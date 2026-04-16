@@ -23,6 +23,32 @@ Then open the connect page from another terminal:
 bun run src/cli.ts connect
 ```
 
+## Check State
+
+Use `is` to inspect element state:
+
+```bash
+bun run src/cli.ts is visible <sel>
+bun run src/cli.ts is enabled <sel>
+bun run src/cli.ts is checked <sel>
+```
+
+The command also supports `disabled` and `focused`.
+
+## Wait
+
+Wait for element state, text, URL, load state, JS condition, or time:
+
+```bash
+bun run src/cli.ts wait <selector>
+bun run src/cli.ts wait <ms>
+bun run src/cli.ts wait --text "Welcome"
+bun run src/cli.ts wait --url "**/dash"
+bun run src/cli.ts wait --load networkidle
+bun run src/cli.ts wait --fn "window.ready === true"
+bun run src/cli.ts wait "#spinner" --state hidden
+```
+
 ## Extension
 
 Build the unpacked extension first:

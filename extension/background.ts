@@ -1318,6 +1318,17 @@ async function checkIsState(tabId, selector, stateType) {
 }
 
 async function getAttribute(tabId, selector, attrName) {
+  if (attrName === 'cdp-url') {
+    if (!state.token) {
+      throw new Error('missing token')
+    }
+
+    return {
+      found: true,
+      value: `ws://127.0.0.1:${state.relayPort}/ws?token=${encodeURIComponent(state.token)}`,
+    }
+  }
+
   if (attrName === 'text') {
     const { value } = await evaluateInTabContext(
       tabId,
@@ -1379,6 +1390,19 @@ async function getAttribute(tabId, selector, attrName) {
         if (!node) return null;
         const rect = node.getBoundingClientRect();
         return { x: rect.x, y: rect.y, width: rect.width, height: rect.height };
+      })()`,
+    )
+    return { found: true, value }
+  }
+
+  if (attrName === 'styles') {
+    const { value } = await evaluateInTabContext(
+      tabId,
+      `(() => {
+        const node = document.querySelector(${JSON.stringify(selector)});
+        if (!node) return null;
+        const styles = window.getComputedStyle(node);
+        return Object.fromEntries(Array.from(styles).map((name) => [name, styles.getPropertyValue(name)]));
       })()`,
     )
     return { found: true, value }
@@ -1479,13 +1503,80 @@ async function waitFor(tabId, condition, timeout = 30000) {
   throw new Error(`wait selector timeout: ${condition}`)
 }
 
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
+function globToRegExp(pattern: string): RegExp {
+  const escaped = escapeRegExp(pattern)
+    .replaceAll('\\*\\*', '.*')
+    .replaceAll('\\*', '[^/]*')
+    .replaceAll('\\?', '.')
+  return new RegExp(`^${escaped}$`)
+}
+
+function matchesUrlPattern(currentUrl: string, pattern: string): boolean {
+  const normalizedPattern = String(pattern || '').trim()
+  if (!normalizedPattern) {
+    return false
+  }
+
+  if (currentUrl.includes(normalizedPattern)) {
+    return true
+  }
+
+  if (normalizedPattern.includes('*') || normalizedPattern.includes('?')) {
+    try {
+      return globToRegExp(normalizedPattern).test(currentUrl)
+    } catch {
+      return false
+    }
+  }
+
+  try {
+    return new RegExp(normalizedPattern).test(currentUrl)
+  } catch {
+    return false
+  }
+}
+
+async function waitForSelectorState(tabId, selector, state = 'visible', timeout = 30000) {
+  const tab = await getTargetTab(tabId)
+  const startTime = Date.now()
+  const hidden = state === 'hidden'
+
+  while (Date.now() - startTime < timeout) {
+    const { value } = await evaluateInTabContext(
+      tab.id,
+      `(() => {
+        const node = document.querySelector(${JSON.stringify(selector)});
+        const visible = Boolean(node) && (() => {
+          const rect = node.getBoundingClientRect();
+          const style = node.ownerDocument.defaultView.getComputedStyle(node);
+          return rect.width > 0 && rect.height > 0 &&
+            style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0';
+        })();
+        return ${hidden ? '!visible' : 'visible'};
+      })()`,
+    )
+
+    if (value === true) {
+      return { waited: true, condition: 'selector', selector, state }
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, 100))
+  }
+
+  throw new Error(`wait selector timeout: ${selector}`)
+}
+
 async function waitForUrl(tabId, urlPattern, timeout = 30000) {
   const startTime = Date.now()
 
   while (Date.now() - startTime < timeout) {
     const { value } = await evaluateInTabContext(tabId, 'window.location.href')
     const currentUrl = value || ''
-    if (currentUrl.includes(urlPattern) || new RegExp(urlPattern).test(currentUrl)) {
+    if (matchesUrlPattern(currentUrl, urlPattern)) {
       return {
         waited: true,
         condition: 'url',
@@ -1519,6 +1610,31 @@ async function waitForText(tabId, text, timeout = 30000) {
   throw new Error(`wait text timeout: ${text}`)
 }
 
+async function waitForExpression(tabId, expression, timeout = 30000) {
+  const startTime = Date.now()
+
+  while (Date.now() - startTime < timeout) {
+    const { value } = await evaluateInTabContext(
+      tabId,
+      `(() => {
+        try {
+          return Boolean(Function('return (' + ${JSON.stringify(expression)} + ')')());
+        } catch (error) {
+          return false;
+        }
+      })()`,
+    )
+
+    if (value === true) {
+      return { waited: true, condition: 'fn', expression }
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, 100))
+  }
+
+  throw new Error(`wait fn timeout: ${expression}`)
+}
+
 async function waitWithTimeout(tabId, ms) {
   await new Promise((resolve) => setTimeout(resolve, ms))
   return { waited: true, condition: 'time', ms }
@@ -1532,7 +1648,7 @@ async function handleWait(tabId, args) {
   }
 
   if (args.type === 'selector' || args.selector) {
-    return await waitFor(tabId, args.selector, timeout)
+    return await waitForSelectorState(tabId, args.selector, args.state || 'visible', timeout)
   }
 
   if (args.type === 'url' || args.url) {
@@ -1549,6 +1665,10 @@ async function handleWait(tabId, args) {
 
   if (args.type === 'networkidle') {
     return await waitFor(tabId, 'networkidle', timeout)
+  }
+
+  if (args.type === 'fn' || args.fn) {
+    return await waitForExpression(tabId, args.fn || '', timeout)
   }
 
   throw new Error(`unsupported wait type: ${args.type}`)

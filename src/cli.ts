@@ -94,7 +94,7 @@ function parseCli(argv: string[]): ParsedCli {
 }
 
 function commandNeedsSelector(attr: string): boolean {
-  return !['title', 'url'].includes(attr)
+  return !['title', 'url', 'cdp-url'].includes(attr)
 }
 
 function parseJsonValue(value: string): unknown {
@@ -169,6 +169,144 @@ function parseNetworkRouteArgs(rest: string[]): { url: string; abort: boolean; b
   return result
 }
 
+function parseWaitArgs(rest: string[]): WaitArgs {
+  const waitArgs: WaitArgs = {
+    timeout: 30000,
+    state: 'visible',
+  }
+
+  const positionals: string[] = []
+
+  for (let index = 0; index < rest.length; index += 1) {
+    const value = rest[index]
+
+    if (value === '--timeout') {
+      const rawTimeout = rest[index + 1]
+      if (rawTimeout === undefined) {
+        throw new Error('missing timeout value')
+      }
+      waitArgs.timeout = Number(rawTimeout) || waitArgs.timeout
+      index += 1
+      continue
+    }
+
+    if (value === '--state') {
+      const rawState = rest[index + 1]
+      if (rawState === undefined) {
+        throw new Error('missing state value')
+      }
+      waitArgs.state = rawState
+      index += 1
+      continue
+    }
+
+    if (value === '--text') {
+      const rawText = rest[index + 1]
+      if (rawText === undefined) {
+        throw new Error('missing text value')
+      }
+      waitArgs.type = 'text'
+      waitArgs.text = rawText
+      index += 1
+      continue
+    }
+
+    if (value === '--url') {
+      const rawUrl = rest[index + 1]
+      if (rawUrl === undefined) {
+        throw new Error('missing url value')
+      }
+      waitArgs.type = 'url'
+      waitArgs.url = rawUrl
+      index += 1
+      continue
+    }
+
+    if (value === '--fn') {
+      const rawFn = rest[index + 1]
+      if (rawFn === undefined) {
+        throw new Error('missing fn value')
+      }
+      waitArgs.type = 'fn'
+      waitArgs.fn = rawFn
+      index += 1
+      continue
+    }
+
+    if (value === '--load') {
+      const rawLoadState = rest[index + 1]
+      if (rawLoadState && !rawLoadState.startsWith('--')) {
+        waitArgs.type = rawLoadState === 'networkidle' ? 'networkidle' : 'load'
+        index += 1
+      } else {
+        waitArgs.type = 'networkidle'
+      }
+      continue
+    }
+
+    if (value === '--ms') {
+      const rawMs = rest[index + 1]
+      if (rawMs === undefined) {
+        throw new Error('missing ms value')
+      }
+      waitArgs.type = 'time'
+      waitArgs.ms = Number(rawMs)
+      index += 1
+      continue
+    }
+
+    if (!value.startsWith('--')) {
+      positionals.push(value)
+    }
+  }
+
+  if (!waitArgs.type && positionals.length > 0) {
+    const [first, second] = positionals
+
+    if (first === 'selector') {
+      waitArgs.type = 'selector'
+      waitArgs.selector = second || ''
+    } else if (first === 'url') {
+      waitArgs.type = 'url'
+      waitArgs.url = second || ''
+    } else if (first === 'text') {
+      waitArgs.type = 'text'
+      waitArgs.text = second || ''
+    } else if (first === 'time' || first === 'ms') {
+      waitArgs.type = 'time'
+      waitArgs.ms = Number(second || first)
+    } else if (first === 'load') {
+      waitArgs.type = second === 'networkidle' ? 'networkidle' : 'load'
+    } else if (first === 'networkidle') {
+      waitArgs.type = 'networkidle'
+    } else if (!isNaN(Number(first)) && positionals.length === 1) {
+      waitArgs.type = 'time'
+      waitArgs.ms = Number(first)
+    } else {
+      waitArgs.type = 'selector'
+      waitArgs.selector = first
+    }
+  }
+
+  if (!waitArgs.type) {
+    waitArgs.type = 'networkidle'
+  }
+
+  if (waitArgs.type === 'selector' && !waitArgs.selector && positionals.length > 0) {
+    waitArgs.selector = positionals[0]
+  }
+
+  if (waitArgs.type === 'url' && !waitArgs.url && positionals.length > 0) {
+    waitArgs.url = positionals[0]
+  }
+
+  if (waitArgs.type === 'text' && !waitArgs.text && positionals.length > 0) {
+    waitArgs.text = positionals[0]
+  }
+
+  return waitArgs
+}
+
 async function writeHarFile(har: unknown, outputPath: string | null): Promise<string> {
   const serialized = `${JSON.stringify(har, null, 2)}\n`
   const targetPath = outputPath || path.join(await mkTempHarDir(), 'network.har')
@@ -179,6 +317,18 @@ async function writeHarFile(har: unknown, outputPath: string | null): Promise<st
 
 async function mkTempHarDir(): Promise<string> {
   return await mkdtemp(path.join(os.tmpdir(), 'autobrowser-har-'))
+}
+
+async function getCdpUrl(baseUrl: string): Promise<string> {
+  const status = await getStatus(baseUrl)
+  const relayPort = Number(status.relayPort || DEFAULT_RELAY_PORT)
+  const token = typeof status.token === 'string' ? status.token : ''
+
+  if (!token) {
+    throw new Error('missing token')
+  }
+
+  return `ws://127.0.0.1:${relayPort}/ws?token=${encodeURIComponent(token)}`
 }
 
 function printHelp(): string {
@@ -217,10 +367,14 @@ Usage:
   autobrowser close [all]
   autobrowser window new
   autobrowser frame <selector|top>
-  autobrowser is <visible|enabled|checked|disabled> <selector>
-  autobrowser get <text|html|value|title|url|count|attr|box> [selector]
+  autobrowser is <visible|enabled|checked|disabled|focused> <selector>
+  autobrowser get <text|html|value|title|url|cdp-url|count|attr|box|styles> [selector]
   autobrowser dialog accept|dismiss [promptText]
-  autobrowser wait <selector|url|text|time|load|networkidle> [value] [timeout]
+  autobrowser wait <selector|ms> [--state visible|hidden] [--timeout <ms>]
+  autobrowser wait --text <text>
+  autobrowser wait --url <pattern>
+  autobrowser wait --load [networkidle]
+  autobrowser wait --fn <expression>
   autobrowser cookies get|set|clear
   autobrowser storage get|set|clear [key] [value]
   autobrowser console
@@ -331,15 +485,27 @@ interface WaitArgs {
   url?: string
   text?: string
   ms?: number
+  state?: string
+  fn?: string
 }
 
 export async function main(argv: string[] = process.argv.slice(2)): Promise<number | void> {
   const { flags, args } = parseCli(argv)
   const [command, ...rest] = args
 
-  function writeResult(payload: CommandResponse | Record<string, unknown>): void {
+  function writeResult(payload: CommandResponse | Record<string, unknown> | string | number | boolean | bigint | null | undefined): void {
     if (flags.json) {
       process.stdout.write(`${JSON.stringify(payload, null, 2)}\n`)
+      return
+    }
+
+    if (
+      typeof payload === 'string' ||
+      typeof payload === 'number' ||
+      typeof payload === 'boolean' ||
+      typeof payload === 'bigint'
+    ) {
+      process.stdout.write(`${String(payload)}\n`)
       return
     }
 
@@ -723,6 +889,17 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
       selector,
       state,
     })
+    if (payload.ok === false) {
+      writeResult(payload)
+      return 1
+    }
+
+    const value = (payload.result as { value?: unknown } | undefined)?.value
+    if (value !== undefined) {
+      writeResult(value as string | number | boolean | bigint)
+      return 0
+    }
+
     writeResult(payload)
     return 0
   }
@@ -730,6 +907,18 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
   if (command === 'get') {
     const attr = rest[0] || 'text'
     const selector = rest[1]
+
+    if (attr === 'cdp-url') {
+      try {
+        const cdpUrl = await getCdpUrl(flags.server)
+        writeResult(cdpUrl)
+        return 0
+      } catch (error) {
+        process.stderr.write(`${(error as Error).message}\n`)
+        return 1
+      }
+    }
+
     if (commandNeedsSelector(attr) && !selector) {
       process.stderr.write('missing selector\n')
       return 1
@@ -755,38 +944,11 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
   }
 
   if (command === 'wait') {
-    const type = rest[0]
-    const value = rest[1]
-    const timeout = Number(rest[2] || 30000)
-
-    const waitArgs: WaitArgs = { timeout }
-
-    if (type === 'time' || type === 'ms') {
-      waitArgs.type = 'time'
-      waitArgs.ms = Number(value) || timeout
-    } else if (type === 'selector') {
-      waitArgs.type = 'selector'
-      waitArgs.selector = value
-      waitArgs.timeout = timeout
-    } else if (type === 'url') {
-      waitArgs.type = 'url'
-      waitArgs.url = value
-      waitArgs.timeout = timeout
-    } else if (type === 'text') {
-      waitArgs.type = 'text'
-      waitArgs.text = value
-      waitArgs.timeout = timeout
-    } else if (type === 'load') {
-      waitArgs.type = 'load'
-      waitArgs.timeout = timeout
-    } else if (type === 'networkidle') {
-      waitArgs.type = 'networkidle'
-      waitArgs.timeout = timeout
-    } else if (!isNaN(Number(type))) {
-      waitArgs.type = 'time'
-      waitArgs.ms = Number(type)
-    } else {
-      process.stderr.write('unknown wait type: use time/selector/url/text/load/networkidle\n')
+    let waitArgs: WaitArgs
+    try {
+      waitArgs = parseWaitArgs(rest)
+    } catch (error) {
+      process.stderr.write(`${(error as Error).message}\n`)
       return 1
     }
 

@@ -69,6 +69,158 @@ describe('cli command routing', () => {
     expect(result.stdout).toContain('Example title')
   })
 
+  test('returns the local cdp websocket url without requiring a selector', async () => {
+    const result = await runCli(['get', 'cdp-url'], {
+      token: 'test-token',
+      relayPort: 48001,
+    })
+
+    expect(result.exitCode).toBe(0)
+    expect(result.fetchCalls).toHaveLength(1)
+    expect(String(result.fetchCalls[0].url)).toBe('http://127.0.0.1:47979/status')
+    expect(result.stdout).toContain('ws://127.0.0.1:48001/ws?token=test-token')
+  })
+
+  test('routes computed styles requests to the extension', async () => {
+    const result = await runCli(['get', 'styles', '#panel'], {
+      ok: true,
+      result: {
+        found: true,
+        value: {
+          display: 'block',
+          width: '320px',
+        },
+      },
+    })
+
+    expect(result.exitCode).toBe(0)
+    expect(result.fetchCalls).toHaveLength(1)
+    expect(result.fetchCalls[0].body).toEqual({
+      command: 'get',
+      args: {
+        selector: '#panel',
+        attr: 'styles',
+      },
+    })
+    expect(result.stdout).toContain('display')
+    expect(result.stdout).toContain('width')
+  })
+
+  test('prints boolean state checks as primitive output', async () => {
+    const result = await runCli(['is', 'visible', '#submit'], {
+      ok: true,
+      result: {
+        found: true,
+        state: 'visible',
+        value: true,
+      },
+    })
+
+    expect(result.exitCode).toBe(0)
+    expect(result.fetchCalls).toHaveLength(1)
+    expect(result.fetchCalls[0].body).toEqual({
+      command: 'is',
+      args: {
+        selector: '#submit',
+        state: 'visible',
+      },
+    })
+    expect(result.stdout.trim()).toBe('true')
+  })
+
+  test('routes selector waits to the extension with visible state by default', async () => {
+    const result = await runCli(['wait', '#spinner'])
+
+    expect(result.exitCode).toBe(0)
+    expect(result.fetchCalls).toHaveLength(1)
+    expect(result.fetchCalls[0].body).toEqual({
+      command: 'wait',
+      args: {
+        timeout: 30000,
+        state: 'visible',
+        type: 'selector',
+        selector: '#spinner',
+      },
+    })
+  })
+
+  test('routes hidden selector waits to the extension', async () => {
+    const result = await runCli(['wait', '#spinner', '--state', 'hidden'])
+
+    expect(result.exitCode).toBe(0)
+    expect(result.fetchCalls).toHaveLength(1)
+    expect(result.fetchCalls[0].body).toEqual({
+      command: 'wait',
+      args: {
+        timeout: 30000,
+        state: 'hidden',
+        type: 'selector',
+        selector: '#spinner',
+      },
+    })
+  })
+
+  test('routes text waits to the extension', async () => {
+    const result = await runCli(['wait', '--text', 'Welcome'])
+
+    expect(result.exitCode).toBe(0)
+    expect(result.fetchCalls).toHaveLength(1)
+    expect(result.fetchCalls[0].body).toEqual({
+      command: 'wait',
+      args: {
+        timeout: 30000,
+        state: 'visible',
+        type: 'text',
+        text: 'Welcome',
+      },
+    })
+  })
+
+  test('routes glob url waits to the extension', async () => {
+    const result = await runCli(['wait', '--url', '**/dash'])
+
+    expect(result.exitCode).toBe(0)
+    expect(result.fetchCalls).toHaveLength(1)
+    expect(result.fetchCalls[0].body).toEqual({
+      command: 'wait',
+      args: {
+        timeout: 30000,
+        state: 'visible',
+        type: 'url',
+        url: '**/dash',
+      },
+    })
+  })
+
+  test('routes load and fn waits to the extension', async () => {
+    const loadResult = await runCli(['wait', '--load', 'networkidle'])
+
+    expect(loadResult.exitCode).toBe(0)
+    expect(loadResult.fetchCalls).toHaveLength(1)
+    expect(loadResult.fetchCalls[0].body).toEqual({
+      command: 'wait',
+      args: {
+        timeout: 30000,
+        state: 'visible',
+        type: 'networkidle',
+      },
+    })
+
+    const fnResult = await runCli(['wait', '--fn', 'window.ready === true'])
+
+    expect(fnResult.exitCode).toBe(0)
+    expect(fnResult.fetchCalls).toHaveLength(1)
+    expect(fnResult.fetchCalls[0].body).toEqual({
+      command: 'wait',
+      args: {
+        timeout: 30000,
+        state: 'visible',
+        type: 'fn',
+        fn: 'window.ready === true',
+      },
+    })
+  })
+
   test('still requires a selector for selector-based get commands', async () => {
     const result = await runCli(['get', 'text'])
 
