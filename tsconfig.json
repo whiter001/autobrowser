@@ -12,8 +12,7 @@
     "allowSyntheticDefaultImports": true,
     "noEmit": true,
     "isolatedModules": true,
-    "types": ["bun-types"]
   },
-  "include": ["src/**/*", "extension/**/*"],
-  "exclude": ["node_modules", "dist"]
+  "include": ["src/**/*"],
+  "exclude": ["node_modules", "dist", "extension"],
 }

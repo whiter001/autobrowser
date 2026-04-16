@@ -1,12 +1,8 @@
-import { readFile } from "node:fs/promises";
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
-import {
-  DEFAULT_IPC_PORT,
-  DEFAULT_RELAY_PORT,
-  isPortInUse,
-} from "./core/protocol.js";
-import { startServers } from "./server.js";
+import { readFile } from 'node:fs/promises';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+import { DEFAULT_IPC_PORT, DEFAULT_RELAY_PORT, isPortInUse } from './core/protocol.js';
+import { startServers } from './server.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -45,41 +41,41 @@ function parseCli(argv: string[]): ParsedCli {
 
   for (let index = 0; index < argv.length; index += 1) {
     const value = argv[index];
-    if (value === "--json") {
+    if (value === '--json') {
       flags.json = true;
       continue;
     }
 
-    if (value === "--stdin") {
+    if (value === '--stdin') {
       flags.stdin = true;
       continue;
     }
 
-    if (value === "--base64") {
+    if (value === '--base64') {
       flags.base64 = true;
       continue;
     }
 
-    if (value === "--file") {
+    if (value === '--file') {
       flags.file = argv[index + 1] || null;
       index += 1;
       continue;
     }
 
-    if (value === "--server") {
+    if (value === '--server') {
       flags.server = argv[index + 1] || flags.server;
       serverExplicitlySet = true;
       index += 1;
       continue;
     }
 
-    if (value === "--relay-port") {
+    if (value === '--relay-port') {
       flags.relayPort = Number(argv[index + 1] || flags.relayPort);
       index += 1;
       continue;
     }
 
-    if (value === "--ipc-port") {
+    if (value === '--ipc-port') {
       flags.ipcPort = Number(argv[index + 1] || flags.ipcPort);
       if (!serverExplicitlySet) {
         flags.server = `http://127.0.0.1:${flags.ipcPort}`;
@@ -95,7 +91,7 @@ function parseCli(argv: string[]): ParsedCli {
 }
 
 function commandNeedsSelector(attr: string): boolean {
-  return !["title", "url"].includes(attr);
+  return !['title', 'url'].includes(attr);
 }
 
 function printHelp(): string {
@@ -153,10 +149,10 @@ Flags:
 
 async function readStdin(): Promise<string> {
   if (process.stdin.isTTY) {
-    return "";
+    return '';
   }
 
-  let content = "";
+  let content = '';
   for await (const chunk of process.stdin) {
     content += chunk;
   }
@@ -166,17 +162,17 @@ async function readStdin(): Promise<string> {
 
 async function openUrl(url: string): Promise<void> {
   const platform = process.platform;
-  if (platform === "darwin") {
-    await execFileAsync("open", [url]);
+  if (platform === 'darwin') {
+    await execFileAsync('open', [url]);
     return;
   }
 
-  if (platform === "win32") {
-    await execFileAsync("cmd", ["/c", "start", "", url]);
+  if (platform === 'win32') {
+    await execFileAsync('cmd', ['/c', 'start', '', url]);
     return;
   }
 
-  await execFileAsync("xdg-open", [url]);
+  await execFileAsync('xdg-open', [url]);
 }
 
 interface CommandResponse {
@@ -191,9 +187,9 @@ async function requestCommand(
   args: CommandArgs = {},
 ): Promise<CommandResponse> {
   const response = await fetch(`${baseUrl}/command`, {
-    method: "POST",
+    method: 'POST',
     headers: {
-      "content-type": "application/json",
+      'content-type': 'application/json',
     },
     body: JSON.stringify({ command, args }),
   });
@@ -206,17 +202,14 @@ async function getStatus(baseUrl: string): Promise<Record<string, unknown>> {
   return (await response.json()) as Record<string, unknown>;
 }
 
-async function resolveEvalScript(
-  flags: CliFlags,
-  rest: string[],
-): Promise<string> {
+async function resolveEvalScript(flags: CliFlags, rest: string[]): Promise<string> {
   if (flags.file) {
-    return await readFile(flags.file, "utf8");
+    return await readFile(flags.file, 'utf8');
   }
 
   if (flags.base64) {
-    const raw = rest.join(" ").trim();
-    return Buffer.from(raw, "base64").toString("utf8");
+    const raw = rest.join(' ').trim();
+    return Buffer.from(raw, 'base64').toString('utf8');
   }
 
   if (flags.stdin) {
@@ -224,7 +217,7 @@ async function resolveEvalScript(
   }
 
   if (rest.length > 0) {
-    return rest.join(" ");
+    return rest.join(' ');
   }
 
   return await readStdin();
@@ -239,15 +232,11 @@ interface WaitArgs {
   ms?: number;
 }
 
-export async function main(
-  argv: string[] = process.argv.slice(2),
-): Promise<number | void> {
+export async function main(argv: string[] = process.argv.slice(2)): Promise<number | void> {
   const { flags, args } = parseCli(argv);
   const [command, ...rest] = args;
 
-  function writeResult(
-    payload: CommandResponse | Record<string, unknown>,
-  ): void {
+  function writeResult(payload: CommandResponse | Record<string, unknown>): void {
     if (flags.json) {
       process.stdout.write(`${JSON.stringify(payload, null, 2)}\n`);
       return;
@@ -255,35 +244,28 @@ export async function main(
 
     const p = payload as CommandResponse;
     if (p?.ok === false) {
-      process.stderr.write(`${p.error?.message || "command failed"}\n`);
+      process.stderr.write(`${p.error?.message || 'command failed'}\n`);
       process.exitCode = 1;
       return;
     }
 
     const result = p?.result ?? payload;
-    if (typeof result === "string") {
-      process.stdout.write(result.endsWith("\n") ? result : `${result}\n`);
+    if (typeof result === 'string') {
+      process.stdout.write(result.endsWith('\n') ? result : `${result}\n`);
       return;
     }
 
     process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
   }
 
-  if (
-    !command ||
-    command === "help" ||
-    command === "--help" ||
-    command === "-h"
-  ) {
+  if (!command || command === 'help' || command === '--help' || command === '-h') {
     process.stdout.write(printHelp());
     return 0;
   }
 
-  if (command === "server") {
+  if (command === 'server') {
     if (await isPortInUse(flags.relayPort)) {
-      process.stderr.write(
-        "Server already running on port " + flags.relayPort + "\n",
-      );
+      process.stderr.write('Server already running on port ' + flags.relayPort + '\n');
       process.exit(1);
     }
     const servers = await startServers({
@@ -299,78 +281,78 @@ export async function main(
       process.exit(0);
     };
 
-    process.on("SIGINT", shutdown);
-    process.on("SIGTERM", shutdown);
+    process.on('SIGINT', shutdown);
+    process.on('SIGTERM', shutdown);
     return new Promise(() => {});
   }
 
-  if (command === "connect") {
+  if (command === 'connect') {
     await openUrl(`http://127.0.0.1:${flags.relayPort}/connect`);
     return 0;
   }
 
-  if (command === "status") {
+  if (command === 'status') {
     const status = await getStatus(flags.server);
     writeResult(status as CommandResponse);
     return 0;
   }
 
-  if (command === "tab") {
+  if (command === 'tab') {
     const [subcommand, ...tabArgs] = rest;
-    if (subcommand === "list") {
-      const payload = await requestCommand(flags.server, "tab.list", {});
+    if (subcommand === 'list') {
+      const payload = await requestCommand(flags.server, 'tab.list', {});
       writeResult(payload);
       return 0;
     }
 
-    if (subcommand === "new") {
-      const url = tabArgs[0] || "about:blank";
-      const payload = await requestCommand(flags.server, "tab.new", { url });
+    if (subcommand === 'new') {
+      const url = tabArgs[0] || 'about:blank';
+      const payload = await requestCommand(flags.server, 'tab.new', { url });
       writeResult(payload);
       return 0;
     }
   }
 
-  if (command === "open" || command === "goto") {
+  if (command === 'open' || command === 'goto') {
     const url = rest[0];
     if (!url) {
-      process.stderr.write("missing url\n");
+      process.stderr.write('missing url\n');
       return 1;
     }
 
-    const payload = await requestCommand(flags.server, "goto", { url });
+    const payload = await requestCommand(flags.server, 'goto', { url });
     writeResult(payload);
     return 0;
   }
 
-  if (command === "eval") {
+  if (command === 'eval') {
     const script = await resolveEvalScript(flags, rest);
-    const payload = await requestCommand(flags.server, "eval", { script });
+    const payload = await requestCommand(flags.server, 'eval', { script });
     writeResult(payload);
     return 0;
   }
 
-  if (command === "click") {
+  if (command === 'click') {
     const selector = rest[0];
     if (!selector) {
-      process.stderr.write("missing selector\n");
+      process.stderr.write('missing selector\n');
       return 1;
     }
 
-    const payload = await requestCommand(flags.server, "click", { selector });
+    const payload = await requestCommand(flags.server, 'click', { selector });
     writeResult(payload);
     return 0;
   }
 
-  if (command === "fill") {
+  if (command === 'fill') {
     const selector = rest[0];
-    const value = rest.slice(1).join(" ");
+    const value = rest.slice(1).join(' ');
     if (!selector) {
-      process.stderr.write("missing selector\n");
+      process.stderr.write('missing selector\n');
       return 1;
     }
 
-    const payload = await requestCommand(flags.server, "fill", {
+    const payload = await requestCommand(flags.server, 'fill', {
       selector,
       value,
     });
@@ -378,53 +360,53 @@ export async function main(
     return 0;
   }
 
-  if (command === "snapshot" || command === "screenshot") {
+  if (command === 'snapshot' || command === 'screenshot') {
     const payload = await requestCommand(flags.server, command, {});
     writeResult(payload);
     return 0;
   }
 
-  if (command === "hover") {
+  if (command === 'hover') {
     const selector = rest[0];
     if (!selector) {
-      process.stderr.write("missing selector\n");
+      process.stderr.write('missing selector\n');
       return 1;
     }
-    const payload = await requestCommand(flags.server, "hover", { selector });
+    const payload = await requestCommand(flags.server, 'hover', { selector });
     writeResult(payload);
     return 0;
   }
 
-  if (command === "press") {
+  if (command === 'press') {
     const key = rest[0];
     if (!key) {
-      process.stderr.write("missing key\n");
+      process.stderr.write('missing key\n');
       return 1;
     }
-    const payload = await requestCommand(flags.server, "press", { key });
+    const payload = await requestCommand(flags.server, 'press', { key });
     writeResult(payload);
     return 0;
   }
 
-  if (command === "focus") {
+  if (command === 'focus') {
     const selector = rest[0];
     if (!selector) {
-      process.stderr.write("missing selector\n");
+      process.stderr.write('missing selector\n');
       return 1;
     }
-    const payload = await requestCommand(flags.server, "focus", { selector });
+    const payload = await requestCommand(flags.server, 'focus', { selector });
     writeResult(payload);
     return 0;
   }
 
-  if (command === "select") {
+  if (command === 'select') {
     const selector = rest[0];
     const value = rest[1];
     if (!selector || value === undefined) {
-      process.stderr.write("missing selector or value\n");
+      process.stderr.write('missing selector or value\n');
       return 1;
     }
-    const payload = await requestCommand(flags.server, "select", {
+    const payload = await requestCommand(flags.server, 'select', {
       selector,
       value,
     });
@@ -432,33 +414,33 @@ export async function main(
     return 0;
   }
 
-  if (command === "check") {
+  if (command === 'check') {
     const selector = rest[0];
     if (!selector) {
-      process.stderr.write("missing selector\n");
+      process.stderr.write('missing selector\n');
       return 1;
     }
-    const payload = await requestCommand(flags.server, "check", { selector });
+    const payload = await requestCommand(flags.server, 'check', { selector });
     writeResult(payload);
     return 0;
   }
 
-  if (command === "uncheck") {
+  if (command === 'uncheck') {
     const selector = rest[0];
     if (!selector) {
-      process.stderr.write("missing selector\n");
+      process.stderr.write('missing selector\n');
       return 1;
     }
-    const payload = await requestCommand(flags.server, "uncheck", { selector });
+    const payload = await requestCommand(flags.server, 'uncheck', { selector });
     writeResult(payload);
     return 0;
   }
 
-  if (command === "scroll") {
+  if (command === 'scroll') {
     const selector = rest[0];
     const deltaX = Number(rest[1] || 0);
     const deltaY = Number(rest[2] || 100);
-    const payload = await requestCommand(flags.server, "scroll", {
+    const payload = await requestCommand(flags.server, 'scroll', {
       selector: selector || null,
       deltaX,
       deltaY,
@@ -467,33 +449,33 @@ export async function main(
     return 0;
   }
 
-  if (command === "drag") {
+  if (command === 'drag') {
     const start = rest[0];
     const end = rest[1];
     if (!start) {
-      process.stderr.write("missing start selector\n");
+      process.stderr.write('missing start selector\n');
       return 1;
     }
-    const payload = await requestCommand(flags.server, "drag", {
+    const payload = await requestCommand(flags.server, 'drag', {
       start,
-      end: end || "",
+      end: end || '',
     });
     writeResult(payload);
     return 0;
   }
 
-  if (command === "upload") {
+  if (command === 'upload') {
     const selector = rest[0];
     const files = rest.slice(1);
     if (!selector) {
-      process.stderr.write("missing selector\n");
+      process.stderr.write('missing selector\n');
       return 1;
     }
     if (!files || files.length === 0) {
-      process.stderr.write("missing files\n");
+      process.stderr.write('missing files\n');
       return 1;
     }
-    const payload = await requestCommand(flags.server, "upload", {
+    const payload = await requestCommand(flags.server, 'upload', {
       selector,
       files,
     });
@@ -501,56 +483,56 @@ export async function main(
     return 0;
   }
 
-  if (command === "back") {
-    const payload = await requestCommand(flags.server, "back", {});
+  if (command === 'back') {
+    const payload = await requestCommand(flags.server, 'back', {});
     writeResult(payload);
     return 0;
   }
 
-  if (command === "forward") {
-    const payload = await requestCommand(flags.server, "forward", {});
+  if (command === 'forward') {
+    const payload = await requestCommand(flags.server, 'forward', {});
     writeResult(payload);
     return 0;
   }
 
-  if (command === "reload") {
-    const payload = await requestCommand(flags.server, "reload", {});
+  if (command === 'reload') {
+    const payload = await requestCommand(flags.server, 'reload', {});
     writeResult(payload);
     return 0;
   }
 
-  if (command === "window") {
+  if (command === 'window') {
     const action = rest[0];
-    if (action === "new") {
-      const payload = await requestCommand(flags.server, "window", {
-        action: "new",
+    if (action === 'new') {
+      const payload = await requestCommand(flags.server, 'window', {
+        action: 'new',
       });
       writeResult(payload);
       return 0;
     }
-    process.stderr.write("unknown window action, use: window new\n");
+    process.stderr.write('unknown window action, use: window new\n');
     return 1;
   }
 
-  if (command === "frame") {
+  if (command === 'frame') {
     const selector = rest[0];
     if (!selector) {
-      process.stderr.write("missing selector\n");
+      process.stderr.write('missing selector\n');
       return 1;
     }
-    const payload = await requestCommand(flags.server, "frame", { selector });
+    const payload = await requestCommand(flags.server, 'frame', { selector });
     writeResult(payload);
     return 0;
   }
 
-  if (command === "is") {
-    const state = rest[0] || "visible";
+  if (command === 'is') {
+    const state = rest[0] || 'visible';
     const selector = rest[1];
     if (!selector) {
-      process.stderr.write("missing selector\n");
+      process.stderr.write('missing selector\n');
       return 1;
     }
-    const payload = await requestCommand(flags.server, "is", {
+    const payload = await requestCommand(flags.server, 'is', {
       selector,
       state,
     });
@@ -558,14 +540,14 @@ export async function main(
     return 0;
   }
 
-  if (command === "get") {
-    const attr = rest[0] || "text";
+  if (command === 'get') {
+    const attr = rest[0] || 'text';
     const selector = rest[1];
     if (commandNeedsSelector(attr) && !selector) {
-      process.stderr.write("missing selector\n");
+      process.stderr.write('missing selector\n');
       return 1;
     }
-    const payload = await requestCommand(flags.server, "get", {
+    const payload = await requestCommand(flags.server, 'get', {
       selector,
       attr,
     });
@@ -573,11 +555,11 @@ export async function main(
     return 0;
   }
 
-  if (command === "dialog") {
+  if (command === 'dialog') {
     const action = rest[0];
-    const promptText = rest.slice(1).join(" ");
-    const accept = action !== "dismiss";
-    const payload = await requestCommand(flags.server, "dialog", {
+    const promptText = rest.slice(1).join(' ');
+    const accept = action !== 'dismiss';
+    const payload = await requestCommand(flags.server, 'dialog', {
       accept,
       promptText,
     });
@@ -585,68 +567,66 @@ export async function main(
     return 0;
   }
 
-  if (command === "wait") {
+  if (command === 'wait') {
     const type = rest[0];
     const value = rest[1];
     const timeout = Number(rest[2] || 30000);
 
     const waitArgs: WaitArgs = { timeout };
 
-    if (type === "time" || type === "ms") {
-      waitArgs.type = "time";
+    if (type === 'time' || type === 'ms') {
+      waitArgs.type = 'time';
       waitArgs.ms = Number(value) || timeout;
-    } else if (type === "selector") {
-      waitArgs.type = "selector";
+    } else if (type === 'selector') {
+      waitArgs.type = 'selector';
       waitArgs.selector = value;
       waitArgs.timeout = timeout;
-    } else if (type === "url") {
-      waitArgs.type = "url";
+    } else if (type === 'url') {
+      waitArgs.type = 'url';
       waitArgs.url = value;
       waitArgs.timeout = timeout;
-    } else if (type === "text") {
-      waitArgs.type = "text";
+    } else if (type === 'text') {
+      waitArgs.type = 'text';
       waitArgs.text = value;
       waitArgs.timeout = timeout;
-    } else if (type === "load") {
-      waitArgs.type = "load";
+    } else if (type === 'load') {
+      waitArgs.type = 'load';
       waitArgs.timeout = timeout;
-    } else if (type === "networkidle") {
-      waitArgs.type = "networkidle";
+    } else if (type === 'networkidle') {
+      waitArgs.type = 'networkidle';
       waitArgs.timeout = timeout;
     } else if (!isNaN(Number(type))) {
-      waitArgs.type = "time";
+      waitArgs.type = 'time';
       waitArgs.ms = Number(type);
     } else {
-      process.stderr.write(
-        "unknown wait type: use time/selector/url/text/load/networkidle\n",
-      );
+      process.stderr.write('unknown wait type: use time/selector/url/text/load/networkidle\n');
       return 1;
     }
 
-    const payload = await requestCommand(flags.server, "wait", waitArgs);
+    const payload = await requestCommand(flags.server, 'wait', waitArgs);
     writeResult(payload);
     return 0;
   }
 
-  if (command === "cookies") {
+  if (command === 'cookies') {
     const action = rest[0];
-    if (action === "get") {
-      const payload = await requestCommand(flags.server, "cookies", {
-        action: "get",
+    if (action === 'get') {
+      const payload = await requestCommand(flags.server, 'cookies', {
+        action: 'get',
       });
       writeResult(payload);
       return 0;
     }
-    if (action === "set") {
+    if (action === 'set') {
       const name = rest[1];
       const value = rest[2];
       const domain = rest[3];
       if (!name || !value) {
-        process.stderr.write("usage: cookies set <name> <value> [domain]\n");
+        process.stderr.write('usage: cookies set <name> <value> [domain]\n');
         return 1;
       }
-      const payload = await requestCommand(flags.server, "cookies", {
-        action: "set",
+      const payload = await requestCommand(flags.server, 'cookies', {
+        action: 'set',
         name,
         value,
         domain,
@@ -654,77 +634,77 @@ export async function main(
       writeResult(payload);
       return 0;
     }
-    if (action === "clear") {
-      const payload = await requestCommand(flags.server, "cookies", {
-        action: "clear",
+    if (action === 'clear') {
+      const payload = await requestCommand(flags.server, 'cookies', {
+        action: 'clear',
       });
       writeResult(payload);
       return 0;
     }
-    process.stderr.write("usage: cookies get|set|clear\n");
+    process.stderr.write('usage: cookies get|set|clear\n');
     return 1;
   }
 
-  if (command === "storage") {
+  if (command === 'storage') {
     const action = rest[0];
-    if (action === "get") {
+    if (action === 'get') {
       const key = rest[1];
-      const payload = await requestCommand(flags.server, "storage", {
-        action: "get",
+      const payload = await requestCommand(flags.server, 'storage', {
+        action: 'get',
         key,
       });
       writeResult(payload);
       return 0;
     }
-    if (action === "set") {
+    if (action === 'set') {
       const key = rest[1];
       const value = rest[2];
       if (!key || value === undefined) {
-        process.stderr.write("usage: storage set <key> <value>\n");
+        process.stderr.write('usage: storage set <key> <value>\n');
         return 1;
       }
-      const payload = await requestCommand(flags.server, "storage", {
-        action: "set",
+      const payload = await requestCommand(flags.server, 'storage', {
+        action: 'set',
         key,
         value,
       });
       writeResult(payload);
       return 0;
     }
-    if (action === "clear") {
-      const payload = await requestCommand(flags.server, "storage", {
-        action: "clear",
+    if (action === 'clear') {
+      const payload = await requestCommand(flags.server, 'storage', {
+        action: 'clear',
       });
       writeResult(payload);
       return 0;
     }
-    process.stderr.write("usage: storage get|set|clear\n");
+    process.stderr.write('usage: storage get|set|clear\n');
     return 1;
   }
 
-  if (command === "console") {
-    const payload = await requestCommand(flags.server, "console", {});
+  if (command === 'console') {
+    const payload = await requestCommand(flags.server, 'console', {});
     writeResult(payload);
     return 0;
   }
 
-  if (command === "errors") {
-    const payload = await requestCommand(flags.server, "errors", {});
+  if (command === 'errors') {
+    const payload = await requestCommand(flags.server, 'errors', {});
     writeResult(payload);
     return 0;
   }
 
-  if (command === "set") {
+  if (command === 'set') {
     const type = rest[0];
     const subArgs = rest.slice(1);
 
-    if (type === "viewport") {
+    if (type === 'viewport') {
       const width = Number(subArgs[0] || 1280);
       const height = Number(subArgs[1] || 720);
       const deviceScaleFactor = Number(subArgs[2] || 1);
-      const mobile = subArgs[3] === "mobile";
-      const payload = await requestCommand(flags.server, "set", {
-        type: "viewport",
+      const mobile = subArgs[3] === 'mobile';
+      const payload = await requestCommand(flags.server, 'set', {
+        type: 'viewport',
         width,
         height,
         deviceScaleFactor,
@@ -733,37 +713,37 @@ export async function main(
       writeResult(payload);
       return 0;
     }
-    if (type === "offline") {
-      const enabled = subArgs[0] !== "false";
-      const payload = await requestCommand(flags.server, "set", {
-        type: "offline",
+    if (type === 'offline') {
+      const enabled = subArgs[0] !== 'false';
+      const payload = await requestCommand(flags.server, 'set', {
+        type: 'offline',
         enabled,
       });
       writeResult(payload);
       return 0;
     }
-    if (type === "headers") {
+    if (type === 'headers') {
       const headers = subArgs
-        .join(" ")
-        .split(",")
+        .join(' ')
+        .split(',')
         .map((h) => {
-          const [name, ...valueParts] = h.split(":");
-          return { name: name.trim(), value: valueParts.join(":").trim() };
+          const [name, ...valueParts] = h.split(':');
+          return { name: name.trim(), value: valueParts.join(':').trim() };
         })
         .filter((h) => h.name);
-      const payload = await requestCommand(flags.server, "set", {
-        type: "headers",
+      const payload = await requestCommand(flags.server, 'set', {
+        type: 'headers',
         headers,
       });
       writeResult(payload);
       return 0;
     }
-    if (type === "geo") {
+    if (type === 'geo') {
       const latitude = Number(subArgs[0] || 0);
       const longitude = Number(subArgs[1] || 0);
       const accuracy = Number(subArgs[2] || 1);
-      const payload = await requestCommand(flags.server, "set", {
-        type: "geo",
+      const payload = await requestCommand(flags.server, 'set', {
+        type: 'geo',
         latitude,
         longitude,
         accuracy,
@@ -771,77 +751,77 @@ export async function main(
       writeResult(payload);
       return 0;
     }
-    if (type === "media") {
-      const media = subArgs[0] || "";
-      const payload = await requestCommand(flags.server, "set", {
-        type: "media",
+    if (type === 'media') {
+      const media = subArgs[0] || '';
+      const payload = await requestCommand(flags.server, 'set', {
+        type: 'media',
         media,
       });
       writeResult(payload);
       return 0;
     }
     process.stderr.write(
-      "usage: set viewport <w> <h>|offline|headers <json>|geo <lat> <lng>|media <scheme>\n",
+      'usage: set viewport <w> <h>|offline|headers <json>|geo <lat> <lng>|media <scheme>\n',
     );
     return 1;
   }
 
-  if (command === "pdf") {
-    const payload = await requestCommand(flags.server, "pdf", {});
+  if (command === 'pdf') {
+    const payload = await requestCommand(flags.server, 'pdf', {});
     writeResult(payload);
     return 0;
   }
 
-  if (command === "clipboard") {
+  if (command === 'clipboard') {
     const action = rest[0];
-    if (action === "read") {
-      const payload = await requestCommand(flags.server, "clipboard", {
-        action: "read",
+    if (action === 'read') {
+      const payload = await requestCommand(flags.server, 'clipboard', {
+        action: 'read',
       });
       writeResult(payload);
       return 0;
     }
-    if (action === "write") {
-      const text = rest.slice(1).join(" ");
-      const payload = await requestCommand(flags.server, "clipboard", {
-        action: "write",
+    if (action === 'write') {
+      const text = rest.slice(1).join(' ');
+      const payload = await requestCommand(flags.server, 'clipboard', {
+        action: 'write',
         text,
       });
       writeResult(payload);
       return 0;
     }
-    process.stderr.write("usage: clipboard read|write <text>\n");
+    process.stderr.write('usage: clipboard read|write <text>\n');
     return 1;
   }
 
-  if (command === "state") {
+  if (command === 'state') {
     const action = rest[0];
-    if (action === "save") {
-      const name = rest[1] || "default";
-      const payload = await requestCommand(flags.server, "state", {
-        action: "save",
+    if (action === 'save') {
+      const name = rest[1] || 'default';
+      const payload = await requestCommand(flags.server, 'state', {
+        action: 'save',
         name,
       });
       writeResult(payload);
       return 0;
     }
-    if (action === "load") {
-      const stateJson = rest.slice(1).join(" ");
+    if (action === 'load') {
+      const stateJson = rest.slice(1).join(' ');
       let data: Record<string, unknown> = {};
       try {
         data = JSON.parse(stateJson);
       } catch {
-        process.stderr.write("invalid state JSON\n");
+        process.stderr.write('invalid state JSON\n');
         return 1;
       }
-      const payload = await requestCommand(flags.server, "state", {
-        action: "load",
+      const payload = await requestCommand(flags.server, 'state', {
+        action: 'load',
         data,
       });
       writeResult(payload);
       return 0;
     }
-    process.stderr.write("usage: state save|load <json>\n");
+    process.stderr.write('usage: state save|load <json>\n');
     return 1;
   }
 
@@ -851,7 +831,7 @@ export async function main(
 
 if (import.meta.main) {
   main().then((code) => {
-    if (typeof code === "number") {
+    if (typeof code === 'number') {
       process.exitCode = code;
     }
   });

@@ -7,7 +7,7 @@ import {
   getTokenPath,
   readJsonFile,
   writeJsonFile,
-} from "./protocol.js";
+} from './protocol.js';
 
 export interface TabInfo {
   id: number;
@@ -89,10 +89,7 @@ export interface Runtime {
   attachExtension: (socket: WebSocket, meta?: Record<string, unknown>) => void;
   detachExtension: () => void;
   handleExtensionMessage: (rawMessage: unknown) => void;
-  dispatchCommand: (
-    command: string,
-    args?: Record<string, unknown>,
-  ) => Promise<unknown>;
+  dispatchCommand: (command: string, args?: Record<string, unknown>) => Promise<unknown>;
   snapshot: () => {
     token: string;
     relayPort: number;
@@ -103,27 +100,20 @@ export interface Runtime {
   };
 }
 
-export async function createRuntime(
-  options: RuntimeOptions = {},
-): Promise<Runtime> {
+export async function createRuntime(options: RuntimeOptions = {}): Promise<Runtime> {
   const homeDir = options.homeDir || getHomeDir();
   const relayPort = options.relayPort || 47978;
   const ipcPort = options.ipcPort || 47979;
-  const requestTimeoutMs =
-    options.requestTimeoutMs || DEFAULT_REQUEST_TIMEOUT_MS;
+  const requestTimeoutMs = options.requestTimeoutMs || DEFAULT_REQUEST_TIMEOUT_MS;
 
   const persistedState = await readJsonFile<{
     token?: string;
     snapshot?: Snapshot;
   } | null>(getStatePath(homeDir), null);
 
-  const tokenFile = await readJsonFile<{ token: string } | null>(
-    getTokenPath(homeDir),
-    null,
-  );
+  const tokenFile = await readJsonFile<{ token: string } | null>(getTokenPath(homeDir), null);
 
-  const persistedToken =
-    options.token || persistedState?.token || tokenFile?.token;
+  const persistedToken = options.token || persistedState?.token || tokenFile?.token;
 
   // pendingRequests maps CLI commands to extension responses
   const pendingRequests = new Map<string, PendingRequest>();
@@ -141,7 +131,7 @@ export async function createRuntime(
   };
 
   // Only restore stable state, avoid stale tab lists
-  if (persistedState?.snapshot && typeof persistedState.snapshot === "object") {
+  if (persistedState?.snapshot && typeof persistedState.snapshot === 'object') {
     snapshot.lastCommand = persistedState.snapshot.lastCommand ?? null;
     snapshot.lastError = persistedState.snapshot.lastError ?? null;
   }
@@ -176,14 +166,10 @@ export async function createRuntime(
 
   function setTabs(tabs: TabInfo[] = []): void {
     snapshot.tabs = Array.isArray(tabs) ? tabs : [];
-    snapshot.activeTabId =
-      snapshot.tabs.find((tab: TabInfo) => tab.active)?.id ?? null;
+    snapshot.activeTabId = snapshot.tabs.find((tab: TabInfo) => tab.active)?.id ?? null;
   }
 
-  function attachExtension(
-    socket: WebSocket,
-    meta: Record<string, unknown> = {},
-  ): void {
+  function attachExtension(socket: WebSocket, meta: Record<string, unknown> = {}): void {
     runtime.extensionSocket = socket;
     runtime.extensionId = (meta.extensionId as string) || null;
     snapshot.extension = {
@@ -197,7 +183,7 @@ export async function createRuntime(
     runtime.extensionSocket = null;
     runtime.extensionId = null;
     snapshot.extension = null;
-    rejectPendingRequests(pendingRequests, "extension disconnected");
+    rejectPendingRequests(pendingRequests, 'extension disconnected');
   }
 
   interface ExtensionMessage {
@@ -214,15 +200,13 @@ export async function createRuntime(
     let message: ExtensionMessage;
     try {
       message =
-        typeof rawMessage === "string"
-          ? JSON.parse(rawMessage)
-          : (rawMessage as ExtensionMessage);
+        typeof rawMessage === 'string' ? JSON.parse(rawMessage) : (rawMessage as ExtensionMessage);
     } catch {
-      setError("received invalid JSON from extension");
+      setError('received invalid JSON from extension');
       return;
     }
 
-    if (message?.type === "state") {
+    if (message?.type === 'state') {
       if (Array.isArray(message.tabs)) {
         setTabs(message.tabs);
       }
@@ -234,7 +218,7 @@ export async function createRuntime(
       return;
     }
 
-    if (message?.type !== "response" || typeof message.id !== "string") {
+    if (message?.type !== 'response' || typeof message.id !== 'string') {
       return;
     }
 
@@ -247,12 +231,9 @@ export async function createRuntime(
     pendingRequests.delete(message.id);
 
     if (message.ok === false) {
-      const error = new Error(
-        message.error?.message || "extension command failed",
-      );
-      error.code = message.error?.code || "EXTENSION_ERROR";
-      (error as Error & { details?: unknown }).details =
-        message.error?.details || null;
+      const error = new Error(message.error?.message || 'extension command failed');
+      error.code = message.error?.code || 'EXTENSION_ERROR';
+      (error as Error & { details?: unknown }).details = message.error?.details || null;
       pending.reject(error);
       return;
     }
@@ -261,7 +242,7 @@ export async function createRuntime(
   }
 
   interface CommandPayload {
-    type: "command";
+    type: 'command';
     id: string;
     command: string;
     args: Record<string, unknown>;
@@ -274,16 +255,13 @@ export async function createRuntime(
   ): Promise<unknown> {
     setLastCommand(command, args);
 
-    if (
-      !runtime.extensionSocket ||
-      runtime.extensionSocket.readyState !== WebSocket.OPEN
-    ) {
-      throw new Error("no extension is connected");
+    if (!runtime.extensionSocket || runtime.extensionSocket.readyState !== WebSocket.OPEN) {
+      throw new Error('no extension is connected');
     }
 
-    const id = createId("cmd");
+    const id = createId('cmd');
     const payload: CommandPayload = {
-      type: "command",
+      type: 'command',
       id,
       command,
       args,

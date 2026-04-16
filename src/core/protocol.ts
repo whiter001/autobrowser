@@ -1,13 +1,13 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
-import os from "node:os";
-import path from "node:path";
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
 
-export const APP_NAME = "autobrowser";
+export const APP_NAME = 'autobrowser';
 export const DEFAULT_RELAY_PORT = 47978;
 export const DEFAULT_IPC_PORT = 47979;
-export const STATE_DIR_NAME = ".autobrowser";
-export const TOKEN_FILE_NAME = "token";
-export const STATE_FILE_NAME = "state.json";
+export const STATE_DIR_NAME = '.autobrowser';
+export const TOKEN_FILE_NAME = 'token';
+export const STATE_FILE_NAME = 'state.json';
 export const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
 
 export interface ResponseInit {
@@ -32,16 +32,14 @@ export function getStatePath(homeDir: string = getHomeDir()): string {
 }
 
 export function createToken(): string {
-  return crypto.randomUUID().replaceAll("-", "");
+  return crypto.randomUUID().replaceAll('-', '');
 }
 
-export function createId(prefix: string = "req"): string {
-  return `${prefix}_${crypto.randomUUID().replaceAll("-", "")}`;
+export function createId(prefix: string = 'req'): string {
+  return `${prefix}_${crypto.randomUUID().replaceAll('-', '')}`;
 }
 
-export async function ensureStateDir(
-  homeDir: string = getHomeDir(),
-): Promise<void> {
+export async function ensureStateDir(homeDir: string = getHomeDir()): Promise<void> {
   await mkdir(getStateDir(homeDir), { recursive: true });
 }
 
@@ -50,31 +48,25 @@ export async function readJsonFile<T>(
   fallback: T | null = null,
 ): Promise<T | null> {
   try {
-    const content = await readFile(filePath, "utf8");
+    const content = await readFile(filePath, 'utf8');
     return JSON.parse(content) as T;
   } catch (error) {
-    if (error && (error as NodeJS.ErrnoException).code === "ENOENT") {
+    if (error && (error as NodeJS.ErrnoException).code === 'ENOENT') {
       return fallback;
     }
     throw error;
   }
 }
 
-export async function writeJsonFile(
-  filePath: string,
-  value: unknown,
-): Promise<void> {
+export async function writeJsonFile(filePath: string, value: unknown): Promise<void> {
   await mkdir(path.dirname(filePath), { recursive: true });
-  await writeFile(filePath, `${JSON.stringify(value, null, 2)}\n`, "utf8");
+  await writeFile(filePath, `${JSON.stringify(value, null, 2)}\n`, 'utf8');
 }
 
-export function jsonResponse(
-  value: unknown,
-  init: ResponseInit = {},
-): Response {
+export function jsonResponse(value: unknown, init: ResponseInit = {}): Response {
   const headers = new Headers(init.headers || {});
-  if (!headers.has("content-type")) {
-    headers.set("content-type", "application/json; charset=utf-8");
+  if (!headers.has('content-type')) {
+    headers.set('content-type', 'application/json; charset=utf-8');
   }
   return new Response(`${JSON.stringify(value, null, 2)}\n`, {
     ...init,
@@ -82,9 +74,7 @@ export function jsonResponse(
   });
 }
 
-export async function parseJsonRequest<T = Record<string, unknown>>(
-  request: Request,
-): Promise<T> {
+export async function parseJsonRequest<T = Record<string, unknown>>(request: Request): Promise<T> {
   const text = await request.text();
   if (!text.trim()) {
     return {} as T;
@@ -94,16 +84,16 @@ export async function parseJsonRequest<T = Record<string, unknown>>(
 
 export function textResponse(value: string, init: ResponseInit = {}): Response {
   const headers = new Headers(init.headers || {});
-  if (!headers.has("content-type")) {
-    headers.set("content-type", "text/plain; charset=utf-8");
+  if (!headers.has('content-type')) {
+    headers.set('content-type', 'text/plain; charset=utf-8');
   }
   return new Response(value, { ...init, headers });
 }
 
 export function htmlResponse(value: string, init: ResponseInit = {}): Response {
   const headers = new Headers(init.headers || {});
-  if (!headers.has("content-type")) {
-    headers.set("content-type", "text/html; charset=utf-8");
+  if (!headers.has('content-type')) {
+    headers.set('content-type', 'text/html; charset=utf-8');
   }
   return new Response(value, { ...init, headers });
 }

@@ -9,15 +9,13 @@
   "scripts": {
     "dev": "bun src/cli.ts server",
     "start": "bun src/cli.ts server",
-    "check": "bun test",
     "test": "bun test",
-    "oxlint": "oxlint",
-    "oxfmt": "oxfmt --config .oxfmtrc.json",
-    "lint": "oxlint && oxfmt --check",
-    "lint:fix": "oxfmt",
+    "fmt": "oxfmt src/ extension/",
+    "lint": "oxlint src/ extension/",
+    "fix": "oxfmt --fix src/ extension/ && oxlint --fix src/ extension/",
+    "check": "bun run lint && bun run build",
     "build": "bun build src/cli.ts --compile --outfile=dist/autobrowser.exe --target=bun",
-    "build:js": "bun build src/cli.ts --outfile=dist/autobrowser.js --target=bun",
-    "typecheck": "bunx tsc --noEmit"
+    "build:js": "bun build src/cli.ts --outfile=dist/autobrowser.js --target=bun"
   },
   "engines": {
     "bun": ">=1.0.0"

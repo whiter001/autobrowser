@@ -1,5 +1,5 @@
-const STORAGE_KEY = "autobrowserToken";
-const RELAY_PORT_STORAGE_KEY = "autobrowserRelayPort";
+const STORAGE_KEY = 'autobrowserToken';
+const RELAY_PORT_STORAGE_KEY = 'autobrowserRelayPort';
 const DEFAULT_RELAY_PORT = 47978;
 
 function normalizeRelayPort(value: string | number | undefined): number {
@@ -17,31 +17,21 @@ async function loadSettings(): Promise<void> {
     RELAY_PORT_STORAGE_KEY,
   ])) as StorageResult;
 
-  const tokenInput = document.getElementById(
-    "token",
-  ) as HTMLInputElement | null;
-  const portInput = document.getElementById(
-    "relay-port",
-  ) as HTMLInputElement | null;
+  const tokenInput = document.getElementById('token') as HTMLInputElement | null;
+  const portInput = document.getElementById('relay-port') as HTMLInputElement | null;
 
   if (tokenInput) {
-    tokenInput.value = String(result[STORAGE_KEY] || "");
+    tokenInput.value = String(result[STORAGE_KEY] || '');
   }
   if (portInput) {
-    portInput.value = String(
-      normalizeRelayPort(result[RELAY_PORT_STORAGE_KEY]),
-    );
+    portInput.value = String(normalizeRelayPort(result[RELAY_PORT_STORAGE_KEY]));
   }
 }
 
 async function saveSettings(): Promise<void> {
-  const tokenInput = document.getElementById(
-    "token",
-  ) as HTMLInputElement | null;
-  const portInput = document.getElementById(
-    "relay-port",
-  ) as HTMLInputElement | null;
-  const statusEl = document.getElementById("status");
+  const tokenInput = document.getElementById('token') as HTMLInputElement | null;
+  const portInput = document.getElementById('relay-port') as HTMLInputElement | null;
+  const statusEl = document.getElementById('status');
 
   if (!tokenInput || !portInput || !statusEl) {
     return;
@@ -52,7 +42,7 @@ async function saveSettings(): Promise<void> {
   const relayPort = normalizeRelayPort(relayPortRaw || DEFAULT_RELAY_PORT);
 
   if (relayPortRaw && String(relayPort) !== relayPortRaw) {
-    statusEl.textContent = "Relay 端口必须是正整数";
+    statusEl.textContent = 'Relay 端口必须是正整数';
     return;
   }
 
@@ -66,11 +56,11 @@ async function saveSettings(): Promise<void> {
     : `已清空 token，扩展仍会尝试连接 127.0.0.1:${relayPort}`;
 }
 
-const saveButton = document.getElementById("save");
+const saveButton = document.getElementById('save');
 if (saveButton) {
-  saveButton.addEventListener("click", () => {
+  saveButton.addEventListener('click', () => {
     saveSettings().catch((error: Error) => {
-      const statusEl = document.getElementById("status");
+      const statusEl = document.getElementById('status');
       if (statusEl) {
         statusEl.textContent = error.message;
       }
@@ -79,7 +69,7 @@ if (saveButton) {
 }
 
 loadSettings().catch((error: Error) => {
-  const statusEl = document.getElementById("status");
+  const statusEl = document.getElementById('status');
   if (statusEl) {
     statusEl.textContent = error.message;
   }

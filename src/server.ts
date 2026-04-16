@@ -1,12 +1,12 @@
-import { htmlResponse, jsonResponse, textResponse } from "./core/protocol.js";
-import { createRuntime, type Runtime } from "./core/runtime.js";
+import { htmlResponse, jsonResponse, textResponse } from './core/protocol.js';
+import { createRuntime, type Runtime } from './core/runtime.js';
 
 function escapeHtml(value: string): string {
   return String(value)
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;");
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;');
 }
 
 interface SnapshotData {
@@ -146,7 +146,7 @@ function connectPage(snapshot: SnapshotData): string {
         </section>
         <section class="panel">
           <div class="label">Current status</div>
-          <div class="value">${snapshot.extensionConnected ? "extension connected" : "waiting for extension"}</div>
+          <div class="value">${snapshot.extensionConnected ? 'extension connected' : 'waiting for extension'}</div>
         </section>
       </div>
 
@@ -186,43 +186,39 @@ interface StartServersResult {
   stop: () => void;
 }
 
-export async function startServers(
-  options: ServerOptions = {},
-): Promise<StartServersResult> {
+export async function startServers(options: ServerOptions = {}): Promise<StartServersResult> {
   const runtime = await createRuntime(options);
 
   const relayServer = Bun.serve({
-    hostname: "127.0.0.1",
+    hostname: '127.0.0.1',
     port: runtime.runtime.relayPort,
     fetch(request, server) {
       const url = new URL(request.url);
 
-      if (url.pathname === "/ws") {
-        if (url.searchParams.get("token") !== runtime.runtime.token) {
-          return textResponse("unauthorized", { status: 401 });
+      if (url.pathname === '/ws') {
+        if (url.searchParams.get('token') !== runtime.runtime.token) {
+          return textResponse('unauthorized', { status: 401 });
         }
 
         const upgraded = server.upgrade(request, {
           data: {
-            extensionId: url.searchParams.get("extensionId") || null,
-            userAgent: request.headers.get("user-agent"),
+            extensionId: url.searchParams.get('extensionId') || null,
+            userAgent: request.headers.get('user-agent'),
           },
         });
 
-        return upgraded
-          ? undefined
-          : textResponse("upgrade failed", { status: 400 });
+        return upgraded ? undefined : textResponse('upgrade failed', { status: 400 });
       }
 
-      if (url.pathname === "/connect" || url.pathname === "/") {
+      if (url.pathname === '/connect' || url.pathname === '/') {
         return htmlResponse(connectPage(runtime.snapshot()));
       }
 
-      if (url.pathname === "/status") {
+      if (url.pathname === '/status') {
         return jsonResponse(runtime.snapshot());
       }
 
-      return textResponse("not found", { status: 404 });
+      return textResponse('not found', { status: 404 });
     },
     websocket: {
       open(socket) {
@@ -232,7 +228,7 @@ export async function startServers(
         );
         socket.send(
           JSON.stringify({
-            type: "hello",
+            type: 'hello',
             token: runtime.runtime.token,
             relayPort: runtime.runtime.relayPort,
             ipcPort: runtime.runtime.ipcPort,
@@ -249,16 +245,16 @@ export async function startServers(
   });
 
   const ipcServer = Bun.serve({
-    hostname: "127.0.0.1",
+    hostname: '127.0.0.1',
     port: runtime.runtime.ipcPort,
     fetch(request) {
       const url = new URL(request.url);
 
-      if (url.pathname === "/status" && request.method === "GET") {
+      if (url.pathname === '/status' && request.method === 'GET') {
         return jsonResponse(runtime.snapshot());
       }
 
-      if (url.pathname === "/command" && request.method === "POST") {
+      if (url.pathname === '/command' && request.method === 'POST') {
         return request
           .json()
           .then(async (body: unknown) => {
@@ -266,18 +262,17 @@ export async function startServers(
               command?: string;
               args?: Record<string, unknown>;
             } | null;
-            const command = String(data?.command || "").trim();
-            const args =
-              data?.args && typeof data.args === "object" ? data.args : {};
+            const command = String(data?.command || '').trim();
+            const args = data?.args && typeof data.args === 'object' ? data.args : {};
 
             if (!command) {
               return jsonResponse(
-                { ok: false, error: { message: "missing command" } },
+                { ok: false, error: { message: 'missing command' } },
                 { status: 400 },
               );
             }
 
-            if (command === "status") {
+            if (command === 'status') {
               return jsonResponse({ ok: true, result: runtime.snapshot() });
             }
 
@@ -292,7 +287,7 @@ export async function startServers(
                   ok: false,
                   error: {
                     message: err.message,
-                    code: err.code || "COMMAND_FAILED",
+                    code: err.code || 'COMMAND_FAILED',
                   },
                 },
                 { status: 500 },
@@ -300,14 +295,11 @@ export async function startServers(
             }
           })
           .catch((error: Error) =>
-            jsonResponse(
-              { ok: false, error: { message: error.message } },
-              { status: 400 },
-            ),
+            jsonResponse({ ok: false, error: { message: error.message } }, { status: 400 }),
           );
       }
 
-      return textResponse("not found", { status: 404 });
+      return textResponse('not found', { status: 404 });
     },
   });
 
