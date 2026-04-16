@@ -243,6 +243,45 @@ describe('cli command routing', () => {
     })
   })
 
+  test('routes dialog dismiss commands to the extension', async () => {
+    const result = await runCli(['dialog', 'dismiss'])
+
+    expect(result.exitCode).toBe(0)
+    expect(result.fetchCalls).toHaveLength(1)
+    expect(result.fetchCalls[0].body).toEqual({
+      command: 'dialog',
+      args: {
+        accept: false,
+        promptText: '',
+      },
+    })
+  })
+
+  test('routes dialog status commands to the extension', async () => {
+    const result = await runCli(['dialog', 'status'], {
+      ok: true,
+      result: {
+        open: false,
+        type: null,
+        message: null,
+        defaultPrompt: null,
+        url: null,
+        openedAt: null,
+      },
+    })
+
+    expect(result.exitCode).toBe(0)
+    expect(result.fetchCalls).toHaveLength(1)
+    expect(result.fetchCalls[0].body).toEqual({
+      command: 'dialog',
+      args: {
+        action: 'status',
+      },
+    })
+    expect(result.stdout).toContain('open')
+    expect(result.stdout).toContain('false')
+  })
+
   test('routes double clicks to the extension', async () => {
     const result = await runCli(['dblclick', '#submit'])
 

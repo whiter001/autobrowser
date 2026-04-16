@@ -35,6 +35,18 @@ bun run src/cli.ts is checked <sel>
 
 The command also supports `disabled` and `focused`.
 
+## Dialogs
+
+Dialog commands support accept, dismiss, and status:
+
+```bash
+bun run src/cli.ts dialog accept [text]
+bun run src/cli.ts dialog dismiss
+bun run src/cli.ts dialog status
+```
+
+Alert and beforeunload dialogs are accepted automatically so they do not block automation. Confirm and prompt dialogs still require explicit handling.
+
 ## Wait
 
 Wait for element state, text, URL, load state, JS condition, or time:

@@ -370,6 +370,7 @@ Usage:
   autobrowser is <visible|enabled|checked|disabled|focused> <selector>
   autobrowser get <text|html|value|title|url|cdp-url|count|attr|box|styles> [selector]
   autobrowser dialog accept|dismiss [promptText]
+  autobrowser dialog status
   autobrowser wait <selector|ms> [--state visible|hidden] [--timeout <ms>]
   autobrowser wait --text <text>
   autobrowser wait --url <pattern>
@@ -933,6 +934,13 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
 
   if (command === 'dialog') {
     const action = rest[0]
+    if (action === 'status') {
+      const payload = await requestCommand(flags.server, 'dialog', {
+        action: 'status',
+      })
+      writeResult(payload)
+      return 0
+    }
     const promptText = rest.slice(1).join(' ')
     const accept = action !== 'dismiss'
     const payload = await requestCommand(flags.server, 'dialog', {

@@ -26,6 +26,16 @@ const state = {
   suppressCloseError: false,
   attachedTabs: new Set(),
   selectedFrames: new Map(),
+  dialog: null as
+    | {
+        open: boolean
+        type: string
+        message: string
+        defaultPrompt: string
+        url: string | null
+        openedAt: string
+      }
+    | null,
   network: {
     routes: [],
     requests: [],
@@ -562,6 +572,33 @@ function setupDebuggerEventListeners() {
         },
         100,
       )
+    }
+
+    if (method === 'Page.javascriptDialogOpening') {
+      state.dialog = {
+        open: true,
+        type: String(params?.type || ''),
+        message: String(params?.message || ''),
+        defaultPrompt: String(params?.defaultPrompt || ''),
+        url: params?.url ? String(params.url) : null,
+        openedAt: new Date().toISOString(),
+      }
+
+      if (['alert', 'beforeunload'].includes(state.dialog.type) && typeof source?.tabId === 'number') {
+        void sendDebuggerCommand(source.tabId, 'Page.handleJavaScriptDialog', {
+          accept: true,
+        })
+          .then(() => {
+            state.dialog = null
+          })
+          .catch((error) => {
+            console.error('failed to auto accept dialog', error)
+          })
+      }
+    }
+
+    if (method === 'Page.javascriptDialogClosed') {
+      state.dialog = null
     }
 
     if (method === 'Fetch.requestPaused') {
@@ -1920,6 +1957,7 @@ async function handleDialog(tabId, accept, promptText) {
       accept,
       promptText: accept ? promptText || '' : undefined,
     })
+    state.dialog = null
     return { handled: true, accepted: accept }
   } catch (error) {
     if (
@@ -1931,6 +1969,23 @@ async function handleDialog(tabId, accept, promptText) {
     }
 
     throw error
+  }
+}
+
+function getDialogStatus(): Record<string, unknown> {
+  if (!state.dialog) {
+    return {
+      open: false,
+      type: null,
+      message: null,
+      defaultPrompt: null,
+      url: null,
+      openedAt: null,
+    }
+  }
+
+  return {
+    ...state.dialog,
   }
 }
 
@@ -2341,6 +2396,9 @@ async function handleCommand(message) {
     case 'get':
       return await getAttribute(tabId, args.selector || '', args.attr || 'text')
     case 'dialog':
+      if (args.action === 'status') {
+        return getDialogStatus()
+      }
       return await handleDialog(tabId, args.accept !== false, args.promptText)
     case 'wait':
       return await handleWait(tabId, args)
@@ -2641,6 +2699,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       connectionError: state.connectionError,
       lastSocketClose: state.lastSocketClose,
       lastCommandError: state.lastCommandError,
+      dialog: getDialogStatus(),
       token: state.token || '',
       relayPort: state.relayPort,
     })
