@@ -186,19 +186,15 @@ function setupDebuggerEventListeners() {
 
 function promisifyChrome(thisArg: any, fn: any, ...args: any[]): Promise<any> {
   return new Promise((resolve, reject) => {
-    fn.call(
-      thisArg,
-      ...args,
-      (result) => {
-        const error = chrome.runtime.lastError
-        if (error) {
-          reject(new Error(error.message))
-          return
-        }
+    fn.call(thisArg, ...args, (result) => {
+      const error = chrome.runtime.lastError
+      if (error) {
+        reject(new Error(error.message))
+        return
+      }
 
-        resolve(result)
-      },
-    )
+      resolve(result)
+    })
   })
 }
 
@@ -208,7 +204,11 @@ async function getToken() {
 }
 
 async function getRelayPort() {
-  const result = await promisifyChrome(chrome.storage.local, chrome.storage.local.get, RELAY_PORT_STORAGE_KEY)
+  const result = await promisifyChrome(
+    chrome.storage.local,
+    chrome.storage.local.get,
+    RELAY_PORT_STORAGE_KEY,
+  )
   return normalizeRelayPort(result?.[RELAY_PORT_STORAGE_KEY])
 }
 
@@ -278,7 +278,13 @@ async function detachDebugger(tabId) {
 }
 
 async function sendRawDebuggerCommand(tabId, method, params = {}) {
-  return await promisifyChrome(chrome.debugger, chrome.debugger.sendCommand, { tabId }, method, params)
+  return await promisifyChrome(
+    chrome.debugger,
+    chrome.debugger.sendCommand,
+    { tabId },
+    method,
+    params,
+  )
 }
 
 async function enableDebuggerDomains(tabId) {
@@ -396,7 +402,11 @@ async function evaluateInTabContext(tabId, expression, options = {}) {
 }
 
 async function getSavedStates() {
-  const result = await promisifyChrome(chrome.storage.local, chrome.storage.local.get, SAVED_STATES_STORAGE_KEY)
+  const result = await promisifyChrome(
+    chrome.storage.local,
+    chrome.storage.local.get,
+    SAVED_STATES_STORAGE_KEY,
+  )
   const savedStates = result?.[SAVED_STATES_STORAGE_KEY]
   return savedStates && typeof savedStates === 'object' ? savedStates : {}
 }
