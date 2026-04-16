@@ -7,54 +7,54 @@ import {
   getTokenPath,
   readJsonFile,
   writeJsonFile,
-} from './protocol.js';
+} from './protocol.js'
 
 export interface TabInfo {
-  id: number;
-  title: string;
-  url: string;
-  active: boolean;
-  pinned: boolean;
-  status: string;
-  windowId: number;
+  id: number
+  title: string
+  url: string
+  active: boolean
+  pinned: boolean
+  status: string
+  windowId: number
 }
 
 export interface ExtensionInfo {
-  extensionId: string | null;
-  connectedAt: string;
-  userAgent: string | null;
+  extensionId: string | null
+  connectedAt: string
+  userAgent: string | null
 }
 
 export interface Snapshot {
-  extension: ExtensionInfo | null;
-  tabs: TabInfo[];
-  activeTabId: number | null;
-  lastCommand: { command: string; args: unknown; at: string } | null;
-  lastError: { message: string; at: string } | null;
+  extension: ExtensionInfo | null
+  tabs: TabInfo[]
+  activeTabId: number | null
+  lastCommand: { command: string; args: unknown; at: string } | null
+  lastError: { message: string; at: string } | null
 }
 
 export interface RuntimeOptions {
-  homeDir?: string;
-  relayPort?: number;
-  ipcPort?: number;
-  requestTimeoutMs?: number;
-  token?: string;
+  homeDir?: string
+  relayPort?: number
+  ipcPort?: number
+  requestTimeoutMs?: number
+  token?: string
 }
 
 interface PendingRequest {
-  resolve: (value: unknown) => void;
-  reject: (error: Error) => void;
-  timer: ReturnType<typeof setTimeout>;
+  resolve: (value: unknown) => void
+  reject: (error: Error) => void
+  timer: ReturnType<typeof setTimeout>
 }
 
 interface ExtensionMetadata {
-  extensionId?: string | null;
-  userAgent?: string | null;
+  extensionId?: string | null
+  userAgent?: string | null
 }
 
 interface ErrorWithCode extends Error {
-  code?: string;
-  details?: unknown;
+  code?: string
+  details?: unknown
 }
 
 function rejectPendingRequests(
@@ -62,9 +62,9 @@ function rejectPendingRequests(
   message: string,
 ): void {
   for (const [id, pending] of pendingRequests) {
-    clearTimeout(pending.timer);
-    pending.reject(new Error(message));
-    pendingRequests.delete(id);
+    clearTimeout(pending.timer)
+    pending.reject(new Error(message))
+    pendingRequests.delete(id)
   }
 }
 
@@ -75,62 +75,62 @@ function createDefaultSnapshot(): Snapshot {
     activeTabId: null,
     lastCommand: null,
     lastError: null,
-  };
+  }
 }
 
 interface RuntimeState {
-  homeDir: string;
-  relayPort: number;
-  ipcPort: number;
-  requestTimeoutMs: number;
-  token: string;
-  startedAt: string;
-  extensionSocket: Bun.ServerWebSocket<ExtensionMetadata> | null;
-  extensionId: string | null;
+  homeDir: string
+  relayPort: number
+  ipcPort: number
+  requestTimeoutMs: number
+  token: string
+  startedAt: string
+  extensionSocket: Bun.ServerWebSocket<ExtensionMetadata> | null
+  extensionId: string | null
 }
 
 export interface Runtime {
-  runtime: RuntimeState;
-  persist: () => Promise<void>;
-  exportSnapshot: () => Promise<unknown>;
-  setError: (message: string) => void;
-  setLastCommand: (command: string, args: unknown) => void;
-  setTabs: (tabs?: TabInfo[]) => void;
+  runtime: RuntimeState
+  persist: () => Promise<void>
+  exportSnapshot: () => Promise<unknown>
+  setError: (message: string) => void
+  setLastCommand: (command: string, args: unknown) => void
+  setTabs: (tabs?: TabInfo[]) => void
   attachExtension: (
     socket: Bun.ServerWebSocket<ExtensionMetadata>,
     meta?: ExtensionMetadata,
-  ) => void;
-  detachExtension: () => void;
-  handleExtensionMessage: (rawMessage: unknown) => void;
-  dispatchCommand: (command: string, args?: Record<string, unknown>) => Promise<unknown>;
+  ) => void
+  detachExtension: () => void
+  handleExtensionMessage: (rawMessage: unknown) => void
+  dispatchCommand: (command: string, args?: Record<string, unknown>) => Promise<unknown>
   snapshot: () => {
-    token: string;
-    relayPort: number;
-    ipcPort: number;
-    startedAt: string;
-    snapshot: Snapshot;
-    extensionConnected: boolean;
-  };
+    token: string
+    relayPort: number
+    ipcPort: number
+    startedAt: string
+    snapshot: Snapshot
+    extensionConnected: boolean
+  }
 }
 
 export async function createRuntime(options: RuntimeOptions = {}): Promise<Runtime> {
-  const homeDir = options.homeDir || getHomeDir();
-  const relayPort = options.relayPort || 47978;
-  const ipcPort = options.ipcPort || 47979;
-  const requestTimeoutMs = options.requestTimeoutMs || DEFAULT_REQUEST_TIMEOUT_MS;
+  const homeDir = options.homeDir || getHomeDir()
+  const relayPort = options.relayPort || 47978
+  const ipcPort = options.ipcPort || 47979
+  const requestTimeoutMs = options.requestTimeoutMs || DEFAULT_REQUEST_TIMEOUT_MS
 
   const persistedState = await readJsonFile<{
-    token?: string;
-    snapshot?: Snapshot;
-  } | null>(getStatePath(homeDir), null);
+    token?: string
+    snapshot?: Snapshot
+  } | null>(getStatePath(homeDir), null)
 
-  const tokenFile = await readJsonFile<{ token: string } | null>(getTokenPath(homeDir), null);
+  const tokenFile = await readJsonFile<{ token: string } | null>(getTokenPath(homeDir), null)
 
-  const persistedToken = options.token || persistedState?.token || tokenFile?.token;
+  const persistedToken = options.token || persistedState?.token || tokenFile?.token
 
   // pendingRequests maps CLI commands to extension responses
-  const pendingRequests = new Map<string, PendingRequest>();
-  const snapshot: Snapshot = createDefaultSnapshot();
+  const pendingRequests = new Map<string, PendingRequest>()
+  const snapshot: Snapshot = createDefaultSnapshot()
 
   const runtime: RuntimeState = {
     homeDir,
@@ -141,12 +141,12 @@ export async function createRuntime(options: RuntimeOptions = {}): Promise<Runti
     startedAt: new Date().toISOString(),
     extensionSocket: null,
     extensionId: null,
-  };
+  }
 
   // Only restore stable state, avoid stale tab lists
   if (persistedState?.snapshot && typeof persistedState.snapshot === 'object') {
-    snapshot.lastCommand = persistedState.snapshot.lastCommand ?? null;
-    snapshot.lastError = persistedState.snapshot.lastError ?? null;
+    snapshot.lastCommand = persistedState.snapshot.lastCommand ?? null
+    snapshot.lastError = persistedState.snapshot.lastError ?? null
   }
 
   async function persist(): Promise<void> {
@@ -156,17 +156,17 @@ export async function createRuntime(options: RuntimeOptions = {}): Promise<Runti
       ipcPort,
       startedAt: runtime.startedAt,
       snapshot,
-    });
-    await writeJsonFile(getTokenPath(homeDir), { token: runtime.token });
+    })
+    await writeJsonFile(getTokenPath(homeDir), { token: runtime.token })
   }
 
-  await persist();
+  await persist()
 
   function setError(message: string): void {
     snapshot.lastError = {
       message,
       at: new Date().toISOString(),
-    };
+    }
   }
 
   function setLastCommand(command: string, args: unknown): void {
@@ -174,127 +174,125 @@ export async function createRuntime(options: RuntimeOptions = {}): Promise<Runti
       command,
       args,
       at: new Date().toISOString(),
-    };
+    }
   }
 
   function setTabs(tabs: TabInfo[] = []): void {
-    snapshot.tabs = Array.isArray(tabs) ? tabs : [];
-    snapshot.activeTabId = snapshot.tabs.find((tab: TabInfo) => tab.active)?.id ?? null;
+    snapshot.tabs = Array.isArray(tabs) ? tabs : []
+    snapshot.activeTabId = snapshot.tabs.find((tab: TabInfo) => tab.active)?.id ?? null
   }
 
   function attachExtension(
     socket: Bun.ServerWebSocket<ExtensionMetadata>,
     meta: ExtensionMetadata = {},
   ): void {
-    runtime.extensionSocket = socket;
-    runtime.extensionId = typeof meta.extensionId === 'string' ? meta.extensionId : null;
+    runtime.extensionSocket = socket
+    runtime.extensionId = typeof meta.extensionId === 'string' ? meta.extensionId : null
     snapshot.extension = {
       extensionId: runtime.extensionId,
       connectedAt: new Date().toISOString(),
       userAgent: (meta.userAgent as string) || null,
-    };
+    }
   }
 
   function detachExtension(): void {
-    runtime.extensionSocket = null;
-    runtime.extensionId = null;
-    snapshot.extension = null;
-    rejectPendingRequests(pendingRequests, 'extension disconnected');
+    runtime.extensionSocket = null
+    runtime.extensionId = null
+    snapshot.extension = null
+    rejectPendingRequests(pendingRequests, 'extension disconnected')
   }
 
   interface ExtensionMessage {
-    type?: string;
-    tabs?: TabInfo[];
-    activeTabId?: number;
-    id?: string;
-    ok?: boolean;
-    error?: { message?: string; code?: string; details?: unknown };
-    result?: unknown;
+    type?: string
+    tabs?: TabInfo[]
+    activeTabId?: number
+    id?: string
+    ok?: boolean
+    error?: { message?: string; code?: string; details?: unknown }
+    result?: unknown
   }
 
   function handleExtensionMessage(rawMessage: unknown): void {
-    let message: ExtensionMessage;
+    let message: ExtensionMessage
     try {
       message =
-        typeof rawMessage === 'string' ? JSON.parse(rawMessage) : (rawMessage as ExtensionMessage);
+        typeof rawMessage === 'string' ? JSON.parse(rawMessage) : (rawMessage as ExtensionMessage)
     } catch {
-      setError('received invalid JSON from extension');
-      return;
+      setError('received invalid JSON from extension')
+      return
     }
 
     if (message?.type === 'state') {
       if (Array.isArray(message.tabs)) {
-        setTabs(message.tabs);
+        setTabs(message.tabs)
       }
 
       if (message.activeTabId !== undefined) {
-        snapshot.activeTabId = message.activeTabId;
+        snapshot.activeTabId = message.activeTabId
       }
 
-      return;
+      return
     }
 
     if (message?.type !== 'response' || typeof message.id !== 'string') {
-      return;
+      return
     }
 
-    const pending = pendingRequests.get(message.id);
+    const pending = pendingRequests.get(message.id)
     if (!pending) {
-      return;
+      return
     }
 
-    clearTimeout(pending.timer);
-    pendingRequests.delete(message.id);
+    clearTimeout(pending.timer)
+    pendingRequests.delete(message.id)
 
     if (message.ok === false) {
-      const error = new Error(
-        message.error?.message || 'extension command failed',
-      ) as ErrorWithCode;
-      error.code = message.error?.code || 'EXTENSION_ERROR';
-      error.details = message.error?.details || null;
-      pending.reject(error);
-      return;
+      const error = new Error(message.error?.message || 'extension command failed') as ErrorWithCode
+      error.code = message.error?.code || 'EXTENSION_ERROR'
+      error.details = message.error?.details || null
+      pending.reject(error)
+      return
     }
 
-    pending.resolve(message.result);
+    pending.resolve(message.result)
   }
 
   interface CommandPayload {
-    type: 'command';
-    id: string;
-    command: string;
-    args: Record<string, unknown>;
-    requestedAt: string;
+    type: 'command'
+    id: string
+    command: string
+    args: Record<string, unknown>
+    requestedAt: string
   }
 
   async function dispatchCommand(
     command: string,
     args: Record<string, unknown> = {},
   ): Promise<unknown> {
-    setLastCommand(command, args);
+    setLastCommand(command, args)
 
     if (!runtime.extensionSocket || runtime.extensionSocket.readyState !== WebSocket.OPEN) {
-      throw new Error('no extension is connected');
+      throw new Error('no extension is connected')
     }
 
-    const id = createId('cmd');
+    const id = createId('cmd')
     const payload: CommandPayload = {
       type: 'command',
       id,
       command,
       args,
       requestedAt: new Date().toISOString(),
-    };
+    }
 
     return await new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
-        pendingRequests.delete(id);
-        reject(new Error(`command timed out: ${command}`));
-      }, requestTimeoutMs);
+        pendingRequests.delete(id)
+        reject(new Error(`command timed out: ${command}`))
+      }, requestTimeoutMs)
 
-      pendingRequests.set(id, { resolve, reject, timer });
-      runtime.extensionSocket!.send(JSON.stringify(payload));
-    });
+      pendingRequests.set(id, { resolve, reject, timer })
+      runtime.extensionSocket!.send(JSON.stringify(payload))
+    })
   }
 
   async function exportSnapshot(): Promise<unknown> {
@@ -304,9 +302,9 @@ export async function createRuntime(options: RuntimeOptions = {}): Promise<Runti
       ipcPort,
       startedAt: runtime.startedAt,
       snapshot,
-    };
-    await writeJsonFile(getStatePath(homeDir), state);
-    return state;
+    }
+    await writeJsonFile(getStatePath(homeDir), state)
+    return state
   }
 
   return {
@@ -328,5 +326,5 @@ export async function createRuntime(options: RuntimeOptions = {}): Promise<Runti
       snapshot,
       extensionConnected: Boolean(runtime.extensionSocket),
     }),
-  };
+  }
 }

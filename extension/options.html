@@ -56,6 +56,11 @@
         color: #98a6c7;
         line-height: 1.6;
       }
+      .diagnostics {
+        white-space: pre-wrap;
+        margin: 8px 0 0;
+        font-size: 14px;
+      }
     </style>
   </head>
   <body>
@@ -64,11 +69,15 @@
       <p>把 relay page 上显示的 token 粘贴到下面；如果 CLI server 不是默认端口，也要把 relay 端口一起填上。</p>
       <label for="token">Token</label>
       <input id="token" autocomplete="off" spellcheck="false" placeholder="paste token here" />
-      <label for="relay-port">Relay Port</label>
-      <input id="relay-port" type="number" min="1" step="1" placeholder="47978" />
-      <button id="save">Save</button>
-      <p id="status">未保存</p>
-    </main>
+        <label for="relay-port">Relay Port</label>
+        <input id="relay-port" type="number" min="1" step="1" placeholder="47978" />
+        <button id="save">Save</button>
+        <p id="status">未保存</p>
+        <div class="panel">
+          <div class="label">Plugin diagnostics</div>
+          <pre id="diagnostics" class="diagnostics">暂无诊断信息</pre>
+        </div>
+      </main>
     <script src="options.js"></script>
   </body>
 </html>

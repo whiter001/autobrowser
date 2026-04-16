@@ -1,26 +1,26 @@
-import { htmlResponse, jsonResponse, textResponse } from './core/protocol.js';
-import { createRuntime, type Runtime } from './core/runtime.js';
+import { htmlResponse, jsonResponse, textResponse } from './core/protocol.js'
+import { createRuntime, type Runtime } from './core/runtime.js'
 
 function escapeHtml(value: string): string {
   return String(value)
     .replaceAll('&', '&amp;')
     .replaceAll('<', '&lt;')
     .replaceAll('>', '&gt;')
-    .replaceAll('"', '&quot;');
+    .replaceAll('"', '&quot;')
 }
 
 interface SnapshotData {
-  token: string;
-  relayPort: number;
-  ipcPort: number;
-  startedAt: string;
-  extensionConnected: boolean;
+  token: string
+  relayPort: number
+  ipcPort: number
+  startedAt: string
+  extensionConnected: boolean
 }
 
 function connectPage(snapshot: SnapshotData): string {
-  const token = escapeHtml(snapshot.token);
-  const relayUrl = `ws://127.0.0.1:${snapshot.relayPort}/ws`;
-  const ipcUrl = `http://127.0.0.1:${snapshot.ipcPort}`;
+  const token = escapeHtml(snapshot.token)
+  const relayUrl = `ws://127.0.0.1:${snapshot.relayPort}/ws`
+  const ipcUrl = `http://127.0.0.1:${snapshot.ipcPort}`
 
   return `<!doctype html>
 <html lang="zh-CN">
@@ -169,44 +169,44 @@ function connectPage(snapshot: SnapshotData): string {
       });
     </script>
   </body>
-</html>`;
+</html>`
 }
 
 interface ServerOptions {
-  relayPort?: number;
-  ipcPort?: number;
-  homeDir?: string;
-  token?: string;
+  relayPort?: number
+  ipcPort?: number
+  homeDir?: string
+  token?: string
 }
 
 interface StartServersResult {
-  runtime: Runtime;
-  relayServer: Bun.Server<RelaySocketData>;
-  ipcServer: Bun.Server<undefined>;
-  stop: () => void;
+  runtime: Runtime
+  relayServer: Bun.Server<RelaySocketData>
+  ipcServer: Bun.Server<undefined>
+  stop: () => void
 }
 
 interface RelaySocketData {
-  extensionId: string | null;
-  userAgent: string | null;
+  extensionId: string | null
+  userAgent: string | null
 }
 
 interface ErrorWithCode extends Error {
-  code?: string;
+  code?: string
 }
 
 export async function startServers(options: ServerOptions = {}): Promise<StartServersResult> {
-  const runtime = await createRuntime(options);
+  const runtime = await createRuntime(options)
 
   const relayServer = Bun.serve<RelaySocketData>({
     hostname: '127.0.0.1',
     port: runtime.runtime.relayPort,
     fetch(request, server) {
-      const url = new URL(request.url);
+      const url = new URL(request.url)
 
       if (url.pathname === '/ws') {
         if (url.searchParams.get('token') !== runtime.runtime.token) {
-          return textResponse('unauthorized', { status: 401 });
+          return textResponse('unauthorized', { status: 401 })
         }
 
         const upgraded = server.upgrade(request, {
@@ -214,24 +214,24 @@ export async function startServers(options: ServerOptions = {}): Promise<StartSe
             extensionId: url.searchParams.get('extensionId') || null,
             userAgent: request.headers.get('user-agent'),
           },
-        });
+        })
 
-        return upgraded ? undefined : textResponse('upgrade failed', { status: 400 });
+        return upgraded ? undefined : textResponse('upgrade failed', { status: 400 })
       }
 
       if (url.pathname === '/connect' || url.pathname === '/') {
-        return htmlResponse(connectPage(runtime.snapshot()));
+        return htmlResponse(connectPage(runtime.snapshot()))
       }
 
       if (url.pathname === '/status') {
-        return jsonResponse(runtime.snapshot());
+        return jsonResponse(runtime.snapshot())
       }
 
-      return textResponse('not found', { status: 404 });
+      return textResponse('not found', { status: 404 })
     },
     websocket: {
       open(socket) {
-        runtime.attachExtension(socket, socket.data);
+        runtime.attachExtension(socket, socket.data)
         socket.send(
           JSON.stringify({
             type: 'hello',
@@ -239,25 +239,25 @@ export async function startServers(options: ServerOptions = {}): Promise<StartSe
             relayPort: runtime.runtime.relayPort,
             ipcPort: runtime.runtime.ipcPort,
           }),
-        );
+        )
       },
       message(socket, message) {
-        runtime.handleExtensionMessage(message);
+        runtime.handleExtensionMessage(message)
       },
       close() {
-        runtime.detachExtension();
+        runtime.detachExtension()
       },
     },
-  });
+  })
 
   const ipcServer = Bun.serve({
     hostname: '127.0.0.1',
     port: runtime.runtime.ipcPort,
     fetch(request) {
-      const url = new URL(request.url);
+      const url = new URL(request.url)
 
       if (url.pathname === '/status' && request.method === 'GET') {
-        return jsonResponse(runtime.snapshot());
+        return jsonResponse(runtime.snapshot())
       }
 
       if (url.pathname === '/command' && request.method === 'POST') {
@@ -265,29 +265,29 @@ export async function startServers(options: ServerOptions = {}): Promise<StartSe
           .json()
           .then(async (body: unknown) => {
             const data = body as {
-              command?: string;
-              args?: Record<string, unknown>;
-            } | null;
-            const command = String(data?.command || '').trim();
-            const args = data?.args && typeof data.args === 'object' ? data.args : {};
+              command?: string
+              args?: Record<string, unknown>
+            } | null
+            const command = String(data?.command || '').trim()
+            const args = data?.args && typeof data.args === 'object' ? data.args : {}
 
             if (!command) {
               return jsonResponse(
                 { ok: false, error: { message: 'missing command' } },
                 { status: 400 },
-              );
+              )
             }
 
             if (command === 'status') {
-              return jsonResponse({ ok: true, result: runtime.snapshot() });
+              return jsonResponse({ ok: true, result: runtime.snapshot() })
             }
 
             try {
-              const result = await runtime.dispatchCommand(command, args);
-              return jsonResponse({ ok: true, result });
+              const result = await runtime.dispatchCommand(command, args)
+              return jsonResponse({ ok: true, result })
             } catch (error) {
-              const err = error as ErrorWithCode;
-              runtime.setError(err.message);
+              const err = error as ErrorWithCode
+              runtime.setError(err.message)
               return jsonResponse(
                 {
                   ok: false,
@@ -297,27 +297,27 @@ export async function startServers(options: ServerOptions = {}): Promise<StartSe
                   },
                 },
                 { status: 500 },
-              );
+              )
             }
           })
           .catch((error: Error) =>
             jsonResponse({ ok: false, error: { message: error.message } }, { status: 400 }),
-          );
+          )
       }
 
-      return textResponse('not found', { status: 404 });
+      return textResponse('not found', { status: 404 })
     },
-  });
+  })
 
-  await runtime.persist();
+  await runtime.persist()
 
   return {
     runtime,
     relayServer,
     ipcServer,
     stop() {
-      relayServer.stop();
-      ipcServer.stop();
+      relayServer.stop()
+      ipcServer.stop()
     },
-  };
+  }
 }
