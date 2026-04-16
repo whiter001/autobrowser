@@ -84,6 +84,19 @@ bun run src/cli.ts network har start
 bun run src/cli.ts network har stop [output.har]
 ```
 
+## Screenshot
+
+Take a screenshot and save it to a file. If no path is provided, the CLI writes into a temporary directory and prints the file path.
+
+```bash
+bun run src/cli.ts screenshot
+bun run src/cli.ts screenshot ./shots/page.png --full
+bun run src/cli.ts screenshot --annotate
+bun run src/cli.ts screenshot --screenshot-dir ./shots --screenshot-format jpeg --screenshot-quality 80
+```
+
+`--full` captures the full page, `--annotate` adds numbered element labels, and `--screenshot-format` / `--screenshot-quality` control the encoded image output.
+
 ## Tests
 
 Run `bun test`.

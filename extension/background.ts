@@ -14,6 +14,15 @@ import {
 const DEFAULT_SERVER_PORT = DEFAULT_RELAY_PORT
 const SAVED_STATES_STORAGE_KEY = 'autobrowserSavedStates'
 const FRAME_WORLD_NAME = 'autobrowser-frame'
+const SCREENSHOT_ANNOTATION_OVERLAY_ID = 'autobrowser-screenshot-annotations'
+const SCREENSHOT_ANNOTATION_MAX_ELEMENTS = 200
+
+interface ScreenshotCaptureOptions {
+  full?: boolean
+  annotate?: boolean
+  format?: string
+  quality?: number
+}
 
 interface ErrorWithCode extends Error {
   code?: string
@@ -918,18 +927,174 @@ async function clickSelector(tabId, selector) {
   return { found: true, selector }
 }
 
-async function captureScreenshot(tabId) {
+async function clearScreenshotAnnotations(tabId) {
+  await evaluateInTabContext(
+    tabId,
+    `(() => {
+      const overlay = document.getElementById(${JSON.stringify(SCREENSHOT_ANNOTATION_OVERLAY_ID)})
+      if (overlay) {
+        overlay.remove()
+      }
+
+      const body = document.body
+      if (!body) {
+        return true
+      }
+
+      if (body.dataset.autobrowserScreenshotPreviousPosition !== undefined) {
+        const previousPosition = body.dataset.autobrowserScreenshotPreviousPosition
+        if (previousPosition) {
+          body.style.position = previousPosition
+        } else {
+          body.style.removeProperty('position')
+        }
+        delete body.dataset.autobrowserScreenshotPreviousPosition
+      }
+
+      return true
+    })()`,
+  )
+}
+
+async function addScreenshotAnnotations(tabId) {
+  const { value } = await evaluateInTabContext(
+    tabId,
+    `(() => {
+      const body = document.body
+      if (!body) {
+        return { count: 0 }
+      }
+
+      const doc = document.documentElement
+      const existing = document.getElementById(${JSON.stringify(SCREENSHOT_ANNOTATION_OVERLAY_ID)})
+      if (existing) {
+        existing.remove()
+      }
+
+      if (getComputedStyle(body).position === 'static') {
+        body.dataset.autobrowserScreenshotPreviousPosition = body.style.position || ''
+        body.style.position = 'relative'
+      }
+
+      const overlay = document.createElement('div')
+      overlay.id = ${JSON.stringify(SCREENSHOT_ANNOTATION_OVERLAY_ID)}
+      overlay.style.position = 'absolute'
+      overlay.style.left = '0'
+      overlay.style.top = '0'
+      overlay.style.pointerEvents = 'none'
+      overlay.style.zIndex = '2147483647'
+      overlay.style.width = Math.max(doc.scrollWidth, doc.clientWidth, body.scrollWidth, body.clientWidth) + 'px'
+      overlay.style.height = Math.max(doc.scrollHeight, doc.clientHeight, body.scrollHeight, body.clientHeight) + 'px'
+
+      const selectors = [
+        'a[href]',
+        'button',
+        'input:not([type="hidden"])',
+        'textarea',
+        'select',
+        'summary',
+        '[role="button"]',
+        '[role="link"]',
+        '[role="checkbox"]',
+        '[role="radio"]',
+        '[role="tab"]',
+        '[tabindex]:not([tabindex="-1"])',
+        'img',
+      ]
+
+      const seen = new Set()
+      const candidates = []
+      for (const selector of selectors) {
+        for (const element of document.querySelectorAll(selector)) {
+          if (seen.has(element)) {
+            continue
+          }
+          seen.add(element)
+          candidates.push(element)
+        }
+      }
+
+      let count = 0
+      for (const element of candidates) {
+        if (!(element instanceof HTMLElement)) {
+          continue
+        }
+
+        if (count >= ${SCREENSHOT_ANNOTATION_MAX_ELEMENTS}) {
+          break
+        }
+
+        const rect = element.getBoundingClientRect()
+        const style = getComputedStyle(element)
+        if (rect.width < 4 || rect.height < 4 || style.display === 'none' || style.visibility === 'hidden' || Number(style.opacity || '1') === 0) {
+          continue
+        }
+
+        const badge = document.createElement('div')
+        badge.textContent = String(count + 1)
+        badge.style.position = 'absolute'
+        badge.style.left = Math.max(0, rect.left + window.scrollX) + 'px'
+        badge.style.top = Math.max(0, rect.top + window.scrollY) + 'px'
+        badge.style.transform = 'translate(-6px, -6px)'
+        badge.style.background = 'rgba(220, 38, 38, 0.94)'
+        badge.style.color = '#ffffff'
+        badge.style.border = '2px solid #ffffff'
+        badge.style.borderRadius = '999px'
+        badge.style.boxShadow = '0 2px 8px rgba(0, 0, 0, 0.35)'
+        badge.style.font = '700 12px/1.1 system-ui, sans-serif'
+        badge.style.padding = '3px 6px'
+        badge.style.minWidth = '16px'
+        badge.style.textAlign = 'center'
+        badge.style.whiteSpace = 'nowrap'
+        overlay.appendChild(badge)
+        count += 1
+      }
+
+      body.appendChild(overlay)
+      return { count }
+    })()`,
+  )
+
+  return Number(value?.count || 0)
+}
+
+async function captureScreenshot(tabId, options: ScreenshotCaptureOptions = {}) {
   const tab = await getTargetTab(tabId)
   await sendDebuggerCommand(tab.id, 'Page.enable', {})
-  const result = await sendDebuggerCommand(tab.id, 'Page.captureScreenshot', {
-    format: 'png',
-    fromSurface: true,
-  })
 
-  return {
-    tabId: tab.id,
-    mimeType: 'image/png',
-    dataUrl: `data:image/png;base64,${result.data}`,
+  let annotationCount = 0
+  try {
+    if (options.annotate) {
+      await clearScreenshotAnnotations(tab.id).catch(() => {})
+      annotationCount = await addScreenshotAnnotations(tab.id)
+    }
+
+    const format = options.format === 'jpeg' ? 'jpeg' : 'png'
+    const captureOptions = {
+      format,
+      fromSurface: true,
+      ...(options.full ? { captureBeyondViewport: true } : {}),
+      ...(format === 'jpeg' && typeof options.quality === 'number' ? { quality: options.quality } : {}),
+    }
+
+    const result = await sendDebuggerCommand(tab.id, 'Page.captureScreenshot', captureOptions)
+
+    return {
+      tabId: tab.id,
+      mimeType: format === 'jpeg' ? 'image/jpeg' : 'image/png',
+      format,
+      fullPage: Boolean(options.full),
+      annotated: Boolean(options.annotate),
+      annotationCount,
+      dataUrl: `data:${format === 'jpeg' ? 'image/jpeg' : 'image/png'};base64,${result.data}`,
+      data: result.data,
+    }
+  } finally {
+    if (options.annotate) {
+      await clearScreenshotAnnotations(tab.id).catch((error) => {
+        console.error('failed to clear screenshot annotations', error)
+      })
+    }
   }
 }
 
@@ -2333,7 +2498,7 @@ async function handleCommand(message) {
     case 'snapshot':
       return await snapshotTab(tabId)
     case 'screenshot':
-      return await captureScreenshot(tabId)
+      return await captureScreenshot(tabId, args)
     case 'click':
       return await clickSelector(tabId, args.selector || '')
     case 'dblclick':

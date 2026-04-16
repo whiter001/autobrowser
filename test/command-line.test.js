@@ -1,5 +1,7 @@
 import { afterEach, describe, expect, test } from 'bun:test'
-import { readFile } from 'node:fs/promises'
+import { mkdtemp, readFile } from 'node:fs/promises'
+import os from 'node:os'
+import path from 'node:path'
 import { main } from '../src/cli.js'
 
 const originalFetch = globalThis.fetch
@@ -280,6 +282,95 @@ describe('cli command routing', () => {
     })
     expect(result.stdout).toContain('open')
     expect(result.stdout).toContain('false')
+  })
+
+  test('routes screenshot options to the extension and writes the output file', async () => {
+    const outputDir = await mkdtemp(path.join(os.tmpdir(), 'autobrowser-screenshot-test-'))
+    const outputPath = path.join(outputDir, 'shot.jpeg')
+    const screenshotBytes = Buffer.from('screenshot-bytes')
+
+    const result = await runCli(
+      ['screenshot', outputPath, '--full', '--annotate', '--screenshot-format', 'jpeg', '--screenshot-quality', '80'],
+      {
+        ok: true,
+        result: {
+          data: screenshotBytes.toString('base64'),
+          mimeType: 'image/jpeg',
+        },
+      },
+    )
+
+    expect(result.exitCode).toBe(0)
+    expect(result.fetchCalls).toHaveLength(1)
+    expect(result.fetchCalls[0].body).toEqual({
+      command: 'screenshot',
+      args: {
+        full: true,
+        annotate: true,
+        format: 'jpeg',
+        quality: 80,
+      },
+    })
+    expect(result.stdout.trim()).toBe(outputPath)
+    expect((await readFile(outputPath)).toString()).toBe('screenshot-bytes')
+  })
+
+  test('saves screenshots into the configured screenshot dir when no path is provided', async () => {
+    const outputDir = await mkdtemp(path.join(os.tmpdir(), 'autobrowser-screenshot-dir-test-'))
+    const screenshotBytes = Buffer.from('temp-screenshot')
+
+    const result = await runCli(
+      ['screenshot', '--screenshot-dir', outputDir, '--screenshot-format', 'jpeg'],
+      {
+        ok: true,
+        result: {
+          data: screenshotBytes.toString('base64'),
+          mimeType: 'image/jpeg',
+        },
+      },
+    )
+
+    const savedPath = result.stdout.trim()
+    expect(result.exitCode).toBe(0)
+    expect(result.fetchCalls).toHaveLength(1)
+    expect(result.fetchCalls[0].body).toEqual({
+      command: 'screenshot',
+      args: {
+        full: false,
+        annotate: false,
+        format: 'jpeg',
+      },
+    })
+    expect(savedPath.startsWith(outputDir)).toBe(true)
+    expect(savedPath.endsWith('.jpeg')).toBe(true)
+    expect((await readFile(savedPath)).toString()).toBe('temp-screenshot')
+  })
+
+  test('saves screenshots to a temporary directory when no path is provided', async () => {
+    const screenshotBytes = Buffer.from('auto-temp-screenshot')
+
+    const result = await runCli(['screenshot'], {
+      ok: true,
+      result: {
+        data: screenshotBytes.toString('base64'),
+        mimeType: 'image/png',
+      },
+    })
+
+    const savedPath = result.stdout.trim()
+    expect(result.exitCode).toBe(0)
+    expect(result.fetchCalls).toHaveLength(1)
+    expect(result.fetchCalls[0].body).toEqual({
+      command: 'screenshot',
+      args: {
+        full: false,
+        annotate: false,
+        format: 'png',
+      },
+    })
+    expect(path.dirname(savedPath).startsWith(os.tmpdir())).toBe(true)
+    expect(savedPath.includes('autobrowser-screenshot-')).toBe(true)
+    expect((await readFile(savedPath)).toString()).toBe('auto-temp-screenshot')
   })
 
   test('routes double clicks to the extension', async () => {

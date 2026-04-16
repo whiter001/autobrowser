@@ -307,6 +307,70 @@ function parseWaitArgs(rest: string[]): WaitArgs {
   return waitArgs
 }
 
+function parseScreenshotArgs(rest: string[]): ScreenshotArgs {
+  const screenshotArgs: ScreenshotArgs = {
+    path: null,
+    full: false,
+    annotate: false,
+    screenshotDir: null,
+    format: 'png',
+    quality: null,
+  }
+
+  for (let index = 0; index < rest.length; index += 1) {
+    const value = rest[index]
+
+    if (value === '--full') {
+      screenshotArgs.full = true
+      continue
+    }
+
+    if (value === '--annotate') {
+      screenshotArgs.annotate = true
+      continue
+    }
+
+    if (value === '--screenshot-dir') {
+      const rawDir = rest[index + 1]
+      if (rawDir === undefined) {
+        throw new Error('missing screenshot dir value')
+      }
+      screenshotArgs.screenshotDir = rawDir
+      index += 1
+      continue
+    }
+
+    if (value === '--screenshot-format') {
+      const rawFormat = rest[index + 1]
+      if (rawFormat === undefined) {
+        throw new Error('missing screenshot format value')
+      }
+      if (rawFormat !== 'png' && rawFormat !== 'jpeg') {
+        throw new Error(`unsupported screenshot format: ${rawFormat}`)
+      }
+      screenshotArgs.format = rawFormat
+      index += 1
+      continue
+    }
+
+    if (value === '--screenshot-quality') {
+      const rawQuality = rest[index + 1]
+      if (rawQuality === undefined) {
+        throw new Error('missing screenshot quality value')
+      }
+      screenshotArgs.quality = Number(rawQuality)
+      index += 1
+      continue
+    }
+
+    if (!value.startsWith('--') && !screenshotArgs.path) {
+      screenshotArgs.path = value
+    }
+  }
+
+  return screenshotArgs
+}
+
 async function writeHarFile(har: unknown, outputPath: string | null): Promise<string> {
   const serialized = `${JSON.stringify(har, null, 2)}\n`
   const targetPath = outputPath || path.join(await mkTempHarDir(), 'network.har')
@@ -317,6 +381,49 @@ async function writeHarFile(har: unknown, outputPath: string | null): Promise<st
 
 async function mkTempHarDir(): Promise<string> {
   return await mkdtemp(path.join(os.tmpdir(), 'autobrowser-har-'))
+}
+
+async function mkTempScreenshotDir(): Promise<string> {
+  return await mkdtemp(path.join(os.tmpdir(), 'autobrowser-screenshot-'))
+}
+
+function extractScreenshotData(result: Record<string, unknown> | undefined): { data: Buffer; mimeType: string } {
+  const dataUrl = typeof result?.dataUrl === 'string' ? result.dataUrl : ''
+  const rawData =
+    typeof result?.data === 'string'
+      ? result.data
+      : dataUrl.includes(',')
+        ? dataUrl.slice(dataUrl.indexOf(',') + 1)
+        : ''
+
+  if (!rawData) {
+    throw new Error('missing screenshot data')
+  }
+
+  const mimeType =
+    typeof result?.mimeType === 'string'
+      ? result.mimeType
+      : dataUrl.startsWith('data:image/jpeg')
+        ? 'image/jpeg'
+        : 'image/png'
+
+  return {
+    data: Buffer.from(rawData, 'base64'),
+    mimeType,
+  }
+}
+
+async function resolveScreenshotOutputPath(screenshotArgs: ScreenshotArgs): Promise<string> {
+  if (screenshotArgs.path) {
+    await mkdir(path.dirname(screenshotArgs.path), { recursive: true })
+    return screenshotArgs.path
+  }
+
+  const outputDir = screenshotArgs.screenshotDir || (await mkTempScreenshotDir())
+  await mkdir(outputDir, { recursive: true })
+  const timestamp = new Date().toISOString().replace(/[:.]/g, '-')
+  const extension = screenshotArgs.format === 'jpeg' ? 'jpeg' : 'png'
+  return path.join(outputDir, `screenshot-${timestamp}.${extension}`)
 }
 
 async function getCdpUrl(baseUrl: string): Promise<string> {
@@ -391,7 +498,7 @@ Usage:
   autobrowser network request <requestId>
   autobrowser network har start
   autobrowser network har stop [output.har]
-  autobrowser screenshot
+  autobrowser screenshot [path] [--full] [--annotate] [--screenshot-dir <dir>] [--screenshot-format png|jpeg] [--screenshot-quality <n>]
   autobrowser snapshot
 
 Flags:
@@ -488,6 +595,15 @@ interface WaitArgs {
   ms?: number
   state?: string
   fn?: string
+}
+
+interface ScreenshotArgs {
+  path: string | null
+  full: boolean
+  annotate: boolean
+  screenshotDir: string | null
+  format: 'png' | 'jpeg'
+  quality: number | null
 }
 
 export async function main(argv: string[] = process.argv.slice(2)): Promise<number | void> {
@@ -664,8 +780,48 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
   }
 
   if (command === 'snapshot' || command === 'screenshot') {
-    const payload = await requestCommand(flags.server, command, {})
-    writeResult(payload)
+    if (command === 'snapshot') {
+      const payload = await requestCommand(flags.server, command, {})
+      writeResult(payload)
+      return 0
+    }
+
+    let screenshotArgs: ScreenshotArgs
+    try {
+      screenshotArgs = parseScreenshotArgs(rest)
+    } catch (error) {
+      process.stderr.write(`${(error as Error).message}\n`)
+      return 1
+    }
+
+    const payload = await requestCommand(flags.server, command, {
+      full: screenshotArgs.full,
+      annotate: screenshotArgs.annotate,
+      format: screenshotArgs.format,
+      ...(screenshotArgs.quality !== null ? { quality: screenshotArgs.quality } : {}),
+    })
+
+    if (payload.ok === false) {
+      writeResult(payload)
+      return 1
+    }
+
+    const { data, mimeType } = extractScreenshotData(payload.result as Record<string, unknown> | undefined)
+    const outputPath = await resolveScreenshotOutputPath(screenshotArgs)
+    await writeFile(outputPath, data)
+
+    if (flags.json) {
+      writeResult({
+        path: outputPath,
+        mimeType,
+        format: screenshotArgs.format,
+        full: screenshotArgs.full,
+        annotate: screenshotArgs.annotate,
+      })
+      return 0
+    }
+
+    process.stdout.write(`${outputPath}\n`)
     return 0
   }
 
