@@ -1403,6 +1403,130 @@ async function fillSelector(tabId, selector, value) {
   return result
 }
 
+async function dispatchInsertText(tabId, text) {
+  const tab = await getTargetTab(tabId)
+  await sendDebuggerCommand(tab.id, 'Input.insertText', {
+    text: String(text || ''),
+  })
+  return { inserted: true, text }
+}
+
+async function insertTextSequentially(tabId, text) {
+  const normalizedText = String(text || '')
+
+  for (const character of normalizedText) {
+    await dispatchInsertText(tabId, character)
+  }
+
+  return { typed: true, text: normalizedText }
+}
+
+async function insertTextOnce(tabId, text) {
+  return await dispatchInsertText(tabId, text)
+}
+
+async function keyDownOnly(tabId, key) {
+  const { key: keyName, modifiers } = parseKeyboardKey(String(key || ''))
+  const tab = await getTargetTab(tabId)
+
+  await sendDebuggerCommand(tab.id, 'Input.dispatchKeyEvent', {
+    type: 'keyDown',
+    key: keyName,
+    code: keyName,
+    modifiers,
+  })
+
+  return { key, pressed: true, type: 'keydown' }
+}
+
+async function keyUpOnly(tabId, key) {
+  const { key: keyName, modifiers } = parseKeyboardKey(String(key || ''))
+  const tab = await getTargetTab(tabId)
+
+  await sendDebuggerCommand(tab.id, 'Input.dispatchKeyEvent', {
+    type: 'keyUp',
+    key: keyName,
+    code: keyName,
+    modifiers,
+  })
+
+  return { key, released: true, type: 'keyup' }
+}
+
+async function typeIntoSelector(tabId, selector, value) {
+  await focusElement(tabId, selector)
+  const typed = await insertTextSequentially(tabId, value)
+  return {
+    found: true,
+    selector,
+    ...typed,
+  }
+}
+
+async function doubleClickSelector(tabId, selector) {
+  const box = await getElementBox(tabId, selector)
+  if (!box) {
+    throw new Error(`element not found: ${selector}`)
+  }
+
+  const tab = await getTargetTab(tabId)
+
+  await sendDebuggerCommand(tab.id, 'Input.dispatchMouseEvent', {
+    type: 'mousePressed',
+    x: box.x,
+    y: box.y,
+    button: 'left',
+    clickCount: 2,
+  })
+  await sendDebuggerCommand(tab.id, 'Input.dispatchMouseEvent', {
+    type: 'mouseReleased',
+    x: box.x,
+    y: box.y,
+    button: 'left',
+    clickCount: 2,
+  })
+
+  return { found: true, selector, doubleClicked: true }
+}
+
+async function scrollIntoViewSelector(tabId, selector) {
+  const { value } = await evaluateInTabContext(
+    tabId,
+    `(() => {
+      try {
+        const node = document.querySelector(${JSON.stringify(selector)});
+        if (!node) return { found: false, reason: 'element not found' };
+        node.scrollIntoView({ block: 'center', inline: 'center' });
+        return { found: true, selector: ${JSON.stringify(selector)} };
+      } catch (error) {
+        return {
+          found: false,
+          reason: error instanceof Error ? error.message : 'failed to scroll into view',
+        };
+      }
+    })()`,
+  )
+
+  return value
+}
+
+async function closeTabs(tabId, closeAll) {
+  if (closeAll) {
+    const tabs = await promisifyChrome(chrome.tabs, chrome.tabs.query, {
+      currentWindow: true,
+    })
+    const tabIds = tabs.map((tab) => tab.id).filter((tabId) => typeof tabId === 'number')
+    if (tabIds.length > 0) {
+      await promisifyChrome(chrome.tabs, chrome.tabs.remove, tabIds)
+    }
+    return { closed: true, all: true, count: tabIds.length }
+  }
+
+  const tab = await getTargetTab(tabId)
+  await promisifyChrome(chrome.tabs, chrome.tabs.remove, tab.id)
+  return { closed: true, all: false, tabId: tab.id }
+}
+
 async function handleCommand(message) {
   const { command, args = {} } = message
   const tabId = args.tabId || undefined
@@ -1432,12 +1556,30 @@ async function handleCommand(message) {
       return await captureScreenshot(tabId)
     case 'click':
       return await clickSelector(tabId, args.selector || '')
+    case 'dblclick':
+      return await doubleClickSelector(tabId, args.selector || '')
     case 'fill':
       return await fillSelector(tabId, args.selector || '', args.value || '')
+    case 'type':
+      return await typeIntoSelector(tabId, args.selector || '', args.value || '')
     case 'hover':
       return await hoverElement(tabId, args.selector || '')
     case 'press':
       return await pressKey(tabId, args.key || '')
+    case 'keyboard':
+      if (args.action === 'type') {
+        return await insertTextSequentially(tabId, args.text || '')
+      }
+      if (args.action === 'inserttext') {
+        return await insertTextOnce(tabId, args.text || '')
+      }
+      if (args.action === 'keydown') {
+        return await keyDownOnly(tabId, args.text || '')
+      }
+      if (args.action === 'keyup') {
+        return await keyUpOnly(tabId, args.text || '')
+      }
+      throw new Error(`unsupported keyboard action: ${args.action}`)
     case 'focus':
       return await focusElement(tabId, args.selector || '')
     case 'select':
@@ -1448,6 +1590,8 @@ async function handleCommand(message) {
       return await checkElement(tabId, args.selector || '', false)
     case 'scroll':
       return await scrollElement(tabId, args.selector || null, args.deltaX || 0, args.deltaY || 100)
+    case 'scrollintoview':
+      return await scrollIntoViewSelector(tabId, args.selector || '')
     case 'drag':
       return await dragElement(tabId, args.start || '', args.end || '')
     case 'upload':
@@ -1458,6 +1602,8 @@ async function handleCommand(message) {
       return await navigateForward(tabId)
     case 'reload':
       return await reloadPage(tabId)
+    case 'close':
+      return await closeTabs(tabId, Boolean(args.all))
     case 'window':
       if (args.action === 'new') {
         return await createWindow()

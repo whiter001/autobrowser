@@ -90,6 +90,73 @@ describe('cli command routing', () => {
     })
   })
 
+  test('routes double clicks to the extension', async () => {
+    const result = await runCli(['dblclick', '#submit'])
+
+    expect(result.exitCode).toBe(0)
+    expect(result.fetchCalls).toHaveLength(1)
+    expect(result.fetchCalls[0].body).toEqual({
+      command: 'dblclick',
+      args: {
+        selector: '#submit',
+      },
+    })
+  })
+
+  test('routes type commands to the extension', async () => {
+    const result = await runCli(['type', '#editor', 'hello world'])
+
+    expect(result.exitCode).toBe(0)
+    expect(result.fetchCalls).toHaveLength(1)
+    expect(result.fetchCalls[0].body).toEqual({
+      command: 'type',
+      args: {
+        selector: '#editor',
+        value: 'hello world',
+      },
+    })
+  })
+
+  test('routes keyboard typing commands to the extension', async () => {
+    const result = await runCli(['keyboard', 'type', 'abc'])
+
+    expect(result.exitCode).toBe(0)
+    expect(result.fetchCalls).toHaveLength(1)
+    expect(result.fetchCalls[0].body).toEqual({
+      command: 'keyboard',
+      args: {
+        action: 'type',
+        text: 'abc',
+      },
+    })
+  })
+
+  test('routes scroll into view commands to the extension', async () => {
+    const result = await runCli(['scrollintoview', '#footer'])
+
+    expect(result.exitCode).toBe(0)
+    expect(result.fetchCalls).toHaveLength(1)
+    expect(result.fetchCalls[0].body).toEqual({
+      command: 'scrollintoview',
+      args: {
+        selector: '#footer',
+      },
+    })
+  })
+
+  test('routes close all commands to the extension', async () => {
+    const result = await runCli(['close', 'all'])
+
+    expect(result.exitCode).toBe(0)
+    expect(result.fetchCalls).toHaveLength(1)
+    expect(result.fetchCalls[0].body).toEqual({
+      command: 'close',
+      args: {
+        all: true,
+      },
+    })
+  })
+
   test('routes requests to the configured ipc port', async () => {
     const result = await runCli(['--ipc-port', '5001', 'status'], { ok: true, ready: true })
 

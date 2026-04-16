@@ -9,7 +9,7 @@ This repository now contains the initial Bun implementation scaffold:
 - local relay server on port `47978`
 - CLI API server on port `47979`
 - browser extension scaffold with a token-based connection flow
-- basic commands for `server`, `connect`, `status`, `tab`, `goto`, `open`, `eval`, `click`, `fill`, `snapshot`, and `screenshot`
+- core commands for `server`, `connect`, `status`, `tab`, `goto`, `open`, `eval`, `click`, `dblclick`, `fill`, `type`, `keyboard`, `scrollintoview`, `close`, `snapshot`, and `screenshot`
 
 ## Run
 

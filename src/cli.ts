@@ -104,19 +104,27 @@ Usage:
   autobrowser open <url>
   autobrowser eval [--stdin|--file path|--base64] <script>
   autobrowser click <selector>
+  autobrowser dblclick <selector>
   autobrowser fill <selector> <value>
+  autobrowser type <selector> <value>
   autobrowser press <key>
+  autobrowser keyboard type <text>
+  autobrowser keyboard inserttext <text>
+  autobrowser keyboard keydown <key>
+  autobrowser keyboard keyup <key>
   autobrowser hover <selector>
   autobrowser focus <selector>
   autobrowser select <selector> <value>
   autobrowser check <selector>
   autobrowser uncheck <selector>
   autobrowser scroll [selector] [deltaX] [deltaY]
+  autobrowser scrollintoview <selector>
   autobrowser drag <startSelector> [endSelector]
   autobrowser upload <selector> <files...>
   autobrowser back
   autobrowser forward
   autobrowser reload
+  autobrowser close [all]
   autobrowser window new
   autobrowser frame <selector|top>
   autobrowser is <visible|enabled|checked|disabled> <selector>
@@ -364,6 +372,18 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
     return 0
   }
 
+  if (command === 'dblclick') {
+    const selector = rest[0]
+    if (!selector) {
+      process.stderr.write('missing selector\n')
+      return 1
+    }
+
+    const payload = await requestCommand(flags.server, 'dblclick', { selector })
+    writeResult(payload)
+    return 0
+  }
+
   if (command === 'fill') {
     const selector = rest[0]
     const value = rest.slice(1).join(' ')
@@ -515,8 +535,47 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
     return 0
   }
 
+  if (command === 'type') {
+    const selector = rest[0]
+    const value = rest.slice(1).join(' ')
+    if (!selector) {
+      process.stderr.write('missing selector\n')
+      return 1
+    }
+
+    const payload = await requestCommand(flags.server, 'type', {
+      selector,
+      value,
+    })
+    writeResult(payload)
+    return 0
+  }
+
+  if (command === 'keyboard') {
+    const action = rest[0]
+    const value = rest.slice(1).join(' ')
+    if (!action || !['type', 'inserttext', 'keydown', 'keyup'].includes(action)) {
+      process.stderr.write('usage: keyboard type|inserttext|keydown|keyup <text>\n')
+      return 1
+    }
+
+    const payload = await requestCommand(flags.server, 'keyboard', {
+      action,
+      text: value,
+    })
+    writeResult(payload)
+    return 0
+  }
+
   if (command === 'reload') {
     const payload = await requestCommand(flags.server, 'reload', {})
+    writeResult(payload)
+    return 0
+  }
+
+  if (command === 'close' || command === 'quit' || command === 'exit') {
+    const all = rest[0] === 'all' || rest[0] === '--all'
+    const payload = await requestCommand(flags.server, 'close', { all })
     writeResult(payload)
     return 0
   }
@@ -541,6 +600,18 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
       return 1
     }
     const payload = await requestCommand(flags.server, 'frame', { selector })
+    writeResult(payload)
+    return 0
+  }
+
+  if (command === 'scrollintoview') {
+    const selector = rest[0]
+    if (!selector) {
+      process.stderr.write('missing selector\n')
+      return 1
+    }
+
+    const payload = await requestCommand(flags.server, 'scrollintoview', { selector })
     writeResult(payload)
     return 0
   }

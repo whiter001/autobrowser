@@ -98,16 +98,27 @@ bun dist/autobrowser.js status
 
 - `eval [--stdin|--file path|--base64] <script>`
 - `click <selector>`
+- `dblclick <selector>`
 - `fill <selector> <value>`
+- `type <selector> <value>`
+- `keyboard type <text>`
+- `keyboard inserttext <text>`
+- `keyboard keydown <key>`
+- `keyboard keyup <key>`
 - `hover <selector>`
 - `focus <selector>`
 - `select <selector> <value>`
 - `check <selector>`
 - `uncheck <selector>`
 - `scroll [selector] [deltaX] [deltaY]`
+- `scrollintoview <selector>`
 - `drag <startSelector> [endSelector]`
 - `upload <selector> <files...>`
 - `press <key>`
+
+### Session control
+
+- `close [all]`
 
 ### Inspection and waits
 
@@ -139,6 +150,8 @@ bun dist/autobrowser.js eval "document.title"
 echo "document.location.href" | bun dist/autobrowser.js eval --stdin
 bun dist/autobrowser.js click "#submit"
 bun dist/autobrowser.js fill "#username" "admin"
+bun dist/autobrowser.js type "#search" "hello world"
+bun dist/autobrowser.js keyboard type "hello"
 bun dist/autobrowser.js state load '{"viewport":{"width":1280,"height":720}}'
 ```
 
