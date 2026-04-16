@@ -1,13 +1,13 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
-import os from "node:os";
-import path from "node:path";
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
 
-export const APP_NAME = "autobrowser";
+export const APP_NAME = 'autobrowser';
 export const DEFAULT_RELAY_PORT = 47978;
 export const DEFAULT_IPC_PORT = 47979;
-export const STATE_DIR_NAME = ".autobrowser";
-export const TOKEN_FILE_NAME = "token";
-export const STATE_FILE_NAME = "state.json";
+export const STATE_DIR_NAME = '.autobrowser';
+export const TOKEN_FILE_NAME = 'token';
+export const STATE_FILE_NAME = 'state.json';
 export const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
 
 export function getHomeDir() {
@@ -27,11 +27,11 @@ export function getStatePath(homeDir = getHomeDir()) {
 }
 
 export function createToken() {
-  return crypto.randomUUID().replaceAll("-", "");
+  return crypto.randomUUID().replaceAll('-', '');
 }
 
-export function createId(prefix = "req") {
-  return `${prefix}_${crypto.randomUUID().replaceAll("-", "")}`;
+export function createId(prefix = 'req') {
+  return `${prefix}_${crypto.randomUUID().replaceAll('-', '')}`;
 }
 
 export async function ensureStateDir(homeDir = getHomeDir()) {
@@ -40,10 +40,10 @@ export async function ensureStateDir(homeDir = getHomeDir()) {
 
 export async function readJsonFile(filePath, fallback = null) {
   try {
-    const content = await readFile(filePath, "utf8");
+    const content = await readFile(filePath, 'utf8');
     return JSON.parse(content);
   } catch (error) {
-    if (error && error.code === "ENOENT") {
+    if (error && error.code === 'ENOENT') {
       return fallback;
     }
 
@@ -53,13 +53,13 @@ export async function readJsonFile(filePath, fallback = null) {
 
 export async function writeJsonFile(filePath, value) {
   await mkdir(path.dirname(filePath), { recursive: true });
-  await writeFile(filePath, `${JSON.stringify(value, null, 2)}\n`, "utf8");
+  await writeFile(filePath, `${JSON.stringify(value, null, 2)}\n`, 'utf8');
 }
 
 export function jsonResponse(value, init = {}) {
   const headers = new Headers(init.headers || {});
-  if (!headers.has("content-type")) {
-    headers.set("content-type", "application/json; charset=utf-8");
+  if (!headers.has('content-type')) {
+    headers.set('content-type', 'application/json; charset=utf-8');
   }
 
   return new Response(`${JSON.stringify(value, null, 2)}\n`, {
@@ -79,8 +79,8 @@ export async function parseJsonRequest(request) {
 
 export function textResponse(value, init = {}) {
   const headers = new Headers(init.headers || {});
-  if (!headers.has("content-type")) {
-    headers.set("content-type", "text/plain; charset=utf-8");
+  if (!headers.has('content-type')) {
+    headers.set('content-type', 'text/plain; charset=utf-8');
   }
 
   return new Response(value, { ...init, headers });
@@ -88,8 +88,8 @@ export function textResponse(value, init = {}) {
 
 export function htmlResponse(value, init = {}) {
   const headers = new Headers(init.headers || {});
-  if (!headers.has("content-type")) {
-    headers.set("content-type", "text/html; charset=utf-8");
+  if (!headers.has('content-type')) {
+    headers.set('content-type', 'text/html; charset=utf-8');
   }
 
   return new Response(value, { ...init, headers });

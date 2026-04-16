@@ -61,9 +61,11 @@
   <body>
     <main class="card">
       <h1>autobrowser 设置</h1>
-      <p>把 relay page 上显示的 token 粘贴到下面，保存后扩展会自动尝试连接本地 daemon。</p>
+      <p>把 relay page 上显示的 token 粘贴到下面；如果 CLI server 不是默认端口，也要把 relay 端口一起填上。</p>
       <label for="token">Token</label>
       <input id="token" autocomplete="off" spellcheck="false" placeholder="paste token here" />
+      <label for="relay-port">Relay Port</label>
+      <input id="relay-port" type="number" min="1" step="1" placeholder="47978" />
       <button id="save">Save</button>
       <p id="status">未保存</p>
     </main>

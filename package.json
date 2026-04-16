@@ -10,7 +10,11 @@
     "dev": "bun src/cli.js server",
     "start": "bun src/cli.js server",
     "check": "bun test",
-    "test": "bun test"
+    "test": "bun test",
+    "oxlint": "oxlint",
+    "oxfmt": "oxfmt --config .oxfmtrc.json",
+    "lint": "oxlint && oxfmt --check",
+    "lint:fix": "oxfmt"
   },
   "engines": {
     "bun": ">=1.0.0"

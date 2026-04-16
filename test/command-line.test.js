@@ -1,82 +1,100 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from 'bun:test';
+import { main } from '../src/cli.js';
 
-function parseCli(argv) {
-  const flags = {
-    json: false,
-    server: "http://127.0.0.1:47979",
-    relayPort: 47978,
-    ipcPort: 47979,
-    stdin: false,
-    file: null,
-    base64: false,
+const originalFetch = globalThis.fetch;
+const originalStdoutWrite = process.stdout.write.bind(process.stdout);
+const originalStderrWrite = process.stderr.write.bind(process.stderr);
+
+function interceptStream(chunks) {
+  return (chunk, encoding, callback) => {
+    chunks.push(String(chunk));
+    if (typeof encoding === 'function') {
+      encoding();
+    }
+    if (typeof callback === 'function') {
+      callback();
+    }
+    return true;
   };
-
-  const args = [];
-
-  for (let index = 0; index < argv.length; index += 1) {
-    const value = argv[index];
-    if (value === "--json") {
-      flags.json = true;
-      continue;
-    }
-
-    if (value === "--stdin") {
-      flags.stdin = true;
-      continue;
-    }
-
-    if (value === "--base64") {
-      flags.base64 = true;
-      continue;
-    }
-
-    if (value === "--file") {
-      flags.file = argv[index + 1] || null;
-      index += 1;
-      continue;
-    }
-
-    if (value === "--server") {
-      flags.server = argv[index + 1] || flags.server;
-      index += 1;
-      continue;
-    }
-
-    if (value === "--relay-port") {
-      flags.relayPort = Number(argv[index + 1] || flags.relayPort);
-      index += 1;
-      continue;
-    }
-
-    if (value === "--ipc-port") {
-      flags.ipcPort = Number(argv[index + 1] || flags.ipcPort);
-      index += 1;
-      continue;
-    }
-
-    args.push(value);
-  }
-
-  return { flags, args };
 }
 
-describe("cli parsing", () => {
-  test("keeps positional args after flags", () => {
-    const result = parseCli(["--json", "tab", "list"]);
-    expect(result.flags.json).toBe(true);
-    expect(result.args).toEqual(["tab", "list"]);
+async function runCli(argv, payload = { ok: true, result: { ok: true } }) {
+  const fetchCalls = [];
+  const stdout = [];
+  const stderr = [];
+
+  globalThis.fetch = async (url, init = {}) => {
+    fetchCalls.push({
+      url,
+      init,
+      body: init.body ? JSON.parse(init.body) : null,
+    });
+    return {
+      async json() {
+        return payload;
+      },
+    };
+  };
+
+  process.stdout.write = interceptStream(stdout);
+  process.stderr.write = interceptStream(stderr);
+
+  const exitCode = await main(argv);
+
+  return {
+    exitCode,
+    fetchCalls,
+    stdout: stdout.join(''),
+    stderr: stderr.join(''),
+  };
+}
+
+afterEach(() => {
+  globalThis.fetch = originalFetch;
+  process.stdout.write = originalStdoutWrite;
+  process.stderr.write = originalStderrWrite;
+});
+
+describe('cli command routing', () => {
+  test('allows title reads without a selector', async () => {
+    const result = await runCli(['get', 'title'], { ok: true, result: 'Example title' });
+
+    expect(result.exitCode).toBe(0);
+    expect(result.fetchCalls).toHaveLength(1);
+    expect(result.fetchCalls[0].body).toEqual({
+      command: 'get',
+      args: { attr: 'title' },
+    });
+    expect(result.stdout).toContain('Example title');
   });
 
-  test("reads file flag with path", () => {
-    const result = parseCli(["eval", "--file", "/tmp/a.js"]);
-    expect(result.args).toEqual(["eval"]);
-    expect(result.flags.file).toBe("/tmp/a.js");
+  test('still requires a selector for selector-based get commands', async () => {
+    const result = await runCli(['get', 'text']);
+
+    expect(result.exitCode).toBe(1);
+    expect(result.fetchCalls).toHaveLength(0);
+    expect(result.stderr).toContain('missing selector');
   });
 
-  test("parses ports", () => {
-    const result = parseCli(["--relay-port", "5000", "--ipc-port", "5001", "status"]);
-    expect(result.flags.relayPort).toBe(5000);
-    expect(result.flags.ipcPort).toBe(5001);
-    expect(result.args).toEqual(["status"]);
+  test('passes full prompt text to dialog commands', async () => {
+    const result = await runCli(['dialog', 'accept', 'hello', 'world']);
+
+    expect(result.exitCode).toBe(0);
+    expect(result.fetchCalls).toHaveLength(1);
+    expect(result.fetchCalls[0].body).toEqual({
+      command: 'dialog',
+      args: {
+        accept: true,
+        promptText: 'hello world',
+      },
+    });
+  });
+
+  test('routes requests to the configured ipc port', async () => {
+    const result = await runCli(['--ipc-port', '5001', 'status'], { ok: true, ready: true });
+
+    expect(result.exitCode).toBe(0);
+    expect(result.fetchCalls).toHaveLength(1);
+    expect(result.fetchCalls[0].url).toBe('http://127.0.0.1:5001/status');
   });
 });

@@ -25,7 +25,7 @@ bun run src/cli.js connect
 
 ## Extension
 
-Load the `extension/` folder as an unpacked extension in Chromium-based browsers, open the extension options page, paste the token from the connect page, and save it. The extension will then try to connect to the local relay server automatically.
+Load the `extension/` folder as an unpacked extension in Chromium-based browsers, open the extension options page, paste the token from the connect page, and save it. If the CLI server is using a non-default relay port, set that port in the options page as well. The extension will then try to connect to the local relay server automatically.
 
 ## Tests
 

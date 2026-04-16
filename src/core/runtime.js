@@ -7,7 +7,7 @@ import {
   getTokenPath,
   readJsonFile,
   writeJsonFile,
-} from "./protocol.js";
+} from './protocol.js';
 
 function rejectPendingRequests(pendingRequests, message) {
   for (const [id, pending] of pendingRequests) {
@@ -55,7 +55,7 @@ export async function createRuntime(options = {}) {
   };
 
   // 只恢复少量稳定的状态，避免把过期的 tab 列表或连接态写回运行时。
-  if (persistedState?.snapshot && typeof persistedState.snapshot === "object") {
+  if (persistedState?.snapshot && typeof persistedState.snapshot === 'object') {
     snapshot.lastCommand = persistedState.snapshot.lastCommand ?? null;
     snapshot.lastError = persistedState.snapshot.lastError ?? null;
   }
@@ -108,19 +108,19 @@ export async function createRuntime(options = {}) {
     runtime.extensionSocket = null;
     runtime.extensionId = null;
     snapshot.extension = null;
-    rejectPendingRequests(pendingRequests, "extension disconnected");
+    rejectPendingRequests(pendingRequests, 'extension disconnected');
   }
 
   function handleExtensionMessage(rawMessage) {
     let message;
     try {
-      message = typeof rawMessage === "string" ? JSON.parse(rawMessage) : rawMessage;
+      message = typeof rawMessage === 'string' ? JSON.parse(rawMessage) : rawMessage;
     } catch {
-      setError("received invalid JSON from extension");
+      setError('received invalid JSON from extension');
       return;
     }
 
-    if (message?.type === "state") {
+    if (message?.type === 'state') {
       if (Array.isArray(message.tabs)) {
         setTabs(message.tabs);
       }
@@ -132,7 +132,7 @@ export async function createRuntime(options = {}) {
       return;
     }
 
-    if (message?.type !== "response" || typeof message.id !== "string") {
+    if (message?.type !== 'response' || typeof message.id !== 'string') {
       return;
     }
 
@@ -145,8 +145,8 @@ export async function createRuntime(options = {}) {
     pendingRequests.delete(message.id);
 
     if (message.ok === false) {
-      const error = new Error(message.error?.message || "extension command failed");
-      error.code = message.error?.code || "EXTENSION_ERROR";
+      const error = new Error(message.error?.message || 'extension command failed');
+      error.code = message.error?.code || 'EXTENSION_ERROR';
       error.details = message.error?.details || null;
       pending.reject(error);
       return;
@@ -160,12 +160,12 @@ export async function createRuntime(options = {}) {
     setLastCommand(command, args);
 
     if (!runtime.extensionSocket || runtime.extensionSocket.readyState !== WebSocket.OPEN) {
-      throw new Error("no extension is connected");
+      throw new Error('no extension is connected');
     }
 
-    const id = createId("cmd");
+    const id = createId('cmd');
     const payload = {
-      type: "command",
+      type: 'command',
       id,
       command,
       args,
