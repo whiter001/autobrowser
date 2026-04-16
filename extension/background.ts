@@ -26,6 +26,13 @@ const state = {
   suppressCloseError: false,
   attachedTabs: new Set(),
   selectedFrames: new Map(),
+  network: {
+    routes: [],
+    requests: [],
+    requestMap: new Map(),
+    harRecording: false,
+    harStartedAt: null,
+  },
   shouldReconnect: true,
   token: '',
   relayPort: DEFAULT_SERVER_PORT,
@@ -35,6 +42,412 @@ const state = {
   connectionError: null as ConnectionErrorInfo | null,
   lastSocketClose: null as SocketCloseInfo | null,
   lastCommandError: null as CommandErrorInfo | null,
+}
+
+function createNetworkRouteId(): string {
+  return `route_${crypto.randomUUID().replaceAll('-', '')}`
+}
+
+function createNetworkRequestKey(tabId: number | null, requestId: string): string {
+  return `${tabId === null ? 'global' : tabId}:${requestId}`
+}
+
+function normalizeHeaders(headers: Record<string, unknown> | undefined): Record<string, string> {
+  if (!headers || typeof headers !== 'object') {
+    return {}
+  }
+
+  return Object.fromEntries(
+    Object.entries(headers).map(([name, value]) => [String(name), String(value ?? '')]),
+  )
+}
+
+function normalizeHeaderPairs(headers: Record<string, string>): Array<{ name: string; value: string }> {
+  return Object.entries(headers).map(([name, value]) => ({ name, value }))
+}
+
+function encodeBase64(value: string): string {
+  const bytes = new TextEncoder().encode(value)
+  let binary = ''
+  for (const byte of bytes) {
+    binary += String.fromCharCode(byte)
+  }
+  return btoa(binary)
+}
+
+function stringifyNetworkBody(body: unknown): { text: string; base64Encoded: boolean } {
+  const text = `${JSON.stringify(body, null, 2)}\n`
+  return { text, base64Encoded: false }
+}
+
+function matchesNetworkRoute(pattern: string, url: string): boolean {
+  const normalizedPattern = String(pattern || '').trim()
+  if (!normalizedPattern) {
+    return false
+  }
+
+  if (normalizedPattern === '*') {
+    return true
+  }
+
+  return String(url || '').includes(normalizedPattern)
+}
+
+function findMatchingNetworkRoute(url: string): { id: string; pattern: string; abort: boolean; body?: unknown } | null {
+  return state.network.routes.find((route) => matchesNetworkRoute(route.pattern, url)) || null
+}
+
+function upsertNetworkRequest(record: Record<string, unknown>): Record<string, unknown> {
+  const key = String(record.id || '')
+  if (!key) {
+    return record
+  }
+
+  const existing = state.network.requestMap.get(key) || { id: key }
+  const merged = { ...existing, ...record }
+  state.network.requestMap.set(key, merged)
+
+  const index = state.network.requests.findIndex((item) => item.id === key)
+  if (index >= 0) {
+    state.network.requests[index] = merged
+  } else {
+    state.network.requests.push(merged)
+  }
+
+  if (state.network.requests.length > 1000) {
+    const removed = state.network.requests.splice(0, state.network.requests.length - 1000)
+    for (const item of removed) {
+      if (item && typeof item.id === 'string') {
+        state.network.requestMap.delete(item.id)
+      }
+    }
+  }
+
+  return merged
+}
+
+function getNetworkRequestById(requestId: string): Record<string, unknown> | null {
+  if (!requestId) {
+    return null
+  }
+
+  const exact = state.network.requestMap.get(requestId)
+  if (exact) {
+    return exact
+  }
+
+  return state.network.requests.find(
+    (item) => item?.requestId === requestId || item?.id === requestId,
+  ) || null
+}
+
+function summarizeNetworkRequest(record: Record<string, unknown>): Record<string, unknown> {
+  return {
+    id: record.id,
+    requestId: record.requestId,
+    tabId: record.tabId,
+    url: record.url,
+    method: record.method,
+    resourceType: record.resourceType,
+    status: record.status ?? null,
+    statusText: record.statusText ?? null,
+    routeId: record.routeId ?? null,
+    routeAction: record.routeAction ?? null,
+    finishedAt: record.finishedAt ?? null,
+    startedAt: record.startedAt ?? null,
+    durationMs: record.durationMs ?? null,
+    errorText: record.errorText ?? null,
+  }
+}
+
+function buildHar(entries: Record<string, unknown>[]): Record<string, unknown> {
+  return {
+    log: {
+      version: '1.2',
+      creator: {
+        name: 'autobrowser',
+        version: '0.1.0',
+      },
+      entries,
+    },
+  }
+}
+
+function buildHarEntry(record: Record<string, unknown>): Record<string, unknown> {
+  const requestHeaders = normalizeHeaderPairs(
+    normalizeHeaders(record.requestHeaders as Record<string, unknown> | undefined),
+  )
+  const responseHeaders = normalizeHeaderPairs(
+    normalizeHeaders(record.responseHeaders as Record<string, unknown> | undefined),
+  )
+  const responseBody = typeof record.responseBody === 'string' ? record.responseBody : ''
+  const responseBodyBase64 = Boolean(record.responseBodyBase64)
+  const responseMimeType = String(record.responseMimeType || 'application/octet-stream')
+  const bodySize = responseBodyBase64
+    ? Math.max(0, Math.floor(responseBody.length * 0.75))
+    : new TextEncoder().encode(responseBody).length
+
+  return {
+    startedDateTime: record.startedAt,
+    time: typeof record.durationMs === 'number' ? record.durationMs : 0,
+    request: {
+      method: record.method || 'GET',
+      url: record.url || '',
+      httpVersion: 'HTTP/1.1',
+      cookies: [],
+      headers: requestHeaders,
+      queryString: [],
+      headersSize: -1,
+      bodySize: typeof record.postData === 'string' ? new TextEncoder().encode(record.postData).length : 0,
+      postData: typeof record.postData === 'string'
+        ? {
+            mimeType: 'application/json',
+            text: record.postData,
+          }
+        : undefined,
+    },
+    response: {
+      status: Number(record.status || 0),
+      statusText: String(record.statusText || ''),
+      httpVersion: 'HTTP/1.1',
+      cookies: [],
+      headers: responseHeaders,
+      content: {
+        size: bodySize,
+        mimeType: responseMimeType,
+        text: responseBody,
+        encoding: responseBodyBase64 ? 'base64' : undefined,
+      },
+      redirectURL: '',
+      headersSize: -1,
+      bodySize,
+    },
+    cache: {},
+    timings: {
+      send: 0,
+      wait: typeof record.waitMs === 'number' ? record.waitMs : 0,
+      receive: typeof record.receiveMs === 'number' ? record.receiveMs : 0,
+    },
+    pageref: record.tabId === null || record.tabId === undefined ? undefined : `tab-${record.tabId}`,
+  }
+}
+
+async function refreshNetworkInterceptors(): Promise<void> {
+  await Promise.allSettled(
+    Array.from(state.attachedTabs).map(async (tabId) => {
+      if (state.network.routes.length === 0) {
+        await sendRawDebuggerCommand(tabId, 'Fetch.disable', {})
+        return
+      }
+
+      await sendRawDebuggerCommand(tabId, 'Fetch.enable', {
+        patterns: [{ urlPattern: '*' }],
+        handleAuthRequests: false,
+      })
+    }),
+  )
+}
+
+async function handleNetworkRequestPaused(tabId: number, params: any): Promise<void> {
+  const request = params?.request || {}
+  const requestId = String(params?.requestId || '')
+  if (!requestId) {
+    return
+  }
+
+  try {
+    const route = findMatchingNetworkRoute(String(request.url || ''))
+    const key = createNetworkRequestKey(tabId, requestId)
+    const record = upsertNetworkRequest({
+      id: key,
+      requestId,
+      tabId,
+      url: String(request.url || ''),
+      method: String(request.method || 'GET'),
+      resourceType: String(params?.resourceType || params?.requestStage || ''),
+      requestHeaders: normalizeHeaders(request.headers),
+      postData: typeof request.postData === 'string' ? request.postData : null,
+      startedAt: new Date().toISOString(),
+      requestWillBeSentAt: typeof params?.timestamp === 'number' ? params.timestamp : null,
+      routeId: route?.id || null,
+      routeAction: route?.abort ? 'abort' : route?.body !== undefined ? 'mock' : 'continue',
+    })
+
+    if (route?.abort) {
+      try {
+        await sendRawDebuggerCommand(tabId, 'Fetch.failRequest', {
+          requestId,
+          errorReason: 'Failed',
+        })
+        return
+      } catch (error) {
+        console.error('failed to abort network request', error)
+        await sendRawDebuggerCommand(tabId, 'Fetch.continueRequest', { requestId })
+        return
+      }
+    }
+
+    if (route && route.body !== undefined) {
+      const body = stringifyNetworkBody(route.body)
+      try {
+        await sendRawDebuggerCommand(tabId, 'Fetch.fulfillRequest', {
+          requestId,
+          responseCode: 200,
+          responsePhrase: 'OK',
+          responseHeaders: [
+            { name: 'content-type', value: 'application/json; charset=utf-8' },
+          ],
+          body: encodeBase64(body.text),
+        })
+        upsertNetworkRequest({
+          ...record,
+          responseBody: body.text,
+          responseBodyBase64: false,
+          responseMimeType: 'application/json; charset=utf-8',
+          status: 200,
+          statusText: 'OK',
+          finishedAt: new Date().toISOString(),
+          durationMs: 0,
+        })
+        return
+      } catch (error) {
+        console.error('failed to fulfill network request', error)
+        await sendRawDebuggerCommand(tabId, 'Fetch.continueRequest', { requestId })
+        return
+      }
+    }
+
+    await sendRawDebuggerCommand(tabId, 'Fetch.continueRequest', { requestId })
+  } catch (error) {
+    console.error('failed to process paused network request', error)
+  }
+}
+
+async function finalizeNetworkRequestBody(tabId: number, requestId: string): Promise<void> {
+  const key = createNetworkRequestKey(tabId, requestId)
+  const record = getNetworkRequestById(key)
+  if (!record) {
+    return
+  }
+
+  try {
+    const result = await sendRawDebuggerCommand(tabId, 'Network.getResponseBody', { requestId })
+    const responseBody = String(result?.body || '')
+    const bodyRecord = upsertNetworkRequest({
+      ...record,
+      responseBody,
+      responseBodyBase64: Boolean(result?.base64Encoded),
+    })
+
+    if (!bodyRecord.responseMimeType) {
+      bodyRecord.responseMimeType = 'application/octet-stream'
+    }
+  } catch {
+    // Best effort only.
+  }
+}
+
+async function handleNetworkEvent(source: any, method: string, params: any): Promise<void> {
+  const tabId = typeof source?.tabId === 'number' ? source.tabId : null
+  if (tabId === null) {
+    return
+  }
+
+  if (method === 'Network.requestWillBeSent') {
+    const requestId = String(params?.requestId || '')
+    if (!requestId) {
+      return
+    }
+
+    upsertNetworkRequest({
+      id: createNetworkRequestKey(tabId, requestId),
+      requestId,
+      tabId,
+      url: String(params?.request?.url || ''),
+      method: String(params?.request?.method || 'GET'),
+      resourceType: String(params?.type || ''),
+      requestHeaders: normalizeHeaders(params?.request?.headers),
+      postData: typeof params?.request?.postData === 'string' ? params.request.postData : null,
+      startedAt: new Date().toISOString(),
+      requestWillBeSentAt: typeof params?.timestamp === 'number' ? params.timestamp : null,
+      wallTime: typeof params?.wallTime === 'number' ? params.wallTime : null,
+      documentUrl: String(params?.documentURL || ''),
+    })
+    return
+  }
+
+  if (method === 'Network.responseReceived') {
+    const requestId = String(params?.requestId || '')
+    if (!requestId) {
+      return
+    }
+
+    upsertNetworkRequest({
+      id: createNetworkRequestKey(tabId, requestId),
+      requestId,
+      tabId,
+      status: Number(params?.response?.status || 0),
+      statusText: String(params?.response?.statusText || ''),
+      responseHeaders: normalizeHeaders(params?.response?.headers),
+      responseMimeType: String(params?.response?.mimeType || 'application/octet-stream'),
+      responseReceivedAt: typeof params?.timestamp === 'number' ? params.timestamp : null,
+    })
+    return
+  }
+
+  if (method === 'Network.loadingFinished') {
+    const requestId = String(params?.requestId || '')
+    if (!requestId) {
+      return
+    }
+
+    const key = createNetworkRequestKey(tabId, requestId)
+    const record = getNetworkRequestById(key)
+    const finishedAt = new Date().toISOString()
+    const requestWillBeSentAt = typeof record?.requestWillBeSentAt === 'number' ? record.requestWillBeSentAt : null
+    const responseReceivedAt = typeof record?.responseReceivedAt === 'number' ? record.responseReceivedAt : null
+    const baseRecord = record || {}
+
+    upsertNetworkRequest({
+      ...baseRecord,
+      id: key,
+      requestId,
+      tabId,
+      finishedAt,
+      durationMs:
+        requestWillBeSentAt !== null && typeof params?.timestamp === 'number'
+          ? Math.max(0, (params.timestamp - requestWillBeSentAt) * 1000)
+          : null,
+      waitMs:
+        requestWillBeSentAt !== null && responseReceivedAt !== null
+          ? Math.max(0, (responseReceivedAt - requestWillBeSentAt) * 1000)
+          : null,
+      receiveMs:
+        responseReceivedAt !== null && typeof params?.timestamp === 'number'
+          ? Math.max(0, (params.timestamp - responseReceivedAt) * 1000)
+          : null,
+      encodedDataLength: typeof params?.encodedDataLength === 'number' ? params.encodedDataLength : null,
+    })
+
+    void finalizeNetworkRequestBody(tabId, requestId)
+    return
+  }
+
+  if (method === 'Network.loadingFailed') {
+    const requestId = String(params?.requestId || '')
+    if (!requestId) {
+      return
+    }
+
+    upsertNetworkRequest({
+      id: createNetworkRequestKey(tabId, requestId),
+      requestId,
+      tabId,
+      errorText: String(params?.errorText || 'request failed'),
+      canceled: Boolean(params?.canceled),
+      finishedAt: new Date().toISOString(),
+    })
+  }
 }
 
 function pushBounded(list, item, maxSize) {
@@ -123,7 +536,7 @@ function stringifyRemoteValue(value) {
 }
 
 function setupDebuggerEventListeners() {
-  chrome.debugger.onEvent.addListener((_source, method, params: any) => {
+  chrome.debugger.onEvent.addListener((source, method, params: any) => {
     if (method === 'Runtime.consoleAPICalled') {
       pushBounded(
         state.consoleMessages,
@@ -149,6 +562,26 @@ function setupDebuggerEventListeners() {
         },
         100,
       )
+    }
+
+    if (method === 'Fetch.requestPaused') {
+      const tabId = typeof source?.tabId === 'number' ? source.tabId : null
+      if (tabId !== null) {
+        void handleNetworkRequestPaused(tabId, params).catch((error) => {
+          console.error('failed to handle paused network request', error)
+        })
+      }
+    }
+
+    if (
+      method === 'Network.requestWillBeSent' ||
+      method === 'Network.responseReceived' ||
+      method === 'Network.loadingFinished' ||
+      method === 'Network.loadingFailed'
+    ) {
+      void handleNetworkEvent(source, method, params).catch((error) => {
+        console.error('failed to record network event', error)
+      })
     }
   })
 }
@@ -230,6 +663,7 @@ async function ensureDebuggerAttached(tabId) {
 
   state.attachedTabs.add(tabId)
   await enableDebuggerDomains(tabId)
+  await refreshNetworkInterceptors()
 }
 
 async function detachDebugger(tabId) {
@@ -260,6 +694,7 @@ async function enableDebuggerDomains(tabId) {
   await Promise.allSettled([
     sendRawDebuggerCommand(tabId, 'Runtime.enable', {}),
     sendRawDebuggerCommand(tabId, 'Console.enable', {}),
+    sendRawDebuggerCommand(tabId, 'Network.enable', {}),
   ])
 }
 
@@ -1510,6 +1945,176 @@ async function scrollIntoViewSelector(tabId, selector) {
   return value
 }
 
+        function parseNetworkStatusFilter(statusFilter: string): (status: number | null | undefined) => boolean {
+          const tokens = String(statusFilter || '')
+            .split(',')
+            .map((token) => token.trim())
+            .filter(Boolean)
+
+          if (tokens.length === 0) {
+            return () => true
+          }
+
+          return (status) => {
+            const numericStatus = Number(status || 0)
+            return tokens.some((token) => {
+              if (/^\dxx$/i.test(token)) {
+                return Math.floor(numericStatus / 100) === Number(token[0])
+              }
+
+              if (/^\d{3}-\d{3}$/.test(token)) {
+                const [start, end] = token.split('-').map((value) => Number(value))
+                return numericStatus >= start && numericStatus <= end
+              }
+
+              return numericStatus === Number(token)
+            })
+          }
+        }
+
+        function matchesNetworkRequestFilters(record: Record<string, unknown>, filters: Record<string, unknown>): boolean {
+          const filterText = String(filters.filter || '').trim().toLowerCase()
+          const typeFilter = String(filters.type || '')
+            .split(',')
+            .map((value) => value.trim().toLowerCase())
+            .filter(Boolean)
+          const methodFilter = String(filters.method || '').trim().toUpperCase()
+          const statusMatches = parseNetworkStatusFilter(String(filters.status || ''))
+
+          if (filterText) {
+            const haystack = [
+              record.id,
+              record.requestId,
+              record.url,
+              record.method,
+              record.resourceType,
+              record.statusText,
+              record.errorText,
+            ]
+              .map((value) => String(value || '').toLowerCase())
+              .join(' ')
+
+            if (!haystack.includes(filterText)) {
+              return false
+            }
+          }
+
+          if (typeFilter.length > 0) {
+            const requestType = String(record.resourceType || '').trim().toLowerCase()
+            if (!typeFilter.includes(requestType)) {
+              return false
+            }
+          }
+
+          if (methodFilter && String(record.method || '').toUpperCase() !== methodFilter) {
+            return false
+          }
+
+          if (!statusMatches(record.status as number | null | undefined)) {
+            return false
+          }
+
+          return true
+        }
+
+        async function routeNetworkRequest(tabId, url, abort = false, body = undefined) {
+          const tab = await getTargetTab(tabId)
+          await sendDebuggerCommand(tab.id, 'Network.enable', {})
+          const route = {
+            id: createNetworkRouteId(),
+            pattern: String(url || '').trim(),
+            abort: Boolean(abort),
+            body: body === undefined ? undefined : body,
+            createdAt: new Date().toISOString(),
+          }
+
+          if (!route.pattern) {
+            throw new Error('missing url pattern')
+          }
+
+          state.network.routes.push(route)
+          await refreshNetworkInterceptors()
+
+          return {
+            route,
+            routes: state.network.routes,
+          }
+        }
+
+        async function unrouteNetworkRequest(tabId, url) {
+          if (tabId !== null && tabId !== undefined) {
+            await getTargetTab(tabId)
+          }
+
+          if (url) {
+            state.network.routes = state.network.routes.filter((route) => route.pattern !== String(url))
+          } else {
+            state.network.routes = []
+          }
+
+          await refreshNetworkInterceptors()
+
+          return {
+            routes: state.network.routes,
+          }
+        }
+
+        function listNetworkRequests(filters: Record<string, unknown> = {}): Record<string, unknown> {
+          const requests = state.network.requests.filter((record) => matchesNetworkRequestFilters(record, filters))
+          return {
+            total: requests.length,
+            requests: requests.map((record) => summarizeNetworkRequest(record)),
+          }
+        }
+
+        function getNetworkRequestDetail(requestId: string): Record<string, unknown> {
+          const record = getNetworkRequestById(String(requestId || ''))
+          if (!record) {
+            throw new Error(`network request not found: ${requestId}`)
+          }
+
+          return {
+            request: record,
+            summary: summarizeNetworkRequest(record),
+            harEntry: buildHarEntry(record),
+          }
+        }
+
+        async function startNetworkHar(tabId): Promise<Record<string, unknown>> {
+          const tab = await getTargetTab(tabId)
+          await sendDebuggerCommand(tab.id, 'Network.enable', {})
+          state.network.harRecording = true
+          state.network.harStartedAt = new Date().toISOString()
+          return {
+            recording: true,
+            startedAt: state.network.harStartedAt,
+          }
+        }
+
+        function stopNetworkHar(): Record<string, unknown> {
+          const startedAt = state.network.harStartedAt
+          const stoppedAt = new Date().toISOString()
+          state.network.harRecording = false
+          state.network.harStartedAt = null
+
+          const requests = state.network.requests.filter((record) => {
+            if (!startedAt) {
+              return true
+            }
+
+            return String(record.startedAt || '') >= startedAt
+          })
+
+          const entries = requests.map((record) => buildHarEntry(record))
+
+          return {
+            recording: false,
+            startedAt,
+            stoppedAt,
+            har: buildHar(entries),
+          }
+        }
+
 async function closeTabs(tabId, closeAll) {
   if (closeAll) {
     const tabs = await promisifyChrome(chrome.tabs, chrome.tabs.query, {
@@ -1645,6 +2250,29 @@ async function handleCommand(message) {
       return { messages: state.consoleMessages }
     case 'errors':
       return { errors: state.pageErrors }
+    case 'network':
+      if (args.action === 'route') {
+        return await routeNetworkRequest(tabId, args.url || '', args.abort === true, args.body)
+      }
+      if (args.action === 'unroute') {
+        return await unrouteNetworkRequest(tabId, args.url ? String(args.url) : '')
+      }
+      if (args.action === 'requests') {
+        return listNetworkRequests(args)
+      }
+      if (args.action === 'request') {
+        return getNetworkRequestDetail(String(args.requestId || ''))
+      }
+      if (args.action === 'har') {
+        if (args.subaction === 'start') {
+          return await startNetworkHar(tabId)
+        }
+        if (args.subaction === 'stop') {
+          return stopNetworkHar()
+        }
+        throw new Error(`unsupported network har action: ${args.subaction}`)
+      }
+      throw new Error(`unsupported network action: ${args.action}`)
     case 'set':
       if (args.type === 'viewport') {
         return await setViewport(

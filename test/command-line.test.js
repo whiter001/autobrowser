@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, test } from 'bun:test'
+import { readFile } from 'node:fs/promises'
 import { main } from '../src/cli.js'
 
 const originalFetch = globalThis.fetch
@@ -163,6 +164,75 @@ describe('cli command routing', () => {
     expect(result.exitCode).toBe(0)
     expect(result.fetchCalls).toHaveLength(1)
     expect(result.fetchCalls[0].url).toBe('http://127.0.0.1:5001/status')
+  })
+
+  test('routes network abort commands to the extension', async () => {
+    const result = await runCli(['network', 'route', 'https://api.example.com', '--abort'])
+
+    expect(result.exitCode).toBe(0)
+    expect(result.fetchCalls).toHaveLength(1)
+    expect(result.fetchCalls[0].body).toEqual({
+      command: 'network',
+      args: {
+        action: 'route',
+        url: 'https://api.example.com',
+        abort: true,
+      },
+    })
+  })
+
+  test('routes network request filters to the extension', async () => {
+    const result = await runCli([
+      'network',
+      'requests',
+      '--filter',
+      'api',
+      '--type',
+      'xhr,fetch',
+      '--method',
+      'POST',
+      '--status',
+      '2xx',
+    ])
+
+    expect(result.exitCode).toBe(0)
+    expect(result.fetchCalls).toHaveLength(1)
+    expect(result.fetchCalls[0].body).toEqual({
+      command: 'network',
+      args: {
+        action: 'requests',
+        filter: 'api',
+        type: 'xhr,fetch',
+        method: 'POST',
+        status: '2xx',
+      },
+    })
+  })
+
+  test('writes HAR output when stopping a recording', async () => {
+    const payload = {
+      ok: true,
+      result: {
+        har: {
+          log: {
+            version: '1.2',
+            creator: { name: 'autobrowser', version: '0.1.0' },
+            entries: [],
+          },
+        },
+      },
+    }
+    const result = await runCli(['network', 'har', 'stop'], payload)
+
+    expect(result.exitCode).toBe(0)
+    expect(result.fetchCalls).toHaveLength(1)
+
+    const outputPath = result.stdout.trim()
+    expect(outputPath.length).toBeGreaterThan(0)
+
+    const harContent = await readFile(outputPath, 'utf8')
+    expect(harContent).toContain('"version": "1.2"')
+    expect(harContent).toContain('"creator"')
   })
 
   test('saves state under the requested name', async () => {

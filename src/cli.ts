@@ -1,6 +1,12 @@
-import { readFile } from 'node:fs/promises'
+/// <reference types="bun-types" />
+/// <reference types="node" />
+/// <reference lib="dom" />
+
+import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
+import os from 'node:os'
+import path from 'node:path'
 import { getExtensionUrl } from './core/extension.js'
 import { DEFAULT_IPC_PORT, DEFAULT_RELAY_PORT, isPortInUse } from './core/protocol.js'
 import { startServers } from './server.js'
@@ -91,6 +97,90 @@ function commandNeedsSelector(attr: string): boolean {
   return !['title', 'url'].includes(attr)
 }
 
+function parseJsonValue(value: string): unknown {
+  try {
+    return JSON.parse(value)
+  } catch {
+    throw new Error(`invalid JSON: ${value}`)
+  }
+}
+
+function parseNetworkRequestsArgs(rest: string[]): Record<string, unknown> {
+  const result: Record<string, unknown> = {}
+  for (let index = 0; index < rest.length; index += 1) {
+    const value = rest[index]
+    if (value === '--filter') {
+      result.filter = rest[index + 1] || ''
+      index += 1
+      continue
+    }
+
+    if (value === '--type') {
+      result.type = rest[index + 1] || ''
+      index += 1
+      continue
+    }
+
+    if (value === '--method') {
+      result.method = rest[index + 1] || ''
+      index += 1
+      continue
+    }
+
+    if (value === '--status') {
+      result.status = rest[index + 1] || ''
+      index += 1
+      continue
+    }
+  }
+
+  return result
+}
+
+function parseNetworkRouteArgs(rest: string[]): { url: string; abort: boolean; body?: unknown } {
+  const result: { url: string; abort: boolean; body?: unknown } = {
+    url: '',
+    abort: false,
+  }
+
+  for (let index = 0; index < rest.length; index += 1) {
+    const value = rest[index]
+    if (value === '--abort') {
+      result.abort = true
+      continue
+    }
+
+    if (value === '--body') {
+      const rawBody = rest[index + 1]
+      if (rawBody === undefined) {
+        throw new Error('missing body value')
+      }
+
+      result.body = parseJsonValue(rawBody)
+      index += 1
+      continue
+    }
+
+    if (!value.startsWith('--') && !result.url) {
+      result.url = value
+    }
+  }
+
+  return result
+}
+
+async function writeHarFile(har: unknown, outputPath: string | null): Promise<string> {
+  const serialized = `${JSON.stringify(har, null, 2)}\n`
+  const targetPath = outputPath || path.join(await mkTempHarDir(), 'network.har')
+  await mkdir(path.dirname(targetPath), { recursive: true })
+  await writeFile(targetPath, serialized, 'utf8')
+  return targetPath
+}
+
+async function mkTempHarDir(): Promise<string> {
+  return await mkdtemp(path.join(os.tmpdir(), 'autobrowser-har-'))
+}
+
 function printHelp(): string {
   return `autobrowser
 
@@ -140,6 +230,12 @@ Usage:
   autobrowser clipboard read|write [text]
   autobrowser state save [name]
   autobrowser state load [name|json]
+  autobrowser network route <url> [--abort] [--body <json>]
+  autobrowser network unroute [url]
+  autobrowser network requests [--filter <text>] [--type <xhr,fetch>] [--method <POST>] [--status <2xx>]
+  autobrowser network request <requestId>
+  autobrowser network har start
+  autobrowser network har stop [output.har]
   autobrowser screenshot
   autobrowser snapshot
 
@@ -925,6 +1021,105 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
       return 0
     }
     process.stderr.write('usage: state save|load <json>\n')
+    return 1
+  }
+
+  if (command === 'network') {
+    const action = rest[0]
+
+    if (action === 'route') {
+      let routeArgs: { url: string; abort: boolean; body?: unknown }
+      try {
+        routeArgs = parseNetworkRouteArgs(rest.slice(1))
+      } catch (error) {
+        process.stderr.write(`${(error as Error).message}\n`)
+        return 1
+      }
+
+      if (!routeArgs.url) {
+        process.stderr.write('usage: network route <url> [--abort] [--body <json>]\n')
+        return 1
+      }
+
+      const payload = await requestCommand(flags.server, 'network', {
+        action: 'route',
+        url: routeArgs.url,
+        abort: routeArgs.abort,
+        body: routeArgs.body,
+      })
+      writeResult(payload)
+      return 0
+    }
+
+    if (action === 'unroute') {
+      const url = rest[1] || ''
+      const payload = await requestCommand(flags.server, 'network', {
+        action: 'unroute',
+        url: url || undefined,
+      })
+      writeResult(payload)
+      return 0
+    }
+
+    if (action === 'requests') {
+      const payload = await requestCommand(flags.server, 'network', {
+        action: 'requests',
+        ...parseNetworkRequestsArgs(rest.slice(1)),
+      })
+      writeResult(payload)
+      return 0
+    }
+
+    if (action === 'request') {
+      const requestId = rest[1]
+      if (!requestId) {
+        process.stderr.write('usage: network request <requestId>\n')
+        return 1
+      }
+
+      const payload = await requestCommand(flags.server, 'network', {
+        action: 'request',
+        requestId,
+      })
+      writeResult(payload)
+      return 0
+    }
+
+    if (action === 'har') {
+      const subaction = rest[1]
+      if (subaction === 'start') {
+        const payload = await requestCommand(flags.server, 'network', {
+          action: 'har',
+          subaction: 'start',
+        })
+        writeResult(payload)
+        return 0
+      }
+
+      if (subaction === 'stop') {
+        const payload = await requestCommand(flags.server, 'network', {
+          action: 'har',
+          subaction: 'stop',
+        })
+
+        if (payload?.ok === false) {
+          writeResult(payload)
+          return 1
+        }
+
+        const result = payload?.result as { har?: unknown; startedAt?: string; stoppedAt?: string } | undefined
+        const har = result?.har || payload
+        const outputPath = rest[2] || null
+        const savedPath = await writeHarFile(har, outputPath)
+        writeResult({ ok: true, result: savedPath })
+        return 0
+      }
+
+      process.stderr.write('usage: network har start|stop [output.har]\n')
+      return 1
+    }
+
+    process.stderr.write('usage: network route|unroute|requests|request|har\n')
     return 1
   }
 
