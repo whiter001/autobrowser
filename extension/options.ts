@@ -1,98 +1,16 @@
-const STORAGE_KEY = 'autobrowserToken'
-const RELAY_PORT_STORAGE_KEY = 'autobrowserRelayPort'
-const CONNECTION_DIAGNOSTICS_STORAGE_KEY = 'autobrowserConnectionDiagnostics'
-const DEFAULT_RELAY_PORT = 47978
-
-function normalizeRelayPort(value: unknown): number {
-  const port = Number(value)
-  return Number.isInteger(port) && port > 0 ? port : DEFAULT_RELAY_PORT
-}
+import {
+  CONNECTION_DIAGNOSTICS_STORAGE_KEY,
+  DEFAULT_RELAY_PORT,
+  RELAY_PORT_STORAGE_KEY,
+  STORAGE_KEY,
+  formatDiagnostics,
+  normalizeRelayPort,
+  type DiagnosticsState,
+  type StatusResponse,
+} from './shared.js'
 
 interface StorageResult {
   [key: string]: unknown
-}
-
-interface ConnectionErrorInfo {
-  message: string
-  at: string
-  code?: string
-}
-
-interface SocketCloseInfo {
-  code: number
-  reason: string
-  wasClean: boolean
-  at: string
-}
-
-interface CommandErrorInfo {
-  command: string
-  message: string
-  at: string
-  code?: string
-}
-
-interface DiagnosticsState {
-  status: string
-  connectionError: ConnectionErrorInfo | null
-  lastSocketClose: SocketCloseInfo | null
-  lastCommandError: CommandErrorInfo | null
-  updatedAt: string
-}
-
-interface StoredDiagnostics extends DiagnosticsState {}
-
-interface StatusResponse {
-  ok: boolean
-  connected?: boolean
-  connectionStatus?: string
-  connectionError?: ConnectionErrorInfo | null
-  lastSocketClose?: SocketCloseInfo | null
-  lastCommandError?: CommandErrorInfo | null
-  token?: string
-  relayPort?: number
-}
-
-function formatDiagnostics(status: StoredDiagnostics | StatusResponse | null): string {
-  if (!status) {
-    return '暂无诊断信息'
-  }
-
-  const lines: string[] = []
-  if ('ok' in status) {
-    lines.push(
-      `连接状态: ${status.connectionStatus || (status.connected ? 'connected' : 'disconnected')}`,
-    )
-  } else {
-    lines.push(`连接状态: ${status.status}`)
-  }
-
-  const connectionError = status.connectionError
-  if (connectionError) {
-    lines.push(
-      `连接错误: ${connectionError.message}${connectionError.code ? ` (${connectionError.code})` : ''} @ ${connectionError.at}`,
-    )
-  }
-
-  const lastSocketClose = status.lastSocketClose
-  if (lastSocketClose) {
-    lines.push(
-      `最后一次断开: code=${lastSocketClose.code}, clean=${lastSocketClose.wasClean ? 'yes' : 'no'}, reason=${lastSocketClose.reason || '(empty)'} @ ${lastSocketClose.at}`,
-    )
-  }
-
-  const lastCommandError = status.lastCommandError
-  if (lastCommandError) {
-    lines.push(
-      `命令错误: ${lastCommandError.command} -> ${lastCommandError.message}${lastCommandError.code ? ` (${lastCommandError.code})` : ''} @ ${lastCommandError.at}`,
-    )
-  }
-
-  if ('updatedAt' in status) {
-    lines.push(`更新时间: ${status.updatedAt}`)
-  }
-
-  return lines.join('\n')
 }
 
 async function loadDiagnostics(): Promise<void> {
@@ -101,7 +19,7 @@ async function loadDiagnostics(): Promise<void> {
     return
   }
 
-  let status: StoredDiagnostics | StatusResponse | null = null
+  let status: DiagnosticsState | StatusResponse | null = null
 
   try {
     const response = (await chrome.runtime.sendMessage({ type: 'autobrowser.getStatus' })) as
@@ -120,7 +38,7 @@ async function loadDiagnostics(): Promise<void> {
     ])) as StorageResult
     const stored = result[CONNECTION_DIAGNOSTICS_STORAGE_KEY]
     if (stored && typeof stored === 'object') {
-      status = stored as StoredDiagnostics
+      status = stored as DiagnosticsState
     }
   }
 

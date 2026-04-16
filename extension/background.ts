@@ -1,48 +1,22 @@
-const DEFAULT_SERVER_PORT = 47978
-const STORAGE_KEY = 'autobrowserToken'
-const RELAY_PORT_STORAGE_KEY = 'autobrowserRelayPort'
+import {
+  CONNECTION_DIAGNOSTICS_STORAGE_KEY,
+  DEFAULT_RELAY_PORT,
+  RELAY_PORT_STORAGE_KEY,
+  STORAGE_KEY,
+  normalizeRelayPort,
+  type CommandErrorInfo,
+  type ConnectionErrorInfo,
+  type ConnectionStatus,
+  type DiagnosticsState,
+  type SocketCloseInfo,
+} from './shared.js'
+
+const DEFAULT_SERVER_PORT = DEFAULT_RELAY_PORT
 const SAVED_STATES_STORAGE_KEY = 'autobrowserSavedStates'
-const CONNECTION_DIAGNOSTICS_STORAGE_KEY = 'autobrowserConnectionDiagnostics'
 const FRAME_WORLD_NAME = 'autobrowser-frame'
-
-type ConnectionStatus =
-  | 'idle'
-  | 'connecting'
-  | 'connected'
-  | 'disconnected'
-  | 'missing-token'
-  | 'error'
-
-interface ConnectionErrorInfo {
-  message: string
-  at: string
-  code?: string
-}
-
-interface ConnectionCloseInfo {
-  code: number
-  reason: string
-  wasClean: boolean
-  at: string
-}
-
-interface CommandErrorInfo {
-  command: string
-  message: string
-  at: string
-  code?: string
-}
 
 interface ErrorWithCode extends Error {
   code?: string
-}
-
-interface ConnectionDiagnostics {
-  status: ConnectionStatus
-  connectionError: ConnectionErrorInfo | null
-  lastSocketClose: ConnectionCloseInfo | null
-  lastCommandError: CommandErrorInfo | null
-  updatedAt: string
 }
 
 const state = {
@@ -59,13 +33,8 @@ const state = {
   pageErrors: [],
   connectionStatus: 'idle' as ConnectionStatus,
   connectionError: null as ConnectionErrorInfo | null,
-  lastSocketClose: null as ConnectionCloseInfo | null,
+  lastSocketClose: null as SocketCloseInfo | null,
   lastCommandError: null as CommandErrorInfo | null,
-}
-
-function normalizeRelayPort(value) {
-  const port = Number(value)
-  return Number.isInteger(port) && port > 0 ? port : DEFAULT_SERVER_PORT
 }
 
 function pushBounded(list, item, maxSize) {
@@ -84,7 +53,7 @@ function persistDiagnostics(): void {
         lastSocketClose: state.lastSocketClose,
         lastCommandError: state.lastCommandError,
         updatedAt: new Date().toISOString(),
-      } satisfies ConnectionDiagnostics,
+      } satisfies DiagnosticsState,
     })
     .catch((error: Error) => {
       console.error('failed to persist plugin diagnostics', error)

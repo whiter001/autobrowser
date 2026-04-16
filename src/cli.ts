@@ -1,6 +1,7 @@
 import { readFile } from 'node:fs/promises'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
+import { getExtensionUrl } from './core/extension.js'
 import { DEFAULT_IPC_PORT, DEFAULT_RELAY_PORT, isPortInUse } from './core/protocol.js'
 import { startServers } from './server.js'
 
@@ -283,7 +284,30 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
   }
 
   if (command === 'connect') {
-    await openUrl(`http://127.0.0.1:${flags.relayPort}/connect`)
+    const status = await getStatus(flags.server).catch(() => null)
+    if (!status) {
+      await openUrl(`http://127.0.0.1:${flags.relayPort}/connect`)
+      return 0
+    }
+
+    const token = typeof status.token === 'string' ? status.token : ''
+    const relayPort = Number(status.relayPort || flags.relayPort)
+    if (!token) {
+      await openUrl(`http://127.0.0.1:${relayPort}/connect`)
+      return 0
+    }
+
+    try {
+      await openUrl(
+        getExtensionUrl('/connect.html', {
+          token,
+          relayPort,
+          ipcPort: Number(status.ipcPort || flags.ipcPort),
+        }),
+      )
+    } catch {
+      await openUrl(`http://127.0.0.1:${relayPort}/connect`)
+    }
     return 0
   }
 

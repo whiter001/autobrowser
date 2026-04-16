@@ -52,11 +52,13 @@ autobrowser is a browser automation tool that controls Chrome/Edge via a browser
 
 ### Extension Connection Flow
 
-1. Extension loads token from `chrome.storage.local`
-2. Opens WebSocket: `ws://127.0.0.1:47978/ws?token=xxx&extensionId=xxx`
-3. Server validates token, upgrades connection
-4. Extension registers message handler for CLI commands
-5. Extension dispatches commands to Chrome DevTools Protocol (CDP)
+1. `autobrowser connect` opens the extension connect page with token and relay port
+2. The connect page saves those values into `chrome.storage.local`
+3. Extension loads token from `chrome.storage.local`
+4. Opens WebSocket: `ws://127.0.0.1:47978/ws?token=xxx&extensionId=xxx`
+5. Server validates token, upgrades connection
+6. Extension registers message handler for CLI commands
+7. Extension dispatches commands to Chrome DevTools Protocol (CDP)
 
 ## Nushell Usage (Recommended)
 

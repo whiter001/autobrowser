@@ -1,4 +1,5 @@
 import { htmlResponse, jsonResponse, textResponse } from './core/protocol.js'
+import { getExtensionUrl } from './core/extension.js'
 import { createRuntime, type Runtime } from './core/runtime.js'
 
 function escapeHtml(value: string): string {
@@ -21,6 +22,11 @@ function connectPage(snapshot: SnapshotData): string {
   const token = escapeHtml(snapshot.token)
   const relayUrl = `ws://127.0.0.1:${snapshot.relayPort}/ws`
   const ipcUrl = `http://127.0.0.1:${snapshot.ipcPort}`
+  const extensionConnectUrl = getExtensionUrl('/connect.html', {
+    token: snapshot.token,
+    relayPort: snapshot.relayPort,
+    ipcPort: snapshot.ipcPort,
+  })
 
   return `<!doctype html>
 <html lang="zh-CN">
@@ -129,7 +135,7 @@ function connectPage(snapshot: SnapshotData): string {
   <body>
     <main class="card">
       <h1>autobrowser 已启动</h1>
-      <p>本地 relay server 正在运行。先在浏览器扩展中保存 token，再让扩展连到下面的 WebSocket 地址。</p>
+      <p>本地 relay server 正在运行。直接打开扩展连接页即可自动保存 token 和 relay 端口，然后让扩展连到下面的 WebSocket 地址。</p>
 
       <div class="grid">
         <section class="panel">
@@ -151,15 +157,16 @@ function connectPage(snapshot: SnapshotData): string {
       </div>
 
       <div class="actions">
+        <a class="button" href="${escapeHtml(extensionConnectUrl)}">Open extension connect page</a>
         <button id="copy-token">Copy token</button>
         <a class="button" href="/status">Open status JSON</a>
       </div>
 
-      <pre>1. Open the extension options page.
-2. Paste the token above and save it.
+      <pre>1. Open the extension connect page.
+2. Let it save the token and relay port automatically.
 3. Reload the extension if it does not connect automatically.
 4. Use the CLI against http://127.0.0.1:${snapshot.ipcPort}.</pre>
-      <p class="small">If you want a tighter setup later, this page can be extended into a local control dashboard.</p>
+      <p class="small">If the browser cannot open the extension page directly, you can still copy the token and paste it in the options page.</p>
     </main>
 
     <script>

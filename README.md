@@ -31,7 +31,7 @@ Build the unpacked extension first:
 pnpm run build:chrome
 ```
 
-Then load the `chrome/` folder as an unpacked extension in Chromium-based browsers, open the extension options page, paste the token from the connect page, and save it. If the CLI server is using a non-default relay port, set that port in the options page as well. The extension will then try to connect to the local relay server automatically.
+Then load the `chrome/` folder as an unpacked extension in Chromium-based browsers. Run `autobrowser connect` to open the extension connect page; it will save the token and relay port automatically, then the extension will try to connect to the local relay server. The options page still works as a manual fallback and shows diagnostics.
 
 ## Tests
 
