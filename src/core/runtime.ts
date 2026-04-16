@@ -20,7 +20,7 @@ export interface TabInfo {
 }
 
 export interface ExtensionInfo {
-  extensionId: string;
+  extensionId: string | null;
   connectedAt: string;
   userAgent: string | null;
 }
@@ -45,6 +45,16 @@ interface PendingRequest {
   resolve: (value: unknown) => void;
   reject: (error: Error) => void;
   timer: ReturnType<typeof setTimeout>;
+}
+
+interface ExtensionMetadata {
+  extensionId?: string | null;
+  userAgent?: string | null;
+}
+
+interface ErrorWithCode extends Error {
+  code?: string;
+  details?: unknown;
 }
 
 function rejectPendingRequests(
@@ -75,7 +85,7 @@ interface RuntimeState {
   requestTimeoutMs: number;
   token: string;
   startedAt: string;
-  extensionSocket: WebSocket | null;
+  extensionSocket: Bun.ServerWebSocket<ExtensionMetadata> | null;
   extensionId: string | null;
 }
 
@@ -86,7 +96,10 @@ export interface Runtime {
   setError: (message: string) => void;
   setLastCommand: (command: string, args: unknown) => void;
   setTabs: (tabs?: TabInfo[]) => void;
-  attachExtension: (socket: WebSocket, meta?: Record<string, unknown>) => void;
+  attachExtension: (
+    socket: Bun.ServerWebSocket<ExtensionMetadata>,
+    meta?: ExtensionMetadata,
+  ) => void;
   detachExtension: () => void;
   handleExtensionMessage: (rawMessage: unknown) => void;
   dispatchCommand: (command: string, args?: Record<string, unknown>) => Promise<unknown>;
@@ -169,9 +182,12 @@ export async function createRuntime(options: RuntimeOptions = {}): Promise<Runti
     snapshot.activeTabId = snapshot.tabs.find((tab: TabInfo) => tab.active)?.id ?? null;
   }
 
-  function attachExtension(socket: WebSocket, meta: Record<string, unknown> = {}): void {
+  function attachExtension(
+    socket: Bun.ServerWebSocket<ExtensionMetadata>,
+    meta: ExtensionMetadata = {},
+  ): void {
     runtime.extensionSocket = socket;
-    runtime.extensionId = (meta.extensionId as string) || null;
+    runtime.extensionId = typeof meta.extensionId === 'string' ? meta.extensionId : null;
     snapshot.extension = {
       extensionId: runtime.extensionId,
       connectedAt: new Date().toISOString(),
@@ -231,9 +247,11 @@ export async function createRuntime(options: RuntimeOptions = {}): Promise<Runti
     pendingRequests.delete(message.id);
 
     if (message.ok === false) {
-      const error = new Error(message.error?.message || 'extension command failed');
+      const error = new Error(
+        message.error?.message || 'extension command failed',
+      ) as ErrorWithCode;
       error.code = message.error?.code || 'EXTENSION_ERROR';
-      (error as Error & { details?: unknown }).details = message.error?.details || null;
+      error.details = message.error?.details || null;
       pending.reject(error);
       return;
     }

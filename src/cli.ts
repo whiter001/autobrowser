@@ -21,10 +21,6 @@ interface ParsedCli {
   args: string[];
 }
 
-interface CommandArgs {
-  [key: string]: unknown;
-}
-
 function parseCli(argv: string[]): ParsedCli {
   const flags: CliFlags = {
     json: false,
@@ -184,7 +180,7 @@ interface CommandResponse {
 async function requestCommand(
   baseUrl: string,
   command: string,
-  args: CommandArgs = {},
+  args: object = {},
 ): Promise<CommandResponse> {
   const response = await fetch(`${baseUrl}/command`, {
     method: 'POST',
@@ -293,7 +289,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
 
   if (command === 'status') {
     const status = await getStatus(flags.server);
-    writeResult(status as CommandResponse);
+    writeResult(status);
     return 0;
   }
 
@@ -806,17 +802,29 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
       return 0;
     }
     if (action === 'load') {
-      const stateJson = rest.slice(1).join(' ');
-      let data: Record<string, unknown> = {};
-      try {
-        data = JSON.parse(stateJson);
-      } catch {
-        process.stderr.write('invalid state JSON\n');
+      const stateValue = rest.slice(1).join(' ').trim();
+      if (!stateValue) {
+        process.stderr.write('usage: state save|load <json>\n');
         return 1;
       }
+
+      try {
+        const data = JSON.parse(stateValue);
+        if (data && typeof data === 'object') {
+          const payload = await requestCommand(flags.server, 'state', {
+            action: 'load',
+            data,
+          });
+          writeResult(payload);
+          return 0;
+        }
+      } catch {
+        // Fall through to loading a saved state by name.
+      }
+
       const payload = await requestCommand(flags.server, 'state', {
         action: 'load',
-        data,
+        name: stateValue,
       });
       writeResult(payload);
       return 0;

@@ -53,7 +53,7 @@ function stringifyRemoteValue(value) {
 }
 
 function setupDebuggerEventListeners() {
-  chrome.debugger.onEvent.addListener((source, method, params) => {
+  chrome.debugger.onEvent.addListener((_source, method, params: any) => {
     if (method === 'Runtime.consoleAPICalled') {
       pushBounded(
         state.consoleMessages,
@@ -83,7 +83,7 @@ function setupDebuggerEventListeners() {
   });
 }
 
-function promisifyChrome(fn, ...args) {
+function promisifyChrome(fn: any, ...args: any[]): Promise<any> {
   return new Promise((resolve, reject) => {
     fn(
       ...args,
@@ -1046,7 +1046,7 @@ async function cookiesGet(tabId) {
 
 async function cookiesSet(tabId, name, value, domain) {
   const tab = await getTargetTab(tabId);
-  const cookie = { name, value };
+  const cookie: { name: string; value: string; domain?: string } = { name, value };
   if (domain) {
     cookie.domain = domain;
   }

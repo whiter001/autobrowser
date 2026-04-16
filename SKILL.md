@@ -4,6 +4,11 @@
 
 autobrowser is a browser automation tool that controls Chrome/Edge via a browser extension, exposing a CLI API for scripting and automation.
 
+**Technology Stack:**
+- Language: TypeScript (.ts files)
+- Runtime: Bun >=1.3.12
+- Code Quality: oxlint (linting), oxfmt (formatting)
+
 ## Architecture
 
 ```
@@ -13,13 +18,13 @@ autobrowser is a browser automation tool that controls Chrome/Edge via a browser
 │                                                             │
 │  ┌──────────────┐      ┌──────────────┐      ┌───────────┐  │
 │  │    CLI      │      │   IPC Server │      │ Relay WS  │  │
-│  │ (bun cli.js)│──────│  port 47979  │      │ port 47978│  │
+│  │ (cli.ts)    │──────│  port 47979  │      │ port 47978│  │
 │  └──────────────┘      └──────┬───────┘      └─────┬─────┘  │
 │                               │                    │        │
 │                               │                    │        │
 │                        ┌──────▼────────────────▼──┐        │
 │                        │     Browser Extension     │        │
-│                        │    (background.js)        │        │
+│                        │   (background.ts)          │        │
 │                        └────────────┬──────────────┘        │
 │                                     │                       │
 │                               ┌─────▼─────┐                 │
@@ -59,31 +64,31 @@ autobrowser is a browser automation tool that controls Chrome/Edge via a browser
 
 ```nushell
 # Start server in background
-job spawn { bun src/cli.js server }
+job spawn { bun src/cli.ts server }
 
 # Wait for server to be ready
 sleep 3sec
 
 # Execute commands
-bun src/cli.js goto https://www.baidu.com
-bun src/cli.js get title
+bun src/cli.ts goto https://www.baidu.com
+bun src/cli.ts get title
 ```
 
 ### Complete Workflow
 
 ```nushell
 # One-liner execution
-nu -c "job spawn { bun src/cli.js server }; sleep 3sec; bun src/cli.js goto https://x.com; bun src/cli.js wait time 8000; bun src/cli.js get title"
+nu -c "job spawn { bun src/cli.ts server }; sleep 3sec; bun src/cli.ts goto https://x.com; bun src/cli.ts wait time 8000; bun src/cli.ts get title"
 
 # Multi-step workflow
 nu -c "
-  job spawn { bun src/cli.js server }
+  job spawn { bun src/cli.ts server }
   sleep 3sec
-  bun src/cli.js goto https://www.baidu.com
-  bun src/cli.js get title
-  bun src/cli.js goto https://x.com
-  bun src/cli.js wait time 5000
-  bun src/cli.js eval \"[...document.querySelectorAll('article')].slice(0,3).map(t => t.innerText.slice(0,200)).join('===')\"
+  bun src/cli.ts goto https://www.baidu.com
+  bun src/cli.ts get title
+  bun src/cli.ts goto https://x.com
+  bun src/cli.ts wait time 5000
+  bun src/cli.ts eval \"[...document.querySelectorAll('article')].slice(0,3).map(t => t.innerText.slice(0,200)).join('===')\"
 "
 ```
 
@@ -107,17 +112,17 @@ fg <job_id>
 
 **Ampersand & (simple)**
 ```nushell
-bun src/cli.js server &
+bun src/cli.ts server &
 ```
 
 **do --bg (Nu 0.60+)**
 ```nushell
-do -b bun src/cli.js server
+do -b bun src/cli.ts server
 ```
 
 **External command prefix ^**
 ```nushell
-^bun src/cli.js server &
+^bun src/cli.ts server &
 ```
 
 ## CLI Commands
@@ -126,206 +131,209 @@ do -b bun src/cli.js server
 
 ```bash
 # Start server (blocks)
-bun src/cli.js server
+bun src/cli.ts server
 
 # Check server status
-bun src/cli.js status
+bun src/cli.ts status
+
+# Open connect page in browser
+bun src/cli.ts connect
 ```
 
 ### Tab Operations
 
 ```bash
 # Navigate to URL
-bun src/cli.js goto https://example.com
-bun src/cli.js open https://example.com
+bun src/cli.ts goto https://example.com
+bun src/cli.ts open https://example.com
 
 # Tab management
-bun src/cli.js tab list
-bun src/cli.js tab new <url>
+bun src/cli.ts tab list
+bun src/cli.ts tab new <url>
 
 # Navigation
-bun src/cli.js back
-bun src/cli.js forward
-bun src/cli.js reload
+bun src/cli.ts back
+bun src/cli.ts forward
+bun src/cli.ts reload
 ```
 
 ### Element Interaction
 
 ```bash
 # Click element
-bun src/cli.js click "#submit-button"
+bun src/cli.ts click "#submit-button"
 
 # Fill input
-bun src/cli.js fill "#username" "admin"
+bun src/cli.ts fill "#username" "admin"
 
 # Hover/Focus
-bun src/cli.js hover "#menu"
-bun src/cli.js focus "#search"
+bun src/cli.ts hover "#menu"
+bun src/cli.ts focus "#search"
 
 # Select dropdown
-bun src/cli.js select "#country" "US"
+bun src/cli.ts select "#country" "US"
 
 # Check/Uncheck
-bun src/cli.js check "#agree"
-bun src/cli.js uncheck "#agree"
+bun src/cli.ts check "#agree"
+bun src/cli.ts uncheck "#agree"
 
 # Press key
-bun src/cli.js press "Enter"
-bun src/cli.js press "Control+KeyA"
+bun src/cli.ts press "Enter"
+bun src/cli.ts press "Control+KeyA"
 ```
 
 ### Element State & Retrieval
 
 ```bash
 # Check element state
-bun src/cli.js is visible "#dialog"
-bun src/cli.js is enabled "#submit"
-bun src/cli.js is checked "#checkbox"
-bun src/cli.js is disabled "#button"
+bun src/cli.ts is visible "#dialog"
+bun src/cli.ts is enabled "#submit"
+bun src/cli.ts is checked "#checkbox"
+bun src/cli.ts is disabled "#button"
 
 # Get element attributes
-bun src/cli.js get text "#title"        # textContent
-bun src/cli.js get html "#content"      # innerHTML
-bun src/cli.js get value "#input"       # value
-bun src/cli.js get title                # document.title
-bun src/cli.js get url                  # window.location.href
-bun src/cli.js get count "div.card"     # querySelectorAll count
-bun src/cli.js get box "#image"         # bounding box
+bun src/cli.ts get text "#title"        # textContent
+bun src/cli.ts get html "#content"       # innerHTML
+bun src/cli.ts get value "#input"        # value
+bun src/cli.ts get title                 # document.title
+bun src/cli.ts get url                   # window.location.href
+bun src/cli.ts get count "div.card"      # querySelectorAll count
+bun src/cli.ts get box "#image"          # bounding box
 ```
 
 ### Scrolling & Dragging
 
 ```bash
 # Scroll page or element
-bun src/cli.js scroll                   # scroll by 0,100
-bun src/cli.js scroll "div.content" 50 100
+bun src/cli.ts scroll                    # scroll by 0,100
+bun src/cli.ts scroll "div.content" 50 100
 
 # Drag element
-bun src/cli.js drag "#handle" "#target"
+bun src/cli.ts drag "#handle" "#target"
 ```
 
 ### Waiting
 
 ```bash
 # Wait for selector
-bun src/cli.js wait selector "#loading" 30000
+bun src/cli.ts wait selector "#loading" 30000
 
 # Wait for URL pattern
-bun src/cli.js wait url "https://example.com" 30000
+bun src/cli.ts wait url "https://example.com" 30000
 
 # Wait for text
-bun src/cli.js wait text "Success" 30000
+bun src/cli.ts wait text "Success" 30000
 
 # Wait for page load
-bun src/cli.js wait load 30000
+bun src/cli.ts wait load 30000
 
 # Wait for network idle
-bun src/cli.js wait networkidle 30000
+bun src/cli.ts wait networkidle 30000
 
 # Wait for fixed time
-bun src/cli.js wait time 5000
+bun src/cli.ts wait time 5000
 ```
 
 ### Execute Script
 
 ```bash
 # Eval JS (inline)
-bun src/cli.js eval "document.title"
+bun src/cli.ts eval "document.title"
 
 # Eval from file
-bun src/cli.js eval --file script.js
+bun src/cli.ts eval --file script.js
 
 # Eval from stdin
-echo "Math.random()" | bun src/cli.js eval --stdin
+echo "Math.random()" | bun src/cli.ts eval --stdin
 
 # Eval from base64
-bun src/cli.js eval --base64 "Y29uc29sZS5sb2coJ2hlbGxvJyk="
+bun src/cli.ts eval --base64 "Y29uc29sZS5sb2coJ2hlbGxvJyk="
 ```
 
 ### Cookies & Storage
 
 ```bash
 # Cookies
-bun src/cli.js cookies get
-bun src/cli.js cookies set "name" "value" ".example.com"
-bun src/cli.js cookies clear
+bun src/cli.ts cookies get
+bun src/cli.ts cookies set "name" "value" ".example.com"
+bun src/cli.ts cookies clear
 
 # LocalStorage
-bun src/cli.js storage get "token"
-bun src/cli.js storage set "token" "abc123"
-bun src/cli.js storage clear
+bun src/cli.ts storage get "token"
+bun src/cli.ts storage set "token" "abc123"
+bun src/cli.ts storage clear
 ```
 
 ### Browser Settings
 
 ```bash
 # Viewport
-bun src/cli.js set viewport 1920 1080 1 false
+bun src/cli.ts set viewport 1920 1080 1 false
 
 # Offline mode
-bun src/cli.js set offline true
+bun src/cli.ts set offline true
 
 # Headers
-bun src/cli.js set headers "[{\"name\":\"X-Custom\",\"value\":\"test\"}]"
+bun src/cli.ts set headers "[{\"name\":\"X-Custom\",\"value\":\"test\"}]"
 
 # Geolocation
-bun src/cli.js set geo 39.9042 116.4074 100
+bun src/cli.ts set geo 39.9042 116.4074 100
 
 # Media (color scheme)
-bun src/cli.js set media "dark"
-bun src/cli.js set media "light"
+bun src/cli.ts set media "dark"
+bun src/cli.ts set media "light"
 ```
 
 ### Dialog Handling
 
 ```bash
 # Accept dialog with optional prompt text
-bun src/cli.js dialog accept "optional prompt"
+bun src/cli.ts dialog accept "optional prompt"
 
 # Dismiss dialog
-bun src/cli.js dialog dismiss
+bun src/cli.ts dialog dismiss
 ```
 
 ### Clipboard
 
 ```bash
 # Read clipboard
-bun src/cli.js clipboard read
+bun src/cli.ts clipboard read
 
 # Write clipboard
-bun src/cli.js clipboard write "text to copy"
+bun src/cli.ts clipboard write "text to copy"
 ```
 
 ### State Management
 
 ```bash
 # Save browser state (cookies + localStorage)
-bun src/cli.js state save "session1"
+bun src/cli.ts state save "session1"
 
 # Load state
-bun src/cli.js state load '{"cookies":[...],"storage":{...}}'
+bun src/cli.ts state load '{"cookies":[...],"storage":{...}}'
 ```
 
 ### Other Commands
 
 ```bash
 # Screenshot
-bun src/cli.js screenshot
+bun src/cli.ts screenshot
 
 # PDF generation
-bun src/cli.js pdf
+bun src/cli.ts pdf
 
 # Snapshot (full state)
-bun src/cli.js snapshot
+bun src/cli.ts snapshot
 
 # Current console messages
-bun src/cli.js console
+bun src/cli.ts console
 
 # Page errors
-bun src/cli.js errors
+bun src/cli.ts errors
 
 # File upload
-bun src/cli.js upload "input[type=file]" "file1.txt" "file2.txt"
+bun src/cli.ts upload "input[type=file]" "file1.txt" "file2.txt"
 ```
 
 ### Flags
@@ -343,8 +351,36 @@ bun src/cli.js upload "input[type=file]" "file1.txt" "file2.txt"
 PowerShell also works but is slower (~4.6s vs ~3.7s for nushell):
 
 ```powershell
-powershell -Command "& {Start-Process -FilePath 'bun' -ArgumentList 'src/cli.js','server' -NoNewWindow -PassThru; Start-Sleep -Seconds 3; bun src/cli.js status}"
+powershell -Command "& {Start-Process -FilePath 'bun' -ArgumentList 'src/cli.ts','server' -NoNewWindow -PassThru; Start-Sleep -Seconds 3; bun src/cli.ts status}"
 ```
+
+## Project Commands
+
+```bash
+# Development
+npm run dev                 # Start server with bun
+bun src/cli.ts server        # Direct start
+
+# Code quality
+npm run fmt                 # Format code (oxfmt)
+npm run lint                # Lint code (oxlint)
+npm run fix                 # Format + fix lint
+npm run check               # Lint + build validation
+
+# Build
+npm run build               # Compile standalone .exe
+npm run build:js            # Build JS bundle
+
+# Testing
+npm run test                # Run test suite
+```
+
+### Build Outputs
+
+| Command | Output | Description |
+|---------|--------|-------------|
+| `npm run build` | `dist/autobrowser.exe` | Standalone executable (~111MB) |
+| `npm run build:js` | `dist/autobrowser.js` | Bundled JS (~35KB) |
 
 ## Extension Configuration
 
@@ -361,26 +397,6 @@ powershell -Command "& {Start-Process -FilePath 'bun' -ArgumentList 'src/cli.js'
 - **Token**: The 32-char hex token from server's connect page
 - **Relay Port**: Relay server port (default: 47978)
 
-## Project Commands
-
-```bash
-# Development
-npm run dev                 # Start server with bun
-
-# Code quality
-npm run oxlint              # Lint code
-npm run oxfmt               # Format code
-npm run lint                # Lint + check format
-npm run lint:fix            # Auto-fix format
-
-# Testing
-npm run test                # Run tests
-npm run check               # Run test suite
-
-# Extension
-bun src/cli.js connect      # Show connect page info
-```
-
 ## Token Regeneration
 
 Token is auto-generated on first server start and persisted. To regenerate:
@@ -391,8 +407,17 @@ Token is auto-generated on first server start and persisted. To regenerate:
 rm -rf ~/.autobrowser
 
 # Restart server - new token generated
-bun src/cli.js server
+bun src/cli.ts server
 ```
+
+## Duplicate Server Prevention
+
+Starting server when one is already running will fail with:
+```
+Server already running on port 47978
+```
+
+The `isPortInUse()` check validates before attempting to bind the port.
 
 ## Troubleshooting
 
@@ -406,7 +431,7 @@ bun src/cli.js server
 
 Server not running. Start it first with nushell:
 ```nushell
-job spawn { bun src/cli.js server }
+job spawn { bun src/cli.ts server }
 sleep 3sec
 ```
 
@@ -414,24 +439,43 @@ sleep 3sec
 
 Token mismatch. Verify extension has correct token, or reset by deleting `~/.autobrowser`.
 
+### Build fails
+
+Ensure bun version >= 1.3.12:
+```bash
+bun --version  # should be >= 1.3.12
+```
+
 ## File Structure
 
 ```
 autobrowser/
 ├── src/
-│   ├── cli.js           # CLI entry point
-│   ├── server.js        # HTTP/WS server setup
+│   ├── cli.ts            # CLI entry point
+│   ├── server.ts         # HTTP/WS server setup
 │   └── core/
-│       ├── protocol.js  # Constants & utilities
-│       └── runtime.js   # Runtime state management
+│       ├── protocol.ts  # Constants & utilities
+│       └── runtime.ts    # Runtime state management
 ├── extension/
-│   ├── background.js    # Chrome extension background
-│   └── options.js       # Extension options page
+│   ├── background.ts     # Chrome extension background
+│   ├── options.ts       # Extension options page
+│   ├── options.html     # Options page UI
+│   └── manifest.json    # Extension manifest
 ├── test/
 │   └── command-line.test.js
+├── dist/
+│   ├── autobrowser.exe   # Built executable
+│   └── autobrowser.js    # Built JS bundle
 ├── package.json
-├── .oxlintrc.json       # Lint config
-├── .oxfmtrc.json        # Format config
-├── SKILL.md             # This file
-└── README.md            # Project overview
+├── tsconfig.json         # TypeScript config
+├── .oxlintrc.json        # Lint config
+├── .oxfmtrc.json         # Format config
+├── SKILL.md              # This file
+└── README.md             # Project overview
 ```
+
+## Requirements
+
+- **Bun**: >=1.3.12
+- **Node**: Not required (uses bun runtime)
+- **Browser**: Chrome/Edge with extension loading support

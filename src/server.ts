@@ -181,15 +181,24 @@ interface ServerOptions {
 
 interface StartServersResult {
   runtime: Runtime;
-  relayServer: Bun.Server;
-  ipcServer: Bun.Server;
+  relayServer: Bun.Server<RelaySocketData>;
+  ipcServer: Bun.Server<undefined>;
   stop: () => void;
+}
+
+interface RelaySocketData {
+  extensionId: string | null;
+  userAgent: string | null;
+}
+
+interface ErrorWithCode extends Error {
+  code?: string;
 }
 
 export async function startServers(options: ServerOptions = {}): Promise<StartServersResult> {
   const runtime = await createRuntime(options);
 
-  const relayServer = Bun.serve({
+  const relayServer = Bun.serve<RelaySocketData>({
     hostname: '127.0.0.1',
     port: runtime.runtime.relayPort,
     fetch(request, server) {
@@ -222,10 +231,7 @@ export async function startServers(options: ServerOptions = {}): Promise<StartSe
     },
     websocket: {
       open(socket) {
-        runtime.attachExtension(
-          socket as unknown as WebSocket,
-          socket.data as Record<string, unknown>,
-        );
+        runtime.attachExtension(socket, socket.data);
         socket.send(
           JSON.stringify({
             type: 'hello',
@@ -280,7 +286,7 @@ export async function startServers(options: ServerOptions = {}): Promise<StartSe
               const result = await runtime.dispatchCommand(command, args);
               return jsonResponse({ ok: true, result });
             } catch (error) {
-              const err = error as Error;
+              const err = error as ErrorWithCode;
               runtime.setError(err.message);
               return jsonResponse(
                 {

@@ -1,4 +1,5 @@
 dist/
+chrome/
 .autobrowser/
 node_modules/
 .DS_Store
