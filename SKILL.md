@@ -1,483 +1,149 @@
-# autobrowser Skills
+---
+name: autobrowser
+description: Current CLI and build reference for dist/autobrowser.js, chrome/ extension output, and browser automation commands.
+---
+
+# autobrowser Skill
 
 ## Overview
 
-autobrowser is a browser automation tool that controls Chrome/Edge via a browser extension, exposing a CLI API for scripting and automation.
+autobrowser is a Bun-based browser automation tool that drives Chrome/Edge through a local relay server and a browser extension. The current canonical runtime entrypoint is the compiled CLI at `dist/autobrowser.js`, built from `src/cli.ts`.
 
-**Technology Stack:**
-- Language: TypeScript (.ts files)
-- Runtime: Bun >=1.3.12
-- Code Quality: oxlint (linting), oxfmt (formatting)
+## Current Entry Points
 
-## Architecture
+- `dist/autobrowser.js` is the runtime entrypoint for day-to-day use.
+- `src/cli.ts` is the development source entrypoint.
+- `chrome/` is the built extension output directory.
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│                        autobrowser                          │
-├─────────────────────────────────────────────────────────────┤
-│                                                             │
-│  ┌──────────────┐      ┌──────────────┐      ┌───────────┐  │
-│  │    CLI      │      │   IPC Server │      │ Relay WS  │  │
-│  │ (cli.ts)    │──────│  port 47979  │      │ port 47978│  │
-│  └──────────────┘      └──────┬───────┘      └─────┬─────┘  │
-│                               │                    │        │
-│                               │                    │        │
-│                        ┌──────▼────────────────▼──┐        │
-│                        │     Browser Extension     │        │
-│                        │   (background.ts)          │        │
-│                        └────────────┬──────────────┘        │
-│                                     │                       │
-│                               ┌─────▼─────┐                 │
-│                               │   Chrome  │                 │
-│                               │  Browser  │                 │
-│                               └───────────┘                 │
-└─────────────────────────────────────────────────────────────┘
-```
-
-## Core Concepts
-
-### Token Authentication
-
-- Server generates a random 32-char hex token on first start
-- Token is stored in `~/.autobrowser/token` and `~/.autobrowser/state.json`
-- Extension needs this token to connect via WebSocket to relay server
-- Token is fixed once generated; delete `~/.autobrowser` to reset
-
-### Two Servers
-
-| Server | Port | Purpose |
-|--------|------|---------|
-| Relay WS | 47978 | Extension connects via WebSocket with token |
-| IPC HTTP | 47979 | CLI sends commands via HTTP POST |
-
-### Extension Connection Flow
-
-1. `autobrowser connect` opens the extension connect page with token and relay port
-2. The connect page saves those values into `chrome.storage.local`
-3. Extension loads token from `chrome.storage.local`
-4. Opens WebSocket: `ws://127.0.0.1:47978/ws?token=xxx&extensionId=xxx`
-5. Server validates token, upgrades connection
-6. Extension registers message handler for CLI commands
-7. Extension dispatches commands to Chrome DevTools Protocol (CDP)
-
-## Nushell Usage (Recommended)
-
-### Recommended: job spawn
-
-```nushell
-# Start server in background
-job spawn { bun src/cli.ts server }
-
-# Wait for server to be ready
-sleep 3sec
-
-# Execute commands
-bun src/cli.ts goto https://www.baidu.com
-bun src/cli.ts get title
-```
-
-### Complete Workflow
-
-```nushell
-# One-liner execution
-nu -c "job spawn { bun src/cli.ts server }; sleep 3sec; bun src/cli.ts goto https://x.com; bun src/cli.ts wait time 8000; bun src/cli.ts get title"
-
-# Multi-step workflow
-nu -c "
-  job spawn { bun src/cli.ts server }
-  sleep 3sec
-  bun src/cli.ts goto https://www.baidu.com
-  bun src/cli.ts get title
-  bun src/cli.ts goto https://x.com
-  bun src/cli.ts wait time 5000
-  bun src/cli.ts eval \"[...document.querySelectorAll('article')].slice(0,3).map(t => t.innerText.slice(0,200)).join('===')\"
-"
-```
-
-### Job Management
-
-```nushell
-# List background jobs
-job list
-
-# Wait for specific job
-job wait <job_id>
-
-# Kill a job
-job kill <job_id>
-
-# Foreground (suspend)
-fg <job_id>
-```
-
-### Alternative Methods
-
-**Ampersand & (simple)**
-```nushell
-bun src/cli.ts server &
-```
-
-**do --bg (Nu 0.60+)**
-```nushell
-do -b bun src/cli.ts server
-```
-
-**External command prefix ^**
-```nushell
-^bun src/cli.ts server &
-```
-
-## CLI Commands
-
-### Server Management
+## Build Workflow
 
 ```bash
-# Start server (blocks)
-bun src/cli.ts server
-
-# Check server status
-bun src/cli.ts status
-
-# Open connect page in browser
-bun src/cli.ts connect
+bun run build:cli
+bun run build:chrome
 ```
 
-### Tab Operations
+- `build:cli` produces `dist/autobrowser.js`.
+- `build:chrome` produces the unpacked extension under `chrome/` and injects the extension key.
+
+## Local Binary Link
+
+`bun link` is package-level linking. If you want the compiled CLI to sit next to the `bun` executable as a convenience command, use the bundled link script instead:
 
 ```bash
-# Navigate to URL
-bun src/cli.ts goto https://example.com
-bun src/cli.ts open https://example.com
-
-# Tab management
-bun src/cli.ts tab list
-bun src/cli.ts tab new <url>
-
-# Navigation
-bun src/cli.ts back
-bun src/cli.ts forward
-bun src/cli.ts reload
+bun run build:cli
+bun run link:bun
 ```
 
-### Element Interaction
+After that you can run `autobrowser server` or `autobrowser connect` from the same directory that exposes `bun`.
+
+The script writes a small wrapper named `autobrowser` next to the `bun` executable and points it at `dist/autobrowser.js`.
+
+If you prefer Bun-managed linking, make sure the package `bin` field points at `dist/autobrowser.js` and then use `bun link` at the package root. That path is package-oriented rather than a direct single-file link.
+
+## Runtime Model
+
+- Default relay WebSocket port: `47978`
+- Default IPC HTTP port: `47979`
+- Runtime state and token storage: `~/.autobrowser`
+- `server` starts both the relay server and the IPC server.
+- `connect` opens the extension connect page and falls back to the relay page if the extension URL is unavailable.
+
+## Recommended Usage
+
+Start the server:
 
 ```bash
-# Click element
-bun src/cli.ts click "#submit-button"
-
-# Fill input
-bun src/cli.ts fill "#username" "admin"
-
-# Hover/Focus
-bun src/cli.ts hover "#menu"
-bun src/cli.ts focus "#search"
-
-# Select dropdown
-bun src/cli.ts select "#country" "US"
-
-# Check/Uncheck
-bun src/cli.ts check "#agree"
-bun src/cli.ts uncheck "#agree"
-
-# Press key
-bun src/cli.ts press "Enter"
-bun src/cli.ts press "Control+KeyA"
+bun dist/autobrowser.js server
 ```
 
-### Element State & Retrieval
+Open the connect page:
 
 ```bash
-# Check element state
-bun src/cli.ts is visible "#dialog"
-bun src/cli.ts is enabled "#submit"
-bun src/cli.ts is checked "#checkbox"
-bun src/cli.ts is disabled "#button"
-
-# Get element attributes
-bun src/cli.ts get text "#title"        # textContent
-bun src/cli.ts get html "#content"       # innerHTML
-bun src/cli.ts get value "#input"        # value
-bun src/cli.ts get title                 # document.title
-bun src/cli.ts get url                   # window.location.href
-bun src/cli.ts get count "div.card"      # querySelectorAll count
-bun src/cli.ts get box "#image"          # bounding box
+bun dist/autobrowser.js connect
 ```
 
-### Scrolling & Dragging
+Check status:
 
 ```bash
-# Scroll page or element
-bun src/cli.ts scroll                    # scroll by 0,100
-bun src/cli.ts scroll "div.content" 50 100
-
-# Drag element
-bun src/cli.ts drag "#handle" "#target"
+bun dist/autobrowser.js status
 ```
 
-### Waiting
+## CLI Flags
+
+- `--json` outputs JSON.
+- `--server <url>` overrides the IPC server base URL.
+- `--ipc-port <port>` overrides the IPC port and updates the default server URL unless `--server` is explicitly set.
+- `--relay-port <port>` overrides the relay port used by `connect` and `server`.
+- `--stdin` reads command content from stdin.
+- `--file <path>` reads command content from a file.
+- `--base64` decodes command content from base64.
+
+## Command Surface
+
+### Navigation and tabs
+
+- `server`
+- `status`
+- `connect`
+- `tab list`
+- `tab new <url>`
+- `open <url>`
+- `goto <url>`
+- `back`
+- `forward`
+- `reload`
+- `window new`
+
+### Page interaction
+
+- `eval [--stdin|--file path|--base64] <script>`
+- `click <selector>`
+- `fill <selector> <value>`
+- `hover <selector>`
+- `focus <selector>`
+- `select <selector> <value>`
+- `check <selector>`
+- `uncheck <selector>`
+- `scroll [selector] [deltaX] [deltaY]`
+- `drag <startSelector> [endSelector]`
+- `upload <selector> <files...>`
+- `press <key>`
+
+### Inspection and waits
+
+- `snapshot`
+- `screenshot`
+- `frame <selector|top>`
+- `is <visible|enabled|checked|disabled> <selector>`
+- `get <text|html|value|title|url|count|attr|box> [selector]`
+- `wait <selector|url|text|time|load|networkidle> [value] [timeout]`
+- `dialog accept|dismiss [promptText]`
+
+### Browser state and tools
+
+- `cookies get|set|clear`
+- `storage get|set|clear [key] [value]`
+- `console`
+- `errors`
+- `set viewport|offline|headers|geo|media`
+- `pdf`
+- `clipboard read|write [text]`
+- `state save [name]`
+- `state load [name|json]`
+
+## Examples
 
 ```bash
-# Wait for selector
-bun src/cli.ts wait selector "#loading" 30000
-
-# Wait for URL pattern
-bun src/cli.ts wait url "https://example.com" 30000
-
-# Wait for text
-bun src/cli.ts wait text "Success" 30000
-
-# Wait for page load
-bun src/cli.ts wait load 30000
-
-# Wait for network idle
-bun src/cli.ts wait networkidle 30000
-
-# Wait for fixed time
-bun src/cli.ts wait time 5000
+bun dist/autobrowser.js goto https://example.com
+bun dist/autobrowser.js eval "document.title"
+echo "document.location.href" | bun dist/autobrowser.js eval --stdin
+bun dist/autobrowser.js click "#submit"
+bun dist/autobrowser.js fill "#username" "admin"
+bun dist/autobrowser.js state load '{"viewport":{"width":1280,"height":720}}'
 ```
 
-### Execute Script
-
-```bash
-# Eval JS (inline)
-bun src/cli.ts eval "document.title"
-
-# Eval from file
-bun src/cli.ts eval --file script.js
-
-# Eval from stdin
-echo "Math.random()" | bun src/cli.ts eval --stdin
-
-# Eval from base64
-bun src/cli.ts eval --base64 "Y29uc29sZS5sb2coJ2hlbGxvJyk="
-```
-
-### Cookies & Storage
-
-```bash
-# Cookies
-bun src/cli.ts cookies get
-bun src/cli.ts cookies set "name" "value" ".example.com"
-bun src/cli.ts cookies clear
-
-# LocalStorage
-bun src/cli.ts storage get "token"
-bun src/cli.ts storage set "token" "abc123"
-bun src/cli.ts storage clear
-```
-
-### Browser Settings
-
-```bash
-# Viewport
-bun src/cli.ts set viewport 1920 1080 1 false
-
-# Offline mode
-bun src/cli.ts set offline true
-
-# Headers
-bun src/cli.ts set headers "[{\"name\":\"X-Custom\",\"value\":\"test\"}]"
-
-# Geolocation
-bun src/cli.ts set geo 39.9042 116.4074 100
-
-# Media (color scheme)
-bun src/cli.ts set media "dark"
-bun src/cli.ts set media "light"
-```
-
-### Dialog Handling
-
-```bash
-# Accept dialog with optional prompt text
-bun src/cli.ts dialog accept "optional prompt"
-
-# Dismiss dialog
-bun src/cli.ts dialog dismiss
-```
-
-### Clipboard
-
-```bash
-# Read clipboard
-bun src/cli.ts clipboard read
-
-# Write clipboard
-bun src/cli.ts clipboard write "text to copy"
-```
-
-### State Management
-
-```bash
-# Save browser state (cookies + localStorage)
-bun src/cli.ts state save "session1"
-
-# Load state
-bun src/cli.ts state load '{"cookies":[...],"storage":{...}}'
-```
-
-### Other Commands
-
-```bash
-# Screenshot
-bun src/cli.ts screenshot
-
-# PDF generation
-bun src/cli.ts pdf
-
-# Snapshot (full state)
-bun src/cli.ts snapshot
-
-# Current console messages
-bun src/cli.ts console
-
-# Page errors
-bun src/cli.ts errors
-
-# File upload
-bun src/cli.ts upload "input[type=file]" "file1.txt" "file2.txt"
-```
-
-### Flags
-
-```bash
---json                    # Output JSON
---server URL              # Target server (default: http://127.0.0.1:47979)
---stdin                   # Read script from stdin
---file PATH               # Read script from file
---base64                  # Decode script from base64
-```
-
-## PowerShell Alternative
-
-PowerShell also works but is slower (~4.6s vs ~3.7s for nushell):
-
-```powershell
-powershell -Command "& {Start-Process -FilePath 'bun' -ArgumentList 'src/cli.ts','server' -NoNewWindow -PassThru; Start-Sleep -Seconds 3; bun src/cli.ts status}"
-```
-
-## Project Commands
-
-```bash
-# Development
-npm run dev                 # Start server with bun
-bun src/cli.ts server        # Direct start
-
-# Code quality
-npm run fmt                 # Format code (oxfmt)
-npm run lint                # Lint code (oxlint)
-npm run fix                 # Format + fix lint
-npm run check               # Lint + build validation
-
-# Build
-npm run build               # Compile standalone .exe
-npm run build:js            # Build JS bundle
-
-# Testing
-npm run test                # Run test suite
-```
-
-### Build Outputs
-
-| Command | Output | Description |
-|---------|--------|-------------|
-| `npm run build` | `dist/autobrowser.exe` | Standalone executable (~111MB) |
-| `npm run build:js` | `dist/autobrowser.js` | Bundled JS (~35KB) |
-
-## Extension Configuration
-
-### Setup Steps
-
-1. Load `extension/` as unpacked extension in Chrome/Edge
-2. Open extension options page
-3. Paste token from relay page
-4. Click Save
-5. Extension auto-connects to relay server
-
-### Options Page Fields
-
-- **Token**: The 32-char hex token from server's connect page
-- **Relay Port**: Relay server port (default: 47978)
-
-## Token Regeneration
-
-Token is auto-generated on first server start and persisted. To regenerate:
-
-```bash
-# Stop server
-# Delete ~/.autobrowser directory
-rm -rf ~/.autobrowser
-
-# Restart server - new token generated
-bun src/cli.ts server
-```
-
-## Duplicate Server Prevention
-
-Starting server when one is already running will fail with:
-```
-Server already running on port 47978
-```
-
-The `isPortInUse()` check validates before attempting to bind the port.
-
-## Troubleshooting
-
-### Extension won't connect
-
-1. Verify token matches between extension and server
-2. Check relay port in extension options matches server
-3. Ensure no firewall blocking localhost connections
-
-### Commands fail with "ConnectionRefused"
-
-Server not running. Start it first with nushell:
-```nushell
-job spawn { bun src/cli.ts server }
-sleep 3sec
-```
-
-### "unauthorized" error
-
-Token mismatch. Verify extension has correct token, or reset by deleting `~/.autobrowser`.
-
-### Build fails
-
-Ensure bun version >= 1.3.12:
-```bash
-bun --version  # should be >= 1.3.12
-```
-
-## File Structure
-
-```
-autobrowser/
-├── src/
-│   ├── cli.ts            # CLI entry point
-│   ├── server.ts         # HTTP/WS server setup
-│   └── core/
-│       ├── protocol.ts  # Constants & utilities
-│       └── runtime.ts    # Runtime state management
-├── extension/
-│   ├── background.ts     # Chrome extension background
-│   ├── options.ts       # Extension options page
-│   ├── options.html     # Options page UI
-│   └── manifest.json    # Extension manifest
-├── test/
-│   └── command-line.test.js
-├── dist/
-│   ├── autobrowser.exe   # Built executable
-│   └── autobrowser.js    # Built JS bundle
-├── package.json
-├── tsconfig.json         # TypeScript config
-├── .oxlintrc.json        # Lint config
-├── .oxfmtrc.json         # Format config
-├── SKILL.md              # This file
-└── README.md             # Project overview
-```
-
-## Requirements
-
-- **Bun**: >=1.3.12
-- **Node**: Not required (uses bun runtime)
-- **Browser**: Chrome/Edge with extension loading support
+## Notes
+
+- Prefer the compiled CLI in `dist/autobrowser.js` when describing user workflows.
+- Use `chrome/` as the unpacked extension directory when loading the plugin into Chromium-based browsers.
+- If you need the development source instead of the built artifact, use `src/cli.ts` and the matching Bun scripts.

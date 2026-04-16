@@ -15,9 +15,10 @@
     "fix": "oxfmt --fix src/ extension/ && oxlint --fix src/ extension/",
     "typecheck": "tsc --noEmit && tsc -p extension/tsconfig.json",
     "check": "tsc --noEmit && tsc -p extension/tsconfig.json && oxlint src/ extension/ && oxfmt src/ extension/",
+    "build:cli": "bun scripts/build-cli.ts",
     "build:chrome": "bun scripts/build-chrome.ts",
-    "build": "bun build src/cli.ts --compile --outfile=dist/autobrowser.exe --target=bun",
-    "build:js": "bun build src/cli.ts --outfile=dist/autobrowser.js --target=bun",
+    "build": "bun run build:cli && bun run build:chrome",
+    "link:bun": "bun scripts/link-bun.ts",
     "prepare": "husky"
   },
   "engines": {

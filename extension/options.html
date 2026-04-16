@@ -17,7 +17,7 @@
           system-ui,
           -apple-system,
           BlinkMacSystemFont,
-          "Segoe UI",
+          'Segoe UI',
           sans-serif;
       }
       .card {
@@ -66,18 +66,20 @@
   <body>
     <main class="card">
       <h1>autobrowser 设置</h1>
-      <p>优先使用 connect page 自动保存 token 和 relay 端口；如果需要手动排查，也可以在这里直接改。</p>
+      <p>
+        优先使用 connect page 自动保存 token 和 relay 端口；如果需要手动排查，也可以在这里直接改。
+      </p>
       <label for="token">Token</label>
       <input id="token" autocomplete="off" spellcheck="false" placeholder="paste token here" />
-        <label for="relay-port">Relay Port</label>
-        <input id="relay-port" type="number" min="1" step="1" placeholder="47978" />
-        <button id="save">Save</button>
-        <p id="status">未保存</p>
-        <div class="panel">
-          <div class="label">Plugin diagnostics</div>
-          <pre id="diagnostics" class="diagnostics">暂无诊断信息</pre>
-        </div>
-      </main>
+      <label for="relay-port">Relay Port</label>
+      <input id="relay-port" type="number" min="1" step="1" placeholder="47978" />
+      <button id="save">Save</button>
+      <p id="status">未保存</p>
+      <div class="panel">
+        <div class="label">Plugin diagnostics</div>
+        <pre id="diagnostics" class="diagnostics">暂无诊断信息</pre>
+      </div>
+    </main>
     <script src="options.js"></script>
   </body>
 </html>
