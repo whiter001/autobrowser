@@ -3,20 +3,21 @@
   "version": "0.1.0",
   "private": true,
   "bin": {
-    "autobrowser": "./src/cli.js"
+    "autobrowser": "./src/cli.ts"
   },
   "type": "module",
   "scripts": {
-    "dev": "bun src/cli.js server",
-    "start": "bun src/cli.js server",
+    "dev": "bun src/cli.ts server",
+    "start": "bun src/cli.ts server",
     "check": "bun test",
     "test": "bun test",
     "oxlint": "oxlint",
     "oxfmt": "oxfmt --config .oxfmtrc.json",
     "lint": "oxlint && oxfmt --check",
     "lint:fix": "oxfmt",
-    "build": "bun build src/cli.js --compile --outfile=dist/autobrowser.exe --target=bun",
-    "build:js": "bun build src/cli.js --outfile=dist/autobrowser.js --target=bun"
+    "build": "bun build src/cli.ts --compile --outfile=dist/autobrowser.exe --target=bun",
+    "build:js": "bun build src/cli.ts --outfile=dist/autobrowser.js --target=bun",
+    "typecheck": "bunx tsc --noEmit"
   },
   "engines": {
     "bun": ">=1.0.0"
