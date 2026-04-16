@@ -102,3 +102,12 @@ export function success(result, meta = {}) {
 export function failure(message, meta = {}) {
   return { ok: false, error: { message, ...meta } };
 }
+
+export async function isPortInUse(port) {
+  try {
+    const response = await fetch(`http://127.0.0.1:${port}/status`);
+    return response.ok;
+  } catch {
+    return false;
+  }
+}

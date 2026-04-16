@@ -1,11 +1,14 @@
 const DEFAULT_SERVER_PORT = 47978;
 const STORAGE_KEY = 'autobrowserToken';
 const RELAY_PORT_STORAGE_KEY = 'autobrowserRelayPort';
+const SAVED_STATES_STORAGE_KEY = 'autobrowserSavedStates';
+const FRAME_WORLD_NAME = 'autobrowser-frame';
 
 const state = {
   socket: null,
   reconnectTimer: null,
   attachedTabs: new Set(),
+  selectedFrames: new Map(),
   shouldReconnect: true,
   token: '',
   relayPort: DEFAULT_SERVER_PORT,
@@ -18,29 +21,64 @@ function normalizeRelayPort(value) {
   return Number.isInteger(port) && port > 0 ? port : DEFAULT_SERVER_PORT;
 }
 
+function pushBounded(list, item, maxSize) {
+  list.push(item);
+  if (list.length > maxSize) {
+    list.splice(0, list.length - maxSize);
+  }
+}
+
+function stringifyRemoteValue(value) {
+  if (!value) {
+    return '';
+  }
+
+  if (Object.prototype.hasOwnProperty.call(value, 'value')) {
+    if (typeof value.value === 'string') {
+      return value.value;
+    }
+
+    try {
+      return JSON.stringify(value.value);
+    } catch {
+      return String(value.value);
+    }
+  }
+
+  if (value.unserializableValue) {
+    return value.unserializableValue;
+  }
+
+  return value.description || value.type || '';
+}
+
 function setupDebuggerEventListeners() {
   chrome.debugger.onEvent.addListener((source, method, params) => {
-    if (method === 'Console.messageAdded') {
-      state.consoleMessages.push({
-        type: params.message.type,
-        text: params.message.text,
-        timestamp: Date.now(),
-      });
-      if (state.consoleMessages.length > 500) {
-        state.consoleMessages = state.consoleMessages.slice(-500);
-      }
+    if (method === 'Runtime.consoleAPICalled') {
+      pushBounded(
+        state.consoleMessages,
+        {
+          type: params.type,
+          text: Array.isArray(params.args)
+            ? params.args.map((item) => stringifyRemoteValue(item)).join(' ')
+            : '',
+          timestamp: Date.now(),
+        },
+        500,
+      );
     }
-    if (method === 'Page.exceptionThrown') {
-      state.pageErrors.push({
-        error: params.exceptionDetails.exception?.description || params.exceptionDetails.text,
-        url: params.exceptionDetails.url,
-        line: params.exceptionDetails.lineNumber,
-        column: params.exceptionDetails.columnNumber,
-        timestamp: Date.now(),
-      });
-      if (state.pageErrors.length > 100) {
-        state.pageErrors = state.pageErrors.slice(-100);
-      }
+    if (method === 'Runtime.exceptionThrown') {
+      pushBounded(
+        state.pageErrors,
+        {
+          error: params.exceptionDetails.exception?.description || params.exceptionDetails.text,
+          url: params.exceptionDetails.url || null,
+          line: params.exceptionDetails.lineNumber,
+          column: params.exceptionDetails.columnNumber,
+          timestamp: Date.now(),
+        },
+        100,
+      );
     }
   });
 }
@@ -112,13 +150,14 @@ async function ensureDebuggerAttached(tabId) {
 
   try {
     await promisifyChrome(chrome.debugger.attach, { tabId }, '1.3');
-    state.attachedTabs.add(tabId);
   } catch (error) {
     if (!String(error.message || '').includes('already attached')) {
       throw error;
     }
-    state.attachedTabs.add(tabId);
   }
+
+  state.attachedTabs.add(tabId);
+  await enableDebuggerDomains(tabId);
 }
 
 async function detachDebugger(tabId) {
@@ -135,9 +174,20 @@ async function detachDebugger(tabId) {
   state.attachedTabs.delete(tabId);
 }
 
+async function sendRawDebuggerCommand(tabId, method, params = {}) {
+  return await promisifyChrome(chrome.debugger.sendCommand, { tabId }, method, params);
+}
+
+async function enableDebuggerDomains(tabId) {
+  await Promise.allSettled([
+    sendRawDebuggerCommand(tabId, 'Runtime.enable', {}),
+    sendRawDebuggerCommand(tabId, 'Console.enable', {}),
+  ]);
+}
+
 async function sendDebuggerCommand(tabId, method, params = {}) {
   await ensureDebuggerAttached(tabId);
-  return await promisifyChrome(chrome.debugger.sendCommand, { tabId }, method, params);
+  return await sendRawDebuggerCommand(tabId, method, params);
 }
 
 async function listTabs() {
@@ -162,6 +212,92 @@ async function getTargetTab(tabId) {
   return tab;
 }
 
+function clearSelectedFrame(tabId) {
+  state.selectedFrames.delete(tabId);
+}
+
+async function resolveFrameTarget(tabId, selector) {
+  const tab = await getTargetTab(tabId);
+  const evaluation = await sendDebuggerCommand(tab.id, 'Runtime.evaluate', {
+    expression: `(() => {
+      const root = document.querySelector(${JSON.stringify(selector)});
+      if (!root) return null;
+      const frame = root.tagName === 'IFRAME' ? root : root.querySelector('iframe');
+      if (!frame) return null;
+      const rect = frame.getBoundingClientRect();
+      return {
+        src: frame.src || null,
+        x: rect.left + rect.width / 2,
+        y: rect.top + rect.height / 2
+      };
+    })()`,
+    awaitPromise: true,
+    returnByValue: true,
+  });
+  const target = unwrapEvaluationResult(evaluation.result);
+  if (!target) {
+    throw new Error(`frame not found: ${selector}`);
+  }
+
+  await sendDebuggerCommand(tab.id, 'DOM.enable', {});
+  const location = await sendDebuggerCommand(tab.id, 'DOM.getNodeForLocation', {
+    x: Math.round(target.x),
+    y: Math.round(target.y),
+    ignorePointerEventsNone: true,
+  });
+  if (!location.frameId) {
+    throw new Error(`frame is not ready: ${selector}`);
+  }
+
+  return {
+    tab,
+    frameId: location.frameId,
+    selector,
+    src: target.src,
+  };
+}
+
+async function getFrameExecutionContext(tabId) {
+  const tab = await getTargetTab(tabId);
+  const selector = state.selectedFrames.get(tab.id);
+  if (!selector) {
+    return { tab, executionContextId: null };
+  }
+
+  const frame = await resolveFrameTarget(tab.id, selector);
+  await sendDebuggerCommand(tab.id, 'Page.enable', {});
+  const isolatedWorld = await sendDebuggerCommand(tab.id, 'Page.createIsolatedWorld', {
+    frameId: frame.frameId,
+    worldName: FRAME_WORLD_NAME,
+  });
+  return {
+    tab,
+    executionContextId: isolatedWorld.executionContextId,
+  };
+}
+
+async function evaluateInTabContext(tabId, expression, options = {}) {
+  const { tab, executionContextId } = await getFrameExecutionContext(tabId);
+  const response = await sendDebuggerCommand(tab.id, 'Runtime.evaluate', {
+    expression,
+    awaitPromise: true,
+    returnByValue: true,
+    ...(executionContextId ? { contextId: executionContextId } : {}),
+    ...options,
+  });
+  return {
+    tab,
+    response,
+    value: unwrapEvaluationResult(response.result),
+  };
+}
+
+async function getSavedStates() {
+  const result = await promisifyChrome(chrome.storage.local.get, SAVED_STATES_STORAGE_KEY);
+  const savedStates = result?.[SAVED_STATES_STORAGE_KEY];
+  return savedStates && typeof savedStates === 'object' ? savedStates : {};
+}
+
 function unwrapEvaluationResult(result) {
   if (!result) {
     return null;
@@ -175,39 +311,32 @@ function unwrapEvaluationResult(result) {
 }
 
 async function evaluateScript(tabId, script) {
-  const tab = await getTargetTab(tabId);
-  const result = await sendDebuggerCommand(tab.id, 'Runtime.evaluate', {
-    expression: script,
-    awaitPromise: true,
-    returnByValue: true,
+  const { value } = await evaluateInTabContext(tabId, script, {
     userGesture: true,
   });
-
-  return unwrapEvaluationResult(result.result);
+  return value;
 }
 
 async function navigateTo(tabId, url) {
   const tab = await getTargetTab(tabId);
+  clearSelectedFrame(tab.id);
   await sendDebuggerCommand(tab.id, 'Page.enable', {});
   await sendDebuggerCommand(tab.id, 'Page.navigate', { url });
   return { tabId: tab.id, url };
 }
 
 async function clickSelector(tabId, selector) {
-  const tab = await getTargetTab(tabId);
-  const jsResult = await sendDebuggerCommand(tab.id, 'Runtime.evaluate', {
-    expression: `(() => {
+  const { tab, value: result } = await evaluateInTabContext(
+    tabId,
+    `(() => {
       const node = document.querySelector(${JSON.stringify(selector)});
       if (!node) return { found: false };
       node.scrollIntoView({ block: 'center', inline: 'center' });
       node.click();
       return { found: true, selector: ${JSON.stringify(selector)} };
     })()`,
-    awaitPromise: true,
-    returnByValue: true,
-  });
+  );
 
-  const result = unwrapEvaluationResult(jsResult.result);
   if (result?.found) {
     return result;
   }
@@ -251,9 +380,9 @@ async function captureScreenshot(tabId) {
 }
 
 async function snapshotTab(tabId) {
-  const tab = await getTargetTab(tabId);
-  const result = await sendDebuggerCommand(tab.id, 'Runtime.evaluate', {
-    expression: `(() => {
+  const { value } = await evaluateInTabContext(
+    tabId,
+    `(() => {
       const toNodeSummary = (node) => ({
         tag: node.tagName,
         text: (node.innerText || node.textContent || "").trim().slice(0, 120),
@@ -270,11 +399,9 @@ async function snapshotTab(tabId) {
         buttons: Array.from(document.querySelectorAll("button,[role='button'],input[type='button'],input[type='submit']")).slice(0, 20).map(toNodeSummary),
       };
     })()`,
-    awaitPromise: true,
-    returnByValue: true,
-  });
+  );
 
-  return unwrapEvaluationResult(result.result);
+  return value;
 }
 
 // 解析组合键，返回 { key, modifiers }
@@ -311,9 +438,9 @@ function parseKeyboardKey(key) {
 }
 
 async function getElementBox(tabId, selector) {
-  const tab = await getTargetTab(tabId);
-  const result = await sendDebuggerCommand(tab.id, 'Runtime.evaluate', {
-    expression: `(() => {
+  const { value } = await evaluateInTabContext(
+    tabId,
+    `(() => {
       const node = document.querySelector(${JSON.stringify(selector)});
       if (!node) return null;
       const rect = node.getBoundingClientRect();
@@ -324,10 +451,8 @@ async function getElementBox(tabId, selector) {
         height: rect.height
       };
     })()`,
-    awaitPromise: true,
-    returnByValue: true,
-  });
-  return unwrapEvaluationResult(result.result);
+  );
+  return value;
 }
 
 async function hoverElement(tabId, selector) {
@@ -339,8 +464,9 @@ async function hoverElement(tabId, selector) {
   const tab = await getTargetTab(tabId);
 
   // 先尝试 JS 方式
-  const jsResult = await sendDebuggerCommand(tab.id, 'Runtime.evaluate', {
-    expression: `(() => {
+  const { value } = await evaluateInTabContext(
+    tabId,
+    `(() => {
       const node = document.querySelector(${JSON.stringify(selector)});
       if (!node) return false;
       const rect = node.getBoundingClientRect();
@@ -355,11 +481,9 @@ async function hoverElement(tabId, selector) {
       node.dispatchEvent(new MouseEvent('mousemove', opts));
       return true;
     })()`,
-    awaitPromise: true,
-    returnByValue: true,
-  });
+  );
 
-  if (unwrapEvaluationResult(jsResult.result)) {
+  if (value) {
     return { found: true, selector };
   }
 
@@ -397,32 +521,27 @@ async function pressKey(tabId, key) {
 }
 
 async function focusElement(tabId, selector) {
-  const tab = await getTargetTab(tabId);
-
-  // 先尝试 DOM.focus
-  const result = await sendDebuggerCommand(tab.id, 'Runtime.evaluate', {
-    expression: `(() => {
+  const { value } = await evaluateInTabContext(
+    tabId,
+    `(() => {
       const node = document.querySelector(${JSON.stringify(selector)});
       if (!node) return { found: false };
       node.focus();
       return { found: true, focused: document.activeElement === node };
     })()`,
-    awaitPromise: true,
-    returnByValue: true,
-  });
+  );
 
-  const res = unwrapEvaluationResult(result.result);
-  if (res?.found) {
-    return res;
+  if (value?.found) {
+    return value;
   }
 
   throw new Error(`element not found: ${selector}`);
 }
 
 async function selectOption(tabId, selector, value) {
-  const tab = await getTargetTab(tabId);
-  const result = await sendDebuggerCommand(tab.id, 'Runtime.evaluate', {
-    expression: `(() => {
+  const { value: result } = await evaluateInTabContext(
+    tabId,
+    `(() => {
       const node = document.querySelector(${JSON.stringify(selector)});
       if (!node) return { found: false };
       node.focus();
@@ -431,21 +550,18 @@ async function selectOption(tabId, selector, value) {
       node.dispatchEvent(new Event('change', { bubbles: true }));
       return { found: true, value: node.value };
     })()`,
-    awaitPromise: true,
-    returnByValue: true,
-  });
+  );
 
-  const res = unwrapEvaluationResult(result.result);
-  if (res?.found) {
-    return res;
+  if (result?.found) {
+    return result;
   }
   throw new Error(`element not found: ${selector}`);
 }
 
 async function checkElement(tabId, selector, checked) {
-  const tab = await getTargetTab(tabId);
-  const result = await sendDebuggerCommand(tab.id, 'Runtime.evaluate', {
-    expression: `(() => {
+  const { value: result } = await evaluateInTabContext(
+    tabId,
+    `(() => {
       const node = document.querySelector(${JSON.stringify(selector)});
       if (!node) return { found: false };
       node.focus();
@@ -454,21 +570,18 @@ async function checkElement(tabId, selector, checked) {
       node.dispatchEvent(new Event('change', { bubbles: true }));
       return { found: true, checked: node.checked };
     })()`,
-    awaitPromise: true,
-    returnByValue: true,
-  });
+  );
 
-  const res = unwrapEvaluationResult(result.result);
-  if (res?.found) {
-    return res;
+  if (result?.found) {
+    return result;
   }
   throw new Error(`element not found: ${selector}`);
 }
 
 async function scrollElement(tabId, selector, deltaX = 0, deltaY = 100) {
-  const tab = await getTargetTab(tabId);
-  const result = await sendDebuggerCommand(tab.id, 'Runtime.evaluate', {
-    expression: `(() => {
+  const { value } = await evaluateInTabContext(
+    tabId,
+    `(() => {
       ${
         selector
           ? `
@@ -481,11 +594,9 @@ async function scrollElement(tabId, selector, deltaX = 0, deltaY = 100) {
       window.scrollBy(${deltaX}, ${deltaY});
       return { found: true, scrolled: true };
     })()`,
-    awaitPromise: true,
-    returnByValue: true,
-  });
+  );
 
-  return unwrapEvaluationResult(result.result) || { found: true, scrolled: true };
+  return value || { found: true, scrolled: true };
 }
 
 async function dragElement(tabId, startSelector, endSelector) {
@@ -576,6 +687,7 @@ async function uploadFiles(tabId, selector, filePaths) {
 
 async function navigateBack(tabId) {
   const tab = await getTargetTab(tabId);
+  clearSelectedFrame(tab.id);
   // 获取导航历史
   const history = await sendDebuggerCommand(tab.id, 'Page.getNavigationHistory');
   const entries = history.entries || [];
@@ -596,6 +708,7 @@ async function navigateBack(tabId) {
 
 async function navigateForward(tabId) {
   const tab = await getTargetTab(tabId);
+  clearSelectedFrame(tab.id);
   const history = await sendDebuggerCommand(tab.id, 'Page.getNavigationHistory');
   const entries = history.entries || [];
   const currentIndex = history.currentIndex;
@@ -615,6 +728,7 @@ async function navigateForward(tabId) {
 
 async function reloadPage(tabId) {
   const tab = await getTargetTab(tabId);
+  clearSelectedFrame(tab.id);
   await sendDebuggerCommand(tab.id, 'Page.reload', {});
   return { reloaded: true };
 }
@@ -629,31 +743,23 @@ async function createWindow() {
 
 async function switchToFrame(tabId, selector) {
   const tab = await getTargetTab(tabId);
-  const result = await sendDebuggerCommand(tab.id, 'Runtime.evaluate', {
-    expression: `(() => {
-      const node = document.querySelector(${JSON.stringify(selector)});
-      if (!node) return { found: false };
-      if (node.tagName !== 'IFRAME') {
-        // 尝试在 iframe 中查找
-        const iframe = node.querySelector('iframe');
-        if (!iframe) return { found: false, reason: 'not an iframe or does not contain one' };
-        return { found: true, isIframe: true, src: iframe.src };
-      }
-      return { found: true, isIframe: true, src: node.src };
-    })()`,
-    awaitPromise: true,
-    returnByValue: true,
-  });
-
-  const res = unwrapEvaluationResult(result.result);
-  if (!res?.found) {
-    throw new Error(`frame not found: ${selector}`);
+  if (['top', 'main', 'default'].includes(selector)) {
+    clearSelectedFrame(tab.id);
+    return { found: true, cleared: true, frame: null };
   }
-  return { found: true, frame: res };
+
+  const frame = await resolveFrameTarget(tab.id, selector);
+  state.selectedFrames.set(tab.id, selector);
+  return {
+    found: true,
+    frame: {
+      selector: frame.selector,
+      src: frame.src,
+    },
+  };
 }
 
 async function checkIsState(tabId, selector, stateType) {
-  const tab = await getTargetTab(tabId);
   const checkJs = {
     visible: `(() => {
       const node = document.querySelector(${JSON.stringify(selector)});
@@ -686,111 +792,90 @@ async function checkIsState(tabId, selector, stateType) {
     throw new Error(`unknown state type: ${stateType}`);
   }
 
-  const result = await sendDebuggerCommand(tab.id, 'Runtime.evaluate', {
-    expression: js,
-    awaitPromise: true,
-    returnByValue: true,
-  });
-
+  const { value } = await evaluateInTabContext(tabId, js);
   return {
     found: true,
     state: stateType,
-    value: unwrapEvaluationResult(result.result),
+    value,
   };
 }
 
 async function getAttribute(tabId, selector, attrName) {
-  const tab = await getTargetTab(tabId);
-
   if (attrName === 'text') {
-    const result = await sendDebuggerCommand(tab.id, 'Runtime.evaluate', {
-      expression: `(() => {
+    const { value } = await evaluateInTabContext(
+      tabId,
+      `(() => {
         const node = document.querySelector(${JSON.stringify(selector)});
         return node ? node.textContent : null;
       })()`,
-      awaitPromise: true,
-      returnByValue: true,
-    });
-    return { found: true, value: unwrapEvaluationResult(result.result) };
+    );
+    return { found: true, value };
   }
 
   if (attrName === 'html') {
-    const result = await sendDebuggerCommand(tab.id, 'Runtime.evaluate', {
-      expression: `(() => {
+    const { value } = await evaluateInTabContext(
+      tabId,
+      `(() => {
         const node = document.querySelector(${JSON.stringify(selector)});
         return node ? node.innerHTML : null;
       })()`,
-      awaitPromise: true,
-      returnByValue: true,
-    });
-    return { found: true, value: unwrapEvaluationResult(result.result) };
+    );
+    return { found: true, value };
   }
 
   if (attrName === 'value') {
-    const result = await sendDebuggerCommand(tab.id, 'Runtime.evaluate', {
-      expression: `(() => {
+    const { value } = await evaluateInTabContext(
+      tabId,
+      `(() => {
         const node = document.querySelector(${JSON.stringify(selector)});
         return node ? node.value : null;
       })()`,
-      awaitPromise: true,
-      returnByValue: true,
-    });
-    return { found: true, value: unwrapEvaluationResult(result.result) };
+    );
+    return { found: true, value };
   }
 
   if (attrName === 'title') {
-    const result = await sendDebuggerCommand(tab.id, 'Runtime.evaluate', {
-      expression: 'document.title',
-      awaitPromise: true,
-      returnByValue: true,
-    });
-    return { found: true, value: unwrapEvaluationResult(result.result) };
+    const { value } = await evaluateInTabContext(tabId, 'document.title');
+    return { found: true, value };
   }
 
   if (attrName === 'url') {
-    const result = await sendDebuggerCommand(tab.id, 'Runtime.evaluate', {
-      expression: 'window.location.href',
-      awaitPromise: true,
-      returnByValue: true,
-    });
-    return { found: true, value: unwrapEvaluationResult(result.result) };
+    const { value } = await evaluateInTabContext(tabId, 'window.location.href');
+    return { found: true, value };
   }
 
   if (attrName === 'count') {
-    const result = await sendDebuggerCommand(tab.id, 'Runtime.evaluate', {
-      expression: `(() => {
+    const { value } = await evaluateInTabContext(
+      tabId,
+      `(() => {
         return document.querySelectorAll(${JSON.stringify(selector)}).length;
       })()`,
-      awaitPromise: true,
-      returnByValue: true,
-    });
-    return { found: true, value: unwrapEvaluationResult(result.result) };
+    );
+    return { found: true, value };
   }
 
   if (attrName === 'box') {
-    const result = await sendDebuggerCommand(tab.id, 'Runtime.evaluate', {
-      expression: `(() => {
+    const { value } = await evaluateInTabContext(
+      tabId,
+      `(() => {
         const node = document.querySelector(${JSON.stringify(selector)});
         if (!node) return null;
         const rect = node.getBoundingClientRect();
         return { x: rect.x, y: rect.y, width: rect.width, height: rect.height };
       })()`,
-      awaitPromise: true,
-      returnByValue: true,
-    });
-    return { found: true, value: unwrapEvaluationResult(result.result) };
+    );
+    return { found: true, value };
   }
 
   // 其他属性
-  const result = await sendDebuggerCommand(tab.id, 'Runtime.evaluate', {
-    expression: `(() => {
+  const { value } = await evaluateInTabContext(
+    tabId,
+    `(() => {
       const node = document.querySelector(${JSON.stringify(selector)});
       return node ? node.getAttribute(${JSON.stringify(attrName)}) : null;
     })()`,
-    awaitPromise: true,
-    returnByValue: true,
-  });
-  return { found: true, value: unwrapEvaluationResult(result.result) };
+  );
+  return { found: true, value };
 }
 
 async function waitFor(tabId, condition, timeout = 30000) {
@@ -800,20 +885,23 @@ async function waitFor(tabId, condition, timeout = 30000) {
   if (condition === 'load') {
     // 等待页面加载
     return new Promise((resolve, reject) => {
+      const listener = (source, method) => {
+        if (source.tabId === tab.id && method === 'Page.loadEventFired') {
+          chrome.debugger.onEvent.removeListener(listener);
+          clearTimeout(timeoutId);
+          resolve({ waited: true, condition: 'load' });
+        }
+      };
       const timeoutId = setTimeout(() => {
+        chrome.debugger.onEvent.removeListener(listener);
         reject(new Error('wait load timeout'));
       }, timeout);
 
-      chrome.debugger.onEvent.addListener(function listener(source, method, _params) {
-        if (source.tabId === tab.id && method === 'Page.loadEventFired') {
-          clearTimeout(timeoutId);
-          chrome.debugger.onEvent.removeListener(listener);
-          resolve({ waited: true, condition: 'load' });
-        }
-      });
+      chrome.debugger.onEvent.addListener(listener);
 
       // 启用 Page domain
       sendDebuggerCommand(tab.id, 'Page.enable', {}).catch((err) => {
+        chrome.debugger.onEvent.removeListener(listener);
         clearTimeout(timeoutId);
         reject(err);
       });
@@ -823,23 +911,29 @@ async function waitFor(tabId, condition, timeout = 30000) {
   if (condition === 'networkidle') {
     // 等待网络空闲
     return new Promise((resolve, reject) => {
-      const timeoutId = setTimeout(() => {
-        reject(new Error('wait networkidle timeout'));
-      }, timeout);
-
-      chrome.debugger.onEvent.addListener(function listener(source, method, params) {
+      const listener = (source, method, params) => {
         if (
           source.tabId === tab.id &&
           method === 'Page.lifecycleEvent' &&
           params.name === 'networkidle'
         ) {
-          clearTimeout(timeoutId);
           chrome.debugger.onEvent.removeListener(listener);
+          clearTimeout(timeoutId);
           resolve({ waited: true, condition: 'networkidle' });
         }
-      });
+      };
+      const timeoutId = setTimeout(() => {
+        chrome.debugger.onEvent.removeListener(listener);
+        reject(new Error('wait networkidle timeout'));
+      }, timeout);
 
-      sendDebuggerCommand(tab.id, 'Page.enable', {}).catch((err) => {
+      chrome.debugger.onEvent.addListener(listener);
+
+      Promise.all([
+        sendDebuggerCommand(tab.id, 'Page.enable', {}),
+        sendDebuggerCommand(tab.id, 'Page.setLifecycleEventsEnabled', { enabled: true }),
+      ]).catch((err) => {
+        chrome.debugger.onEvent.removeListener(listener);
         clearTimeout(timeoutId);
         reject(err);
       });
@@ -848,18 +942,17 @@ async function waitFor(tabId, condition, timeout = 30000) {
 
   // 轮询方式等待 selector
   while (Date.now() - startTime < timeout) {
-    const result = await sendDebuggerCommand(tab.id, 'Runtime.evaluate', {
-      expression: `(() => {
+    const { value } = await evaluateInTabContext(
+      tab.id,
+      `(() => {
         const node = document.querySelector(${JSON.stringify(condition)});
         if (!node) return false;
         const rect = node.getBoundingClientRect();
         return rect.width > 0 && rect.height > 0;
       })()`,
-      awaitPromise: true,
-      returnByValue: true,
-    });
+    );
 
-    if (unwrapEvaluationResult(result.result) === true) {
+    if (value === true) {
       return { waited: true, condition: 'selector', selector: condition };
     }
 
@@ -870,17 +963,11 @@ async function waitFor(tabId, condition, timeout = 30000) {
 }
 
 async function waitForUrl(tabId, urlPattern, timeout = 30000) {
-  const tab = await getTargetTab(tabId);
   const startTime = Date.now();
 
   while (Date.now() - startTime < timeout) {
-    const result = await sendDebuggerCommand(tab.id, 'Runtime.evaluate', {
-      expression: 'window.location.href',
-      awaitPromise: true,
-      returnByValue: true,
-    });
-
-    const currentUrl = unwrapEvaluationResult(result.result) || '';
+    const { value } = await evaluateInTabContext(tabId, 'window.location.href');
+    const currentUrl = value || '';
     if (currentUrl.includes(urlPattern) || new RegExp(urlPattern).test(currentUrl)) {
       return {
         waited: true,
@@ -897,17 +984,14 @@ async function waitForUrl(tabId, urlPattern, timeout = 30000) {
 }
 
 async function waitForText(tabId, text, timeout = 30000) {
-  const tab = await getTargetTab(tabId);
   const startTime = Date.now();
 
   while (Date.now() - startTime < timeout) {
-    const result = await sendDebuggerCommand(tab.id, 'Runtime.evaluate', {
-      expression: "document.body ? document.body.innerText : ''",
-      awaitPromise: true,
-      returnByValue: true,
-    });
-
-    const pageText = (unwrapEvaluationResult(result.result) || '').toLowerCase();
+    const { value } = await evaluateInTabContext(
+      tabId,
+      "document.body ? document.body.innerText : ''",
+    );
+    const pageText = (value || '').toLowerCase();
     if (pageText.includes(text.toLowerCase())) {
       return { waited: true, condition: 'text', text };
     }
@@ -978,11 +1062,11 @@ async function cookiesClear(tabId) {
 
 // Storage commands
 async function storageGet(tabId, key) {
-  const tab = await getTargetTab(tabId);
   if (!key) {
     // 获取所有 localStorage
-    const result = await sendDebuggerCommand(tab.id, 'Runtime.evaluate', {
-      expression: `(() => {
+    const { value } = await evaluateInTabContext(
+      tabId,
+      `(() => {
         const items = {};
         for (let i = 0; i < localStorage.length; i++) {
           const k = localStorage.key(i);
@@ -990,37 +1074,27 @@ async function storageGet(tabId, key) {
         }
         return items;
       })()`,
-      awaitPromise: true,
-      returnByValue: true,
-    });
-    return { storage: unwrapEvaluationResult(result.result) || {} };
+    );
+    return { storage: value || {} };
   }
 
-  const result = await sendDebuggerCommand(tab.id, 'Runtime.evaluate', {
-    expression: `localStorage.getItem(${JSON.stringify(key)})`,
-    awaitPromise: true,
-    returnByValue: true,
-  });
-  return { key, value: unwrapEvaluationResult(result.result) };
+  const { value } = await evaluateInTabContext(
+    tabId,
+    `localStorage.getItem(${JSON.stringify(key)})`,
+  );
+  return { key, value };
 }
 
 async function storageSet(tabId, key, value) {
-  const tab = await getTargetTab(tabId);
-  await sendDebuggerCommand(tab.id, 'Runtime.evaluate', {
-    expression: `localStorage.setItem(${JSON.stringify(key)}, ${JSON.stringify(value)})`,
-    awaitPromise: true,
-    returnByValue: true,
-  });
+  await evaluateInTabContext(
+    tabId,
+    `localStorage.setItem(${JSON.stringify(key)}, ${JSON.stringify(value)})`,
+  );
   return { key, value, set: true };
 }
 
 async function storageClear(tabId) {
-  const tab = await getTargetTab(tabId);
-  await sendDebuggerCommand(tab.id, 'Runtime.evaluate', {
-    expression: 'localStorage.clear()',
-    awaitPromise: true,
-    returnByValue: true,
-  });
+  await evaluateInTabContext(tabId, 'localStorage.clear()');
   return { cleared: true };
 }
 
@@ -1111,14 +1185,13 @@ async function clipboardRead(tabId) {
     // ignore permission errors
   }
 
-  const result = await sendDebuggerCommand(tab.id, 'Runtime.evaluate', {
-    expression: `(() => {
+  const { value } = await evaluateInTabContext(
+    tabId,
+    `(() => {
       return navigator.clipboard.readText().catch(() => '');
     })()`,
-    awaitPromise: true,
-    returnByValue: true,
-  });
-  return { text: unwrapEvaluationResult(result.result) || '' };
+  );
+  return { text: value || '' };
 }
 
 async function clipboardWrite(tabId, text) {
@@ -1132,19 +1205,19 @@ async function clipboardWrite(tabId, text) {
     // ignore permission errors
   }
 
-  await sendDebuggerCommand(tab.id, 'Runtime.evaluate', {
-    expression: `navigator.clipboard.writeText(${JSON.stringify(text)}).catch(() => {})`,
-    awaitPromise: true,
-    returnByValue: true,
-  });
+  await evaluateInTabContext(
+    tabId,
+    `navigator.clipboard.writeText(${JSON.stringify(text)}).catch(() => {})`,
+  );
   return { written: true, text };
 }
 
 async function saveState(tabId, name) {
   const tab = await getTargetTab(tabId);
   const cookiesResult = await sendDebuggerCommand(tab.id, 'Network.getCookies', {});
-  const storageResult = await sendDebuggerCommand(tab.id, 'Runtime.evaluate', {
-    expression: `(() => {
+  const { value } = await evaluateInTabContext(
+    tabId,
+    `(() => {
       const items = {};
       for (let i = 0; i < localStorage.length; i++) {
         const k = localStorage.key(i);
@@ -1152,14 +1225,22 @@ async function saveState(tabId, name) {
       }
       return items;
     })()`,
-    awaitPromise: true,
-    returnByValue: true,
+  );
+  const savedState = {
+    name,
+    cookies: cookiesResult.cookies || [],
+    storage: value || {},
+  };
+  const savedStates = await getSavedStates();
+  await promisifyChrome(chrome.storage.local.set, {
+    [SAVED_STATES_STORAGE_KEY]: {
+      ...savedStates,
+      [name]: savedState,
+    },
   });
 
   return {
-    name,
-    cookies: cookiesResult.cookies || [],
-    storage: unwrapEvaluationResult(storageResult.result) || {},
+    ...savedState,
     saved: true,
   };
 }
@@ -1183,11 +1264,10 @@ async function loadState(tabId, stateData) {
   // 恢复 storage
   if (stateData.storage) {
     for (const [key, value] of Object.entries(stateData.storage)) {
-      await sendDebuggerCommand(tab.id, 'Runtime.evaluate', {
-        expression: `localStorage.setItem(${JSON.stringify(key)}, ${JSON.stringify(value)})`,
-        awaitPromise: true,
-        returnByValue: true,
-      });
+      await evaluateInTabContext(
+        tab.id,
+        `localStorage.setItem(${JSON.stringify(key)}, ${JSON.stringify(value)})`,
+      );
     }
   }
 
@@ -1218,9 +1298,9 @@ async function handleDialog(tabId, accept, promptText) {
 }
 
 async function fillSelector(tabId, selector, value) {
-  const tab = await getTargetTab(tabId);
-  const result = await sendDebuggerCommand(tab.id, 'Runtime.evaluate', {
-    expression: `(() => {
+  const { value: result } = await evaluateInTabContext(
+    tabId,
+    `(() => {
       const node = document.querySelector(${JSON.stringify(selector)});
       if (!node) {
         return { found: false };
@@ -1236,11 +1316,9 @@ async function fillSelector(tabId, selector, value) {
       node.dispatchEvent(new Event("change", { bubbles: true }));
       return { found: true, selector: ${JSON.stringify(selector)} };
     })()`,
-    awaitPromise: true,
-    returnByValue: true,
-  });
+  );
 
-  return unwrapEvaluationResult(result.result);
+  return result;
 }
 
 async function handleCommand(message) {
@@ -1382,7 +1460,16 @@ async function handleCommand(message) {
         return await saveState(tabId, args.name || 'default');
       }
       if (args.action === 'load') {
-        return await loadState(tabId, args.data || {});
+        if (args.data && typeof args.data === 'object') {
+          return await loadState(tabId, args.data);
+        }
+
+        const savedStates = await getSavedStates();
+        const savedState = savedStates[args.name || 'default'];
+        if (!savedState) {
+          throw new Error(`saved state not found: ${args.name || 'default'}`);
+        }
+        return await loadState(tabId, savedState);
       }
       throw new Error(`unsupported state action: ${args.action}`);
     default:
@@ -1550,6 +1637,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 });
 
 chrome.tabs.onRemoved.addListener((tabId) => {
+  clearSelectedFrame(tabId);
   detachDebugger(tabId).catch(() => {});
 });
 

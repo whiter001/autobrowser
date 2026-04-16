@@ -1,7 +1,7 @@
 import { readFile } from 'node:fs/promises';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { DEFAULT_IPC_PORT, DEFAULT_RELAY_PORT } from './core/protocol.js';
+import { DEFAULT_IPC_PORT, DEFAULT_RELAY_PORT, isPortInUse } from './core/protocol.js';
 import { startServers } from './server.js';
 
 const execFileAsync = promisify(execFile);
@@ -103,7 +103,7 @@ Usage:
   autobrowser forward
   autobrowser reload
   autobrowser window new
-  autobrowser frame <selector>
+  autobrowser frame <selector|top>
   autobrowser is <visible|enabled|checked|disabled> <selector>
   autobrowser get <text|html|value|title|url|count|attr|box> [selector]
   autobrowser dialog accept|dismiss [promptText]
@@ -115,7 +115,8 @@ Usage:
   autobrowser set viewport|offline|headers|geo|media
   autobrowser pdf
   autobrowser clipboard read|write [text]
-  autobrowser state save|load [name|json]
+  autobrowser state save [name]
+  autobrowser state load [name|json]
   autobrowser screenshot
   autobrowser snapshot
 
@@ -225,6 +226,15 @@ export async function main(argv = process.argv.slice(2)) {
   }
 
   if (command === 'server') {
+    if (await isPortInUse(flags.relayPort)) {
+      process.stderr.write(
+        'Server already running on port ' +
+          flags.relayPort +
+          '\
+',
+      );
+      process.exit(1);
+    }
     const servers = await startServers({ relayPort: flags.relayPort, ipcPort: flags.ipcPort });
     process.stdout.write(
       `autobrowser server started\nrelay: http://127.0.0.1:${servers.runtime.runtime.relayPort}\nipc: http://127.0.0.1:${servers.runtime.runtime.ipcPort}\n`,
@@ -699,20 +709,31 @@ export async function main(argv = process.argv.slice(2)) {
       return 0;
     }
     if (action === 'load') {
-      // 需要提供 state JSON 数据
-      const stateJson = rest.slice(1).join(' ');
-      let data = {};
-      try {
-        data = JSON.parse(stateJson);
-      } catch {
-        process.stderr.write('invalid state JSON\n');
-        return 1;
+      const stateInput = rest.slice(1).join(' ').trim();
+      if (!stateInput) {
+        const payload = await requestCommand(flags.server, 'state', {
+          action: 'load',
+          name: 'default',
+        });
+        writeResult(payload);
+        return 0;
       }
-      const payload = await requestCommand(flags.server, 'state', { action: 'load', data });
-      writeResult(payload);
-      return 0;
+
+      try {
+        const data = JSON.parse(stateInput);
+        const payload = await requestCommand(flags.server, 'state', { action: 'load', data });
+        writeResult(payload);
+        return 0;
+      } catch {
+        const payload = await requestCommand(flags.server, 'state', {
+          action: 'load',
+          name: stateInput,
+        });
+        writeResult(payload);
+        return 0;
+      }
     }
-    process.stderr.write('usage: state save|load <json>\n');
+    process.stderr.write('usage: state save [name]\nusage: state load [name|json]\n');
     return 1;
   }
 

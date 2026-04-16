@@ -2,3 +2,5 @@ dist/
 .autobrowser/
 node_modules/
 .DS_Store
+.err
+.log

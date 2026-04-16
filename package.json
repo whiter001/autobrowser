@@ -14,7 +14,9 @@
     "oxlint": "oxlint",
     "oxfmt": "oxfmt --config .oxfmtrc.json",
     "lint": "oxlint && oxfmt --check",
-    "lint:fix": "oxfmt"
+    "lint:fix": "oxfmt",
+    "build": "bun build src/cli.js --compile --outfile=dist/autobrowser.exe --target=bun",
+    "build:js": "bun build src/cli.js --outfile=dist/autobrowser.js --target=bun"
   },
   "engines": {
     "bun": ">=1.0.0"

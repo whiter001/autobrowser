@@ -97,4 +97,51 @@ describe('cli command routing', () => {
     expect(result.fetchCalls).toHaveLength(1);
     expect(result.fetchCalls[0].url).toBe('http://127.0.0.1:5001/status');
   });
+
+  test('saves state under the requested name', async () => {
+    const result = await runCli(['state', 'save', 'checkout']);
+
+    expect(result.exitCode).toBe(0);
+    expect(result.fetchCalls).toHaveLength(1);
+    expect(result.fetchCalls[0].body).toEqual({
+      command: 'state',
+      args: {
+        action: 'save',
+        name: 'checkout',
+      },
+    });
+  });
+
+  test('loads state by saved name when input is not json', async () => {
+    const result = await runCli(['state', 'load', 'checkout']);
+
+    expect(result.exitCode).toBe(0);
+    expect(result.fetchCalls).toHaveLength(1);
+    expect(result.fetchCalls[0].body).toEqual({
+      command: 'state',
+      args: {
+        action: 'load',
+        name: 'checkout',
+      },
+    });
+  });
+
+  test('loads state from inline json when provided', async () => {
+    const result = await runCli(['state', 'load', '{"name":"checkout","storage":{"step":"2"}}']);
+
+    expect(result.exitCode).toBe(0);
+    expect(result.fetchCalls).toHaveLength(1);
+    expect(result.fetchCalls[0].body).toEqual({
+      command: 'state',
+      args: {
+        action: 'load',
+        data: {
+          name: 'checkout',
+          storage: {
+            step: '2',
+          },
+        },
+      },
+    });
+  });
 });
