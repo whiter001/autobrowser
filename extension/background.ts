@@ -35,16 +35,14 @@ const state = {
   suppressCloseError: false,
   attachedTabs: new Set(),
   selectedFrames: new Map(),
-  dialog: null as
-    | {
-        open: boolean
-        type: string
-        message: string
-        defaultPrompt: string
-        url: string | null
-        openedAt: string
-      }
-    | null,
+  dialog: null as {
+    open: boolean
+    type: string
+    message: string
+    defaultPrompt: string
+    url: string | null
+    openedAt: string
+  } | null,
   network: {
     routes: [],
     requests: [],
@@ -81,7 +79,9 @@ function normalizeHeaders(headers: Record<string, unknown> | undefined): Record<
   )
 }
 
-function normalizeHeaderPairs(headers: Record<string, string>): Array<{ name: string; value: string }> {
+function normalizeHeaderPairs(
+  headers: Record<string, string>,
+): Array<{ name: string; value: string }> {
   return Object.entries(headers).map(([name, value]) => ({ name, value }))
 }
 
@@ -112,7 +112,9 @@ function matchesNetworkRoute(pattern: string, url: string): boolean {
   return String(url || '').includes(normalizedPattern)
 }
 
-function findMatchingNetworkRoute(url: string): { id: string; pattern: string; abort: boolean; body?: unknown } | null {
+function findMatchingNetworkRoute(
+  url: string,
+): { id: string; pattern: string; abort: boolean; body?: unknown } | null {
   return state.network.routes.find((route) => matchesNetworkRoute(route.pattern, url)) || null
 }
 
@@ -155,9 +157,11 @@ function getNetworkRequestById(requestId: string): Record<string, unknown> | nul
     return exact
   }
 
-  return state.network.requests.find(
-    (item) => item?.requestId === requestId || item?.id === requestId,
-  ) || null
+  return (
+    state.network.requests.find(
+      (item) => item?.requestId === requestId || item?.id === requestId,
+    ) || null
+  )
 }
 
 function summarizeNetworkRequest(record: Record<string, unknown>): Record<string, unknown> {
@@ -217,13 +221,15 @@ function buildHarEntry(record: Record<string, unknown>): Record<string, unknown>
       headers: requestHeaders,
       queryString: [],
       headersSize: -1,
-      bodySize: typeof record.postData === 'string' ? new TextEncoder().encode(record.postData).length : 0,
-      postData: typeof record.postData === 'string'
-        ? {
-            mimeType: 'application/json',
-            text: record.postData,
-          }
-        : undefined,
+      bodySize:
+        typeof record.postData === 'string' ? new TextEncoder().encode(record.postData).length : 0,
+      postData:
+        typeof record.postData === 'string'
+          ? {
+              mimeType: 'application/json',
+              text: record.postData,
+            }
+          : undefined,
     },
     response: {
       status: Number(record.status || 0),
@@ -247,7 +253,8 @@ function buildHarEntry(record: Record<string, unknown>): Record<string, unknown>
       wait: typeof record.waitMs === 'number' ? record.waitMs : 0,
       receive: typeof record.receiveMs === 'number' ? record.receiveMs : 0,
     },
-    pageref: record.tabId === null || record.tabId === undefined ? undefined : `tab-${record.tabId}`,
+    pageref:
+      record.tabId === null || record.tabId === undefined ? undefined : `tab-${record.tabId}`,
   }
 }
 
@@ -313,9 +320,7 @@ async function handleNetworkRequestPaused(tabId: number, params: any): Promise<v
           requestId,
           responseCode: 200,
           responsePhrase: 'OK',
-          responseHeaders: [
-            { name: 'content-type', value: 'application/json; charset=utf-8' },
-          ],
+          responseHeaders: [{ name: 'content-type', value: 'application/json; charset=utf-8' }],
           body: encodeBase64(body.text),
         })
         upsertNetworkRequest({
@@ -423,8 +428,10 @@ async function handleNetworkEvent(source: any, method: string, params: any): Pro
     const key = createNetworkRequestKey(tabId, requestId)
     const record = getNetworkRequestById(key)
     const finishedAt = new Date().toISOString()
-    const requestWillBeSentAt = typeof record?.requestWillBeSentAt === 'number' ? record.requestWillBeSentAt : null
-    const responseReceivedAt = typeof record?.responseReceivedAt === 'number' ? record.responseReceivedAt : null
+    const requestWillBeSentAt =
+      typeof record?.requestWillBeSentAt === 'number' ? record.requestWillBeSentAt : null
+    const responseReceivedAt =
+      typeof record?.responseReceivedAt === 'number' ? record.responseReceivedAt : null
     const baseRecord = record || {}
 
     upsertNetworkRequest({
@@ -445,7 +452,8 @@ async function handleNetworkEvent(source: any, method: string, params: any): Pro
         responseReceivedAt !== null && typeof params?.timestamp === 'number'
           ? Math.max(0, (params.timestamp - responseReceivedAt) * 1000)
           : null,
-      encodedDataLength: typeof params?.encodedDataLength === 'number' ? params.encodedDataLength : null,
+      encodedDataLength:
+        typeof params?.encodedDataLength === 'number' ? params.encodedDataLength : null,
     })
 
     void finalizeNetworkRequestBody(tabId, requestId)
@@ -593,7 +601,10 @@ function setupDebuggerEventListeners() {
         openedAt: new Date().toISOString(),
       }
 
-      if (['alert', 'beforeunload'].includes(state.dialog.type) && typeof source?.tabId === 'number') {
+      if (
+        ['alert', 'beforeunload'].includes(state.dialog.type) &&
+        typeof source?.tabId === 'number'
+      ) {
         void sendDebuggerCommand(source.tabId, 'Page.handleJavaScriptDialog', {
           accept: true,
         })
@@ -1074,7 +1085,9 @@ async function captureScreenshot(tabId, options: ScreenshotCaptureOptions = {}) 
       format,
       fromSurface: true,
       ...(options.full ? { captureBeyondViewport: true } : {}),
-      ...(format === 'jpeg' && typeof options.quality === 'number' ? { quality: options.quality } : {}),
+      ...(format === 'jpeg' && typeof options.quality === 'number'
+        ? { quality: options.quality }
+        : {}),
     }
 
     const result = await sendDebuggerCommand(tab.id, 'Page.captureScreenshot', captureOptions)
@@ -2285,175 +2298,188 @@ async function scrollIntoViewSelector(tabId, selector) {
   return value
 }
 
-        function parseNetworkStatusFilter(statusFilter: string): (status: number | null | undefined) => boolean {
-          const tokens = String(statusFilter || '')
-            .split(',')
-            .map((token) => token.trim())
-            .filter(Boolean)
+function parseNetworkStatusFilter(
+  statusFilter: string,
+): (status: number | null | undefined) => boolean {
+  const tokens = String(statusFilter || '')
+    .split(',')
+    .map((token) => token.trim())
+    .filter(Boolean)
 
-          if (tokens.length === 0) {
-            return () => true
-          }
+  if (tokens.length === 0) {
+    return () => true
+  }
 
-          return (status) => {
-            const numericStatus = Number(status || 0)
-            return tokens.some((token) => {
-              if (/^\dxx$/i.test(token)) {
-                return Math.floor(numericStatus / 100) === Number(token[0])
-              }
+  return (status) => {
+    const numericStatus = Number(status || 0)
+    return tokens.some((token) => {
+      if (/^\dxx$/i.test(token)) {
+        return Math.floor(numericStatus / 100) === Number(token[0])
+      }
 
-              if (/^\d{3}-\d{3}$/.test(token)) {
-                const [start, end] = token.split('-').map((value) => Number(value))
-                return numericStatus >= start && numericStatus <= end
-              }
+      if (/^\d{3}-\d{3}$/.test(token)) {
+        const [start, end] = token.split('-').map((value) => Number(value))
+        return numericStatus >= start && numericStatus <= end
+      }
 
-              return numericStatus === Number(token)
-            })
-          }
-        }
+      return numericStatus === Number(token)
+    })
+  }
+}
 
-        function matchesNetworkRequestFilters(record: Record<string, unknown>, filters: Record<string, unknown>): boolean {
-          const filterText = String(filters.filter || '').trim().toLowerCase()
-          const typeFilter = String(filters.type || '')
-            .split(',')
-            .map((value) => value.trim().toLowerCase())
-            .filter(Boolean)
-          const methodFilter = String(filters.method || '').trim().toUpperCase()
-          const statusMatches = parseNetworkStatusFilter(String(filters.status || ''))
+function matchesNetworkRequestFilters(
+  record: Record<string, unknown>,
+  filters: Record<string, unknown>,
+): boolean {
+  const filterText = String(filters.filter || '')
+    .trim()
+    .toLowerCase()
+  const typeFilter = String(filters.type || '')
+    .split(',')
+    .map((value) => value.trim().toLowerCase())
+    .filter(Boolean)
+  const methodFilter = String(filters.method || '')
+    .trim()
+    .toUpperCase()
+  const statusMatches = parseNetworkStatusFilter(String(filters.status || ''))
 
-          if (filterText) {
-            const haystack = [
-              record.id,
-              record.requestId,
-              record.url,
-              record.method,
-              record.resourceType,
-              record.statusText,
-              record.errorText,
-            ]
-              .map((value) => String(value || '').toLowerCase())
-              .join(' ')
+  if (filterText) {
+    const haystack = [
+      record.id,
+      record.requestId,
+      record.url,
+      record.method,
+      record.resourceType,
+      record.statusText,
+      record.errorText,
+    ]
+      .map((value) => String(value || '').toLowerCase())
+      .join(' ')
 
-            if (!haystack.includes(filterText)) {
-              return false
-            }
-          }
+    if (!haystack.includes(filterText)) {
+      return false
+    }
+  }
 
-          if (typeFilter.length > 0) {
-            const requestType = String(record.resourceType || '').trim().toLowerCase()
-            if (!typeFilter.includes(requestType)) {
-              return false
-            }
-          }
+  if (typeFilter.length > 0) {
+    const requestType = String(record.resourceType || '')
+      .trim()
+      .toLowerCase()
+    if (!typeFilter.includes(requestType)) {
+      return false
+    }
+  }
 
-          if (methodFilter && String(record.method || '').toUpperCase() !== methodFilter) {
-            return false
-          }
+  if (methodFilter && String(record.method || '').toUpperCase() !== methodFilter) {
+    return false
+  }
 
-          if (!statusMatches(record.status as number | null | undefined)) {
-            return false
-          }
+  if (!statusMatches(record.status as number | null | undefined)) {
+    return false
+  }
 
-          return true
-        }
+  return true
+}
 
-        async function routeNetworkRequest(tabId, url, abort = false, body = undefined) {
-          const tab = await getTargetTab(tabId)
-          await sendDebuggerCommand(tab.id, 'Network.enable', {})
-          const route = {
-            id: createNetworkRouteId(),
-            pattern: String(url || '').trim(),
-            abort: Boolean(abort),
-            body: body === undefined ? undefined : body,
-            createdAt: new Date().toISOString(),
-          }
+async function routeNetworkRequest(tabId, url, abort = false, body = undefined) {
+  const tab = await getTargetTab(tabId)
+  await sendDebuggerCommand(tab.id, 'Network.enable', {})
+  const route = {
+    id: createNetworkRouteId(),
+    pattern: String(url || '').trim(),
+    abort: Boolean(abort),
+    body: body === undefined ? undefined : body,
+    createdAt: new Date().toISOString(),
+  }
 
-          if (!route.pattern) {
-            throw new Error('missing url pattern')
-          }
+  if (!route.pattern) {
+    throw new Error('missing url pattern')
+  }
 
-          state.network.routes.push(route)
-          await refreshNetworkInterceptors()
+  state.network.routes.push(route)
+  await refreshNetworkInterceptors()
 
-          return {
-            route,
-            routes: state.network.routes,
-          }
-        }
+  return {
+    route,
+    routes: state.network.routes,
+  }
+}
 
-        async function unrouteNetworkRequest(tabId, url) {
-          if (tabId !== null && tabId !== undefined) {
-            await getTargetTab(tabId)
-          }
+async function unrouteNetworkRequest(tabId, url) {
+  if (tabId !== null && tabId !== undefined) {
+    await getTargetTab(tabId)
+  }
 
-          if (url) {
-            state.network.routes = state.network.routes.filter((route) => route.pattern !== String(url))
-          } else {
-            state.network.routes = []
-          }
+  if (url) {
+    state.network.routes = state.network.routes.filter((route) => route.pattern !== String(url))
+  } else {
+    state.network.routes = []
+  }
 
-          await refreshNetworkInterceptors()
+  await refreshNetworkInterceptors()
 
-          return {
-            routes: state.network.routes,
-          }
-        }
+  return {
+    routes: state.network.routes,
+  }
+}
 
-        function listNetworkRequests(filters: Record<string, unknown> = {}): Record<string, unknown> {
-          const requests = state.network.requests.filter((record) => matchesNetworkRequestFilters(record, filters))
-          return {
-            total: requests.length,
-            requests: requests.map((record) => summarizeNetworkRequest(record)),
-          }
-        }
+function listNetworkRequests(filters: Record<string, unknown> = {}): Record<string, unknown> {
+  const requests = state.network.requests.filter((record) =>
+    matchesNetworkRequestFilters(record, filters),
+  )
+  return {
+    total: requests.length,
+    requests: requests.map((record) => summarizeNetworkRequest(record)),
+  }
+}
 
-        function getNetworkRequestDetail(requestId: string): Record<string, unknown> {
-          const record = getNetworkRequestById(String(requestId || ''))
-          if (!record) {
-            throw new Error(`network request not found: ${requestId}`)
-          }
+function getNetworkRequestDetail(requestId: string): Record<string, unknown> {
+  const record = getNetworkRequestById(String(requestId || ''))
+  if (!record) {
+    throw new Error(`network request not found: ${requestId}`)
+  }
 
-          return {
-            request: record,
-            summary: summarizeNetworkRequest(record),
-            harEntry: buildHarEntry(record),
-          }
-        }
+  return {
+    request: record,
+    summary: summarizeNetworkRequest(record),
+    harEntry: buildHarEntry(record),
+  }
+}
 
-        async function startNetworkHar(tabId): Promise<Record<string, unknown>> {
-          const tab = await getTargetTab(tabId)
-          await sendDebuggerCommand(tab.id, 'Network.enable', {})
-          state.network.harRecording = true
-          state.network.harStartedAt = new Date().toISOString()
-          return {
-            recording: true,
-            startedAt: state.network.harStartedAt,
-          }
-        }
+async function startNetworkHar(tabId): Promise<Record<string, unknown>> {
+  const tab = await getTargetTab(tabId)
+  await sendDebuggerCommand(tab.id, 'Network.enable', {})
+  state.network.harRecording = true
+  state.network.harStartedAt = new Date().toISOString()
+  return {
+    recording: true,
+    startedAt: state.network.harStartedAt,
+  }
+}
 
-        function stopNetworkHar(): Record<string, unknown> {
-          const startedAt = state.network.harStartedAt
-          const stoppedAt = new Date().toISOString()
-          state.network.harRecording = false
-          state.network.harStartedAt = null
+function stopNetworkHar(): Record<string, unknown> {
+  const startedAt = state.network.harStartedAt
+  const stoppedAt = new Date().toISOString()
+  state.network.harRecording = false
+  state.network.harStartedAt = null
 
-          const requests = state.network.requests.filter((record) => {
-            if (!startedAt) {
-              return true
-            }
+  const requests = state.network.requests.filter((record) => {
+    if (!startedAt) {
+      return true
+    }
 
-            return String(record.startedAt || '') >= startedAt
-          })
+    return String(record.startedAt || '') >= startedAt
+  })
 
-          const entries = requests.map((record) => buildHarEntry(record))
+  const entries = requests.map((record) => buildHarEntry(record))
 
-          return {
-            recording: false,
-            startedAt,
-            stoppedAt,
-            har: buildHar(entries),
-          }
-        }
+  return {
+    recording: false,
+    startedAt,
+    stoppedAt,
+    har: buildHar(entries),
+  }
+}
 
 async function closeTabs(tabId, closeAll) {
   if (closeAll) {

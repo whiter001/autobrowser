@@ -387,7 +387,10 @@ async function mkTempScreenshotDir(): Promise<string> {
   return await mkdtemp(path.join(os.tmpdir(), 'autobrowser-screenshot-'))
 }
 
-function extractScreenshotData(result: Record<string, unknown> | undefined): { data: Buffer; mimeType: string } {
+function extractScreenshotData(result: Record<string, unknown> | undefined): {
+  data: Buffer
+  mimeType: string
+} {
   const dataUrl = typeof result?.dataUrl === 'string' ? result.dataUrl : ''
   const rawData =
     typeof result?.data === 'string'
@@ -466,40 +469,24 @@ const HELP_ROOT = helpNode(
   'autobrowser',
   'Browser automation CLI for controlling Chrome/Edge through a relay server and extension.',
   'autobrowser [command] [options]',
-  [
-    '--json',
-    '--server <url>',
-    '--stdin',
-    '--file <path>',
-    '--base64',
-  ],
+  ['--json', '--server <url>', '--stdin', '--file <path>', '--base64'],
   [
     helpNode('help', 'Show help for a command path.', 'autobrowser help [command ...]'),
     helpNode('server', 'Start the relay and IPC servers.', 'autobrowser server'),
     helpNode('status', 'Show server status.', 'autobrowser status'),
     helpNode('connect', 'Open the extension connect page.', 'autobrowser connect'),
-    helpNode(
-      'tab',
-      'Manage tabs.',
-      'autobrowser tab <list|new>',
-      undefined,
-      [
-        helpNode('list', 'List tabs.', 'autobrowser tab list'),
-        helpNode('new', 'Open a new tab.', 'autobrowser tab new <url>'),
-      ],
-    ),
+    helpNode('tab', 'Manage tabs.', 'autobrowser tab <list|new>', undefined, [
+      helpNode('list', 'List tabs.', 'autobrowser tab list'),
+      helpNode('new', 'Open a new tab.', 'autobrowser tab new <url>'),
+    ]),
     helpNode('open', 'Navigate to a URL.', 'autobrowser open <url>'),
     helpNode('goto', 'Navigate to a URL.', 'autobrowser goto <url>'),
     helpNode('back', 'Go back in browser history.', 'autobrowser back'),
     helpNode('forward', 'Go forward in browser history.', 'autobrowser forward'),
     helpNode('reload', 'Reload the current page.', 'autobrowser reload'),
-    helpNode(
-      'window',
-      'Manage browser windows.',
-      'autobrowser window <new>',
-      undefined,
-      [helpNode('new', 'Open a new window.', 'autobrowser window new')],
-    ),
+    helpNode('window', 'Manage browser windows.', 'autobrowser window <new>', undefined, [
+      helpNode('new', 'Open a new window.', 'autobrowser window new'),
+    ]),
     helpNode(
       'eval',
       'Run JavaScript in the page context.',
@@ -511,35 +498,61 @@ const HELP_ROOT = helpNode(
     helpNode('fill', 'Fill a selector with text.', 'autobrowser fill <selector> <value>'),
     helpNode('type', 'Type text into a selector.', 'autobrowser type <selector> <value>'),
     helpNode('press', 'Press a keyboard key.', 'autobrowser press <key>'),
-    helpNode('keyboard', 'Send keyboard input.', 'autobrowser keyboard <type|inserttext|keydown|keyup> <text>'),
+    helpNode(
+      'keyboard',
+      'Send keyboard input.',
+      'autobrowser keyboard <type|inserttext|keydown|keyup> <text>',
+    ),
     helpNode('hover', 'Hover a selector.', 'autobrowser hover <selector>'),
     helpNode('focus', 'Focus a selector.', 'autobrowser focus <selector>'),
     helpNode('select', 'Select an option.', 'autobrowser select <selector> <value>'),
     helpNode('check', 'Check a checkbox.', 'autobrowser check <selector>'),
     helpNode('uncheck', 'Uncheck a checkbox.', 'autobrowser uncheck <selector>'),
-    helpNode('scroll', 'Scroll a page or element.', 'autobrowser scroll [selector] [deltaX] [deltaY]'),
-    helpNode('scrollintoview', 'Scroll a selector into view.', 'autobrowser scrollintoview <selector>'),
-    helpNode('drag', 'Drag between elements.', 'autobrowser drag <startSelector> [endSelector]'),
-    helpNode('upload', 'Upload files through a file input.', 'autobrowser upload <selector> <files...>'),
-    helpNode('frame', 'Select a frame.', 'autobrowser frame <selector|top>'),
-    helpNode('is', 'Check element state.', 'autobrowser is <visible|enabled|checked|disabled|focused> <selector>'),
-    helpNode('get', 'Read page or element data.', 'autobrowser get <text|html|value|title|url|cdp-url|count|attr|box|styles> [selector]'),
     helpNode(
-      'dialog',
-      'Handle dialogs.',
-      'autobrowser dialog <accept|dismiss|status>',
-      undefined,
-      [
-        helpNode('accept', 'Accept the active dialog.', 'autobrowser dialog accept [promptText]'),
-        helpNode('dismiss', 'Dismiss the active dialog.', 'autobrowser dialog dismiss [promptText]'),
-        helpNode('status', 'Show dialog status.', 'autobrowser dialog status'),
-      ],
+      'scroll',
+      'Scroll a page or element.',
+      'autobrowser scroll [selector] [deltaX] [deltaY]',
     ),
+    helpNode(
+      'scrollintoview',
+      'Scroll a selector into view.',
+      'autobrowser scrollintoview <selector>',
+    ),
+    helpNode('drag', 'Drag between elements.', 'autobrowser drag <startSelector> [endSelector]'),
+    helpNode(
+      'upload',
+      'Upload files through a file input.',
+      'autobrowser upload <selector> <files...>',
+    ),
+    helpNode('frame', 'Select a frame.', 'autobrowser frame <selector|top>'),
+    helpNode(
+      'is',
+      'Check element state.',
+      'autobrowser is <visible|enabled|checked|disabled|focused> <selector>',
+    ),
+    helpNode(
+      'get',
+      'Read page or element data.',
+      'autobrowser get <text|html|value|title|url|cdp-url|count|attr|box|styles> [selector]',
+    ),
+    helpNode('dialog', 'Handle dialogs.', 'autobrowser dialog <accept|dismiss|status>', undefined, [
+      helpNode('accept', 'Accept the active dialog.', 'autobrowser dialog accept [promptText]'),
+      helpNode('dismiss', 'Dismiss the active dialog.', 'autobrowser dialog dismiss [promptText]'),
+      helpNode('status', 'Show dialog status.', 'autobrowser dialog status'),
+    ]),
     helpNode(
       'wait',
       'Wait for a selector, text, URL, load state, function, or time.',
       'autobrowser wait <selector|ms> [--state visible|hidden] [--timeout <ms>]',
-      ['--state <visible|hidden>', '--timeout <ms>', '--text <text>', '--url <pattern>', '--load [networkidle]', '--fn <expression>', '--ms <ms>'],
+      [
+        '--state <visible|hidden>',
+        '--timeout <ms>',
+        '--text <text>',
+        '--url <pattern>',
+        '--load [networkidle]',
+        '--fn <expression>',
+        '--ms <ms>',
+      ],
     ),
     helpNode(
       'cookies',
@@ -571,10 +584,18 @@ const HELP_ROOT = helpNode(
       'autobrowser set <viewport|offline|headers|geo|media>',
       undefined,
       [
-        helpNode('viewport', 'Set viewport settings.', 'autobrowser set viewport <width> <height> [deviceScaleFactor] [mobile]'),
+        helpNode(
+          'viewport',
+          'Set viewport settings.',
+          'autobrowser set viewport <width> <height> [deviceScaleFactor] [mobile]',
+        ),
         helpNode('offline', 'Toggle offline mode.', 'autobrowser set offline [false]'),
         helpNode('headers', 'Set request headers.', 'autobrowser set headers <name:value,...>'),
-        helpNode('geo', 'Set geolocation.', 'autobrowser set geo <latitude> <longitude> [accuracy]'),
+        helpNode(
+          'geo',
+          'Set geolocation.',
+          'autobrowser set geo <latitude> <longitude> [accuracy]',
+        ),
         helpNode('media', 'Set media emulation.', 'autobrowser set media <scheme>'),
       ],
     ),
@@ -589,25 +610,33 @@ const HELP_ROOT = helpNode(
         helpNode('write', 'Write to the clipboard.', 'autobrowser clipboard write [text]'),
       ],
     ),
-    helpNode(
-      'state',
-      'Save or load browser state.',
-      'autobrowser state <save|load>',
-      undefined,
-      [
-        helpNode('save', 'Save state.', 'autobrowser state save [name]'),
-        helpNode('load', 'Load state from a name or JSON payload.', 'autobrowser state load [name|json]'),
-      ],
-    ),
+    helpNode('state', 'Save or load browser state.', 'autobrowser state <save|load>', undefined, [
+      helpNode('save', 'Save state.', 'autobrowser state save [name]'),
+      helpNode(
+        'load',
+        'Load state from a name or JSON payload.',
+        'autobrowser state load [name|json]',
+      ),
+    ]),
     helpNode(
       'network',
       'Inspect and control network activity.',
       'autobrowser network <route|unroute|requests|request|har>',
       undefined,
       [
-        helpNode('route', 'Add a network route.', 'autobrowser network route <url> [--abort] [--body <json>]', ['--abort', '--body <json>']),
+        helpNode(
+          'route',
+          'Add a network route.',
+          'autobrowser network route <url> [--abort] [--body <json>]',
+          ['--abort', '--body <json>'],
+        ),
         helpNode('unroute', 'Remove a network route.', 'autobrowser network unroute [url]'),
-        helpNode('requests', 'List captured requests.', 'autobrowser network requests [--filter <text>] [--type <xhr,fetch>] [--method <POST>] [--status <2xx>]', ['--filter <text>', '--type <xhr,fetch>', '--method <POST>', '--status <2xx>']),
+        helpNode(
+          'requests',
+          'List captured requests.',
+          'autobrowser network requests [--filter <text>] [--type <xhr,fetch>] [--method <POST>] [--status <2xx>]',
+          ['--filter <text>', '--type <xhr,fetch>', '--method <POST>', '--status <2xx>'],
+        ),
         helpNode('request', 'Inspect a single request.', 'autobrowser network request <requestId>'),
         helpNode(
           'har',
@@ -616,7 +645,11 @@ const HELP_ROOT = helpNode(
           undefined,
           [
             helpNode('start', 'Start HAR capture.', 'autobrowser network har start'),
-            helpNode('stop', 'Stop HAR capture and save it.', 'autobrowser network har stop [output.har]'),
+            helpNode(
+              'stop',
+              'Stop HAR capture and save it.',
+              'autobrowser network har stop [output.har]',
+            ),
           ],
         ),
       ],
@@ -625,7 +658,13 @@ const HELP_ROOT = helpNode(
       'screenshot',
       'Capture a screenshot.',
       'autobrowser screenshot [path] [--full] [--annotate] [--screenshot-dir <dir>] [--screenshot-format png|jpeg] [--screenshot-quality <n>]',
-      ['--full', '--annotate', '--screenshot-dir <dir>', '--screenshot-format png|jpeg', '--screenshot-quality <n>'],
+      [
+        '--full',
+        '--annotate',
+        '--screenshot-dir <dir>',
+        '--screenshot-format png|jpeg',
+        '--screenshot-quality <n>',
+      ],
     ),
     helpNode('snapshot', 'Capture a page snapshot.', 'autobrowser snapshot'),
   ],
@@ -643,7 +682,10 @@ function isHelpToken(value: string | undefined): boolean {
   return value === '--help' || value === '-h' || value === 'help'
 }
 
-function resolveHelpNode(node: HelpNode, pathParts: string[]): { node: HelpNode; remainder: string[] } {
+function resolveHelpNode(
+  node: HelpNode,
+  pathParts: string[],
+): { node: HelpNode; remainder: string[] } {
   let current = node
   let index = 0
 
@@ -817,7 +859,17 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
   const { flags, args } = parseCli(argv)
   const [command, ...rest] = args
 
-  function writeResult(payload: CommandResponse | Record<string, unknown> | string | number | boolean | bigint | null | undefined): void {
+  function writeResult(
+    payload:
+      | CommandResponse
+      | Record<string, unknown>
+      | string
+      | number
+      | boolean
+      | bigint
+      | null
+      | undefined,
+  ): void {
     if (flags.json) {
       process.stdout.write(`${JSON.stringify(payload, null, 2)}\n`)
       return
@@ -1054,7 +1106,9 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
       return 1
     }
 
-    const { data, mimeType } = extractScreenshotData(payload.result as Record<string, unknown> | undefined)
+    const { data, mimeType } = extractScreenshotData(
+      payload.result as Record<string, unknown> | undefined,
+    )
     const outputPath = await resolveScreenshotOutputPath(screenshotArgs)
     await writeFile(outputPath, data)
 
@@ -1247,7 +1301,11 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
   if (command === 'keyboard') {
     const action = rest[0]
     const value = rest.slice(1).join(' ')
-    if (isHelpToken(action) || !action || !['type', 'inserttext', 'keydown', 'keyup'].includes(action)) {
+    if (
+      isHelpToken(action) ||
+      !action ||
+      !['type', 'inserttext', 'keydown', 'keyup'].includes(action)
+    ) {
       return writeHelp(['keyboard'])
     }
 
@@ -1764,7 +1822,9 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
           return 1
         }
 
-        const result = payload?.result as { har?: unknown; startedAt?: string; stoppedAt?: string } | undefined
+        const result = payload?.result as
+          | { har?: unknown; startedAt?: string; stoppedAt?: string }
+          | undefined
         const har = result?.har || payload
         const outputPath = rest[2] || null
         const savedPath = await writeHarFile(har, outputPath)
