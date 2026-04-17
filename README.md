@@ -4,12 +4,14 @@ autobrowser is a Bun-based browser automation tool inspired by v-browser.
 
 ## Current status
 
-This repository now contains the initial Bun implementation scaffold:
+This repository now contains a Bun implementation with the main automation flows in place:
 
 - local relay server on port `47978`
 - CLI API server on port `47979`
 - browser extension scaffold with a token-based connection flow
-- core commands for `server`, `connect`, `status`, `tab`, `goto`, `open`, `eval`, `click`, `dblclick`, `fill`, `type`, `keyboard`, `scrollintoview`, `close`, `snapshot`, and `screenshot`
+- core commands for server and connection management, navigation, tab and window control, element interaction, dialogs, wait and state checks, cookies, storage, clipboard, browser state, network inspection and interception, snapshot, and screenshot
+
+Run `bun run src/cli.ts help` to see the full command tree.
 
 ## Run
 
