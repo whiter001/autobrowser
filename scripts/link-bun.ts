@@ -1,6 +1,7 @@
 import { access, chmod, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import os from 'node:os'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
@@ -22,8 +23,11 @@ try {
 }
 
 const bunDir = path.dirname(bunPath)
-const targetPath = path.join(bunDir, 'autobrowser')
-const wrapper = `#!/usr/bin/env sh
+const isWindows = os.platform() === 'win32'
+const targetPath = path.join(bunDir, isWindows ? 'autobrowser.cmd' : 'autobrowser')
+const wrapper = isWindows
+  ? `@echo off\r\nsetlocal\r\n${JSON.stringify(bunPath)} ${JSON.stringify(distEntry)} %*\r\n`
+  : `#!/usr/bin/env sh
 exec ${JSON.stringify(bunPath)} ${JSON.stringify(distEntry)} "$@"
 `
 

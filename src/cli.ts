@@ -438,76 +438,283 @@ async function getCdpUrl(baseUrl: string): Promise<string> {
   return `ws://127.0.0.1:${relayPort}/ws?token=${encodeURIComponent(token)}`
 }
 
-function printHelp(): string {
-  return `autobrowser
+interface HelpNode {
+  name: string
+  summary: string
+  usage: string
+  options?: string[]
+  children?: HelpNode[]
+}
 
-Usage:
-  autobrowser server
-  autobrowser status
-  autobrowser connect
-  autobrowser tab list
-  autobrowser tab new <url>
-  autobrowser goto <url>
-  autobrowser open <url>
-  autobrowser eval [--stdin|--file path|--base64] <script>
-  autobrowser click <selector>
-  autobrowser dblclick <selector>
-  autobrowser fill <selector> <value>
-  autobrowser type <selector> <value>
-  autobrowser press <key>
-  autobrowser keyboard type <text>
-  autobrowser keyboard inserttext <text>
-  autobrowser keyboard keydown <key>
-  autobrowser keyboard keyup <key>
-  autobrowser hover <selector>
-  autobrowser focus <selector>
-  autobrowser select <selector> <value>
-  autobrowser check <selector>
-  autobrowser uncheck <selector>
-  autobrowser scroll [selector] [deltaX] [deltaY]
-  autobrowser scrollintoview <selector>
-  autobrowser drag <startSelector> [endSelector]
-  autobrowser upload <selector> <files...>
-  autobrowser back
-  autobrowser forward
-  autobrowser reload
-  autobrowser close [all]
-  autobrowser window new
-  autobrowser frame <selector|top>
-  autobrowser is <visible|enabled|checked|disabled|focused> <selector>
-  autobrowser get <text|html|value|title|url|cdp-url|count|attr|box|styles> [selector]
-  autobrowser dialog accept|dismiss [promptText]
-  autobrowser dialog status
-  autobrowser wait <selector|ms> [--state visible|hidden] [--timeout <ms>]
-  autobrowser wait --text <text>
-  autobrowser wait --url <pattern>
-  autobrowser wait --load [networkidle]
-  autobrowser wait --fn <expression>
-  autobrowser cookies get|set|clear
-  autobrowser storage get|set|clear [key] [value]
-  autobrowser console
-  autobrowser errors
-  autobrowser set viewport|offline|headers|geo|media
-  autobrowser pdf
-  autobrowser clipboard read|write [text]
-  autobrowser state save [name]
-  autobrowser state load [name|json]
-  autobrowser network route <url> [--abort] [--body <json>]
-  autobrowser network unroute [url]
-  autobrowser network requests [--filter <text>] [--type <xhr,fetch>] [--method <POST>] [--status <2xx>]
-  autobrowser network request <requestId>
-  autobrowser network har start
-  autobrowser network har stop [output.har]
-  autobrowser screenshot [path] [--full] [--annotate] [--screenshot-dir <dir>] [--screenshot-format png|jpeg] [--screenshot-quality <n>]
-  autobrowser snapshot
+function helpNode(
+  name: string,
+  summary: string,
+  usage: string,
+  options?: string[],
+  children?: HelpNode[],
+): HelpNode {
+  return {
+    name,
+    summary,
+    usage,
+    ...(options && options.length > 0 ? { options } : {}),
+    ...(children && children.length > 0 ? { children } : {}),
+  }
+}
 
-Flags:
-  --json        output JSON
-  --server URL  target server base URL, default http://127.0.0.1:47979
-  --stdin       read command body from stdin
-  --file PATH   read command body from file
-  --base64      decode command body from base64
-`
+const HELP_ROOT = helpNode(
+  'autobrowser',
+  'Browser automation CLI for controlling Chrome/Edge through a relay server and extension.',
+  'autobrowser [command] [options]',
+  [
+    '--json',
+    '--server <url>',
+    '--stdin',
+    '--file <path>',
+    '--base64',
+  ],
+  [
+    helpNode('help', 'Show help for a command path.', 'autobrowser help [command ...]'),
+    helpNode('server', 'Start the relay and IPC servers.', 'autobrowser server'),
+    helpNode('status', 'Show server status.', 'autobrowser status'),
+    helpNode('connect', 'Open the extension connect page.', 'autobrowser connect'),
+    helpNode(
+      'tab',
+      'Manage tabs.',
+      'autobrowser tab <list|new>',
+      undefined,
+      [
+        helpNode('list', 'List tabs.', 'autobrowser tab list'),
+        helpNode('new', 'Open a new tab.', 'autobrowser tab new <url>'),
+      ],
+    ),
+    helpNode('open', 'Navigate to a URL.', 'autobrowser open <url>'),
+    helpNode('goto', 'Navigate to a URL.', 'autobrowser goto <url>'),
+    helpNode('back', 'Go back in browser history.', 'autobrowser back'),
+    helpNode('forward', 'Go forward in browser history.', 'autobrowser forward'),
+    helpNode('reload', 'Reload the current page.', 'autobrowser reload'),
+    helpNode(
+      'window',
+      'Manage browser windows.',
+      'autobrowser window <new>',
+      undefined,
+      [helpNode('new', 'Open a new window.', 'autobrowser window new')],
+    ),
+    helpNode(
+      'eval',
+      'Run JavaScript in the page context.',
+      'autobrowser eval [--stdin|--file path|--base64] <script>',
+      ['--stdin', '--file <path>', '--base64'],
+    ),
+    helpNode('click', 'Click a selector.', 'autobrowser click <selector>'),
+    helpNode('dblclick', 'Double-click a selector.', 'autobrowser dblclick <selector>'),
+    helpNode('fill', 'Fill a selector with text.', 'autobrowser fill <selector> <value>'),
+    helpNode('type', 'Type text into a selector.', 'autobrowser type <selector> <value>'),
+    helpNode('press', 'Press a keyboard key.', 'autobrowser press <key>'),
+    helpNode('keyboard', 'Send keyboard input.', 'autobrowser keyboard <type|inserttext|keydown|keyup> <text>'),
+    helpNode('hover', 'Hover a selector.', 'autobrowser hover <selector>'),
+    helpNode('focus', 'Focus a selector.', 'autobrowser focus <selector>'),
+    helpNode('select', 'Select an option.', 'autobrowser select <selector> <value>'),
+    helpNode('check', 'Check a checkbox.', 'autobrowser check <selector>'),
+    helpNode('uncheck', 'Uncheck a checkbox.', 'autobrowser uncheck <selector>'),
+    helpNode('scroll', 'Scroll a page or element.', 'autobrowser scroll [selector] [deltaX] [deltaY]'),
+    helpNode('scrollintoview', 'Scroll a selector into view.', 'autobrowser scrollintoview <selector>'),
+    helpNode('drag', 'Drag between elements.', 'autobrowser drag <startSelector> [endSelector]'),
+    helpNode('upload', 'Upload files through a file input.', 'autobrowser upload <selector> <files...>'),
+    helpNode('frame', 'Select a frame.', 'autobrowser frame <selector|top>'),
+    helpNode('is', 'Check element state.', 'autobrowser is <visible|enabled|checked|disabled|focused> <selector>'),
+    helpNode('get', 'Read page or element data.', 'autobrowser get <text|html|value|title|url|cdp-url|count|attr|box|styles> [selector]'),
+    helpNode(
+      'dialog',
+      'Handle dialogs.',
+      'autobrowser dialog <accept|dismiss|status>',
+      undefined,
+      [
+        helpNode('accept', 'Accept the active dialog.', 'autobrowser dialog accept [promptText]'),
+        helpNode('dismiss', 'Dismiss the active dialog.', 'autobrowser dialog dismiss [promptText]'),
+        helpNode('status', 'Show dialog status.', 'autobrowser dialog status'),
+      ],
+    ),
+    helpNode(
+      'wait',
+      'Wait for a selector, text, URL, load state, function, or time.',
+      'autobrowser wait <selector|ms> [--state visible|hidden] [--timeout <ms>]',
+      ['--state <visible|hidden>', '--timeout <ms>', '--text <text>', '--url <pattern>', '--load [networkidle]', '--fn <expression>', '--ms <ms>'],
+    ),
+    helpNode(
+      'cookies',
+      'Inspect or update cookies.',
+      'autobrowser cookies <get|set|clear>',
+      undefined,
+      [
+        helpNode('get', 'List cookies.', 'autobrowser cookies get'),
+        helpNode('set', 'Set a cookie.', 'autobrowser cookies set <name> <value> [domain]'),
+        helpNode('clear', 'Clear cookies.', 'autobrowser cookies clear'),
+      ],
+    ),
+    helpNode(
+      'storage',
+      'Inspect or update storage.',
+      'autobrowser storage <get|set|clear>',
+      undefined,
+      [
+        helpNode('get', 'Read storage by key.', 'autobrowser storage get [key]'),
+        helpNode('set', 'Write storage by key.', 'autobrowser storage set <key> <value>'),
+        helpNode('clear', 'Clear storage.', 'autobrowser storage clear'),
+      ],
+    ),
+    helpNode('console', 'Read console output.', 'autobrowser console'),
+    helpNode('errors', 'Read page errors.', 'autobrowser errors'),
+    helpNode(
+      'set',
+      'Adjust browser state.',
+      'autobrowser set <viewport|offline|headers|geo|media>',
+      undefined,
+      [
+        helpNode('viewport', 'Set viewport settings.', 'autobrowser set viewport <width> <height> [deviceScaleFactor] [mobile]'),
+        helpNode('offline', 'Toggle offline mode.', 'autobrowser set offline [false]'),
+        helpNode('headers', 'Set request headers.', 'autobrowser set headers <name:value,...>'),
+        helpNode('geo', 'Set geolocation.', 'autobrowser set geo <latitude> <longitude> [accuracy]'),
+        helpNode('media', 'Set media emulation.', 'autobrowser set media <scheme>'),
+      ],
+    ),
+    helpNode('pdf', 'Export the current page as PDF.', 'autobrowser pdf'),
+    helpNode(
+      'clipboard',
+      'Read or write clipboard contents.',
+      'autobrowser clipboard <read|write>',
+      undefined,
+      [
+        helpNode('read', 'Read the clipboard.', 'autobrowser clipboard read'),
+        helpNode('write', 'Write to the clipboard.', 'autobrowser clipboard write [text]'),
+      ],
+    ),
+    helpNode(
+      'state',
+      'Save or load browser state.',
+      'autobrowser state <save|load>',
+      undefined,
+      [
+        helpNode('save', 'Save state.', 'autobrowser state save [name]'),
+        helpNode('load', 'Load state from a name or JSON payload.', 'autobrowser state load [name|json]'),
+      ],
+    ),
+    helpNode(
+      'network',
+      'Inspect and control network activity.',
+      'autobrowser network <route|unroute|requests|request|har>',
+      undefined,
+      [
+        helpNode('route', 'Add a network route.', 'autobrowser network route <url> [--abort] [--body <json>]', ['--abort', '--body <json>']),
+        helpNode('unroute', 'Remove a network route.', 'autobrowser network unroute [url]'),
+        helpNode('requests', 'List captured requests.', 'autobrowser network requests [--filter <text>] [--type <xhr,fetch>] [--method <POST>] [--status <2xx>]', ['--filter <text>', '--type <xhr,fetch>', '--method <POST>', '--status <2xx>']),
+        helpNode('request', 'Inspect a single request.', 'autobrowser network request <requestId>'),
+        helpNode(
+          'har',
+          'Record or stop HAR capture.',
+          'autobrowser network har <start|stop>',
+          undefined,
+          [
+            helpNode('start', 'Start HAR capture.', 'autobrowser network har start'),
+            helpNode('stop', 'Stop HAR capture and save it.', 'autobrowser network har stop [output.har]'),
+          ],
+        ),
+      ],
+    ),
+    helpNode(
+      'screenshot',
+      'Capture a screenshot.',
+      'autobrowser screenshot [path] [--full] [--annotate] [--screenshot-dir <dir>] [--screenshot-format png|jpeg] [--screenshot-quality <n>]',
+      ['--full', '--annotate', '--screenshot-dir <dir>', '--screenshot-format png|jpeg', '--screenshot-quality <n>'],
+    ),
+    helpNode('snapshot', 'Capture a page snapshot.', 'autobrowser snapshot'),
+  ],
+)
+
+const ROOT_HELP_FLAGS = [
+  '--json        output JSON',
+  '--server URL  target server base URL, default http://127.0.0.1:47979',
+  '--stdin       read command body from stdin',
+  '--file PATH   read command body from file',
+  '--base64      decode command body from base64',
+]
+
+function isHelpToken(value: string | undefined): boolean {
+  return value === '--help' || value === '-h' || value === 'help'
+}
+
+function resolveHelpNode(node: HelpNode, pathParts: string[]): { node: HelpNode; remainder: string[] } {
+  let current = node
+  let index = 0
+
+  for (; index < pathParts.length; index += 1) {
+    const next = current.children?.find((child) => child.name === pathParts[index])
+    if (!next) {
+      break
+    }
+    current = next
+  }
+
+  return {
+    node: current,
+    remainder: pathParts.slice(index),
+  }
+}
+
+function renderHelp(node: HelpNode, isRoot = false): string {
+  const lines: string[] = []
+  const newline = '\n'
+
+  lines.push(node.name)
+  lines.push('')
+  lines.push(node.summary)
+  lines.push('')
+  lines.push('Usage:')
+  lines.push(`  ${node.usage}`)
+
+  if (isRoot) {
+    lines.push('')
+    lines.push('Flags:')
+    for (const flag of ROOT_HELP_FLAGS) {
+      lines.push(`  ${flag}`)
+    }
+  }
+
+  if (!isRoot && node.options && node.options.length > 0) {
+    lines.push('')
+    lines.push('Options:')
+    for (const option of node.options) {
+      lines.push(`  ${option}`)
+    }
+  }
+
+  if (node.children && node.children.length > 0) {
+    lines.push('')
+    lines.push('Commands:')
+    for (const child of node.children) {
+      lines.push(`  ${child.name.padEnd(18)} ${child.summary}`)
+    }
+  }
+
+  return `${lines.join(newline)}${newline}`
+}
+
+function printHelp(pathParts: string[] = []): string {
+  const { node, remainder } = resolveHelpNode(HELP_ROOT, pathParts)
+  const rendered = renderHelp(node, node === HELP_ROOT)
+  if (remainder.length === 0) {
+    return rendered
+  }
+
+  return `${rendered}Unknown command path: ${remainder.join(' ')}\r\n`
+}
+
+function writeHelp(pathParts: string[] = []): 0 {
+  const normalized = printHelp(pathParts).replace(/\r\n?/g, '\n')
+  for (const line of normalized.split('\n')) {
+    process.stdout.write(`${line}\n`)
+  }
+  return 0
 }
 
 async function readStdin(): Promise<string> {
@@ -642,12 +849,18 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
     process.stdout.write(`${JSON.stringify(result, null, 2)}\n`)
   }
 
-  if (!command || command === 'help' || command === '--help' || command === '-h') {
-    process.stdout.write(printHelp())
-    return 0
+  if (!command) {
+    return writeHelp()
+  }
+
+  if (command === 'help' || command === '--help' || command === '-h') {
+    return writeHelp(rest)
   }
 
   if (command === 'server') {
+    if (isHelpToken(rest[0])) {
+      return writeHelp(['server'])
+    }
     if (await isPortInUse(flags.relayPort)) {
       process.stderr.write('Server already running on port ' + flags.relayPort + '\n')
       process.exit(1)
@@ -671,6 +884,9 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
   }
 
   if (command === 'connect') {
+    if (isHelpToken(rest[0])) {
+      return writeHelp(['connect'])
+    }
     const status = await getStatus(flags.server).catch(() => null)
     if (!status) {
       await openUrl(`http://127.0.0.1:${flags.relayPort}/connect`)
@@ -699,6 +915,9 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
   }
 
   if (command === 'status') {
+    if (isHelpToken(rest[0])) {
+      return writeHelp(['status'])
+    }
     const status = await getStatus(flags.server)
     writeResult(status)
     return 0
@@ -706,25 +925,38 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
 
   if (command === 'tab') {
     const [subcommand, ...tabArgs] = rest
+    if (isHelpToken(subcommand)) {
+      return writeHelp(['tab'])
+    }
     if (subcommand === 'list') {
+      if (isHelpToken(tabArgs[0])) {
+        return writeHelp(['tab', 'list'])
+      }
       const payload = await requestCommand(flags.server, 'tab.list', {})
       writeResult(payload)
       return 0
     }
 
     if (subcommand === 'new') {
+      if (isHelpToken(tabArgs[0])) {
+        return writeHelp(['tab', 'new'])
+      }
       const url = tabArgs[0] || 'about:blank'
       const payload = await requestCommand(flags.server, 'tab.new', { url })
       writeResult(payload)
       return 0
     }
+
+    return writeHelp(['tab'])
   }
 
   if (command === 'open' || command === 'goto') {
     const url = rest[0]
+    if (isHelpToken(url)) {
+      return writeHelp([command])
+    }
     if (!url) {
-      process.stderr.write('missing url\n')
-      return 1
+      return writeHelp([command])
     }
 
     const payload = await requestCommand(flags.server, 'goto', { url })
@@ -733,6 +965,9 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
   }
 
   if (command === 'eval') {
+    if (isHelpToken(rest[0])) {
+      return writeHelp(['eval'])
+    }
     const script = await resolveEvalScript(flags, rest)
     const payload = await requestCommand(flags.server, 'eval', { script })
     writeResult(payload)
@@ -741,9 +976,11 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
 
   if (command === 'click') {
     const selector = rest[0]
+    if (isHelpToken(selector)) {
+      return writeHelp(['click'])
+    }
     if (!selector) {
-      process.stderr.write('missing selector\n')
-      return 1
+      return writeHelp(['click'])
     }
 
     const payload = await requestCommand(flags.server, 'click', { selector })
@@ -753,9 +990,11 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
 
   if (command === 'dblclick') {
     const selector = rest[0]
+    if (isHelpToken(selector)) {
+      return writeHelp(['dblclick'])
+    }
     if (!selector) {
-      process.stderr.write('missing selector\n')
-      return 1
+      return writeHelp(['dblclick'])
     }
 
     const payload = await requestCommand(flags.server, 'dblclick', { selector })
@@ -766,9 +1005,11 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
   if (command === 'fill') {
     const selector = rest[0]
     const value = rest.slice(1).join(' ')
+    if (isHelpToken(selector)) {
+      return writeHelp(['fill'])
+    }
     if (!selector) {
-      process.stderr.write('missing selector\n')
-      return 1
+      return writeHelp(['fill'])
     }
 
     const payload = await requestCommand(flags.server, 'fill', {
@@ -781,9 +1022,16 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
 
   if (command === 'snapshot' || command === 'screenshot') {
     if (command === 'snapshot') {
+      if (isHelpToken(rest[0])) {
+        return writeHelp(['snapshot'])
+      }
       const payload = await requestCommand(flags.server, command, {})
       writeResult(payload)
       return 0
+    }
+
+    if (isHelpToken(rest[0])) {
+      return writeHelp(['screenshot'])
     }
 
     let screenshotArgs: ScreenshotArgs
@@ -827,9 +1075,11 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
 
   if (command === 'hover') {
     const selector = rest[0]
+    if (isHelpToken(selector)) {
+      return writeHelp(['hover'])
+    }
     if (!selector) {
-      process.stderr.write('missing selector\n')
-      return 1
+      return writeHelp(['hover'])
     }
     const payload = await requestCommand(flags.server, 'hover', { selector })
     writeResult(payload)
@@ -838,9 +1088,11 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
 
   if (command === 'press') {
     const key = rest[0]
+    if (isHelpToken(key)) {
+      return writeHelp(['press'])
+    }
     if (!key) {
-      process.stderr.write('missing key\n')
-      return 1
+      return writeHelp(['press'])
     }
     const payload = await requestCommand(flags.server, 'press', { key })
     writeResult(payload)
@@ -849,9 +1101,11 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
 
   if (command === 'focus') {
     const selector = rest[0]
+    if (isHelpToken(selector)) {
+      return writeHelp(['focus'])
+    }
     if (!selector) {
-      process.stderr.write('missing selector\n')
-      return 1
+      return writeHelp(['focus'])
     }
     const payload = await requestCommand(flags.server, 'focus', { selector })
     writeResult(payload)
@@ -861,9 +1115,11 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
   if (command === 'select') {
     const selector = rest[0]
     const value = rest[1]
+    if (isHelpToken(selector)) {
+      return writeHelp(['select'])
+    }
     if (!selector || value === undefined) {
-      process.stderr.write('missing selector or value\n')
-      return 1
+      return writeHelp(['select'])
     }
     const payload = await requestCommand(flags.server, 'select', {
       selector,
@@ -875,9 +1131,11 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
 
   if (command === 'check') {
     const selector = rest[0]
+    if (isHelpToken(selector)) {
+      return writeHelp(['check'])
+    }
     if (!selector) {
-      process.stderr.write('missing selector\n')
-      return 1
+      return writeHelp(['check'])
     }
     const payload = await requestCommand(flags.server, 'check', { selector })
     writeResult(payload)
@@ -886,9 +1144,11 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
 
   if (command === 'uncheck') {
     const selector = rest[0]
+    if (isHelpToken(selector)) {
+      return writeHelp(['uncheck'])
+    }
     if (!selector) {
-      process.stderr.write('missing selector\n')
-      return 1
+      return writeHelp(['uncheck'])
     }
     const payload = await requestCommand(flags.server, 'uncheck', { selector })
     writeResult(payload)
@@ -897,6 +1157,9 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
 
   if (command === 'scroll') {
     const selector = rest[0]
+    if (isHelpToken(selector)) {
+      return writeHelp(['scroll'])
+    }
     const deltaX = Number(rest[1] || 0)
     const deltaY = Number(rest[2] || 100)
     const payload = await requestCommand(flags.server, 'scroll', {
@@ -911,9 +1174,11 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
   if (command === 'drag') {
     const start = rest[0]
     const end = rest[1]
+    if (isHelpToken(start)) {
+      return writeHelp(['drag'])
+    }
     if (!start) {
-      process.stderr.write('missing start selector\n')
-      return 1
+      return writeHelp(['drag'])
     }
     const payload = await requestCommand(flags.server, 'drag', {
       start,
@@ -926,13 +1191,14 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
   if (command === 'upload') {
     const selector = rest[0]
     const files = rest.slice(1)
+    if (isHelpToken(selector)) {
+      return writeHelp(['upload'])
+    }
     if (!selector) {
-      process.stderr.write('missing selector\n')
-      return 1
+      return writeHelp(['upload'])
     }
     if (!files || files.length === 0) {
-      process.stderr.write('missing files\n')
-      return 1
+      return writeHelp(['upload'])
     }
     const payload = await requestCommand(flags.server, 'upload', {
       selector,
@@ -943,12 +1209,18 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
   }
 
   if (command === 'back') {
+    if (isHelpToken(rest[0])) {
+      return writeHelp(['back'])
+    }
     const payload = await requestCommand(flags.server, 'back', {})
     writeResult(payload)
     return 0
   }
 
   if (command === 'forward') {
+    if (isHelpToken(rest[0])) {
+      return writeHelp(['forward'])
+    }
     const payload = await requestCommand(flags.server, 'forward', {})
     writeResult(payload)
     return 0
@@ -957,9 +1229,11 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
   if (command === 'type') {
     const selector = rest[0]
     const value = rest.slice(1).join(' ')
+    if (isHelpToken(selector)) {
+      return writeHelp(['type'])
+    }
     if (!selector) {
-      process.stderr.write('missing selector\n')
-      return 1
+      return writeHelp(['type'])
     }
 
     const payload = await requestCommand(flags.server, 'type', {
@@ -973,9 +1247,8 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
   if (command === 'keyboard') {
     const action = rest[0]
     const value = rest.slice(1).join(' ')
-    if (!action || !['type', 'inserttext', 'keydown', 'keyup'].includes(action)) {
-      process.stderr.write('usage: keyboard type|inserttext|keydown|keyup <text>\n')
-      return 1
+    if (isHelpToken(action) || !action || !['type', 'inserttext', 'keydown', 'keyup'].includes(action)) {
+      return writeHelp(['keyboard'])
     }
 
     const payload = await requestCommand(flags.server, 'keyboard', {
@@ -987,12 +1260,18 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
   }
 
   if (command === 'reload') {
+    if (isHelpToken(rest[0])) {
+      return writeHelp(['reload'])
+    }
     const payload = await requestCommand(flags.server, 'reload', {})
     writeResult(payload)
     return 0
   }
 
   if (command === 'close' || command === 'quit' || command === 'exit') {
+    if (isHelpToken(rest[0])) {
+      return writeHelp(['close'])
+    }
     const all = rest[0] === 'all' || rest[0] === '--all'
     const payload = await requestCommand(flags.server, 'close', { all })
     writeResult(payload)
@@ -1001,6 +1280,9 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
 
   if (command === 'window') {
     const action = rest[0]
+    if (isHelpToken(action)) {
+      return writeHelp(['window'])
+    }
     if (action === 'new') {
       const payload = await requestCommand(flags.server, 'window', {
         action: 'new',
@@ -1008,15 +1290,16 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
       writeResult(payload)
       return 0
     }
-    process.stderr.write('unknown window action, use: window new\n')
-    return 1
+    return writeHelp(['window'])
   }
 
   if (command === 'frame') {
     const selector = rest[0]
+    if (isHelpToken(selector)) {
+      return writeHelp(['frame'])
+    }
     if (!selector) {
-      process.stderr.write('missing selector\n')
-      return 1
+      return writeHelp(['frame'])
     }
     const payload = await requestCommand(flags.server, 'frame', { selector })
     writeResult(payload)
@@ -1025,9 +1308,11 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
 
   if (command === 'scrollintoview') {
     const selector = rest[0]
+    if (isHelpToken(selector)) {
+      return writeHelp(['scrollintoview'])
+    }
     if (!selector) {
-      process.stderr.write('missing selector\n')
-      return 1
+      return writeHelp(['scrollintoview'])
     }
 
     const payload = await requestCommand(flags.server, 'scrollintoview', { selector })
@@ -1038,9 +1323,11 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
   if (command === 'is') {
     const state = rest[0] || 'visible'
     const selector = rest[1]
+    if (isHelpToken(state) || isHelpToken(selector)) {
+      return writeHelp(['is'])
+    }
     if (!selector) {
-      process.stderr.write('missing selector\n')
-      return 1
+      return writeHelp(['is'])
     }
     const payload = await requestCommand(flags.server, 'is', {
       selector,
@@ -1064,6 +1351,9 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
   if (command === 'get') {
     const attr = rest[0] || 'text'
     const selector = rest[1]
+    if (isHelpToken(attr) || isHelpToken(selector)) {
+      return writeHelp(['get'])
+    }
 
     if (attr === 'cdp-url') {
       try {
@@ -1077,8 +1367,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
     }
 
     if (commandNeedsSelector(attr) && !selector) {
-      process.stderr.write('missing selector\n')
-      return 1
+      return writeHelp(['get'])
     }
     const payload = await requestCommand(flags.server, 'get', {
       selector,
@@ -1090,12 +1379,18 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
 
   if (command === 'dialog') {
     const action = rest[0]
+    if (isHelpToken(action)) {
+      return writeHelp(['dialog'])
+    }
     if (action === 'status') {
       const payload = await requestCommand(flags.server, 'dialog', {
         action: 'status',
       })
       writeResult(payload)
       return 0
+    }
+    if (!action || !['accept', 'dismiss'].includes(action)) {
+      return writeHelp(['dialog'])
     }
     const promptText = rest.slice(1).join(' ')
     const accept = action !== 'dismiss'
@@ -1108,6 +1403,9 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
   }
 
   if (command === 'wait') {
+    if (isHelpToken(rest[0])) {
+      return writeHelp(['wait'])
+    }
     let waitArgs: WaitArgs
     try {
       waitArgs = parseWaitArgs(rest)
@@ -1123,6 +1421,9 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
 
   if (command === 'cookies') {
     const action = rest[0]
+    if (isHelpToken(action)) {
+      return writeHelp(['cookies'])
+    }
     if (action === 'get') {
       const payload = await requestCommand(flags.server, 'cookies', {
         action: 'get',
@@ -1135,8 +1436,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
       const value = rest[2]
       const domain = rest[3]
       if (!name || !value) {
-        process.stderr.write('usage: cookies set <name> <value> [domain]\n')
-        return 1
+        return writeHelp(['cookies', 'set'])
       }
       const payload = await requestCommand(flags.server, 'cookies', {
         action: 'set',
@@ -1154,12 +1454,14 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
       writeResult(payload)
       return 0
     }
-    process.stderr.write('usage: cookies get|set|clear\n')
-    return 1
+    return writeHelp(['cookies'])
   }
 
   if (command === 'storage') {
     const action = rest[0]
+    if (isHelpToken(action)) {
+      return writeHelp(['storage'])
+    }
     if (action === 'get') {
       const key = rest[1]
       const payload = await requestCommand(flags.server, 'storage', {
@@ -1173,8 +1475,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
       const key = rest[1]
       const value = rest[2]
       if (!key || value === undefined) {
-        process.stderr.write('usage: storage set <key> <value>\n')
-        return 1
+        return writeHelp(['storage', 'set'])
       }
       const payload = await requestCommand(flags.server, 'storage', {
         action: 'set',
@@ -1191,17 +1492,22 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
       writeResult(payload)
       return 0
     }
-    process.stderr.write('usage: storage get|set|clear\n')
-    return 1
+    return writeHelp(['storage'])
   }
 
   if (command === 'console') {
+    if (isHelpToken(rest[0])) {
+      return writeHelp(['console'])
+    }
     const payload = await requestCommand(flags.server, 'console', {})
     writeResult(payload)
     return 0
   }
 
   if (command === 'errors') {
+    if (isHelpToken(rest[0])) {
+      return writeHelp(['errors'])
+    }
     const payload = await requestCommand(flags.server, 'errors', {})
     writeResult(payload)
     return 0
@@ -1210,6 +1516,9 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
   if (command === 'set') {
     const type = rest[0]
     const subArgs = rest.slice(1)
+    if (isHelpToken(type)) {
+      return writeHelp(['set'])
+    }
 
     if (type === 'viewport') {
       const width = Number(subArgs[0] || 1280)
@@ -1273,13 +1582,13 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
       writeResult(payload)
       return 0
     }
-    process.stderr.write(
-      'usage: set viewport <w> <h>|offline|headers <json>|geo <lat> <lng>|media <scheme>\n',
-    )
-    return 1
+    return writeHelp(['set'])
   }
 
   if (command === 'pdf') {
+    if (isHelpToken(rest[0])) {
+      return writeHelp(['pdf'])
+    }
     const payload = await requestCommand(flags.server, 'pdf', {})
     writeResult(payload)
     return 0
@@ -1287,6 +1596,9 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
 
   if (command === 'clipboard') {
     const action = rest[0]
+    if (isHelpToken(action)) {
+      return writeHelp(['clipboard'])
+    }
     if (action === 'read') {
       const payload = await requestCommand(flags.server, 'clipboard', {
         action: 'read',
@@ -1303,12 +1615,14 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
       writeResult(payload)
       return 0
     }
-    process.stderr.write('usage: clipboard read|write <text>\n')
-    return 1
+    return writeHelp(['clipboard'])
   }
 
   if (command === 'state') {
     const action = rest[0]
+    if (isHelpToken(action)) {
+      return writeHelp(['state'])
+    }
     if (action === 'save') {
       const name = rest[1] || 'default'
       const payload = await requestCommand(flags.server, 'state', {
@@ -1321,8 +1635,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
     if (action === 'load') {
       const stateValue = rest.slice(1).join(' ').trim()
       if (!stateValue) {
-        process.stderr.write('usage: state save|load <json>\n')
-        return 1
+        return writeHelp(['state', 'load'])
       }
 
       try {
@@ -1346,15 +1659,23 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
       writeResult(payload)
       return 0
     }
-    process.stderr.write('usage: state save|load <json>\n')
-    return 1
+    return writeHelp(['state'])
   }
 
   if (command === 'network') {
     const action = rest[0]
+    if (isHelpToken(action)) {
+      return writeHelp(['network'])
+    }
+    if (!action) {
+      return writeHelp(['network'])
+    }
 
     if (action === 'route') {
       let routeArgs: { url: string; abort: boolean; body?: unknown }
+      if (isHelpToken(rest[1])) {
+        return writeHelp(['network', 'route'])
+      }
       try {
         routeArgs = parseNetworkRouteArgs(rest.slice(1))
       } catch (error) {
@@ -1363,8 +1684,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
       }
 
       if (!routeArgs.url) {
-        process.stderr.write('usage: network route <url> [--abort] [--body <json>]\n')
-        return 1
+        return writeHelp(['network', 'route'])
       }
 
       const payload = await requestCommand(flags.server, 'network', {
@@ -1378,6 +1698,9 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
     }
 
     if (action === 'unroute') {
+      if (isHelpToken(rest[1])) {
+        return writeHelp(['network', 'unroute'])
+      }
       const url = rest[1] || ''
       const payload = await requestCommand(flags.server, 'network', {
         action: 'unroute',
@@ -1388,6 +1711,9 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
     }
 
     if (action === 'requests') {
+      if (isHelpToken(rest[1])) {
+        return writeHelp(['network', 'requests'])
+      }
       const payload = await requestCommand(flags.server, 'network', {
         action: 'requests',
         ...parseNetworkRequestsArgs(rest.slice(1)),
@@ -1398,9 +1724,11 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
 
     if (action === 'request') {
       const requestId = rest[1]
+      if (isHelpToken(requestId)) {
+        return writeHelp(['network', 'request'])
+      }
       if (!requestId) {
-        process.stderr.write('usage: network request <requestId>\n')
-        return 1
+        return writeHelp(['network', 'request'])
       }
 
       const payload = await requestCommand(flags.server, 'network', {
@@ -1413,6 +1741,9 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
 
     if (action === 'har') {
       const subaction = rest[1]
+      if (isHelpToken(subaction)) {
+        return writeHelp(['network', 'har'])
+      }
       if (subaction === 'start') {
         const payload = await requestCommand(flags.server, 'network', {
           action: 'har',
@@ -1441,12 +1772,10 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
         return 0
       }
 
-      process.stderr.write('usage: network har start|stop [output.har]\n')
-      return 1
+      return writeHelp(['network', 'har'])
     }
 
-    process.stderr.write('usage: network route|unroute|requests|request|har\n')
-    return 1
+    return writeHelp(['network'])
   }
 
   process.stderr.write(`${printHelp()}\n`)
