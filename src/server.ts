@@ -316,8 +316,6 @@ export async function startServers(options: ServerOptions = {}): Promise<StartSe
     },
   })
 
-  await runtime.persist()
-
   return {
     runtime,
     relayServer,

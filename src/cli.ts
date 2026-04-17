@@ -1425,7 +1425,8 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
     }
 
     if (commandNeedsSelector(attr) && !selector) {
-      return writeHelp(['get'])
+      process.stderr.write('missing selector\n')
+      return 1
     }
     const payload = await requestCommand(flags.server, 'get', {
       selector,
