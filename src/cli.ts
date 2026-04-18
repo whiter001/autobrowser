@@ -7,8 +7,21 @@ import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import os from 'node:os'
 import path from 'node:path'
+import {
+  resolveBrowserLaunchConfig,
+  resolveExtensionId,
+  type BrowserLaunchConfig,
+} from './core/config.js'
 import { getExtensionUrl } from './core/extension.js'
-import { DEFAULT_IPC_PORT, DEFAULT_RELAY_PORT, isPortInUse } from './core/protocol.js'
+import {
+  DEFAULT_IPC_PORT,
+  DEFAULT_RELAY_PORT,
+  getHomeDir,
+  getStatePath,
+  getTokenPath,
+  isPortInUse,
+  readJsonFile,
+} from './core/protocol.js'
 import { startServers } from './server.js'
 
 const execFileAsync = promisify(execFile)
@@ -18,6 +31,9 @@ interface CliFlags {
   server: string
   relayPort: number
   ipcPort: number
+  extensionId: string | null
+  browserCommand: string | null
+  browserArgs: string[]
   stdin: boolean
   file: string | null
   base64: boolean
@@ -28,12 +44,19 @@ interface ParsedCli {
   args: string[]
 }
 
+interface CliDependencies {
+  openUrl?: (url: string, browserConfig: BrowserLaunchConfig | null) => Promise<void>
+}
+
 function parseCli(argv: string[]): ParsedCli {
   const flags: CliFlags = {
     json: false,
     server: `http://127.0.0.1:${DEFAULT_IPC_PORT}`,
     relayPort: DEFAULT_RELAY_PORT,
     ipcPort: DEFAULT_IPC_PORT,
+    extensionId: process.env.AUTOBROWSER_EXTENSION_ID || null,
+    browserCommand: null,
+    browserArgs: [],
     stdin: false,
     file: null,
     base64: false,
@@ -83,6 +106,24 @@ function parseCli(argv: string[]): ParsedCli {
       if (!serverExplicitlySet) {
         flags.server = `http://127.0.0.1:${flags.ipcPort}`
       }
+      index += 1
+      continue
+    }
+
+    if (value === '--extension-id') {
+      flags.extensionId = argv[index + 1] || flags.extensionId
+      index += 1
+      continue
+    }
+
+    if (value === '--browser-command') {
+      flags.browserCommand = argv[index + 1] || flags.browserCommand
+      index += 1
+      continue
+    }
+
+    if (value === '--browser-arg') {
+      flags.browserArgs.push(argv[index + 1] || '')
       index += 1
       continue
     }
@@ -469,12 +510,29 @@ const HELP_ROOT = helpNode(
   'autobrowser',
   'Browser automation CLI for controlling Chrome/Edge through a relay server and extension.',
   'autobrowser [command] [options]',
-  ['--json', '--server <url>', '--stdin', '--file <path>', '--base64'],
+  [
+    '--json',
+    '--server <url>',
+    '--stdin',
+    '--file <path>',
+    '--base64',
+    '--extension-id <id>',
+    '--browser-command <command>',
+    '--browser-arg <arg>',
+  ],
   [
     helpNode('help', 'Show help for a command path.', 'autobrowser help [command ...]'),
-    helpNode('server', 'Start the relay and IPC servers.', 'autobrowser server'),
+    helpNode(
+      'server',
+      'Start the relay and IPC servers.',
+      'autobrowser server [--extension-id <id>] [--browser-command <command>] [--browser-arg <arg>]',
+    ),
     helpNode('status', 'Show server status.', 'autobrowser status'),
-    helpNode('connect', 'Open the extension connect page.', 'autobrowser connect'),
+    helpNode(
+      'connect',
+      'Open the extension connect page.',
+      'autobrowser connect [--extension-id <id>] [--browser-command <command>] [--browser-arg <arg>]',
+    ),
     helpNode('tab', 'Manage tabs.', 'autobrowser tab <list|new>', undefined, [
       helpNode('list', 'List tabs.', 'autobrowser tab list'),
       helpNode('new', 'Open a new tab.', 'autobrowser tab new <url>'),
@@ -772,7 +830,15 @@ async function readStdin(): Promise<string> {
   return content
 }
 
-async function openUrl(url: string): Promise<void> {
+async function openUrl(
+  url: string,
+  browserConfig: BrowserLaunchConfig | null,
+): Promise<void> {
+  if (browserConfig?.command) {
+    await execFileAsync(browserConfig.command, [...browserConfig.args, url])
+    return
+  }
+
   const platform = process.platform
   if (platform === 'darwin') {
     await execFileAsync('open', [url])
@@ -812,6 +878,57 @@ async function requestCommand(
 async function getStatus(baseUrl: string): Promise<Record<string, unknown>> {
   const response = await fetch(`${baseUrl}/status`)
   return (await response.json()) as Record<string, unknown>
+}
+
+function normalizeSavedPort(value: unknown, fallback: number): number {
+  const port = Number(value)
+  return Number.isInteger(port) && port >= 1 && port <= 65535 ? port : fallback
+}
+
+function readPersistedToken(
+  stateRecord: Record<string, unknown> | null,
+  tokenRecord: Record<string, unknown> | null,
+): string {
+  const stateToken = typeof stateRecord?.token === 'string' ? stateRecord.token : ''
+  if (stateToken) {
+    return stateToken
+  }
+
+  return typeof tokenRecord?.token === 'string' ? tokenRecord.token : ''
+}
+
+async function readPersistedConnectionInfo(
+  fallbackRelayPort: number,
+  fallbackIpcPort: number,
+): Promise<{ token: string; relayPort: number; ipcPort: number } | null> {
+  const homeDir = getHomeDir()
+  const [stateResult, tokenFileResult] = await Promise.allSettled([
+    readJsonFile<{
+      token?: unknown
+      relayPort?: unknown
+      ipcPort?: unknown
+    } | null>(getStatePath(homeDir), null),
+    readJsonFile<{ token?: unknown } | null>(getTokenPath(homeDir), null),
+  ])
+
+  const state = stateResult.status === 'fulfilled' ? stateResult.value : null
+  const tokenFile = tokenFileResult.status === 'fulfilled' ? tokenFileResult.value : null
+
+  const stateRecord = state && typeof state === 'object' ? (state as Record<string, unknown>) : null
+  const tokenRecord =
+    tokenFile && typeof tokenFile === 'object' ? (tokenFile as Record<string, unknown>) : null
+
+  const token = readPersistedToken(stateRecord, tokenRecord)
+
+  if (!token) {
+    return null
+  }
+
+  return {
+    token,
+    relayPort: normalizeSavedPort(stateRecord?.relayPort, fallbackRelayPort),
+    ipcPort: normalizeSavedPort(stateRecord?.ipcPort, fallbackIpcPort),
+  }
 }
 
 async function resolveEvalScript(flags: CliFlags, rest: string[]): Promise<string> {
@@ -855,9 +972,18 @@ interface ScreenshotArgs {
   quality: number | null
 }
 
-export async function main(argv: string[] = process.argv.slice(2)): Promise<number | void> {
+export async function main(
+  argv: string[] = process.argv.slice(2),
+  dependencies: CliDependencies = {},
+): Promise<number | void> {
   const { flags, args } = parseCli(argv)
   const [command, ...rest] = args
+  const homeDir = getHomeDir()
+  const launchUrl = dependencies.openUrl ?? openUrl
+
+  const openRelayConnectPage = async (relayPort: number): Promise<void> => {
+    await launchUrl(`http://127.0.0.1:${relayPort}/connect`, null)
+  }
 
   function writeResult(
     payload:
@@ -917,9 +1043,11 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
       process.stderr.write('Server already running on port ' + flags.relayPort + '\n')
       process.exit(1)
     }
+    const extensionId = await resolveExtensionId(homeDir, flags.extensionId)
     const servers = await startServers({
       relayPort: flags.relayPort,
       ipcPort: flags.ipcPort,
+      extensionId,
     })
     process.stdout.write(
       `autobrowser server started\nrelay: http://127.0.0.1:${servers.runtime.runtime.relayPort}\nipc: http://127.0.0.1:${servers.runtime.runtime.ipcPort}\n`,
@@ -940,28 +1068,46 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
       return writeHelp(['connect'])
     }
     const status = await getStatus(flags.server).catch(() => null)
-    if (!status) {
-      await openUrl(`http://127.0.0.1:${flags.relayPort}/connect`)
+    const persistedConnectionInfo = await readPersistedConnectionInfo(
+      flags.relayPort,
+      flags.ipcPort,
+    )
+    const token =
+      typeof status?.token === 'string' && status.token
+        ? status.token
+        : persistedConnectionInfo?.token || ''
+    const relayPort = normalizeSavedPort(
+      status?.relayPort ?? persistedConnectionInfo?.relayPort,
+      flags.relayPort,
+    )
+    const ipcPort = normalizeSavedPort(
+      status?.ipcPort ?? persistedConnectionInfo?.ipcPort,
+      flags.ipcPort,
+    )
+
+    if (!token) {
+      await openRelayConnectPage(relayPort)
       return 0
     }
 
-    const token = typeof status.token === 'string' ? status.token : ''
-    const relayPort = Number(status.relayPort || flags.relayPort)
-    if (!token) {
-      await openUrl(`http://127.0.0.1:${relayPort}/connect`)
-      return 0
-    }
+    const browserConfig = await resolveBrowserLaunchConfig(
+      homeDir,
+      flags.browserCommand,
+      flags.browserArgs,
+    )
+    const extensionId = await resolveExtensionId(homeDir, flags.extensionId)
 
     try {
-      await openUrl(
+      await launchUrl(
         getExtensionUrl('/connect.html', {
           token,
           relayPort,
-          ipcPort: Number(status.ipcPort || flags.ipcPort),
-        }),
+          ipcPort,
+        }, extensionId),
+        browserConfig,
       )
     } catch {
-      await openUrl(`http://127.0.0.1:${relayPort}/connect`)
+      await openRelayConnectPage(relayPort)
     }
     return 0
   }

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from 'bun:test'
-import { mkdtemp, readFile } from 'node:fs/promises'
+import { chmod, mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { main } from '../src/cli.js'
@@ -7,6 +7,7 @@ import { main } from '../src/cli.js'
 const originalFetch = globalThis.fetch
 const originalStdoutWrite = process.stdout.write.bind(process.stdout)
 const originalStderrWrite = process.stderr.write.bind(process.stderr)
+const originalAutobrowserHome = process.env.AUTOBROWSER_HOME
 
 function interceptStream(chunks) {
   return (chunk, encoding, callback) => {
@@ -21,10 +22,20 @@ function interceptStream(chunks) {
   }
 }
 
-async function runCli(argv, payload = { ok: true, result: { ok: true } }) {
+async function runCli(
+  argv,
+  payload = { ok: true, result: { ok: true } },
+  options = {},
+) {
   const fetchCalls = []
   const stdout = []
   const stderr = []
+  const openCalls = []
+  const browserCalls = []
+  const previousAutobrowserHome = process.env.AUTOBROWSER_HOME
+  const homeDir = options.homeDir || (await mkdtemp(path.join(os.tmpdir(), 'autobrowser-home-run-')))
+
+  process.env.AUTOBROWSER_HOME = homeDir
 
   globalThis.fetch = async (url, init = {}) => {
     fetchCalls.push({
@@ -32,6 +43,11 @@ async function runCli(argv, payload = { ok: true, result: { ok: true } }) {
       init,
       body: init.body ? JSON.parse(init.body) : null,
     })
+
+    if (options.fetchImpl) {
+      return options.fetchImpl(url, init)
+    }
+
     return {
       async json() {
         return payload
@@ -42,13 +58,35 @@ async function runCli(argv, payload = { ok: true, result: { ok: true } }) {
   process.stdout.write = interceptStream(stdout)
   process.stderr.write = interceptStream(stderr)
 
-  const exitCode = await main(argv)
+  try {
+    const exitCode = await main(argv, {
+      openUrl: options.openUrl
+        ? async (url, browserConfig) => {
+            openCalls.push(url)
+            browserCalls.push(browserConfig)
+            await options.openUrl(url, browserConfig)
+          }
+        : undefined,
+    })
 
-  return {
-    exitCode,
-    fetchCalls,
-    stdout: stdout.join(''),
-    stderr: stderr.join(''),
+    return {
+      exitCode,
+      fetchCalls,
+      openCalls,
+      browserCalls,
+      stdout: stdout.join(''),
+      stderr: stderr.join(''),
+    }
+  } finally {
+    globalThis.fetch = originalFetch
+    process.stdout.write = originalStdoutWrite
+    process.stderr.write = originalStderrWrite
+
+    if (previousAutobrowserHome === undefined) {
+      delete process.env.AUTOBROWSER_HOME
+    } else {
+      process.env.AUTOBROWSER_HOME = previousAutobrowserHome
+    }
   }
 }
 
@@ -56,6 +94,11 @@ afterEach(() => {
   globalThis.fetch = originalFetch
   process.stdout.write = originalStdoutWrite
   process.stderr.write = originalStderrWrite
+  if (originalAutobrowserHome === undefined) {
+    delete process.env.AUTOBROWSER_HOME
+  } else {
+    process.env.AUTOBROWSER_HOME = originalAutobrowserHome
+  }
 })
 
 describe('cli command routing', () => {
@@ -81,6 +124,227 @@ describe('cli command routing', () => {
     expect(result.fetchCalls).toHaveLength(1)
     expect(String(result.fetchCalls[0].url)).toBe('http://127.0.0.1:47979/status')
     expect(result.stdout).toContain('ws://127.0.0.1:48001/ws?token=test-token')
+  })
+
+  test('connect opens the extension page when the server reports a token', async () => {
+    const result = await runCli(
+      ['connect'],
+      { ok: true, token: 'live-token', relayPort: 48011, ipcPort: 48012 },
+      {
+        openUrl: async () => {},
+      },
+    )
+
+    expect(result.exitCode).toBe(0)
+    expect(result.fetchCalls).toHaveLength(1)
+    expect(String(result.fetchCalls[0].url)).toBe('http://127.0.0.1:47979/status')
+    expect(result.openCalls).toEqual([
+      'chrome-extension://bfccnpkjkbhceghimfjgnkigilidldep/connect.html?token=live-token&relayPort=48011&ipcPort=48012',
+    ])
+    expect(result.browserCalls).toEqual([null])
+  })
+
+  test('connect honors an explicit extension id override', async () => {
+    const result = await runCli(
+      ['connect', '--extension-id', 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'],
+      { ok: true, token: 'live-token', relayPort: 48011, ipcPort: 48012 },
+      {
+        openUrl: async () => {},
+      },
+    )
+
+    expect(result.exitCode).toBe(0)
+    expect(result.openCalls).toEqual([
+      'chrome-extension://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/connect.html?token=live-token&relayPort=48011&ipcPort=48012',
+    ])
+  })
+
+  test('connect persists the extension id for later runs', async () => {
+    const homeDir = await mkdtemp(path.join(os.tmpdir(), 'autobrowser-config-test-'))
+
+    const firstResult = await runCli(
+      ['connect', '--extension-id', 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'],
+      { ok: true, token: 'live-token', relayPort: 48011, ipcPort: 48012 },
+      {
+        homeDir,
+        openUrl: async () => {},
+      },
+    )
+
+    expect(firstResult.exitCode).toBe(0)
+    const configPath = path.join(homeDir, '.autobrowser', 'config.json')
+    expect(JSON.parse(await readFile(configPath, 'utf8'))).toEqual({
+      extensionId: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+    })
+
+    const secondResult = await runCli(
+      ['connect'],
+      { ok: true, token: 'live-token', relayPort: 48011, ipcPort: 48012 },
+      {
+        homeDir,
+        openUrl: async () => {},
+      },
+    )
+
+    expect(secondResult.exitCode).toBe(0)
+    expect(secondResult.openCalls).toEqual([
+      'chrome-extension://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/connect.html?token=live-token&relayPort=48011&ipcPort=48012',
+    ])
+  })
+
+  test('connect persists the browser command for later runs', async () => {
+    const homeDir = await mkdtemp(path.join(os.tmpdir(), 'autobrowser-browser-config-'))
+    const browserCommand = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
+    const browserArg = '--profile-directory=Profile 1'
+
+    const firstResult = await runCli(
+      ['connect', '--browser-command', browserCommand, '--browser-arg', browserArg],
+      { ok: true, token: 'live-token', relayPort: 48011, ipcPort: 48012 },
+      {
+        homeDir,
+        openUrl: async () => {},
+      },
+    )
+
+    expect(firstResult.exitCode).toBe(0)
+    expect(firstResult.browserCalls).toEqual([
+      {
+        command: browserCommand,
+        args: [browserArg],
+      },
+    ])
+    const configPath = path.join(homeDir, '.autobrowser', 'config.json')
+    expect(JSON.parse(await readFile(configPath, 'utf8'))).toEqual({
+      extensionId: 'bfccnpkjkbhceghimfjgnkigilidldep',
+      browserCommand,
+      browserArgs: [browserArg],
+    })
+
+    const secondResult = await runCli(
+      ['connect'],
+      { ok: true, token: 'live-token', relayPort: 48011, ipcPort: 48012 },
+      {
+        homeDir,
+        openUrl: async () => {},
+      },
+    )
+
+    expect(secondResult.exitCode).toBe(0)
+    expect(secondResult.browserCalls).toEqual([
+      {
+        command: browserCommand,
+        args: [browserArg],
+      },
+    ])
+  })
+
+  test('connect repairs an invalid persisted extension id', async () => {
+    const homeDir = await mkdtemp(path.join(os.tmpdir(), 'autobrowser-invalid-config-'))
+    const stateDir = path.join(homeDir, '.autobrowser')
+    await mkdir(stateDir, { recursive: true })
+    await writeFile(
+      path.join(stateDir, 'config.json'),
+      JSON.stringify({
+        extensionId: 'invalid-extension-id',
+      }),
+    )
+
+    const result = await runCli(
+      ['connect'],
+      { ok: true, token: 'live-token', relayPort: 48011, ipcPort: 48012 },
+      {
+        homeDir,
+        openUrl: async () => {},
+      },
+    )
+
+    expect(result.exitCode).toBe(0)
+    expect(result.openCalls).toEqual([
+      'chrome-extension://bfccnpkjkbhceghimfjgnkigilidldep/connect.html?token=live-token&relayPort=48011&ipcPort=48012',
+    ])
+    expect(JSON.parse(await readFile(path.join(stateDir, 'config.json'), 'utf8'))).toEqual({
+      extensionId: 'bfccnpkjkbhceghimfjgnkigilidldep',
+    })
+  })
+
+  test('connect falls back to persisted token and ports when status is unavailable', async () => {
+    const homeDir = await mkdtemp(path.join(os.tmpdir(), 'autobrowser-home-'))
+    const stateDir = path.join(homeDir, '.autobrowser')
+    await mkdir(stateDir, { recursive: true })
+    await writeFile(
+      path.join(stateDir, 'state.json'),
+      JSON.stringify({
+        token: 'saved-token',
+        relayPort: 49001,
+        ipcPort: 49002,
+      }),
+    )
+    await writeFile(path.join(stateDir, 'token'), JSON.stringify({ token: 'saved-token' }))
+
+    const result = await runCli(
+      ['connect'],
+      { ok: true, result: { ok: true } },
+      {
+        homeDir,
+        fetchImpl: async () => {
+          throw new Error('status unavailable')
+        },
+        openUrl: async () => {},
+      },
+    )
+
+    expect(result.exitCode).toBe(0)
+    expect(result.fetchCalls).toHaveLength(1)
+    expect(result.openCalls).toEqual([
+      'chrome-extension://bfccnpkjkbhceghimfjgnkigilidldep/connect.html?token=saved-token&relayPort=49001&ipcPort=49002',
+    ])
+  })
+
+  test('connect falls back to the relay page when no token is available', async () => {
+    const homeDir = await mkdtemp(path.join(os.tmpdir(), 'autobrowser-home-empty-'))
+
+    const result = await runCli(
+      ['connect'],
+      { ok: true, result: { ok: true } },
+      {
+        homeDir,
+        fetchImpl: async () => {
+          throw new Error('status unavailable')
+        },
+        openUrl: async () => {},
+      },
+    )
+
+    expect(result.exitCode).toBe(0)
+    expect(result.fetchCalls).toHaveLength(1)
+    expect(result.openCalls).toEqual(['http://127.0.0.1:47978/connect'])
+  })
+
+  test('connect keeps working when config persistence is unavailable', async () => {
+    const homeDir = await mkdtemp(path.join(os.tmpdir(), 'autobrowser-readonly-home-'))
+    const stateDir = path.join(homeDir, '.autobrowser')
+    await mkdir(stateDir, { recursive: true })
+    await chmod(stateDir, 0o500)
+
+    const result = await runCli(
+      ['connect', '--browser-command', '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'],
+      { ok: true, token: 'live-token', relayPort: 48011, ipcPort: 48012 },
+      {
+        homeDir,
+        openUrl: async () => {},
+      },
+    )
+
+    expect(result.exitCode).toBe(0)
+    expect(result.browserCalls).toEqual([
+      {
+        command: '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+        args: [],
+      },
+    ])
+    expect(result.openCalls).toEqual([
+      'chrome-extension://bfccnpkjkbhceghimfjgnkigilidldep/connect.html?token=live-token&relayPort=48011&ipcPort=48012',
+    ])
   })
 
   test('routes computed styles requests to the extension', async () => {

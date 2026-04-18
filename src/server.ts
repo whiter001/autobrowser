@@ -18,7 +18,7 @@ interface SnapshotData {
   extensionConnected: boolean
 }
 
-function connectPage(snapshot: SnapshotData): string {
+function connectPage(snapshot: SnapshotData, extensionId?: string | null): string {
   const token = escapeHtml(snapshot.token)
   const relayUrl = `ws://127.0.0.1:${snapshot.relayPort}/ws`
   const ipcUrl = `http://127.0.0.1:${snapshot.ipcPort}`
@@ -26,7 +26,7 @@ function connectPage(snapshot: SnapshotData): string {
     token: snapshot.token,
     relayPort: snapshot.relayPort,
     ipcPort: snapshot.ipcPort,
-  })
+  }, extensionId)
 
   return `<!doctype html>
 <html lang="zh-CN">
@@ -184,6 +184,7 @@ interface ServerOptions {
   ipcPort?: number
   homeDir?: string
   token?: string
+  extensionId?: string | null
 }
 
 interface StartServersResult {
@@ -227,7 +228,7 @@ export async function startServers(options: ServerOptions = {}): Promise<StartSe
       }
 
       if (url.pathname === '/connect' || url.pathname === '/') {
-        return htmlResponse(connectPage(runtime.snapshot()))
+        return htmlResponse(connectPage(runtime.snapshot(), options.extensionId))
       }
 
       if (url.pathname === '/status') {

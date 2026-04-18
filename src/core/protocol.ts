@@ -6,6 +6,7 @@ export const APP_NAME = 'autobrowser'
 export const DEFAULT_RELAY_PORT = 47978
 export const DEFAULT_IPC_PORT = 47979
 export const STATE_DIR_NAME = '.autobrowser'
+export const CONFIG_FILE_NAME = 'config.json'
 export const TOKEN_FILE_NAME = 'token'
 export const STATE_FILE_NAME = 'state.json'
 export const DEFAULT_REQUEST_TIMEOUT_MS = 30_000
@@ -29,6 +30,10 @@ export function getTokenPath(homeDir: string = getHomeDir()): string {
 
 export function getStatePath(homeDir: string = getHomeDir()): string {
   return path.join(getStateDir(homeDir), STATE_FILE_NAME)
+}
+
+export function getConfigPath(homeDir: string = getHomeDir()): string {
+  return path.join(getStateDir(homeDir), CONFIG_FILE_NAME)
 }
 
 export function createToken(): string {

@@ -11,18 +11,35 @@ function mapHexToExtensionId(hex: string): string {
     .join('')
 }
 
+function normalizeExtensionIdCandidate(value: string | null | undefined): string {
+  return String(value || '').trim()
+}
+
+function isValidExtensionId(value: string): boolean {
+  return /^[a-p]{32}$/.test(value)
+}
+
+function pickExtensionId(...candidates: Array<string | null | undefined>): string | null {
+  return candidates.map(normalizeExtensionIdCandidate).find(isValidExtensionId) || null
+}
+
 export function getExtensionId(publicKey: string = EXTENSION_PUBLIC_KEY): string {
   const keyBytes = Buffer.from(publicKey, 'base64')
   const hash = createHash('sha256').update(keyBytes).digest('hex')
   return mapHexToExtensionId(hash)
 }
 
+export function resolveExtensionId(extensionId?: string | null): string {
+  return pickExtensionId(extensionId, process.env.AUTOBROWSER_EXTENSION_ID) || getExtensionId()
+}
+
 export function getExtensionUrl(
   pathname: string,
   searchParams: Record<string, string | number | boolean | null | undefined> = {},
+  extensionId?: string | null,
 ): string {
   const normalizedPath = pathname.startsWith('/') ? pathname : `/${pathname}`
-  const url = new URL(`chrome-extension://${getExtensionId()}${normalizedPath}`)
+  const url = new URL(`chrome-extension://${resolveExtensionId(extensionId)}${normalizedPath}`)
 
   for (const [key, value] of Object.entries(searchParams)) {
     if (value === null || value === undefined) {
