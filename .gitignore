@@ -7,3 +7,5 @@ node_modules/
 .err
 .log
 .playwright-mcp/
+.autobrowser-tmp/
+*.har

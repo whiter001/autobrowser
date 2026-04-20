@@ -28,6 +28,7 @@ Windows 上用 `autobrowser.cmd`；Unix 用 `autobrowser`。
 # Windows (推荐)
 autobrowser.cmd server
 autobrowser.cmd connect
+autobrowser.cmd open https://www.example.com
 ```
 
 ## Common commands

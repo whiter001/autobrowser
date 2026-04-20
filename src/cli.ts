@@ -1173,6 +1173,48 @@ interface CommandResponse {
   error?: { message: string; code?: string }
 }
 
+interface NetworkRequestSummary {
+  id?: string
+  requestId?: string
+  tabId?: number
+  url?: string
+  method?: string
+  resourceType?: string
+  status?: number
+  statusText?: string
+  startedAt?: string
+  durationMs?: number
+}
+
+interface NetworkHarStopResult {
+  har?: unknown
+  startedAt?: string
+  stoppedAt?: string
+  requestCount?: number
+}
+
+const HAR_CREATOR = {
+  name: 'autobrowser',
+  version: '0.1.0',
+}
+
+const HAR_MIME_TYPES: Record<string, string> = {
+  Document: 'text/html',
+  XHR: 'application/json',
+  Fetch: 'application/json',
+  Script: 'application/javascript',
+  Stylesheet: 'text/css',
+  Image: 'image/*',
+  Font: 'font/woff2',
+  Ping: 'text/plain',
+  Manifest: 'application/json',
+  Other: 'application/octet-stream',
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object'
+}
+
 async function requestCommand(
   baseUrl: string,
   command: string,
@@ -1192,6 +1234,135 @@ async function requestCommand(
 async function getStatus(baseUrl: string): Promise<Record<string, unknown>> {
   const response = await fetch(`${baseUrl}/status`)
   return (await response.json()) as Record<string, unknown>
+}
+
+function compareNetworkRequestSummaries(
+  left: NetworkRequestSummary,
+  right: NetworkRequestSummary,
+): number {
+  const leftStartedAt = Date.parse(left.startedAt || '') || 0
+  const rightStartedAt = Date.parse(right.startedAt || '') || 0
+
+  if (leftStartedAt !== rightStartedAt) {
+    return leftStartedAt - rightStartedAt
+  }
+
+  const leftId = String(left.id || left.requestId || '')
+  const rightId = String(right.id || right.requestId || '')
+  return leftId.localeCompare(rightId)
+}
+
+function buildHar(entries: Record<string, unknown>[]): Record<string, unknown> {
+  return {
+    log: {
+      version: '1.2',
+      creator: HAR_CREATOR,
+      entries,
+    },
+  }
+}
+
+function buildFallbackHarEntry(summary: NetworkRequestSummary): Record<string, unknown> {
+  const resourceType = String(summary.resourceType || 'Other')
+  const mimeType = HAR_MIME_TYPES[resourceType] || 'application/octet-stream'
+  const startedDateTime =
+    typeof summary.startedAt === 'string' ? summary.startedAt : new Date().toISOString()
+  const durationMs = typeof summary.durationMs === 'number' ? summary.durationMs : 0
+
+  return {
+    startedDateTime,
+    time: durationMs,
+    request: {
+      method: summary.method || 'GET',
+      url: summary.url || '',
+      httpVersion: 'HTTP/1.1',
+      cookies: [],
+      headers: [],
+      queryString: [],
+      headersSize: -1,
+      bodySize: 0,
+    },
+    response: {
+      status: Number(summary.status || 0),
+      statusText: String(summary.statusText || ''),
+      httpVersion: 'HTTP/1.1',
+      cookies: [],
+      headers: [],
+      content: {
+        size: 0,
+        mimeType,
+        text: '',
+      },
+      redirectURL: '',
+      headersSize: -1,
+      bodySize: 0,
+    },
+    cache: {},
+    timings: {
+      send: 0,
+      wait: durationMs,
+      receive: 0,
+    },
+    pageref:
+      summary.tabId === null || summary.tabId === undefined ? undefined : `tab-${summary.tabId}`,
+  }
+}
+
+async function collectHarFromNetwork(
+  baseUrl: string,
+  startedAt: string | null,
+): Promise<Record<string, unknown>> {
+  const requestListPayload = await requestCommand(baseUrl, 'network', {
+    action: 'requests',
+  })
+
+  if (requestListPayload?.ok === false) {
+    throw new Error(requestListPayload.error?.message || 'failed to read network requests')
+  }
+
+  const requestListResult = isRecord(requestListPayload?.result)
+    ? (requestListPayload.result as Record<string, unknown>)
+    : null
+  const requestSummaries = Array.isArray(requestListResult?.requests)
+    ? requestListResult.requests.filter(isRecord).map((request) => request as NetworkRequestSummary)
+    : []
+
+  const filteredSummaries = requestSummaries
+    .filter((request) => !startedAt || String(request.startedAt || '') >= startedAt)
+    .sort(compareNetworkRequestSummaries)
+
+  const entries: Record<string, unknown>[] = []
+
+  for (const request of filteredSummaries) {
+    const requestId = String(request.requestId || request.id || '')
+    if (!requestId) {
+      entries.push(buildFallbackHarEntry(request))
+      continue
+    }
+
+    try {
+      const requestPayload = await requestCommand(baseUrl, 'network', {
+        action: 'request',
+        requestId,
+      })
+
+      if (requestPayload?.ok === false) {
+        entries.push(buildFallbackHarEntry(request))
+        continue
+      }
+
+      const requestResult = isRecord(requestPayload?.result)
+        ? (requestPayload.result as Record<string, unknown>)
+        : null
+      const harEntry = isRecord(requestResult?.harEntry) ? requestResult.harEntry : null
+
+      entries.push(harEntry || buildFallbackHarEntry(request))
+    } catch {
+      entries.push(buildFallbackHarEntry(request))
+    }
+  }
+
+  return buildHar(entries)
 }
 
 function normalizeSavedPort(value: unknown, fallback: number): number {
@@ -2382,10 +2553,16 @@ export async function main(
           return 1
         }
 
-        const result = payload?.result as
-          | { har?: unknown; startedAt?: string; stoppedAt?: string }
-          | undefined
-        const har = result?.har || payload
+        const result = isRecord(payload?.result)
+          ? (payload.result as NetworkHarStopResult)
+          : undefined
+        const har =
+          result && isRecord(result.har)
+            ? result.har
+            : await collectHarFromNetwork(
+                flags.server,
+                typeof result?.startedAt === 'string' ? result.startedAt : null,
+              )
         const outputPath = rest[2] || null
         const savedPath = await writeHarFile(har, outputPath)
         writeResult({ ok: true, result: savedPath })

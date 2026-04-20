@@ -1027,6 +1027,159 @@ describe('cli command routing', () => {
     expect(harContent).toContain('"creator"')
   })
 
+  test('reconstructs HAR output when stop only returns metadata', async () => {
+    const outputDir = await mkdtemp(path.join(os.tmpdir(), 'autobrowser-har-rebuild-test-'))
+    const outputPath = path.join(outputDir, 'network.har')
+    const startedAt = '2026-04-20T15:00:00.000Z'
+    const stoppedAt = '2026-04-20T15:00:05.000Z'
+    const requestSummary = {
+      id: '1275677941:abc',
+      requestId: 'abc',
+      tabId: 1275677941,
+      url: 'https://example.com/',
+      method: 'GET',
+      resourceType: 'Document',
+      status: 200,
+      statusText: 'OK',
+      startedAt,
+      durationMs: 12,
+    }
+    const requestDetail = {
+      request: requestSummary,
+      summary: {
+        id: requestSummary.id,
+        requestId: requestSummary.requestId,
+        tabId: requestSummary.tabId,
+        url: requestSummary.url,
+        method: requestSummary.method,
+        resourceType: requestSummary.resourceType,
+        status: requestSummary.status,
+        statusText: requestSummary.statusText,
+        startedAt: requestSummary.startedAt,
+        durationMs: requestSummary.durationMs,
+      },
+      harEntry: {
+        startedDateTime: startedAt,
+        time: 12,
+        request: {
+          method: 'GET',
+          url: 'https://example.com/',
+          httpVersion: 'HTTP/1.1',
+          cookies: [],
+          headers: [],
+          queryString: [],
+          headersSize: -1,
+          bodySize: 0,
+        },
+        response: {
+          status: 200,
+          statusText: 'OK',
+          httpVersion: 'HTTP/1.1',
+          cookies: [],
+          headers: [],
+          content: {
+            size: 19,
+            mimeType: 'text/html',
+            text: 'hello from response',
+          },
+          redirectURL: '',
+          headersSize: -1,
+          bodySize: 19,
+        },
+        cache: {},
+        timings: {
+          send: 0,
+          wait: 12,
+          receive: 0,
+        },
+        pageref: 'tab-1275677941',
+      },
+    }
+
+    const result = await runCli(
+      ['network', 'har', 'stop', outputPath],
+      { ok: true, result: { recording: false, startedAt, stoppedAt, requestCount: 1 } },
+      {
+        fetchImpl: async (url, init = {}) => {
+          const body = init.body ? JSON.parse(init.body) : null
+
+          if (body?.command !== 'network') {
+            throw new Error(`unexpected command: ${JSON.stringify(body)}`)
+          }
+
+          if (body.args.action === 'har' && body.args.subaction === 'stop') {
+            return {
+              ok: true,
+              async json() {
+                return {
+                  ok: true,
+                  result: { recording: false, startedAt, stoppedAt, requestCount: 1 },
+                }
+              },
+            }
+          }
+
+          if (body.args.action === 'requests') {
+            return {
+              ok: true,
+              async json() {
+                return {
+                  ok: true,
+                  result: {
+                    total: 1,
+                    requests: [requestSummary],
+                  },
+                }
+              },
+            }
+          }
+
+          if (body.args.action === 'request') {
+            expect(body.args.requestId).toBe('abc')
+            return {
+              ok: true,
+              async json() {
+                return {
+                  ok: true,
+                  result: requestDetail,
+                }
+              },
+            }
+          }
+
+          throw new Error(`unexpected URL or body: ${String(url)} ${JSON.stringify(body)}`)
+        },
+      },
+    )
+
+    expect(result.exitCode).toBe(0)
+    expect(result.fetchCalls).toHaveLength(3)
+    expect(result.fetchCalls[0].body).toEqual({
+      command: 'network',
+      args: {
+        action: 'har',
+        subaction: 'stop',
+      },
+    })
+    expect(result.fetchCalls[1].body).toEqual({
+      command: 'network',
+      args: {
+        action: 'requests',
+      },
+    })
+    expect(result.fetchCalls[2].body).toEqual({
+      command: 'network',
+      args: {
+        action: 'request',
+        requestId: 'abc',
+      },
+    })
+
+    const harContent = JSON.parse(await readFile(outputPath, 'utf8'))
+    expect(harContent.log.entries).toHaveLength(1)
+    expect(harContent.log.entries[0].response.content.text).toBe('hello from response')
+  })
+
   test('saves state under the requested name', async () => {
     const result = await runCli(['state', 'save', 'checkout'])
 

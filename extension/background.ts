@@ -183,19 +183,6 @@ function summarizeNetworkRequest(record: Record<string, unknown>): Record<string
   }
 }
 
-function buildHar(entries: Record<string, unknown>[]): Record<string, unknown> {
-  return {
-    log: {
-      version: '1.2',
-      creator: {
-        name: 'autobrowser',
-        version: '0.1.0',
-      },
-      entries,
-    },
-  }
-}
-
 function buildHarEntry(record: Record<string, unknown>): Record<string, unknown> {
   const requestHeaders = normalizeHeaderPairs(
     normalizeHeaders(record.requestHeaders as Record<string, unknown> | undefined),
@@ -2471,13 +2458,11 @@ function stopNetworkHar(): Record<string, unknown> {
     return String(record.startedAt || '') >= startedAt
   })
 
-  const entries = requests.map((record) => buildHarEntry(record))
-
   return {
     recording: false,
     startedAt,
     stoppedAt,
-    har: buildHar(entries),
+    requestCount: requests.length,
   }
 }
 
