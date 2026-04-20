@@ -31,6 +31,7 @@ export interface Snapshot {
   extension: ExtensionInfo | null
   tabs: TabInfo[]
   activeTabId: number | null
+  targetTabId: number | null
   lastCommand: { command: string; args: unknown; at: string } | null
   lastError: { message: string; at: string } | null
 }
@@ -75,6 +76,7 @@ function createDefaultSnapshot(): Snapshot {
     extension: null,
     tabs: [],
     activeTabId: null,
+    targetTabId: null,
     lastCommand: null,
     lastError: null,
   }
@@ -208,6 +210,7 @@ export async function createRuntime(options: RuntimeOptions = {}): Promise<Runti
     type?: string
     tabs?: TabInfo[]
     activeTabId?: number
+    targetTabId?: number | null
     id?: string
     ok?: boolean
     error?: { message?: string; code?: string; details?: unknown }
@@ -231,6 +234,10 @@ export async function createRuntime(options: RuntimeOptions = {}): Promise<Runti
 
       if (message.activeTabId !== undefined) {
         snapshot.activeTabId = message.activeTabId
+      }
+
+      if (message.targetTabId !== undefined) {
+        snapshot.targetTabId = message.targetTabId ?? null
       }
 
       return

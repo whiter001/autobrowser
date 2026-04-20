@@ -10,6 +10,7 @@ import {
   type DiagnosticsState,
   type SocketCloseInfo,
 } from './shared.js'
+import { clearRemovedTabId, pickLastNonActiveTab } from '../src/core/tab-selection.js'
 
 const DEFAULT_SERVER_PORT = DEFAULT_RELAY_PORT
 const SAVED_STATES_STORAGE_KEY = 'autobrowserSavedStates'
@@ -35,6 +36,7 @@ const state = {
   suppressCloseError: false,
   attachedTabs: new Set(),
   selectedFrames: new Map(),
+  targetTabId: null,
   dialog: null as {
     open: boolean
     type: string
@@ -680,16 +682,27 @@ function requestReconnect() {
   reconnect()
 }
 
-async function loadActiveTab(tabId) {
+function rememberTargetTab(tabId) {
+  state.targetTabId = typeof tabId === 'number' ? tabId : null
+}
+
+async function loadTargetTab(tabId) {
   if (typeof tabId === 'number') {
     return await promisifyChrome(chrome.tabs, chrome.tabs.get, tabId)
   }
 
+  if (typeof state.targetTabId === 'number') {
+    try {
+      return await promisifyChrome(chrome.tabs, chrome.tabs.get, state.targetTabId)
+    } catch {
+      rememberTargetTab(null)
+    }
+  }
+
   const tabs = await promisifyChrome(chrome.tabs, chrome.tabs.query, {
-    active: true,
     currentWindow: true,
   })
-  return tabs[0] || null
+  return pickLastNonActiveTab(tabs)
 }
 
 async function ensureDebuggerAttached(tabId) {
@@ -761,11 +774,12 @@ async function listTabs() {
 }
 
 async function getTargetTab(tabId) {
-  const tab = await loadActiveTab(tabId)
+  const tab = await loadTargetTab(tabId)
   if (!tab || typeof tab.id !== 'number') {
-    throw new Error('no active tab available')
+    throw new Error('no target tab available')
   }
 
+  rememberTargetTab(tab.id)
   return tab
 }
 
@@ -2495,12 +2509,17 @@ async function handleCommand(message) {
       }
     case 'tab.list':
       return { tabs: await listTabs() }
-    case 'tab.new':
-      return {
-        tab: await promisifyChrome(chrome.tabs, chrome.tabs.create, {
-          url: args.url || 'about:blank',
-        }),
+    case 'tab.new': {
+      const tab = await promisifyChrome(chrome.tabs, chrome.tabs.create, {
+        url: args.url || 'about:blank',
+      })
+
+      if (tab && typeof tab.id === 'number') {
+        rememberTargetTab(tab.id)
       }
+
+      return { tab }
+    }
     case 'goto':
     case 'open':
       return await navigateTo(tabId, args.url || 'about:blank')
@@ -2780,6 +2799,7 @@ async function connect() {
             type: 'state',
             tabs,
             activeTabId: tabs.find((tab) => tab.active)?.id || null,
+            targetTabId: state.targetTabId,
           }),
         )
       } catch (error) {
@@ -2817,6 +2837,7 @@ async function connect() {
           type: 'state',
           tabs,
           activeTabId: tabs.find((tab) => tab.active)?.id || null,
+          targetTabId: state.targetTabId,
         }),
       )
     } catch (error) {
@@ -2887,6 +2908,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
 chrome.tabs.onRemoved.addListener((tabId) => {
   clearSelectedFrame(tabId)
+  state.targetTabId = clearRemovedTabId(state.targetTabId, tabId)
   detachDebugger(tabId).catch(() => {})
 })
 
