@@ -20,6 +20,16 @@ autobrowser is a browser automation CLI for controlling Chrome/Edge through a re
 - manage cookies, storage, clipboard, PDFs, and viewport/session settings
 - route requests and inspect network activity
 
+## Run
+
+Windows 上用 `autobrowser.cmd`；Unix 用 `autobrowser`。
+
+```bash
+# Windows (推荐)
+autobrowser.cmd server
+autobrowser.cmd connect
+```
+
 ## Common commands
 
 - `server`
