@@ -1,10 +1,5 @@
 import { getExtensionId } from './extension.js'
-import {
-  getConfigPath,
-  getHomeDir,
-  readJsonFile,
-  writeJsonFile,
-} from './protocol.js'
+import { getConfigPath, getHomeDir, readJsonFile, writeJsonFile } from './protocol.js'
 
 export interface BrowserLaunchConfig {
   command: string
@@ -26,9 +21,7 @@ function normalizeStringArray(value: unknown): string[] {
     return []
   }
 
-  return value
-    .map((item) => normalizeString(item))
-    .filter((item) => item.length > 0)
+  return value.map((item) => normalizeString(item)).filter((item) => item.length > 0)
 }
 
 function normalizeExtensionIdCandidate(value: unknown): string {
@@ -39,10 +32,7 @@ function isValidExtensionId(value: string): boolean {
   return /^[a-p]{32}$/.test(value)
 }
 
-function normalizeBrowserLaunchConfig(
-  command: unknown,
-  args: unknown,
-): BrowserLaunchConfig | null {
+function normalizeBrowserLaunchConfig(command: unknown, args: unknown): BrowserLaunchConfig | null {
   const normalizedCommand = normalizeString(command)
   if (!normalizedCommand) {
     return null
@@ -78,7 +68,10 @@ function normalizeCliConfig(value: unknown): CliConfig {
 
 async function readRawCliConfig(homeDir: string): Promise<Record<string, unknown>> {
   try {
-    const rawConfig = await readJsonFile<Record<string, unknown> | null>(getConfigPath(homeDir), null)
+    const rawConfig = await readJsonFile<Record<string, unknown> | null>(
+      getConfigPath(homeDir),
+      null,
+    )
     return rawConfig && typeof rawConfig === 'object' ? { ...rawConfig } : {}
   } catch {
     return {}
@@ -127,7 +120,9 @@ async function mergeCliConfig(
   }
 
   if ('browserArgs' in updates) {
-    const browserArgs = Array.isArray(updates.browserArgs) ? normalizeStringArray(updates.browserArgs) : []
+    const browserArgs = Array.isArray(updates.browserArgs)
+      ? normalizeStringArray(updates.browserArgs)
+      : []
     if (browserArgs.length > 0) {
       nextConfig.browserArgs = browserArgs
     } else {
