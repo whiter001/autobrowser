@@ -19,6 +19,12 @@ Run `bun run src/cli.ts help` to see the full command tree.
 bun run src/cli.ts server
 ```
 
+This starts the relay and IPC servers in the background. To stop them later:
+
+```bash
+bun run src/cli.ts server stop
+```
+
 Then open the connect page from another terminal:
 
 ```bash
@@ -71,7 +77,7 @@ Build the unpacked extension first:
 pnpm run build:chrome
 ```
 
-Then load the `chrome/` folder as an unpacked extension in Chromium-based browsers. Run `autobrowser connect` to open the extension connect page if the CLI binary is installed globally; it will save the token and relay port automatically, then the extension will try to connect to the local relay server. If you are running the repository directly, use `bun run src/cli.ts connect` instead. The options page still works as a manual fallback and shows diagnostics.
+Then load the `chrome/` folder as an unpacked extension in Chromium-based browsers. Run `autobrowser connect` to open the extension connect page if the CLI binary is installed globally; it will save the token and relay port automatically, and any `--extension-id`, `--browser-command`, or `--browser-arg` values you pass will be persisted in `~/.autobrowser/config.json` for later runs. If you are running the repository directly, use `bun run src/cli.ts connect` instead. The options page still works as a manual fallback and shows diagnostics.
 
 ## Network
 

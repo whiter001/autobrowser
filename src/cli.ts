@@ -3,14 +3,14 @@
 /// <reference lib="dom" />
 
 import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises'
-import { execFile } from 'node:child_process'
+import { execFile, spawn } from 'node:child_process'
 import { promisify } from 'node:util'
 import os from 'node:os'
 import path from 'node:path'
 import {
   resolveBrowserLaunchConfig,
   resolveExtensionId,
-  type BrowserLaunchConfig,
+  type BrowserLaunchConfig
 } from './core/config.js'
 import { getExtensionUrl } from './core/extension.js'
 import {
@@ -20,7 +20,7 @@ import {
   getStatePath,
   getTokenPath,
   isPortInUse,
-  readJsonFile,
+  readJsonFile
 } from './core/protocol.js'
 import { startServers } from './server.js'
 
@@ -44,8 +44,30 @@ interface ParsedCli {
   args: string[]
 }
 
+interface DetachedProcessHandle {
+  pid?: number
+  unref(): void
+  kill?(signal?: NodeJS.Signals | number): boolean
+  waitForExit?: () => Promise<{ code: number | null; signal: string | null }>
+}
+
+interface ServerSnapshotStatus {
+  token: string
+  relayPort: number
+  ipcPort: number
+  startedAt?: string
+  extensionConnected?: boolean
+}
+
 interface CliDependencies {
-  openUrl?: (url: string, browserConfig: BrowserLaunchConfig | null) => Promise<void>
+  openUrl?: (
+    url: string,
+    browserConfig: BrowserLaunchConfig | null
+  ) => Promise<void>
+  spawnDetachedProcess?: (
+    command: string,
+    args: string[]
+  ) => DetachedProcessHandle | Promise<DetachedProcessHandle>
 }
 
 function parseCli(argv: string[]): ParsedCli {
@@ -59,7 +81,7 @@ function parseCli(argv: string[]): ParsedCli {
     browserArgs: [],
     stdin: false,
     file: null,
-    base64: false,
+    base64: false
   }
 
   const args: string[] = []
@@ -146,6 +168,38 @@ function parseJsonValue(value: string): unknown {
   }
 }
 
+function isServerSnapshotStatus(value: unknown): value is ServerSnapshotStatus {
+  if (!value || typeof value !== 'object') {
+    return false
+  }
+
+  const record = value as Record<string, unknown>
+  const relayPort = record.relayPort
+  const ipcPort = record.ipcPort
+  return (
+    typeof record.token === 'string' &&
+    record.token.length > 0 &&
+    typeof relayPort === 'number' &&
+    Number.isInteger(relayPort) &&
+    relayPort >= 1 &&
+    typeof ipcPort === 'number' &&
+    Number.isInteger(ipcPort) &&
+    ipcPort >= 1
+  )
+}
+
+function isServerSnapshotOnPorts(
+  value: unknown,
+  relayPort: number,
+  ipcPort: number
+): value is ServerSnapshotStatus {
+  return (
+    isServerSnapshotStatus(value) &&
+    value.relayPort === relayPort &&
+    value.ipcPort === ipcPort
+  )
+}
+
 function parseNetworkRequestsArgs(rest: string[]): Record<string, unknown> {
   const result: Record<string, unknown> = {}
   for (let index = 0; index < rest.length; index += 1) {
@@ -178,10 +232,14 @@ function parseNetworkRequestsArgs(rest: string[]): Record<string, unknown> {
   return result
 }
 
-function parseNetworkRouteArgs(rest: string[]): { url: string; abort: boolean; body?: unknown } {
+function parseNetworkRouteArgs(rest: string[]): {
+  url: string
+  abort: boolean
+  body?: unknown
+} {
   const result: { url: string; abort: boolean; body?: unknown } = {
     url: '',
-    abort: false,
+    abort: false
   }
 
   for (let index = 0; index < rest.length; index += 1) {
@@ -210,10 +268,155 @@ function parseNetworkRouteArgs(rest: string[]): { url: string; abort: boolean; b
   return result
 }
 
+function killDetachedProcess(
+  handle: DetachedProcessHandle | null | undefined
+): void {
+  if (!handle) {
+    return
+  }
+
+  try {
+    if (typeof handle.kill === 'function') {
+      handle.kill()
+      return
+    }
+  } catch {
+    // Fall through to best-effort pid-based termination.
+  }
+
+  if (typeof handle.pid === 'number') {
+    try {
+      process.kill(handle.pid)
+    } catch {
+      // Best effort only.
+    }
+  }
+}
+
+async function spawnDetachedProcess(
+  command: string,
+  args: string[]
+): Promise<DetachedProcessHandle> {
+  return await new Promise((resolve, reject) => {
+    const child = spawn(command, args, {
+      detached: true,
+      stdio: 'ignore',
+      windowsHide: true
+    })
+
+    const exitPromise = new Promise<{
+      code: number | null
+      signal: string | null
+    }>((resolveExit) => {
+      child.once('exit', (code, signal) => {
+        resolveExit({
+          code,
+          signal: signal ? String(signal) : null
+        })
+      })
+    })
+
+    const cleanup = (): void => {
+      child.removeListener('error', onError)
+      child.removeListener('spawn', onSpawn)
+    }
+
+    const onError = (error: Error): void => {
+      cleanup()
+      reject(error)
+    }
+
+    const onSpawn = (): void => {
+      cleanup()
+      child.unref()
+      resolve({
+        pid: child.pid ?? undefined,
+        unref() {
+          child.unref()
+        },
+        kill(signal?: NodeJS.Signals | number) {
+          return child.kill(signal)
+        },
+        waitForExit() {
+          return exitPromise
+        }
+      })
+    }
+
+    child.once('error', onError)
+    child.once('spawn', onSpawn)
+  })
+}
+
+async function waitForServerStatus(
+  baseUrl: string,
+  relayPort: number,
+  ipcPort: number,
+  timeoutMs: number = 5000,
+  intervalMs: number = 100
+): Promise<ServerSnapshotStatus | null> {
+  const deadline = Date.now() + timeoutMs
+
+  while (Date.now() <= deadline) {
+    try {
+      const status = await getStatus(baseUrl)
+      if (isServerSnapshotOnPorts(status, relayPort, ipcPort)) {
+        return status
+      }
+    } catch {
+      // keep polling until the server becomes available or the timeout elapses
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, intervalMs))
+  }
+
+  return null
+}
+
+async function stopBackgroundServer(
+  baseUrl: string,
+  token: string
+): Promise<void> {
+  const response = await fetch(`${baseUrl}/shutdown`, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json'
+    },
+    body: JSON.stringify({ token })
+  })
+
+  const payload = (await response.json()) as {
+    ok?: boolean
+    error?: { message?: string }
+  }
+
+  if (!response.ok || payload.ok === false) {
+    throw new Error(
+      payload.error?.message || 'failed to stop background server'
+    )
+  }
+}
+
+function buildServerLaunchArgs(flags: CliFlags, extensionId: string): string[] {
+  const args = [
+    process.argv[1],
+    'server',
+    '--serve',
+    '--relay-port',
+    String(flags.relayPort),
+    '--ipc-port',
+    String(flags.ipcPort),
+    '--extension-id',
+    extensionId
+  ]
+
+  return args
+}
+
 function parseWaitArgs(rest: string[]): WaitArgs {
   const waitArgs: WaitArgs = {
     timeout: 30000,
-    state: 'visible',
+    state: 'visible'
   }
 
   const positionals: string[] = []
@@ -333,7 +536,11 @@ function parseWaitArgs(rest: string[]): WaitArgs {
     waitArgs.type = 'networkidle'
   }
 
-  if (waitArgs.type === 'selector' && !waitArgs.selector && positionals.length > 0) {
+  if (
+    waitArgs.type === 'selector' &&
+    !waitArgs.selector &&
+    positionals.length > 0
+  ) {
     waitArgs.selector = positionals[0]
   }
 
@@ -355,7 +562,7 @@ function parseScreenshotArgs(rest: string[]): ScreenshotArgs {
     annotate: false,
     screenshotDir: null,
     format: 'png',
-    quality: null,
+    quality: null
   }
 
   for (let index = 0; index < rest.length; index += 1) {
@@ -412,9 +619,13 @@ function parseScreenshotArgs(rest: string[]): ScreenshotArgs {
   return screenshotArgs
 }
 
-async function writeHarFile(har: unknown, outputPath: string | null): Promise<string> {
+async function writeHarFile(
+  har: unknown,
+  outputPath: string | null
+): Promise<string> {
   const serialized = `${JSON.stringify(har, null, 2)}\n`
-  const targetPath = outputPath || path.join(await mkTempHarDir(), 'network.har')
+  const targetPath =
+    outputPath || path.join(await mkTempHarDir(), 'network.har')
   await mkdir(path.dirname(targetPath), { recursive: true })
   await writeFile(targetPath, serialized, 'utf8')
   return targetPath
@@ -453,17 +664,20 @@ function extractScreenshotData(result: Record<string, unknown> | undefined): {
 
   return {
     data: Buffer.from(rawData, 'base64'),
-    mimeType,
+    mimeType
   }
 }
 
-async function resolveScreenshotOutputPath(screenshotArgs: ScreenshotArgs): Promise<string> {
+async function resolveScreenshotOutputPath(
+  screenshotArgs: ScreenshotArgs
+): Promise<string> {
   if (screenshotArgs.path) {
     await mkdir(path.dirname(screenshotArgs.path), { recursive: true })
     return screenshotArgs.path
   }
 
-  const outputDir = screenshotArgs.screenshotDir || (await mkTempScreenshotDir())
+  const outputDir =
+    screenshotArgs.screenshotDir || (await mkTempScreenshotDir())
   await mkdir(outputDir, { recursive: true })
   const timestamp = new Date().toISOString().replace(/[:.]/g, '-')
   const extension = screenshotArgs.format === 'jpeg' ? 'jpeg' : 'png'
@@ -495,14 +709,14 @@ function helpNode(
   summary: string,
   usage: string,
   options?: string[],
-  children?: HelpNode[],
+  children?: HelpNode[]
 ): HelpNode {
   return {
     name,
     summary,
     usage,
     ...(options && options.length > 0 ? { options } : {}),
-    ...(children && children.length > 0 ? { children } : {}),
+    ...(children && children.length > 0 ? { children } : {})
   }
 }
 
@@ -518,86 +732,144 @@ const HELP_ROOT = helpNode(
     '--base64',
     '--extension-id <id>',
     '--browser-command <command>',
-    '--browser-arg <arg>',
+    '--browser-arg <arg>'
   ],
   [
-    helpNode('help', 'Show help for a command path.', 'autobrowser help [command ...]'),
+    helpNode(
+      'help',
+      'Show help for a command path.',
+      'autobrowser help [command ...]'
+    ),
     helpNode(
       'server',
-      'Start the relay and IPC servers.',
+      'Manage the background relay and IPC servers.',
       'autobrowser server [--extension-id <id>] [--browser-command <command>] [--browser-arg <arg>]',
+      undefined,
+      [
+        helpNode(
+          'stop',
+          'Stop the background servers.',
+          'autobrowser server stop'
+        )
+      ]
     ),
     helpNode('status', 'Show server status.', 'autobrowser status'),
     helpNode(
       'connect',
       'Open the extension connect page.',
-      'autobrowser connect [--extension-id <id>] [--browser-command <command>] [--browser-arg <arg>]',
+      'autobrowser connect [--extension-id <id>] [--browser-command <command>] [--browser-arg <arg>]'
     ),
     helpNode('tab', 'Manage tabs.', 'autobrowser tab <list|new>', undefined, [
       helpNode('list', 'List tabs.', 'autobrowser tab list'),
-      helpNode('new', 'Open a new tab.', 'autobrowser tab new <url>'),
+      helpNode('new', 'Open a new tab.', 'autobrowser tab new <url>')
     ]),
     helpNode('open', 'Navigate to a URL.', 'autobrowser open <url>'),
     helpNode('goto', 'Navigate to a URL.', 'autobrowser goto <url>'),
     helpNode('back', 'Go back in browser history.', 'autobrowser back'),
-    helpNode('forward', 'Go forward in browser history.', 'autobrowser forward'),
+    helpNode(
+      'forward',
+      'Go forward in browser history.',
+      'autobrowser forward'
+    ),
     helpNode('reload', 'Reload the current page.', 'autobrowser reload'),
-    helpNode('window', 'Manage browser windows.', 'autobrowser window <new>', undefined, [
-      helpNode('new', 'Open a new window.', 'autobrowser window new'),
-    ]),
+    helpNode(
+      'window',
+      'Manage browser windows.',
+      'autobrowser window <new>',
+      undefined,
+      [helpNode('new', 'Open a new window.', 'autobrowser window new')]
+    ),
     helpNode(
       'eval',
       'Run JavaScript in the page context.',
       'autobrowser eval [--stdin|--file path|--base64] <script>',
-      ['--stdin', '--file <path>', '--base64'],
+      ['--stdin', '--file <path>', '--base64']
     ),
     helpNode('click', 'Click a selector.', 'autobrowser click <selector>'),
-    helpNode('dblclick', 'Double-click a selector.', 'autobrowser dblclick <selector>'),
-    helpNode('fill', 'Fill a selector with text.', 'autobrowser fill <selector> <value>'),
-    helpNode('type', 'Type text into a selector.', 'autobrowser type <selector> <value>'),
+    helpNode(
+      'dblclick',
+      'Double-click a selector.',
+      'autobrowser dblclick <selector>'
+    ),
+    helpNode(
+      'fill',
+      'Fill a selector with text.',
+      'autobrowser fill <selector> <value>'
+    ),
+    helpNode(
+      'type',
+      'Type text into a selector.',
+      'autobrowser type <selector> <value>'
+    ),
     helpNode('press', 'Press a keyboard key.', 'autobrowser press <key>'),
     helpNode(
       'keyboard',
       'Send keyboard input.',
-      'autobrowser keyboard <type|inserttext|keydown|keyup> <text>',
+      'autobrowser keyboard <type|inserttext|keydown|keyup> <text>'
     ),
     helpNode('hover', 'Hover a selector.', 'autobrowser hover <selector>'),
     helpNode('focus', 'Focus a selector.', 'autobrowser focus <selector>'),
-    helpNode('select', 'Select an option.', 'autobrowser select <selector> <value>'),
+    helpNode(
+      'select',
+      'Select an option.',
+      'autobrowser select <selector> <value>'
+    ),
     helpNode('check', 'Check a checkbox.', 'autobrowser check <selector>'),
-    helpNode('uncheck', 'Uncheck a checkbox.', 'autobrowser uncheck <selector>'),
+    helpNode(
+      'uncheck',
+      'Uncheck a checkbox.',
+      'autobrowser uncheck <selector>'
+    ),
     helpNode(
       'scroll',
       'Scroll a page or element.',
-      'autobrowser scroll [selector] [deltaX] [deltaY]',
+      'autobrowser scroll [selector] [deltaX] [deltaY]'
     ),
     helpNode(
       'scrollintoview',
       'Scroll a selector into view.',
-      'autobrowser scrollintoview <selector>',
+      'autobrowser scrollintoview <selector>'
     ),
-    helpNode('drag', 'Drag between elements.', 'autobrowser drag <startSelector> [endSelector]'),
+    helpNode(
+      'drag',
+      'Drag between elements.',
+      'autobrowser drag <startSelector> [endSelector]'
+    ),
     helpNode(
       'upload',
       'Upload files through a file input.',
-      'autobrowser upload <selector> <files...>',
+      'autobrowser upload <selector> <files...>'
     ),
     helpNode('frame', 'Select a frame.', 'autobrowser frame <selector|top>'),
     helpNode(
       'is',
       'Check element state.',
-      'autobrowser is <visible|enabled|checked|disabled|focused> <selector>',
+      'autobrowser is <visible|enabled|checked|disabled|focused> <selector>'
     ),
     helpNode(
       'get',
       'Read page or element data.',
-      'autobrowser get <text|html|value|title|url|cdp-url|count|attr|box|styles> [selector]',
+      'autobrowser get <text|html|value|title|url|cdp-url|count|attr|box|styles> [selector]'
     ),
-    helpNode('dialog', 'Handle dialogs.', 'autobrowser dialog <accept|dismiss|status>', undefined, [
-      helpNode('accept', 'Accept the active dialog.', 'autobrowser dialog accept [promptText]'),
-      helpNode('dismiss', 'Dismiss the active dialog.', 'autobrowser dialog dismiss [promptText]'),
-      helpNode('status', 'Show dialog status.', 'autobrowser dialog status'),
-    ]),
+    helpNode(
+      'dialog',
+      'Handle dialogs.',
+      'autobrowser dialog <accept|dismiss|status>',
+      undefined,
+      [
+        helpNode(
+          'accept',
+          'Accept the active dialog.',
+          'autobrowser dialog accept [promptText]'
+        ),
+        helpNode(
+          'dismiss',
+          'Dismiss the active dialog.',
+          'autobrowser dialog dismiss [promptText]'
+        ),
+        helpNode('status', 'Show dialog status.', 'autobrowser dialog status')
+      ]
+    ),
     helpNode(
       'wait',
       'Wait for a selector, text, URL, load state, function, or time.',
@@ -609,8 +881,8 @@ const HELP_ROOT = helpNode(
         '--url <pattern>',
         '--load [networkidle]',
         '--fn <expression>',
-        '--ms <ms>',
-      ],
+        '--ms <ms>'
+      ]
     ),
     helpNode(
       'cookies',
@@ -619,9 +891,13 @@ const HELP_ROOT = helpNode(
       undefined,
       [
         helpNode('get', 'List cookies.', 'autobrowser cookies get'),
-        helpNode('set', 'Set a cookie.', 'autobrowser cookies set <name> <value> [domain]'),
-        helpNode('clear', 'Clear cookies.', 'autobrowser cookies clear'),
-      ],
+        helpNode(
+          'set',
+          'Set a cookie.',
+          'autobrowser cookies set <name> <value> [domain]'
+        ),
+        helpNode('clear', 'Clear cookies.', 'autobrowser cookies clear')
+      ]
     ),
     helpNode(
       'storage',
@@ -629,10 +905,18 @@ const HELP_ROOT = helpNode(
       'autobrowser storage <get|set|clear>',
       undefined,
       [
-        helpNode('get', 'Read storage by key.', 'autobrowser storage get [key]'),
-        helpNode('set', 'Write storage by key.', 'autobrowser storage set <key> <value>'),
-        helpNode('clear', 'Clear storage.', 'autobrowser storage clear'),
-      ],
+        helpNode(
+          'get',
+          'Read storage by key.',
+          'autobrowser storage get [key]'
+        ),
+        helpNode(
+          'set',
+          'Write storage by key.',
+          'autobrowser storage set <key> <value>'
+        ),
+        helpNode('clear', 'Clear storage.', 'autobrowser storage clear')
+      ]
     ),
     helpNode('console', 'Read console output.', 'autobrowser console'),
     helpNode('errors', 'Read page errors.', 'autobrowser errors'),
@@ -645,17 +929,29 @@ const HELP_ROOT = helpNode(
         helpNode(
           'viewport',
           'Set viewport settings.',
-          'autobrowser set viewport <width> <height> [deviceScaleFactor] [mobile]',
+          'autobrowser set viewport <width> <height> [deviceScaleFactor] [mobile]'
         ),
-        helpNode('offline', 'Toggle offline mode.', 'autobrowser set offline [false]'),
-        helpNode('headers', 'Set request headers.', 'autobrowser set headers <name:value,...>'),
+        helpNode(
+          'offline',
+          'Toggle offline mode.',
+          'autobrowser set offline [false]'
+        ),
+        helpNode(
+          'headers',
+          'Set request headers.',
+          'autobrowser set headers <name:value,...>'
+        ),
         helpNode(
           'geo',
           'Set geolocation.',
-          'autobrowser set geo <latitude> <longitude> [accuracy]',
+          'autobrowser set geo <latitude> <longitude> [accuracy]'
         ),
-        helpNode('media', 'Set media emulation.', 'autobrowser set media <scheme>'),
-      ],
+        helpNode(
+          'media',
+          'Set media emulation.',
+          'autobrowser set media <scheme>'
+        )
+      ]
     ),
     helpNode('pdf', 'Export the current page as PDF.', 'autobrowser pdf'),
     helpNode(
@@ -665,17 +961,27 @@ const HELP_ROOT = helpNode(
       undefined,
       [
         helpNode('read', 'Read the clipboard.', 'autobrowser clipboard read'),
-        helpNode('write', 'Write to the clipboard.', 'autobrowser clipboard write [text]'),
-      ],
+        helpNode(
+          'write',
+          'Write to the clipboard.',
+          'autobrowser clipboard write [text]'
+        )
+      ]
     ),
-    helpNode('state', 'Save or load browser state.', 'autobrowser state <save|load>', undefined, [
-      helpNode('save', 'Save state.', 'autobrowser state save [name]'),
-      helpNode(
-        'load',
-        'Load state from a name or JSON payload.',
-        'autobrowser state load [name|json]',
-      ),
-    ]),
+    helpNode(
+      'state',
+      'Save or load browser state.',
+      'autobrowser state <save|load>',
+      undefined,
+      [
+        helpNode('save', 'Save state.', 'autobrowser state save [name]'),
+        helpNode(
+          'load',
+          'Load state from a name or JSON payload.',
+          'autobrowser state load [name|json]'
+        )
+      ]
+    ),
     helpNode(
       'network',
       'Inspect and control network activity.',
@@ -686,31 +992,48 @@ const HELP_ROOT = helpNode(
           'route',
           'Add a network route.',
           'autobrowser network route <url> [--abort] [--body <json>]',
-          ['--abort', '--body <json>'],
+          ['--abort', '--body <json>']
         ),
-        helpNode('unroute', 'Remove a network route.', 'autobrowser network unroute [url]'),
+        helpNode(
+          'unroute',
+          'Remove a network route.',
+          'autobrowser network unroute [url]'
+        ),
         helpNode(
           'requests',
           'List captured requests.',
           'autobrowser network requests [--filter <text>] [--type <xhr,fetch>] [--method <POST>] [--status <2xx>]',
-          ['--filter <text>', '--type <xhr,fetch>', '--method <POST>', '--status <2xx>'],
+          [
+            '--filter <text>',
+            '--type <xhr,fetch>',
+            '--method <POST>',
+            '--status <2xx>'
+          ]
         ),
-        helpNode('request', 'Inspect a single request.', 'autobrowser network request <requestId>'),
+        helpNode(
+          'request',
+          'Inspect a single request.',
+          'autobrowser network request <requestId>'
+        ),
         helpNode(
           'har',
           'Record or stop HAR capture.',
           'autobrowser network har <start|stop>',
           undefined,
           [
-            helpNode('start', 'Start HAR capture.', 'autobrowser network har start'),
+            helpNode(
+              'start',
+              'Start HAR capture.',
+              'autobrowser network har start'
+            ),
             helpNode(
               'stop',
               'Stop HAR capture and save it.',
-              'autobrowser network har stop [output.har]',
-            ),
-          ],
-        ),
-      ],
+              'autobrowser network har stop [output.har]'
+            )
+          ]
+        )
+      ]
     ),
     helpNode(
       'screenshot',
@@ -721,11 +1044,11 @@ const HELP_ROOT = helpNode(
         '--annotate',
         '--screenshot-dir <dir>',
         '--screenshot-format png|jpeg',
-        '--screenshot-quality <n>',
-      ],
+        '--screenshot-quality <n>'
+      ]
     ),
-    helpNode('snapshot', 'Capture a page snapshot.', 'autobrowser snapshot'),
-  ],
+    helpNode('snapshot', 'Capture a page snapshot.', 'autobrowser snapshot')
+  ]
 )
 
 const ROOT_HELP_FLAGS = [
@@ -733,7 +1056,7 @@ const ROOT_HELP_FLAGS = [
   '--server URL  target server base URL, default http://127.0.0.1:47979',
   '--stdin       read command body from stdin',
   '--file PATH   read command body from file',
-  '--base64      decode command body from base64',
+  '--base64      decode command body from base64'
 ]
 
 function isHelpToken(value: string | undefined): boolean {
@@ -742,13 +1065,15 @@ function isHelpToken(value: string | undefined): boolean {
 
 function resolveHelpNode(
   node: HelpNode,
-  pathParts: string[],
+  pathParts: string[]
 ): { node: HelpNode; remainder: string[] } {
   let current = node
   let index = 0
 
   for (; index < pathParts.length; index += 1) {
-    const next = current.children?.find((child) => child.name === pathParts[index])
+    const next = current.children?.find(
+      (child) => child.name === pathParts[index]
+    )
     if (!next) {
       break
     }
@@ -757,7 +1082,7 @@ function resolveHelpNode(
 
   return {
     node: current,
-    remainder: pathParts.slice(index),
+    remainder: pathParts.slice(index)
   }
 }
 
@@ -832,7 +1157,7 @@ async function readStdin(): Promise<string> {
 
 async function openUrl(
   url: string,
-  browserConfig: BrowserLaunchConfig | null,
+  browserConfig: BrowserLaunchConfig | null
 ): Promise<void> {
   if (browserConfig?.command) {
     await execFileAsync(browserConfig.command, [...browserConfig.args, url])
@@ -862,14 +1187,14 @@ interface CommandResponse {
 async function requestCommand(
   baseUrl: string,
   command: string,
-  args: object = {},
+  args: object = {}
 ): Promise<CommandResponse> {
   const response = await fetch(`${baseUrl}/command`, {
     method: 'POST',
     headers: {
-      'content-type': 'application/json',
+      'content-type': 'application/json'
     },
-    body: JSON.stringify({ command, args }),
+    body: JSON.stringify({ command, args })
   })
 
   return (await response.json()) as CommandResponse
@@ -887,9 +1212,10 @@ function normalizeSavedPort(value: unknown, fallback: number): number {
 
 function readPersistedToken(
   stateRecord: Record<string, unknown> | null,
-  tokenRecord: Record<string, unknown> | null,
+  tokenRecord: Record<string, unknown> | null
 ): string {
-  const stateToken = typeof stateRecord?.token === 'string' ? stateRecord.token : ''
+  const stateToken =
+    typeof stateRecord?.token === 'string' ? stateRecord.token : ''
   if (stateToken) {
     return stateToken
   }
@@ -899,7 +1225,7 @@ function readPersistedToken(
 
 async function readPersistedConnectionInfo(
   fallbackRelayPort: number,
-  fallbackIpcPort: number,
+  fallbackIpcPort: number
 ): Promise<{ token: string; relayPort: number; ipcPort: number } | null> {
   const homeDir = getHomeDir()
   const [stateResult, tokenFileResult] = await Promise.allSettled([
@@ -908,15 +1234,21 @@ async function readPersistedConnectionInfo(
       relayPort?: unknown
       ipcPort?: unknown
     } | null>(getStatePath(homeDir), null),
-    readJsonFile<{ token?: unknown } | null>(getTokenPath(homeDir), null),
+    readJsonFile<{ token?: unknown } | null>(getTokenPath(homeDir), null)
   ])
 
   const state = stateResult.status === 'fulfilled' ? stateResult.value : null
-  const tokenFile = tokenFileResult.status === 'fulfilled' ? tokenFileResult.value : null
+  const tokenFile =
+    tokenFileResult.status === 'fulfilled' ? tokenFileResult.value : null
 
-  const stateRecord = state && typeof state === 'object' ? (state as Record<string, unknown>) : null
+  const stateRecord =
+    state && typeof state === 'object'
+      ? (state as Record<string, unknown>)
+      : null
   const tokenRecord =
-    tokenFile && typeof tokenFile === 'object' ? (tokenFile as Record<string, unknown>) : null
+    tokenFile && typeof tokenFile === 'object'
+      ? (tokenFile as Record<string, unknown>)
+      : null
 
   const token = readPersistedToken(stateRecord, tokenRecord)
 
@@ -927,11 +1259,14 @@ async function readPersistedConnectionInfo(
   return {
     token,
     relayPort: normalizeSavedPort(stateRecord?.relayPort, fallbackRelayPort),
-    ipcPort: normalizeSavedPort(stateRecord?.ipcPort, fallbackIpcPort),
+    ipcPort: normalizeSavedPort(stateRecord?.ipcPort, fallbackIpcPort)
   }
 }
 
-async function resolveEvalScript(flags: CliFlags, rest: string[]): Promise<string> {
+async function resolveEvalScript(
+  flags: CliFlags,
+  rest: string[]
+): Promise<string> {
   if (flags.file) {
     return await readFile(flags.file, 'utf8')
   }
@@ -974,7 +1309,7 @@ interface ScreenshotArgs {
 
 export async function main(
   argv: string[] = process.argv.slice(2),
-  dependencies: CliDependencies = {},
+  dependencies: CliDependencies = {}
 ): Promise<number | void> {
   const { flags, args } = parseCli(argv)
   const [command, ...rest] = args
@@ -994,7 +1329,7 @@ export async function main(
       | boolean
       | bigint
       | null
-      | undefined,
+      | undefined
   ): void {
     if (flags.json) {
       process.stdout.write(`${JSON.stringify(payload, null, 2)}\n`)
@@ -1036,31 +1371,141 @@ export async function main(
   }
 
   if (command === 'server') {
+    if (rest[0] === '--serve') {
+      if (await isPortInUse(flags.relayPort)) {
+        process.stderr.write(
+          'Server already running on port ' + flags.relayPort + '\n'
+        )
+        return 1
+      }
+
+      const extensionId = await resolveExtensionId(homeDir, flags.extensionId)
+      const servers = await startServers({
+        relayPort: flags.relayPort,
+        ipcPort: flags.ipcPort,
+        extensionId
+      })
+      process.stdout.write(
+        `autobrowser server started\nrelay: http://127.0.0.1:${servers.runtime.runtime.relayPort}\nipc: http://127.0.0.1:${servers.runtime.runtime.ipcPort}\n`
+      )
+
+      const shutdown = () => {
+        servers.stop()
+        process.exit(0)
+      }
+
+      process.on('SIGINT', shutdown)
+      process.on('SIGTERM', shutdown)
+      return new Promise(() => {})
+    }
+
+    if (rest[0] === 'stop') {
+      if (isHelpToken(rest[1])) {
+        return writeHelp(['server', 'stop'])
+      }
+
+      const persistedConnectionInfo = await readPersistedConnectionInfo(
+        flags.relayPort,
+        flags.ipcPort
+      )
+
+      if (!persistedConnectionInfo?.token) {
+        process.stderr.write('No persisted background server state found.\n')
+        return 1
+      }
+
+      try {
+        await stopBackgroundServer(
+          `http://127.0.0.1:${persistedConnectionInfo.ipcPort}`,
+          persistedConnectionInfo.token
+        )
+        process.stdout.write('autobrowser server stopped\n')
+        return
+      } catch (error) {
+        process.stderr.write(
+          `${error instanceof Error ? error.message : 'failed to stop background server'}\n`
+        )
+        return 1
+      }
+    }
+
     if (isHelpToken(rest[0])) {
       return writeHelp(['server'])
     }
-    if (await isPortInUse(flags.relayPort)) {
-      process.stderr.write('Server already running on port ' + flags.relayPort + '\n')
-      process.exit(1)
+
+    const controlBaseUrl = `http://127.0.0.1:${flags.ipcPort}`
+    const existingStatus = await getStatus(controlBaseUrl).catch(() => null)
+    if (
+      isServerSnapshotOnPorts(existingStatus, flags.relayPort, flags.ipcPort)
+    ) {
+      process.stdout.write(`autobrowser server already running\n`)
+      return 0
     }
+
     const extensionId = await resolveExtensionId(homeDir, flags.extensionId)
-    const servers = await startServers({
-      relayPort: flags.relayPort,
-      ipcPort: flags.ipcPort,
-      extensionId,
-    })
-    process.stdout.write(
-      `autobrowser server started\nrelay: http://127.0.0.1:${servers.runtime.runtime.relayPort}\nipc: http://127.0.0.1:${servers.runtime.runtime.ipcPort}\n`,
-    )
+    const spawnCommand =
+      dependencies.spawnDetachedProcess ?? spawnDetachedProcess
+    let backgroundProcess: DetachedProcessHandle
 
-    const shutdown = async () => {
-      await servers.stop()
-      process.exit(0)
+    try {
+      backgroundProcess = await spawnCommand(
+        'bun',
+        buildServerLaunchArgs(flags, extensionId)
+      )
+    } catch (error) {
+      process.stderr.write(
+        `${error instanceof Error ? error.message : 'failed to start background server'}\n`
+      )
+      return 1
     }
 
-    process.on('SIGINT', shutdown)
-    process.on('SIGTERM', shutdown)
-    return new Promise(() => {})
+    const readyResult = backgroundProcess.waitForExit
+      ? await Promise.race([
+          waitForServerStatus(
+            controlBaseUrl,
+            flags.relayPort,
+            flags.ipcPort
+          ).then((status) => ({
+            kind: 'ready' as const,
+            status
+          })),
+          backgroundProcess.waitForExit().then((exitInfo) => ({
+            kind: 'exit' as const,
+            exitInfo
+          }))
+        ])
+      : {
+          kind: 'ready' as const,
+          status: await waitForServerStatus(
+            controlBaseUrl,
+            flags.relayPort,
+            flags.ipcPort
+          )
+        }
+
+    if (readyResult.kind === 'exit') {
+      process.stderr.write(
+        `Background server exited before becoming ready${
+          readyResult.exitInfo.code !== null
+            ? ` (code ${readyResult.exitInfo.code})`
+            : ''
+        }${readyResult.exitInfo.signal ? ` (signal ${readyResult.exitInfo.signal})` : ''}.\n`
+      )
+      return 1
+    }
+
+    if (!readyResult.status) {
+      killDetachedProcess(backgroundProcess)
+      process.stderr.write(
+        `Failed to start background server on ${controlBaseUrl}\n`
+      )
+      return 1
+    }
+
+    process.stdout.write(
+      `autobrowser server started in background\nrelay: http://127.0.0.1:${flags.relayPort}\nipc: ${controlBaseUrl}\n`
+    )
+    return
   }
 
   if (command === 'connect') {
@@ -1068,21 +1513,22 @@ export async function main(
       return writeHelp(['connect'])
     }
     const status = await getStatus(flags.server).catch(() => null)
+    const serverStatus = isServerSnapshotStatus(status) ? status : null
     const persistedConnectionInfo = await readPersistedConnectionInfo(
       flags.relayPort,
-      flags.ipcPort,
+      flags.ipcPort
     )
     const token =
-      typeof status?.token === 'string' && status.token
-        ? status.token
+      typeof serverStatus?.token === 'string' && serverStatus.token
+        ? serverStatus.token
         : persistedConnectionInfo?.token || ''
     const relayPort = normalizeSavedPort(
-      status?.relayPort ?? persistedConnectionInfo?.relayPort,
-      flags.relayPort,
+      serverStatus?.relayPort ?? persistedConnectionInfo?.relayPort,
+      flags.relayPort
     )
     const ipcPort = normalizeSavedPort(
-      status?.ipcPort ?? persistedConnectionInfo?.ipcPort,
-      flags.ipcPort,
+      serverStatus?.ipcPort ?? persistedConnectionInfo?.ipcPort,
+      flags.ipcPort
     )
 
     if (!token) {
@@ -1093,18 +1539,22 @@ export async function main(
     const browserConfig = await resolveBrowserLaunchConfig(
       homeDir,
       flags.browserCommand,
-      flags.browserArgs,
+      flags.browserArgs
     )
     const extensionId = await resolveExtensionId(homeDir, flags.extensionId)
 
     try {
       await launchUrl(
-        getExtensionUrl('/connect.html', {
-          token,
-          relayPort,
-          ipcPort,
-        }, extensionId),
-        browserConfig,
+        getExtensionUrl(
+          '/connect.html',
+          {
+            token,
+            relayPort,
+            ipcPort
+          },
+          extensionId
+        ),
+        browserConfig
       )
     } catch {
       await openRelayConnectPage(relayPort)
@@ -1212,7 +1662,7 @@ export async function main(
 
     const payload = await requestCommand(flags.server, 'fill', {
       selector,
-      value,
+      value
     })
     writeResult(payload)
     return 0
@@ -1244,7 +1694,9 @@ export async function main(
       full: screenshotArgs.full,
       annotate: screenshotArgs.annotate,
       format: screenshotArgs.format,
-      ...(screenshotArgs.quality !== null ? { quality: screenshotArgs.quality } : {}),
+      ...(screenshotArgs.quality !== null
+        ? { quality: screenshotArgs.quality }
+        : {})
     })
 
     if (payload.ok === false) {
@@ -1253,7 +1705,7 @@ export async function main(
     }
 
     const { data, mimeType } = extractScreenshotData(
-      payload.result as Record<string, unknown> | undefined,
+      payload.result as Record<string, unknown> | undefined
     )
     const outputPath = await resolveScreenshotOutputPath(screenshotArgs)
     await writeFile(outputPath, data)
@@ -1264,7 +1716,7 @@ export async function main(
         mimeType,
         format: screenshotArgs.format,
         full: screenshotArgs.full,
-        annotate: screenshotArgs.annotate,
+        annotate: screenshotArgs.annotate
       })
       return 0
     }
@@ -1323,7 +1775,7 @@ export async function main(
     }
     const payload = await requestCommand(flags.server, 'select', {
       selector,
-      value,
+      value
     })
     writeResult(payload)
     return 0
@@ -1365,7 +1817,7 @@ export async function main(
     const payload = await requestCommand(flags.server, 'scroll', {
       selector: selector || null,
       deltaX,
-      deltaY,
+      deltaY
     })
     writeResult(payload)
     return 0
@@ -1382,7 +1834,7 @@ export async function main(
     }
     const payload = await requestCommand(flags.server, 'drag', {
       start,
-      end: end || '',
+      end: end || ''
     })
     writeResult(payload)
     return 0
@@ -1402,7 +1854,7 @@ export async function main(
     }
     const payload = await requestCommand(flags.server, 'upload', {
       selector,
-      files,
+      files
     })
     writeResult(payload)
     return 0
@@ -1438,7 +1890,7 @@ export async function main(
 
     const payload = await requestCommand(flags.server, 'type', {
       selector,
-      value,
+      value
     })
     writeResult(payload)
     return 0
@@ -1457,7 +1909,7 @@ export async function main(
 
     const payload = await requestCommand(flags.server, 'keyboard', {
       action,
-      text: value,
+      text: value
     })
     writeResult(payload)
     return 0
@@ -1489,7 +1941,7 @@ export async function main(
     }
     if (action === 'new') {
       const payload = await requestCommand(flags.server, 'window', {
-        action: 'new',
+        action: 'new'
       })
       writeResult(payload)
       return 0
@@ -1519,7 +1971,9 @@ export async function main(
       return writeHelp(['scrollintoview'])
     }
 
-    const payload = await requestCommand(flags.server, 'scrollintoview', { selector })
+    const payload = await requestCommand(flags.server, 'scrollintoview', {
+      selector
+    })
     writeResult(payload)
     return 0
   }
@@ -1535,7 +1989,7 @@ export async function main(
     }
     const payload = await requestCommand(flags.server, 'is', {
       selector,
-      state,
+      state
     })
     if (payload.ok === false) {
       writeResult(payload)
@@ -1576,7 +2030,7 @@ export async function main(
     }
     const payload = await requestCommand(flags.server, 'get', {
       selector,
-      attr,
+      attr
     })
     writeResult(payload)
     return 0
@@ -1589,7 +2043,7 @@ export async function main(
     }
     if (action === 'status') {
       const payload = await requestCommand(flags.server, 'dialog', {
-        action: 'status',
+        action: 'status'
       })
       writeResult(payload)
       return 0
@@ -1601,7 +2055,7 @@ export async function main(
     const accept = action !== 'dismiss'
     const payload = await requestCommand(flags.server, 'dialog', {
       accept,
-      promptText,
+      promptText
     })
     writeResult(payload)
     return 0
@@ -1631,7 +2085,7 @@ export async function main(
     }
     if (action === 'get') {
       const payload = await requestCommand(flags.server, 'cookies', {
-        action: 'get',
+        action: 'get'
       })
       writeResult(payload)
       return 0
@@ -1647,14 +2101,14 @@ export async function main(
         action: 'set',
         name,
         value,
-        domain,
+        domain
       })
       writeResult(payload)
       return 0
     }
     if (action === 'clear') {
       const payload = await requestCommand(flags.server, 'cookies', {
-        action: 'clear',
+        action: 'clear'
       })
       writeResult(payload)
       return 0
@@ -1671,7 +2125,7 @@ export async function main(
       const key = rest[1]
       const payload = await requestCommand(flags.server, 'storage', {
         action: 'get',
-        key,
+        key
       })
       writeResult(payload)
       return 0
@@ -1685,14 +2139,14 @@ export async function main(
       const payload = await requestCommand(flags.server, 'storage', {
         action: 'set',
         key,
-        value,
+        value
       })
       writeResult(payload)
       return 0
     }
     if (action === 'clear') {
       const payload = await requestCommand(flags.server, 'storage', {
-        action: 'clear',
+        action: 'clear'
       })
       writeResult(payload)
       return 0
@@ -1735,7 +2189,7 @@ export async function main(
         width,
         height,
         deviceScaleFactor,
-        mobile,
+        mobile
       })
       writeResult(payload)
       return 0
@@ -1744,7 +2198,7 @@ export async function main(
       const enabled = subArgs[0] !== 'false'
       const payload = await requestCommand(flags.server, 'set', {
         type: 'offline',
-        enabled,
+        enabled
       })
       writeResult(payload)
       return 0
@@ -1760,7 +2214,7 @@ export async function main(
         .filter((h) => h.name)
       const payload = await requestCommand(flags.server, 'set', {
         type: 'headers',
-        headers,
+        headers
       })
       writeResult(payload)
       return 0
@@ -1773,7 +2227,7 @@ export async function main(
         type: 'geo',
         latitude,
         longitude,
-        accuracy,
+        accuracy
       })
       writeResult(payload)
       return 0
@@ -1782,7 +2236,7 @@ export async function main(
       const media = subArgs[0] || ''
       const payload = await requestCommand(flags.server, 'set', {
         type: 'media',
-        media,
+        media
       })
       writeResult(payload)
       return 0
@@ -1806,7 +2260,7 @@ export async function main(
     }
     if (action === 'read') {
       const payload = await requestCommand(flags.server, 'clipboard', {
-        action: 'read',
+        action: 'read'
       })
       writeResult(payload)
       return 0
@@ -1815,7 +2269,7 @@ export async function main(
       const text = rest.slice(1).join(' ')
       const payload = await requestCommand(flags.server, 'clipboard', {
         action: 'write',
-        text,
+        text
       })
       writeResult(payload)
       return 0
@@ -1832,7 +2286,7 @@ export async function main(
       const name = rest[1] || 'default'
       const payload = await requestCommand(flags.server, 'state', {
         action: 'save',
-        name,
+        name
       })
       writeResult(payload)
       return 0
@@ -1848,7 +2302,7 @@ export async function main(
         if (data && typeof data === 'object') {
           const payload = await requestCommand(flags.server, 'state', {
             action: 'load',
-            data,
+            data
           })
           writeResult(payload)
           return 0
@@ -1859,7 +2313,7 @@ export async function main(
 
       const payload = await requestCommand(flags.server, 'state', {
         action: 'load',
-        name: stateValue,
+        name: stateValue
       })
       writeResult(payload)
       return 0
@@ -1896,7 +2350,7 @@ export async function main(
         action: 'route',
         url: routeArgs.url,
         abort: routeArgs.abort,
-        body: routeArgs.body,
+        body: routeArgs.body
       })
       writeResult(payload)
       return 0
@@ -1909,7 +2363,7 @@ export async function main(
       const url = rest[1] || ''
       const payload = await requestCommand(flags.server, 'network', {
         action: 'unroute',
-        url: url || undefined,
+        url: url || undefined
       })
       writeResult(payload)
       return 0
@@ -1921,7 +2375,7 @@ export async function main(
       }
       const payload = await requestCommand(flags.server, 'network', {
         action: 'requests',
-        ...parseNetworkRequestsArgs(rest.slice(1)),
+        ...parseNetworkRequestsArgs(rest.slice(1))
       })
       writeResult(payload)
       return 0
@@ -1938,7 +2392,7 @@ export async function main(
 
       const payload = await requestCommand(flags.server, 'network', {
         action: 'request',
-        requestId,
+        requestId
       })
       writeResult(payload)
       return 0
@@ -1952,7 +2406,7 @@ export async function main(
       if (subaction === 'start') {
         const payload = await requestCommand(flags.server, 'network', {
           action: 'har',
-          subaction: 'start',
+          subaction: 'start'
         })
         writeResult(payload)
         return 0
@@ -1961,7 +2415,7 @@ export async function main(
       if (subaction === 'stop') {
         const payload = await requestCommand(flags.server, 'network', {
           action: 'har',
-          subaction: 'stop',
+          subaction: 'stop'
         })
 
         if (payload?.ok === false) {

@@ -18,15 +18,22 @@ interface SnapshotData {
   extensionConnected: boolean
 }
 
-function connectPage(snapshot: SnapshotData, extensionId?: string | null): string {
+function connectPage(
+  snapshot: SnapshotData,
+  extensionId?: string | null
+): string {
   const token = escapeHtml(snapshot.token)
   const relayUrl = `ws://127.0.0.1:${snapshot.relayPort}/ws`
   const ipcUrl = `http://127.0.0.1:${snapshot.ipcPort}`
-  const extensionConnectUrl = getExtensionUrl('/connect.html', {
-    token: snapshot.token,
-    relayPort: snapshot.relayPort,
-    ipcPort: snapshot.ipcPort,
-  }, extensionId)
+  const extensionConnectUrl = getExtensionUrl(
+    '/connect.html',
+    {
+      token: snapshot.token,
+      relayPort: snapshot.relayPort,
+      ipcPort: snapshot.ipcPort
+    },
+    extensionId
+  )
 
   return `<!doctype html>
 <html lang="zh-CN">
@@ -203,8 +210,23 @@ interface ErrorWithCode extends Error {
   code?: string
 }
 
-export async function startServers(options: ServerOptions = {}): Promise<StartServersResult> {
+export async function startServers(
+  options: ServerOptions = {}
+): Promise<StartServersResult> {
   const runtime = await createRuntime(options)
+  let shuttingDown = false
+  let requestShutdown = () => {}
+
+  function performShutdown(): void {
+    if (shuttingDown) {
+      return
+    }
+
+    shuttingDown = true
+    runtime.detachExtension()
+    relayServer.stop()
+    ipcServer.stop()
+  }
 
   const relayServer = Bun.serve<RelaySocketData>({
     hostname: '127.0.0.1',
@@ -220,15 +242,19 @@ export async function startServers(options: ServerOptions = {}): Promise<StartSe
         const upgraded = server.upgrade(request, {
           data: {
             extensionId: url.searchParams.get('extensionId') || null,
-            userAgent: request.headers.get('user-agent'),
-          },
+            userAgent: request.headers.get('user-agent')
+          }
         })
 
-        return upgraded ? undefined : textResponse('upgrade failed', { status: 400 })
+        return upgraded
+          ? undefined
+          : textResponse('upgrade failed', { status: 400 })
       }
 
       if (url.pathname === '/connect' || url.pathname === '/') {
-        return htmlResponse(connectPage(runtime.snapshot(), options.extensionId))
+        return htmlResponse(
+          connectPage(runtime.snapshot(), options.extensionId)
+        )
       }
 
       if (url.pathname === '/status') {
@@ -245,8 +271,8 @@ export async function startServers(options: ServerOptions = {}): Promise<StartSe
             type: 'hello',
             token: runtime.runtime.token,
             relayPort: runtime.runtime.relayPort,
-            ipcPort: runtime.runtime.ipcPort,
-          }),
+            ipcPort: runtime.runtime.ipcPort
+          })
         )
       },
       message(socket, message) {
@@ -254,8 +280,8 @@ export async function startServers(options: ServerOptions = {}): Promise<StartSe
       },
       close() {
         runtime.detachExtension()
-      },
-    },
+      }
+    }
   })
 
   const ipcServer = Bun.serve({
@@ -268,6 +294,29 @@ export async function startServers(options: ServerOptions = {}): Promise<StartSe
         return jsonResponse(runtime.snapshot())
       }
 
+      if (url.pathname === '/shutdown' && request.method === 'POST') {
+        return request
+          .json()
+          .then((body: unknown) => {
+            const data = body as { token?: unknown } | null
+            if (String(data?.token || '') !== runtime.runtime.token) {
+              return jsonResponse(
+                { ok: false, error: { message: 'unauthorized' } },
+                { status: 401 }
+              )
+            }
+
+            requestShutdown()
+            return jsonResponse({ ok: true, result: { stopping: true } })
+          })
+          .catch((error: Error) =>
+            jsonResponse(
+              { ok: false, error: { message: error.message } },
+              { status: 400 }
+            )
+          )
+      }
+
       if (url.pathname === '/command' && request.method === 'POST') {
         return request
           .json()
@@ -277,12 +326,13 @@ export async function startServers(options: ServerOptions = {}): Promise<StartSe
               args?: Record<string, unknown>
             } | null
             const command = String(data?.command || '').trim()
-            const args = data?.args && typeof data.args === 'object' ? data.args : {}
+            const args =
+              data?.args && typeof data.args === 'object' ? data.args : {}
 
             if (!command) {
               return jsonResponse(
                 { ok: false, error: { message: 'missing command' } },
-                { status: 400 },
+                { status: 400 }
               )
             }
 
@@ -301,29 +351,37 @@ export async function startServers(options: ServerOptions = {}): Promise<StartSe
                   ok: false,
                   error: {
                     message: err.message,
-                    code: err.code || 'COMMAND_FAILED',
-                  },
+                    code: err.code || 'COMMAND_FAILED'
+                  }
                 },
-                { status: 500 },
+                { status: 500 }
               )
             }
           })
           .catch((error: Error) =>
-            jsonResponse({ ok: false, error: { message: error.message } }, { status: 400 }),
+            jsonResponse(
+              { ok: false, error: { message: error.message } },
+              { status: 400 }
+            )
           )
       }
 
       return textResponse('not found', { status: 404 })
-    },
+    }
   })
+
+  requestShutdown = () => {
+    setTimeout(() => {
+      performShutdown()
+    }, 0)
+  }
 
   return {
     runtime,
     relayServer,
     ipcServer,
     stop() {
-      relayServer.stop()
-      ipcServer.stop()
-    },
+      performShutdown()
+    }
   }
 }
