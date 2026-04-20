@@ -3,8 +3,8 @@ import os from 'node:os'
 import path from 'node:path'
 
 export const APP_NAME = 'autobrowser'
-export const DEFAULT_RELAY_PORT = 47978
-export const DEFAULT_IPC_PORT = 47979
+export const DEFAULT_RELAY_PORT = 57978
+export const DEFAULT_IPC_PORT = 57979
 export const STATE_DIR_NAME = '.autobrowser'
 export const CONFIG_FILE_NAME = 'config.json'
 export const TOKEN_FILE_NAME = 'token'

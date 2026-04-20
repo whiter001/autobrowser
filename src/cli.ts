@@ -65,6 +65,8 @@ interface CliDependencies {
     command: string,
     args: string[],
   ) => DetachedProcessHandle | Promise<DetachedProcessHandle>
+  findProcessIdByPort?: (port: number) => Promise<number | null>
+  killProcess?: (pid: number, signal?: NodeJS.Signals | number) => boolean
 }
 
 function parseCli(argv: string[]): ParsedCli {
@@ -284,6 +286,96 @@ function killDetachedProcess(handle: DetachedProcessHandle | null | undefined): 
   }
 }
 
+function killProcessByPid(pid: number, signal?: NodeJS.Signals | number): boolean {
+  try {
+    process.kill(pid, signal)
+    return true
+  } catch {
+    return false
+  }
+}
+
+async function waitForPortToClose(
+  port: number,
+  timeoutMs: number = 3000,
+  intervalMs: number = 100,
+): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs
+
+  while (Date.now() <= deadline) {
+    try {
+      if (!(await isPortInUse(port))) {
+        return true
+      }
+    } catch {
+      return true
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, intervalMs))
+  }
+
+  return false
+}
+
+async function findListeningProcessIdByPort(port: number): Promise<number | null> {
+  if (!Number.isInteger(port) || port <= 0 || port > 65535) {
+    return null
+  }
+
+  try {
+    if (process.platform === 'win32') {
+      const { stdout } = await execFileAsync('netstat', ['-ano', '-p', 'tcp'])
+      const portToken = `:${port}`
+
+      for (const line of String(stdout).split(/\r?\n/)) {
+        const normalizedLine = line.trim()
+        if (!normalizedLine || !normalizedLine.startsWith('TCP')) {
+          continue
+        }
+
+        if (!normalizedLine.includes(portToken) || !/LISTENING/i.test(normalizedLine)) {
+          continue
+        }
+
+        const pidText = normalizedLine.split(/\s+/).at(-1) || ''
+        const pid = Number(pidText)
+        if (Number.isInteger(pid) && pid > 0) {
+          return pid
+        }
+      }
+
+      return null
+    }
+
+    const { stdout } = await execFileAsync('lsof', ['-nP', `-iTCP:${port}`, '-sTCP:LISTEN', '-t'])
+
+    for (const line of String(stdout).split(/\r?\n/)) {
+      const pid = Number(line.trim())
+      if (Number.isInteger(pid) && pid > 0) {
+        return pid
+      }
+    }
+
+    return null
+  } catch {
+    return null
+  }
+}
+
+async function terminateProcessListeningOnPort(
+  port: number,
+  findProcessIdByPort: (port: number) => Promise<number | null> = findListeningProcessIdByPort,
+  killProcess: (pid: number, signal?: NodeJS.Signals | number) => boolean = killProcessByPid,
+): Promise<boolean> {
+  const pid = await findProcessIdByPort(port)
+  if (!pid) {
+    return false
+  }
+
+  killProcess(pid, 'SIGTERM')
+  return await waitForPortToClose(port)
+}
+
 async function spawnDetachedProcess(
   command: string,
   args: string[],
@@ -364,8 +456,13 @@ async function waitForServerStatus(
   return null
 }
 
-async function stopBackgroundServer(baseUrl: string, token: string): Promise<void> {
-  const response = await fetch(`${baseUrl}/shutdown`, {
+async function stopBackgroundServer(
+  ipcPort: number,
+  token: string,
+  findProcessIdByPort: (port: number) => Promise<number | null> = findListeningProcessIdByPort,
+  killProcess: (pid: number, signal?: NodeJS.Signals | number) => boolean = killProcessByPid,
+): Promise<void> {
+  const response = await fetch(`http://127.0.0.1:${ipcPort}/shutdown`, {
     method: 'POST',
     headers: {
       'content-type': 'application/json',
@@ -373,13 +470,42 @@ async function stopBackgroundServer(baseUrl: string, token: string): Promise<voi
     body: JSON.stringify({ token }),
   })
 
-  const payload = (await response.json()) as {
+  const bodyText = await response.text().catch(() => '')
+  const trimmedBodyText = bodyText.trim()
+  let payload: {
     ok?: boolean
     error?: { message?: string }
+  } | null = null
+
+  if (trimmedBodyText) {
+    try {
+      payload = JSON.parse(trimmedBodyText) as {
+        ok?: boolean
+        error?: { message?: string }
+      }
+    } catch {
+      if (response.ok) {
+        return
+      }
+    }
+  } else if (response.ok) {
+    return
   }
 
-  if (!response.ok || payload.ok === false) {
-    throw new Error(payload.error?.message || 'failed to stop background server')
+  if (
+    response.status === 404 &&
+    (await terminateProcessListeningOnPort(ipcPort, findProcessIdByPort, killProcess))
+  ) {
+    return
+  }
+
+  if (!response.ok || payload?.ok === false) {
+    throw new Error(
+      payload?.error?.message ||
+        trimmedBodyText ||
+        response.statusText ||
+        'failed to stop background server',
+    )
   }
 }
 
@@ -921,7 +1047,7 @@ const HELP_ROOT = helpNode(
 
 const ROOT_HELP_FLAGS = [
   '--json        output JSON',
-  '--server URL  target server base URL, default http://127.0.0.1:47979',
+  '--server URL  target server base URL, default http://127.0.0.1:57979',
   '--stdin       read command body from stdin',
   '--file PATH   read command body from file',
   '--base64      decode command body from base64',
@@ -1267,8 +1393,10 @@ export async function main(
 
       try {
         await stopBackgroundServer(
-          `http://127.0.0.1:${persistedConnectionInfo.ipcPort}`,
+          persistedConnectionInfo.ipcPort,
           persistedConnectionInfo.token,
+          dependencies.findProcessIdByPort,
+          dependencies.killProcess,
         )
         process.stdout.write('autobrowser server stopped\n')
         return

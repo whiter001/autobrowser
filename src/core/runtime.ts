@@ -2,6 +2,8 @@ import {
   createId,
   createToken,
   DEFAULT_REQUEST_TIMEOUT_MS,
+  DEFAULT_IPC_PORT,
+  DEFAULT_RELAY_PORT,
   getHomeDir,
   getStatePath,
   getTokenPath,
@@ -115,8 +117,8 @@ export interface Runtime {
 
 export async function createRuntime(options: RuntimeOptions = {}): Promise<Runtime> {
   const homeDir = options.homeDir || getHomeDir()
-  const relayPort = options.relayPort || 47978
-  const ipcPort = options.ipcPort || 47979
+  const relayPort = options.relayPort || DEFAULT_RELAY_PORT
+  const ipcPort = options.ipcPort || DEFAULT_IPC_PORT
   const requestTimeoutMs = options.requestTimeoutMs || DEFAULT_REQUEST_TIMEOUT_MS
 
   const persistedState = await readJsonFile<{

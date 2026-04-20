@@ -1,8 +1,8 @@
 export const STORAGE_KEY = 'autobrowserToken'
 export const RELAY_PORT_STORAGE_KEY = 'autobrowserRelayPort'
 export const CONNECTION_DIAGNOSTICS_STORAGE_KEY = 'autobrowserConnectionDiagnostics'
-export const DEFAULT_RELAY_PORT = 47978
-export const DEFAULT_IPC_PORT = 47979
+export const DEFAULT_RELAY_PORT = 57978
+export const DEFAULT_IPC_PORT = 57979
 
 export type ConnectionStatus =
   | 'idle'

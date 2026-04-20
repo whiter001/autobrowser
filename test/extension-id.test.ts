@@ -13,8 +13,8 @@ describe('extension url helpers', () => {
   })
 
   test('builds chrome extension urls with query params', () => {
-    expect(getExtensionUrl('/connect.html', { token: 'abc', relayPort: 47978 })).toBe(
-      'chrome-extension://bfccnpkjkbhceghimfjgnkigilidldep/connect.html?token=abc&relayPort=47978',
+    expect(getExtensionUrl('/connect.html', { token: 'abc', relayPort: 57978 })).toBe(
+      'chrome-extension://bfccnpkjkbhceghimfjgnkigilidldep/connect.html?token=abc&relayPort=57978',
     )
   })
 
@@ -22,9 +22,9 @@ describe('extension url helpers', () => {
     expect(resolveExtensionId('bfccnpkjkbhceghimfjgnkigilidldep')).toBe(
       'bfccnpkjkbhceghimfjgnkigilidldep',
     )
-    expect(getExtensionUrl('/connect.html', { token: 'abc' }, 'bfccnpkjkbhceghimfjgnkigilidldep')).toBe(
-      'chrome-extension://bfccnpkjkbhceghimfjgnkigilidldep/connect.html?token=abc',
-    )
+    expect(
+      getExtensionUrl('/connect.html', { token: 'abc' }, 'bfccnpkjkbhceghimfjgnkigilidldep'),
+    ).toBe('chrome-extension://bfccnpkjkbhceghimfjgnkigilidldep/connect.html?token=abc')
   })
 
   test('falls back to the default extension id when the override is invalid', () => {

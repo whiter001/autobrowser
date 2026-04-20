@@ -22,11 +22,7 @@ function interceptStream(chunks) {
   }
 }
 
-async function runCli(
-  argv,
-  payload = { ok: true, result: { ok: true } },
-  options = {}
-) {
+async function runCli(argv, payload = { ok: true, result: { ok: true } }, options = {}) {
   const fetchCalls = []
   const spawnCalls = []
   const stdout = []
@@ -35,8 +31,7 @@ async function runCli(
   const browserCalls = []
   const previousAutobrowserHome = process.env.AUTOBROWSER_HOME
   const homeDir =
-    options.homeDir ||
-    (await mkdtemp(path.join(os.tmpdir(), 'autobrowser-home-run-')))
+    options.homeDir || (await mkdtemp(path.join(os.tmpdir(), 'autobrowser-home-run-')))
 
   process.env.AUTOBROWSER_HOME = homeDir
 
@@ -44,7 +39,7 @@ async function runCli(
     fetchCalls.push({
       url,
       init,
-      body: init.body ? JSON.parse(init.body) : null
+      body: init.body ? JSON.parse(init.body) : null,
     })
 
     if (options.fetchImpl) {
@@ -55,7 +50,10 @@ async function runCli(
       ok: true,
       async json() {
         return payload
-      }
+      },
+      async text() {
+        return `${JSON.stringify(payload)}\n`
+      },
     }
   }
 
@@ -77,7 +75,9 @@ async function runCli(
             spawnCalls.push({ command, args })
             return child
           }
-        : undefined
+        : undefined,
+      findProcessIdByPort: options.findProcessIdByPort,
+      killProcess: options.killProcess,
     })
 
     return {
@@ -87,7 +87,7 @@ async function runCli(
       openCalls,
       browserCalls,
       stdout: stdout.join(''),
-      stderr: stderr.join('')
+      stderr: stderr.join(''),
     }
   } finally {
     globalThis.fetch = originalFetch
@@ -117,14 +117,14 @@ describe('cli command routing', () => {
   test('allows title reads without a selector', async () => {
     const result = await runCli(['get', 'title'], {
       ok: true,
-      result: 'Example title'
+      result: 'Example title',
     })
 
     expect(result.exitCode).toBe(0)
     expect(result.fetchCalls).toHaveLength(1)
     expect(result.fetchCalls[0].body).toEqual({
       command: 'get',
-      args: { attr: 'title' }
+      args: { attr: 'title' },
     })
     expect(result.stdout).toContain('Example title')
   })
@@ -132,14 +132,12 @@ describe('cli command routing', () => {
   test('returns the local cdp websocket url without requiring a selector', async () => {
     const result = await runCli(['get', 'cdp-url'], {
       token: 'test-token',
-      relayPort: 48001
+      relayPort: 48001,
     })
 
     expect(result.exitCode).toBe(0)
     expect(result.fetchCalls).toHaveLength(1)
-    expect(String(result.fetchCalls[0].url)).toBe(
-      'http://127.0.0.1:47979/status'
-    )
+    expect(String(result.fetchCalls[0].url)).toBe('http://127.0.0.1:57979/status')
     expect(result.stdout).toContain('ws://127.0.0.1:48001/ws?token=test-token')
   })
 
@@ -148,17 +146,15 @@ describe('cli command routing', () => {
       ['connect'],
       { ok: true, token: 'live-token', relayPort: 48011, ipcPort: 48012 },
       {
-        openUrl: async () => {}
-      }
+        openUrl: async () => {},
+      },
     )
 
     expect(result.exitCode).toBe(0)
     expect(result.fetchCalls).toHaveLength(1)
-    expect(String(result.fetchCalls[0].url)).toBe(
-      'http://127.0.0.1:47979/status'
-    )
+    expect(String(result.fetchCalls[0].url)).toBe('http://127.0.0.1:57979/status')
     expect(result.openCalls).toEqual([
-      'chrome-extension://bfccnpkjkbhceghimfjgnkigilidldep/connect.html?token=live-token&relayPort=48011&ipcPort=48012'
+      'chrome-extension://bfccnpkjkbhceghimfjgnkigilidldep/connect.html?token=live-token&relayPort=48011&ipcPort=48012',
     ])
     expect(result.browserCalls).toEqual([null])
   })
@@ -168,34 +164,32 @@ describe('cli command routing', () => {
       ['connect', '--extension-id', 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'],
       { ok: true, token: 'live-token', relayPort: 48011, ipcPort: 48012 },
       {
-        openUrl: async () => {}
-      }
+        openUrl: async () => {},
+      },
     )
 
     expect(result.exitCode).toBe(0)
     expect(result.openCalls).toEqual([
-      'chrome-extension://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/connect.html?token=live-token&relayPort=48011&ipcPort=48012'
+      'chrome-extension://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/connect.html?token=live-token&relayPort=48011&ipcPort=48012',
     ])
   })
 
   test('connect persists the extension id for later runs', async () => {
-    const homeDir = await mkdtemp(
-      path.join(os.tmpdir(), 'autobrowser-config-test-')
-    )
+    const homeDir = await mkdtemp(path.join(os.tmpdir(), 'autobrowser-config-test-'))
 
     const firstResult = await runCli(
       ['connect', '--extension-id', 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'],
       { ok: true, token: 'live-token', relayPort: 48011, ipcPort: 48012 },
       {
         homeDir,
-        openUrl: async () => {}
-      }
+        openUrl: async () => {},
+      },
     )
 
     expect(firstResult.exitCode).toBe(0)
     const configPath = path.join(homeDir, '.autobrowser', 'config.json')
     expect(JSON.parse(await readFile(configPath, 'utf8'))).toEqual({
-      extensionId: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+      extensionId: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
     })
 
     const secondResult = await runCli(
@@ -203,51 +197,42 @@ describe('cli command routing', () => {
       { ok: true, token: 'live-token', relayPort: 48011, ipcPort: 48012 },
       {
         homeDir,
-        openUrl: async () => {}
-      }
+        openUrl: async () => {},
+      },
     )
 
     expect(secondResult.exitCode).toBe(0)
     expect(secondResult.openCalls).toEqual([
-      'chrome-extension://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/connect.html?token=live-token&relayPort=48011&ipcPort=48012'
+      'chrome-extension://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/connect.html?token=live-token&relayPort=48011&ipcPort=48012',
     ])
   })
 
   test('connect persists the browser command for later runs', async () => {
-    const homeDir = await mkdtemp(
-      path.join(os.tmpdir(), 'autobrowser-browser-config-')
-    )
-    const browserCommand =
-      '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
+    const homeDir = await mkdtemp(path.join(os.tmpdir(), 'autobrowser-browser-config-'))
+    const browserCommand = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
     const browserArg = '--profile-directory=Profile 1'
 
     const firstResult = await runCli(
-      [
-        'connect',
-        '--browser-command',
-        browserCommand,
-        '--browser-arg',
-        browserArg
-      ],
+      ['connect', '--browser-command', browserCommand, '--browser-arg', browserArg],
       { ok: true, token: 'live-token', relayPort: 48011, ipcPort: 48012 },
       {
         homeDir,
-        openUrl: async () => {}
-      }
+        openUrl: async () => {},
+      },
     )
 
     expect(firstResult.exitCode).toBe(0)
     expect(firstResult.browserCalls).toEqual([
       {
         command: browserCommand,
-        args: [browserArg]
-      }
+        args: [browserArg],
+      },
     ])
     const configPath = path.join(homeDir, '.autobrowser', 'config.json')
     expect(JSON.parse(await readFile(configPath, 'utf8'))).toEqual({
       extensionId: 'bfccnpkjkbhceghimfjgnkigilidldep',
       browserCommand,
-      browserArgs: [browserArg]
+      browserArgs: [browserArg],
     })
 
     const secondResult = await runCli(
@@ -255,30 +240,28 @@ describe('cli command routing', () => {
       { ok: true, token: 'live-token', relayPort: 48011, ipcPort: 48012 },
       {
         homeDir,
-        openUrl: async () => {}
-      }
+        openUrl: async () => {},
+      },
     )
 
     expect(secondResult.exitCode).toBe(0)
     expect(secondResult.browserCalls).toEqual([
       {
         command: browserCommand,
-        args: [browserArg]
-      }
+        args: [browserArg],
+      },
     ])
   })
 
   test('connect repairs an invalid persisted extension id', async () => {
-    const homeDir = await mkdtemp(
-      path.join(os.tmpdir(), 'autobrowser-invalid-config-')
-    )
+    const homeDir = await mkdtemp(path.join(os.tmpdir(), 'autobrowser-invalid-config-'))
     const stateDir = path.join(homeDir, '.autobrowser')
     await mkdir(stateDir, { recursive: true })
     await writeFile(
       path.join(stateDir, 'config.json'),
       JSON.stringify({
-        extensionId: 'invalid-extension-id'
-      })
+        extensionId: 'invalid-extension-id',
+      }),
     )
 
     const result = await runCli(
@@ -286,18 +269,16 @@ describe('cli command routing', () => {
       { ok: true, token: 'live-token', relayPort: 48011, ipcPort: 48012 },
       {
         homeDir,
-        openUrl: async () => {}
-      }
+        openUrl: async () => {},
+      },
     )
 
     expect(result.exitCode).toBe(0)
     expect(result.openCalls).toEqual([
-      'chrome-extension://bfccnpkjkbhceghimfjgnkigilidldep/connect.html?token=live-token&relayPort=48011&ipcPort=48012'
+      'chrome-extension://bfccnpkjkbhceghimfjgnkigilidldep/connect.html?token=live-token&relayPort=48011&ipcPort=48012',
     ])
-    expect(
-      JSON.parse(await readFile(path.join(stateDir, 'config.json'), 'utf8'))
-    ).toEqual({
-      extensionId: 'bfccnpkjkbhceghimfjgnkigilidldep'
+    expect(JSON.parse(await readFile(path.join(stateDir, 'config.json'), 'utf8'))).toEqual({
+      extensionId: 'bfccnpkjkbhceghimfjgnkigilidldep',
     })
   })
 
@@ -310,13 +291,10 @@ describe('cli command routing', () => {
       JSON.stringify({
         token: 'saved-token',
         relayPort: 49001,
-        ipcPort: 49002
-      })
+        ipcPort: 49002,
+      }),
     )
-    await writeFile(
-      path.join(stateDir, 'token'),
-      JSON.stringify({ token: 'saved-token' })
-    )
+    await writeFile(path.join(stateDir, 'token'), JSON.stringify({ token: 'saved-token' }))
 
     const result = await runCli(
       ['connect'],
@@ -326,21 +304,19 @@ describe('cli command routing', () => {
         fetchImpl: async () => {
           throw new Error('status unavailable')
         },
-        openUrl: async () => {}
-      }
+        openUrl: async () => {},
+      },
     )
 
     expect(result.exitCode).toBe(0)
     expect(result.fetchCalls).toHaveLength(1)
     expect(result.openCalls).toEqual([
-      'chrome-extension://bfccnpkjkbhceghimfjgnkigilidldep/connect.html?token=saved-token&relayPort=49001&ipcPort=49002'
+      'chrome-extension://bfccnpkjkbhceghimfjgnkigilidldep/connect.html?token=saved-token&relayPort=49001&ipcPort=49002',
     ])
   })
 
   test('connect falls back to the relay page when no token is available', async () => {
-    const homeDir = await mkdtemp(
-      path.join(os.tmpdir(), 'autobrowser-home-empty-')
-    )
+    const homeDir = await mkdtemp(path.join(os.tmpdir(), 'autobrowser-home-empty-'))
 
     const result = await runCli(
       ['connect'],
@@ -350,13 +326,13 @@ describe('cli command routing', () => {
         fetchImpl: async () => {
           throw new Error('status unavailable')
         },
-        openUrl: async () => {}
-      }
+        openUrl: async () => {},
+      },
     )
 
     expect(result.exitCode).toBe(0)
     expect(result.fetchCalls).toHaveLength(1)
-    expect(result.openCalls).toEqual(['http://127.0.0.1:47978/connect'])
+    expect(result.openCalls).toEqual(['http://127.0.0.1:57978/connect'])
   })
 
   test('server starts the detached background process and waits for status', async () => {
@@ -365,7 +341,7 @@ describe('cli command routing', () => {
       ['server'],
       {
         ok: true,
-        result: { token: 'live-token', relayPort: 47978, ipcPort: 47979 }
+        result: { token: 'live-token', relayPort: 57978, ipcPort: 57979 },
       },
       {
         fetchImpl: async () => {
@@ -377,15 +353,15 @@ describe('cli command routing', () => {
           return {
             ok: true,
             async json() {
-              return { token: 'live-token', relayPort: 47978, ipcPort: 47979 }
-            }
+              return { token: 'live-token', relayPort: 57978, ipcPort: 57979 }
+            },
           }
         },
         spawnDetachedProcess: (command, args) => ({
           pid: 12345,
-          unref() {}
-        })
-      }
+          unref() {},
+        }),
+      },
     )
 
     expect(result.exitCode).toBeUndefined()
@@ -404,7 +380,7 @@ describe('cli command routing', () => {
       ['server'],
       {
         ok: true,
-        result: { token: 'live-token', relayPort: 47978, ipcPort: 47979 }
+        result: { token: 'live-token', relayPort: 57978, ipcPort: 57979 },
       },
       {
         fetchImpl: async () => {
@@ -415,22 +391,22 @@ describe('cli command routing', () => {
               ok: true,
               async json() {
                 return { random: true }
-              }
+              },
             }
           }
 
           return {
             ok: true,
             async json() {
-              return { token: 'live-token', relayPort: 47978, ipcPort: 47979 }
-            }
+              return { token: 'live-token', relayPort: 57978, ipcPort: 57979 }
+            },
           }
         },
         spawnDetachedProcess: () => ({
           pid: 12345,
-          unref() {}
-        })
-      }
+          unref() {},
+        }),
+      },
     )
 
     expect(result.exitCode).toBeUndefined()
@@ -439,9 +415,7 @@ describe('cli command routing', () => {
   })
 
   test('server stop asks the background server to shut down', async () => {
-    const homeDir = await mkdtemp(
-      path.join(os.tmpdir(), 'autobrowser-stop-test-')
-    )
+    const homeDir = await mkdtemp(path.join(os.tmpdir(), 'autobrowser-stop-test-'))
     const stateDir = path.join(homeDir, '.autobrowser')
     await mkdir(stateDir, { recursive: true })
     await writeFile(
@@ -449,13 +423,10 @@ describe('cli command routing', () => {
       JSON.stringify({
         token: 'stop-token',
         relayPort: 49011,
-        ipcPort: 49012
-      })
+        ipcPort: 49012,
+      }),
     )
-    await writeFile(
-      path.join(stateDir, 'token'),
-      JSON.stringify({ token: 'stop-token' })
-    )
+    await writeFile(path.join(stateDir, 'token'), JSON.stringify({ token: 'stop-token' }))
 
     const result = await runCli(
       ['server', 'stop'],
@@ -468,12 +439,15 @@ describe('cli command routing', () => {
           expect(JSON.parse(init.body)).toEqual({ token: 'stop-token' })
           return {
             ok: true,
+            async text() {
+              return JSON.stringify({ ok: true, result: { stopping: true } })
+            },
             async json() {
               return { ok: true, result: { stopping: true } }
-            }
+            },
           }
-        }
-      }
+        },
+      },
     )
 
     expect(result.exitCode).toBeUndefined()
@@ -481,10 +455,103 @@ describe('cli command routing', () => {
     expect(result.stdout).toContain('stopped')
   })
 
-  test('connect keeps working when config persistence is unavailable', async () => {
-    const homeDir = await mkdtemp(
-      path.join(os.tmpdir(), 'autobrowser-readonly-home-')
+  test('server stop tolerates a non-json shutdown response body', async () => {
+    const homeDir = await mkdtemp(path.join(os.tmpdir(), 'autobrowser-stop-text-test-'))
+    const stateDir = path.join(homeDir, '.autobrowser')
+    await mkdir(stateDir, { recursive: true })
+    await writeFile(
+      path.join(stateDir, 'state.json'),
+      JSON.stringify({
+        token: 'stop-token',
+        relayPort: 49011,
+        ipcPort: 49012,
+      }),
     )
+    await writeFile(path.join(stateDir, 'token'), JSON.stringify({ token: 'stop-token' }))
+
+    const result = await runCli(
+      ['server', 'stop'],
+      { ok: true, result: { stopping: true } },
+      {
+        homeDir,
+        fetchImpl: async (url, init = {}) => {
+          expect(String(url)).toBe('http://127.0.0.1:49012/shutdown')
+          expect(init.method).toBe('POST')
+          expect(JSON.parse(init.body)).toEqual({ token: 'stop-token' })
+          return {
+            ok: true,
+            async text() {
+              return 'shutting down'
+            },
+          }
+        },
+      },
+    )
+
+    expect(result.exitCode).toBeUndefined()
+    expect(result.fetchCalls).toHaveLength(1)
+    expect(result.stdout).toContain('stopped')
+  })
+
+  test('server stop falls back to terminating the listening process when shutdown is missing', async () => {
+    const homeDir = await mkdtemp(path.join(os.tmpdir(), 'autobrowser-stop-fallback-test-'))
+    const stateDir = path.join(homeDir, '.autobrowser')
+    await mkdir(stateDir, { recursive: true })
+    await writeFile(
+      path.join(stateDir, 'state.json'),
+      JSON.stringify({
+        token: 'stop-token',
+        relayPort: 49011,
+        ipcPort: 49012,
+      }),
+    )
+    await writeFile(path.join(stateDir, 'token'), JSON.stringify({ token: 'stop-token' }))
+
+    const killCalls = []
+
+    const result = await runCli(
+      ['server', 'stop'],
+      { ok: true, result: { stopping: true } },
+      {
+        homeDir,
+        findProcessIdByPort: async (port) => {
+          expect(port).toBe(49012)
+          return 12345
+        },
+        killProcess: (pid, signal) => {
+          killCalls.push({ pid, signal })
+          return true
+        },
+        fetchImpl: async (url, init = {}) => {
+          if (String(url).endsWith('/shutdown')) {
+            expect(init.method).toBe('POST')
+            expect(JSON.parse(init.body)).toEqual({ token: 'stop-token' })
+          } else if (String(url).endsWith('/status')) {
+            expect(init.method).toBeUndefined()
+          } else {
+            throw new Error(`unexpected URL: ${String(url)}`)
+          }
+
+          return {
+            ok: false,
+            status: 404,
+            statusText: 'Not Found',
+            async text() {
+              return 'not found'
+            },
+          }
+        },
+      },
+    )
+
+    expect(result.exitCode).toBeUndefined()
+    expect(result.fetchCalls).toHaveLength(2)
+    expect(killCalls).toEqual([{ pid: 12345, signal: 'SIGTERM' }])
+    expect(result.stdout).toContain('stopped')
+  })
+
+  test('connect keeps working when config persistence is unavailable', async () => {
+    const homeDir = await mkdtemp(path.join(os.tmpdir(), 'autobrowser-readonly-home-'))
     const stateDir = path.join(homeDir, '.autobrowser')
     await mkdir(stateDir, { recursive: true })
     await chmod(stateDir, 0o500)
@@ -493,24 +560,24 @@ describe('cli command routing', () => {
       [
         'connect',
         '--browser-command',
-        '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
+        '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
       ],
       { ok: true, token: 'live-token', relayPort: 48011, ipcPort: 48012 },
       {
         homeDir,
-        openUrl: async () => {}
-      }
+        openUrl: async () => {},
+      },
     )
 
     expect(result.exitCode).toBe(0)
     expect(result.browserCalls).toEqual([
       {
         command: '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
-        args: []
-      }
+        args: [],
+      },
     ])
     expect(result.openCalls).toEqual([
-      'chrome-extension://bfccnpkjkbhceghimfjgnkigilidldep/connect.html?token=live-token&relayPort=48011&ipcPort=48012'
+      'chrome-extension://bfccnpkjkbhceghimfjgnkigilidldep/connect.html?token=live-token&relayPort=48011&ipcPort=48012',
     ])
   })
 
@@ -521,9 +588,9 @@ describe('cli command routing', () => {
         found: true,
         value: {
           display: 'block',
-          width: '320px'
-        }
-      }
+          width: '320px',
+        },
+      },
     })
 
     expect(result.exitCode).toBe(0)
@@ -532,8 +599,8 @@ describe('cli command routing', () => {
       command: 'get',
       args: {
         selector: '#panel',
-        attr: 'styles'
-      }
+        attr: 'styles',
+      },
     })
     expect(result.stdout).toContain('display')
     expect(result.stdout).toContain('width')
@@ -545,8 +612,8 @@ describe('cli command routing', () => {
       result: {
         found: true,
         state: 'visible',
-        value: true
-      }
+        value: true,
+      },
     })
 
     expect(result.exitCode).toBe(0)
@@ -555,8 +622,8 @@ describe('cli command routing', () => {
       command: 'is',
       args: {
         selector: '#submit',
-        state: 'visible'
-      }
+        state: 'visible',
+      },
     })
     expect(result.stdout.trim()).toBe('true')
   })
@@ -572,8 +639,8 @@ describe('cli command routing', () => {
         timeout: 30000,
         state: 'visible',
         type: 'selector',
-        selector: '#spinner'
-      }
+        selector: '#spinner',
+      },
     })
   })
 
@@ -588,8 +655,8 @@ describe('cli command routing', () => {
         timeout: 30000,
         state: 'hidden',
         type: 'selector',
-        selector: '#spinner'
-      }
+        selector: '#spinner',
+      },
     })
   })
 
@@ -604,8 +671,8 @@ describe('cli command routing', () => {
         timeout: 30000,
         state: 'visible',
         type: 'text',
-        text: 'Welcome'
-      }
+        text: 'Welcome',
+      },
     })
   })
 
@@ -620,8 +687,8 @@ describe('cli command routing', () => {
         timeout: 30000,
         state: 'visible',
         type: 'url',
-        url: '**/dash'
-      }
+        url: '**/dash',
+      },
     })
   })
 
@@ -635,8 +702,8 @@ describe('cli command routing', () => {
       args: {
         timeout: 30000,
         state: 'visible',
-        type: 'networkidle'
-      }
+        type: 'networkidle',
+      },
     })
 
     const fnResult = await runCli(['wait', '--fn', 'window.ready === true'])
@@ -649,8 +716,8 @@ describe('cli command routing', () => {
         timeout: 30000,
         state: 'visible',
         type: 'fn',
-        fn: 'window.ready === true'
-      }
+        fn: 'window.ready === true',
+      },
     })
   })
 
@@ -671,8 +738,8 @@ describe('cli command routing', () => {
       command: 'dialog',
       args: {
         accept: true,
-        promptText: 'hello world'
-      }
+        promptText: 'hello world',
+      },
     })
   })
 
@@ -685,8 +752,8 @@ describe('cli command routing', () => {
       command: 'dialog',
       args: {
         accept: false,
-        promptText: ''
-      }
+        promptText: '',
+      },
     })
   })
 
@@ -699,8 +766,8 @@ describe('cli command routing', () => {
         message: null,
         defaultPrompt: null,
         url: null,
-        openedAt: null
-      }
+        openedAt: null,
+      },
     })
 
     expect(result.exitCode).toBe(0)
@@ -708,17 +775,15 @@ describe('cli command routing', () => {
     expect(result.fetchCalls[0].body).toEqual({
       command: 'dialog',
       args: {
-        action: 'status'
-      }
+        action: 'status',
+      },
     })
     expect(result.stdout).toContain('open')
     expect(result.stdout).toContain('false')
   })
 
   test('routes screenshot options to the extension and writes the output file', async () => {
-    const outputDir = await mkdtemp(
-      path.join(os.tmpdir(), 'autobrowser-screenshot-test-')
-    )
+    const outputDir = await mkdtemp(path.join(os.tmpdir(), 'autobrowser-screenshot-test-'))
     const outputPath = path.join(outputDir, 'shot.jpeg')
     const screenshotBytes = Buffer.from('screenshot-bytes')
 
@@ -731,15 +796,15 @@ describe('cli command routing', () => {
         '--screenshot-format',
         'jpeg',
         '--screenshot-quality',
-        '80'
+        '80',
       ],
       {
         ok: true,
         result: {
           data: screenshotBytes.toString('base64'),
-          mimeType: 'image/jpeg'
-        }
-      }
+          mimeType: 'image/jpeg',
+        },
+      },
     )
 
     expect(result.exitCode).toBe(0)
@@ -750,34 +815,26 @@ describe('cli command routing', () => {
         full: true,
         annotate: true,
         format: 'jpeg',
-        quality: 80
-      }
+        quality: 80,
+      },
     })
     expect(result.stdout.trim()).toBe(outputPath)
     expect((await readFile(outputPath)).toString()).toBe('screenshot-bytes')
   })
 
   test('saves screenshots into the configured screenshot dir when no path is provided', async () => {
-    const outputDir = await mkdtemp(
-      path.join(os.tmpdir(), 'autobrowser-screenshot-dir-test-')
-    )
+    const outputDir = await mkdtemp(path.join(os.tmpdir(), 'autobrowser-screenshot-dir-test-'))
     const screenshotBytes = Buffer.from('temp-screenshot')
 
     const result = await runCli(
-      [
-        'screenshot',
-        '--screenshot-dir',
-        outputDir,
-        '--screenshot-format',
-        'jpeg'
-      ],
+      ['screenshot', '--screenshot-dir', outputDir, '--screenshot-format', 'jpeg'],
       {
         ok: true,
         result: {
           data: screenshotBytes.toString('base64'),
-          mimeType: 'image/jpeg'
-        }
-      }
+          mimeType: 'image/jpeg',
+        },
+      },
     )
 
     const savedPath = result.stdout.trim()
@@ -788,8 +845,8 @@ describe('cli command routing', () => {
       args: {
         full: false,
         annotate: false,
-        format: 'jpeg'
-      }
+        format: 'jpeg',
+      },
     })
     expect(savedPath.startsWith(outputDir)).toBe(true)
     expect(savedPath.endsWith('.jpeg')).toBe(true)
@@ -803,8 +860,8 @@ describe('cli command routing', () => {
       ok: true,
       result: {
         data: screenshotBytes.toString('base64'),
-        mimeType: 'image/png'
-      }
+        mimeType: 'image/png',
+      },
     })
 
     const savedPath = result.stdout.trim()
@@ -815,8 +872,8 @@ describe('cli command routing', () => {
       args: {
         full: false,
         annotate: false,
-        format: 'png'
-      }
+        format: 'png',
+      },
     })
     expect(path.dirname(savedPath).startsWith(os.tmpdir())).toBe(true)
     expect(savedPath.includes('autobrowser-screenshot-')).toBe(true)
@@ -831,8 +888,8 @@ describe('cli command routing', () => {
     expect(result.fetchCalls[0].body).toEqual({
       command: 'dblclick',
       args: {
-        selector: '#submit'
-      }
+        selector: '#submit',
+      },
     })
   })
 
@@ -845,8 +902,8 @@ describe('cli command routing', () => {
       command: 'type',
       args: {
         selector: '#editor',
-        value: 'hello world'
-      }
+        value: 'hello world',
+      },
     })
   })
 
@@ -859,8 +916,8 @@ describe('cli command routing', () => {
       command: 'keyboard',
       args: {
         action: 'type',
-        text: 'abc'
-      }
+        text: 'abc',
+      },
     })
   })
 
@@ -872,8 +929,8 @@ describe('cli command routing', () => {
     expect(result.fetchCalls[0].body).toEqual({
       command: 'scrollintoview',
       args: {
-        selector: '#footer'
-      }
+        selector: '#footer',
+      },
     })
   })
 
@@ -885,15 +942,15 @@ describe('cli command routing', () => {
     expect(result.fetchCalls[0].body).toEqual({
       command: 'close',
       args: {
-        all: true
-      }
+        all: true,
+      },
     })
   })
 
   test('routes requests to the configured ipc port', async () => {
     const result = await runCli(['--ipc-port', '5001', 'status'], {
       ok: true,
-      ready: true
+      ready: true,
     })
 
     expect(result.exitCode).toBe(0)
@@ -902,12 +959,7 @@ describe('cli command routing', () => {
   })
 
   test('routes network abort commands to the extension', async () => {
-    const result = await runCli([
-      'network',
-      'route',
-      'https://api.example.com',
-      '--abort'
-    ])
+    const result = await runCli(['network', 'route', 'https://api.example.com', '--abort'])
 
     expect(result.exitCode).toBe(0)
     expect(result.fetchCalls).toHaveLength(1)
@@ -916,8 +968,8 @@ describe('cli command routing', () => {
       args: {
         action: 'route',
         url: 'https://api.example.com',
-        abort: true
-      }
+        abort: true,
+      },
     })
   })
 
@@ -932,7 +984,7 @@ describe('cli command routing', () => {
       '--method',
       'POST',
       '--status',
-      '2xx'
+      '2xx',
     ])
 
     expect(result.exitCode).toBe(0)
@@ -944,8 +996,8 @@ describe('cli command routing', () => {
         filter: 'api',
         type: 'xhr,fetch',
         method: 'POST',
-        status: '2xx'
-      }
+        status: '2xx',
+      },
     })
   })
 
@@ -957,10 +1009,10 @@ describe('cli command routing', () => {
           log: {
             version: '1.2',
             creator: { name: 'autobrowser', version: '0.1.0' },
-            entries: []
-          }
-        }
-      }
+            entries: [],
+          },
+        },
+      },
     }
     const result = await runCli(['network', 'har', 'stop'], payload)
 
@@ -984,8 +1036,8 @@ describe('cli command routing', () => {
       command: 'state',
       args: {
         action: 'save',
-        name: 'checkout'
-      }
+        name: 'checkout',
+      },
     })
   })
 
@@ -998,17 +1050,13 @@ describe('cli command routing', () => {
       command: 'state',
       args: {
         action: 'load',
-        name: 'checkout'
-      }
+        name: 'checkout',
+      },
     })
   })
 
   test('loads state from inline json when provided', async () => {
-    const result = await runCli([
-      'state',
-      'load',
-      '{"name":"checkout","storage":{"step":"2"}}'
-    ])
+    const result = await runCli(['state', 'load', '{"name":"checkout","storage":{"step":"2"}}'])
 
     expect(result.exitCode).toBe(0)
     expect(result.fetchCalls).toHaveLength(1)
@@ -1019,10 +1067,10 @@ describe('cli command routing', () => {
         data: {
           name: 'checkout',
           storage: {
-            step: '2'
-          }
-        }
-      }
+            step: '2',
+          },
+        },
+      },
     })
   })
 })
