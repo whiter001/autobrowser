@@ -317,6 +317,39 @@ async function waitForPortToClose(
   return false
 }
 
+export function parseWindowsNetstatListeningPid(stdout: string, port: number): number | null {
+  if (!Number.isInteger(port) || port <= 0 || port > 65535) {
+    return null
+  }
+
+  const portToken = `:${port}`
+
+  for (const line of String(stdout).split(/\r?\n/)) {
+    const normalizedLine = line.trim()
+    if (!normalizedLine || !normalizedLine.startsWith('TCP')) {
+      continue
+    }
+
+    const columns = normalizedLine.split(/\s+/)
+    if (columns.length < 5) {
+      continue
+    }
+
+    const localAddress = columns[1] || ''
+    const state = columns[3] || ''
+    if (!localAddress.endsWith(portToken) || state.toUpperCase() !== 'LISTENING') {
+      continue
+    }
+
+    const pid = Number(columns[columns.length - 1] || '')
+    if (Number.isInteger(pid) && pid > 0) {
+      return pid
+    }
+  }
+
+  return null
+}
+
 async function findListeningProcessIdByPort(port: number): Promise<number | null> {
   if (!Number.isInteger(port) || port <= 0 || port > 65535) {
     return null
@@ -325,26 +358,7 @@ async function findListeningProcessIdByPort(port: number): Promise<number | null
   try {
     if (process.platform === 'win32') {
       const { stdout } = await execFileAsync('netstat', ['-ano', '-p', 'tcp'])
-      const portToken = `:${port}`
-
-      for (const line of String(stdout).split(/\r?\n/)) {
-        const normalizedLine = line.trim()
-        if (!normalizedLine || !normalizedLine.startsWith('TCP')) {
-          continue
-        }
-
-        if (!normalizedLine.includes(portToken) || !/LISTENING/i.test(normalizedLine)) {
-          continue
-        }
-
-        const pidText = normalizedLine.split(/\s+/).at(-1) || ''
-        const pid = Number(pidText)
-        if (Number.isInteger(pid) && pid > 0) {
-          return pid
-        }
-      }
-
-      return null
+      return parseWindowsNetstatListeningPid(stdout, port)
     }
 
     const { stdout } = await execFileAsync('lsof', ['-nP', `-iTCP:${port}`, '-sTCP:LISTEN', '-t'])
@@ -1147,30 +1161,51 @@ async function readStdin(): Promise<string> {
   return content
 }
 
+export function buildSystemOpenCommand(
+  platform: NodeJS.Platform,
+  url: string,
+): { command: string; args: string[] } {
+  if (platform === 'darwin') {
+    return { command: 'open', args: [url] }
+  }
+
+  if (platform === 'win32') {
+    return {
+      command: 'rundll32',
+      args: ['url.dll,FileProtocolHandler', url],
+    }
+  }
+
+  return { command: 'xdg-open', args: [url] }
+}
+
 async function openUrl(url: string, browserConfig: BrowserLaunchConfig | null): Promise<void> {
   if (browserConfig?.command) {
     await execFileAsync(browserConfig.command, [...browserConfig.args, url])
     return
   }
 
-  const platform = process.platform
-  if (platform === 'darwin') {
-    await execFileAsync('open', [url])
-    return
-  }
-
-  if (platform === 'win32') {
-    await execFileAsync('cmd', ['/c', 'start', '', url])
-    return
-  }
-
-  await execFileAsync('xdg-open', [url])
+  const systemOpenCommand = buildSystemOpenCommand(process.platform, url)
+  await execFileAsync(systemOpenCommand.command, systemOpenCommand.args)
 }
 
 interface CommandResponse {
   ok: boolean
   result?: unknown
   error?: { message: string; code?: string }
+}
+
+function shouldOpenInNewTab(payload: CommandResponse): boolean {
+  if (payload.ok !== false) {
+    return false
+  }
+
+  const message = String(payload.error?.message || '').toLowerCase()
+  return (
+    message.includes('cannot access chrome:// and edge:// urls') ||
+    message.includes('cannot access chrome://') ||
+    message.includes('cannot access edge://')
+  )
 }
 
 interface NetworkRequestSummary {
@@ -1457,7 +1492,7 @@ interface ScreenshotArgs {
   quality: number | null
 }
 
-export async function main(
+async function runMain(
   argv: string[] = process.argv.slice(2),
   dependencies: CliDependencies = {},
 ): Promise<number | void> {
@@ -1740,8 +1775,14 @@ export async function main(
     }
 
     const payload = await requestCommand(flags.server, 'goto', { url })
+    if (shouldOpenInNewTab(payload)) {
+      const fallbackPayload = await requestCommand(flags.server, 'tab.new', { url })
+      writeResult(fallbackPayload)
+      return fallbackPayload.ok === false ? 1 : 0
+    }
+
     writeResult(payload)
-    return 0
+    return payload.ok === false ? 1 : 0
   }
 
   if (command === 'eval') {
@@ -2579,10 +2620,27 @@ export async function main(
   return 1
 }
 
+export async function main(
+  argv: string[] = process.argv.slice(2),
+  dependencies: CliDependencies = {},
+): Promise<number | void> {
+  try {
+    return await runMain(argv, dependencies)
+  } catch (error) {
+    process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`)
+    return 1
+  }
+}
+
 if (import.meta.main) {
-  main().then((code) => {
-    if (typeof code === 'number') {
-      process.exitCode = code
-    }
-  })
+  main()
+    .then((code) => {
+      if (typeof code === 'number') {
+        process.exitCode = code
+      }
+    })
+    .catch((error) => {
+      process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`)
+      process.exitCode = 1
+    })
 }

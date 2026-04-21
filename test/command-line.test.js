@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from 'bun:test'
 import { chmod, mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
-import { main } from '../src/cli.js'
+import { buildSystemOpenCommand, main, parseWindowsNetstatListeningPid } from '../src/cli.js'
 
 const originalFetch = globalThis.fetch
 const originalStdoutWrite = process.stdout.write.bind(process.stdout)
@@ -113,6 +113,32 @@ afterEach(() => {
   }
 })
 
+describe('cli helpers', () => {
+  test('uses rundll32 on windows for system url opens', () => {
+    expect(
+      buildSystemOpenCommand(
+        'win32',
+        'chrome-extension://bfccnpkjkbhceghimfjgnkigilidldep/connect.html?token=a&relayPort=1&ipcPort=2',
+      ),
+    ).toEqual({
+      command: 'rundll32',
+      args: [
+        'url.dll,FileProtocolHandler',
+        'chrome-extension://bfccnpkjkbhceghimfjgnkigilidldep/connect.html?token=a&relayPort=1&ipcPort=2',
+      ],
+    })
+  })
+
+  test('parses the exact listening pid from netstat output', () => {
+    const stdout = [
+      '  TCP    0.0.0.0:57978    0.0.0.0:0     LISTENING       12345',
+      '  TCP    0.0.0.0:579780   0.0.0.0:0     LISTENING       54321',
+    ].join('\n')
+
+    expect(parseWindowsNetstatListeningPid(stdout, 57978)).toBe(12345)
+  })
+})
+
 describe('cli command routing', () => {
   test('allows title reads without a selector', async () => {
     const result = await runCli(['get', 'title'], {
@@ -139,6 +165,105 @@ describe('cli command routing', () => {
     expect(result.fetchCalls).toHaveLength(1)
     expect(String(result.fetchCalls[0].url)).toBe('http://127.0.0.1:57979/status')
     expect(result.stdout).toContain('ws://127.0.0.1:48001/ws?token=test-token')
+  })
+
+  test('returns a non-zero code when status lookup fails', async () => {
+    const result = await runCli(
+      ['status'],
+      { ok: true, result: { ok: true } },
+      {
+        fetchImpl: async () => {
+          throw new Error('status unavailable')
+        },
+      },
+    )
+
+    expect(result.exitCode).toBe(1)
+    expect(result.fetchCalls).toHaveLength(1)
+    expect(result.stderr).toContain('status unavailable')
+  })
+
+  test('open falls back to a new tab when goto hits a restricted page', async () => {
+    const result = await runCli(
+      ['open', 'https://www.baidu.com'],
+      { ok: true, result: { ok: true } },
+      {
+        fetchImpl: async (url, init = {}) => {
+          const body = init.body ? JSON.parse(init.body) : null
+
+          if (body?.command === 'goto') {
+            return {
+              ok: true,
+              async json() {
+                return {
+                  ok: false,
+                  error: {
+                    message: 'Cannot access chrome:// and edge:// URLs',
+                  },
+                }
+              },
+              async text() {
+                return `${JSON.stringify({
+                  ok: false,
+                  error: {
+                    message: 'Cannot access chrome:// and edge:// URLs',
+                  },
+                })}\n`
+              },
+            }
+          }
+
+          if (body?.command === 'tab.new') {
+            expect(body.args).toEqual({ url: 'https://www.baidu.com' })
+            return {
+              ok: true,
+              async json() {
+                return {
+                  ok: true,
+                  result: {
+                    tab: {
+                      id: 123,
+                      url: 'https://www.baidu.com',
+                      active: true,
+                    },
+                  },
+                }
+              },
+              async text() {
+                return `${JSON.stringify({
+                  ok: true,
+                  result: {
+                    tab: {
+                      id: 123,
+                      url: 'https://www.baidu.com',
+                      active: true,
+                    },
+                  },
+                })}\n`
+              },
+            }
+          }
+
+          throw new Error(`unexpected request: ${String(url)} ${JSON.stringify(body)}`)
+        },
+      },
+    )
+
+    expect(result.exitCode).toBe(0)
+    expect(result.fetchCalls).toHaveLength(2)
+    expect(result.fetchCalls[0].body).toEqual({
+      command: 'goto',
+      args: {
+        url: 'https://www.baidu.com',
+      },
+    })
+    expect(result.fetchCalls[1].body).toEqual({
+      command: 'tab.new',
+      args: {
+        url: 'https://www.baidu.com',
+      },
+    })
+    expect(result.stdout).toContain('https://www.baidu.com')
   })
 
   test('connect opens the extension page when the server reports a token', async () => {
