@@ -1,4 +1,6 @@
-# Plugin install
+# Extension install
+
+This page covers the unpacked browser extension flow and the saved connection settings used by `connect`.
 
 Build the extension first:
 

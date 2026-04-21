@@ -1,5 +1,7 @@
 # Bun linking
 
+This page explains the wrapper that places `autobrowser` next to `bun` or `bun.exe`, and when plain `bun link` is enough.
+
 `bun link` is package-level linking. See [`overview.md`](overview.md) for the build and link workflow that places `autobrowser` next to `bun` or `bun.exe`.
 
 The repo's current `bin` entry still points at `./src/cli.ts`, so a plain `bun link` will link the source entrypoint unless you change that field first.

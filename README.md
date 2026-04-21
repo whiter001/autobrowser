@@ -2,6 +2,8 @@
 
 autobrowser is a Bun-based browser automation tool inspired by v-browser.
 
+Detailed usage docs live in [`docs/README.md`](docs/README.md).
+
 ## Current status
 
 This repository now contains a Bun implementation with the main automation flows in place:
