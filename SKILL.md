@@ -51,3 +51,17 @@ autobrowser.cmd open https://www.example.com
 - `network requests`
 - `state save <name>`
 - `state load <name|json>`
+
+## Failure patterns and recovery
+
+- `get text` needs a selector. Use `get text body` only when the page body is expected to be small and clean.
+- On x.com and similar SPA feeds, `get text body` can return huge script/config blobs instead of readable posts.
+- For visible feed items, prefer `eval` in the page context and read `article` nodes directly.
+- A reliable x.com extraction pattern is `Array.from(document.querySelectorAll('article')).slice(0, N).map((article) => article.innerText.trim())`.
+- When a page is still loading, run `open <url>` first and then a short `wait <ms>` before extracting.
+- If the page looks empty or wrong, verify whether the current view is a login screen, a captcha, or a virtualized timeline before retrying.
+
+## Add New Failures
+
+- When a new failure repeats, add it here as a short bullet with the trigger, the bad command or pattern, and the preferred recovery path.
+- Keep the guidance action-oriented so the next run can reuse it without re-deriving the fix.
