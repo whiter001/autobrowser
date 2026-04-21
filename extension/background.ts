@@ -2874,10 +2874,14 @@ chrome.runtime.onInstalled.addListener(() => {
 })
 
 chrome.runtime.onStartup.addListener(() => {
-  connect().catch(() => {})
+  connect().catch((error) => {
+    console.error('failed to connect autobrowser extension on startup', error)
+  })
 })
 
-connect().catch(() => {})
+connect().catch((error) => {
+  console.error('failed to connect autobrowser extension', error)
+})
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message?.type === 'autobrowser.setToken') {
@@ -2941,4 +2945,9 @@ Promise.all([getToken(), getRelayPort()])
     setupDebuggerEventListeners()
     return connect()
   })
-  .catch(() => {})
+  .catch((error) => {
+    console.error('failed to initialize autobrowser extension', error)
+    const message = error instanceof Error ? error.message : String(error)
+    setConnectionStatus('error')
+    setConnectionError(message, 'STARTUP_ERROR')
+  })

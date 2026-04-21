@@ -1018,6 +1018,25 @@ describe('cli command routing', () => {
     })
   })
 
+  test('returns a non-zero exit code when the extension reports a failed command', async () => {
+    const result = await runCli(['click', '#submit'], {
+      ok: false,
+      error: {
+        message: 'click failed',
+      },
+    })
+
+    expect(result.exitCode).toBe(1)
+    expect(result.fetchCalls).toHaveLength(1)
+    expect(result.fetchCalls[0].body).toEqual({
+      command: 'click',
+      args: {
+        selector: '#submit',
+      },
+    })
+    expect(result.stderr).toContain('click failed')
+  })
+
   test('routes type commands to the extension', async () => {
     const result = await runCli(['type', '#editor', 'hello world'])
 

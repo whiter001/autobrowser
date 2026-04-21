@@ -69,6 +69,13 @@ interface CliDependencies {
   killProcess?: (pid: number, signal?: NodeJS.Signals | number) => boolean
 }
 
+class CommandResultError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'CommandResultError'
+  }
+}
+
 function parseCli(argv: string[]): ParsedCli {
   const flags: CliFlags = {
     json: false,
@@ -1505,6 +1512,10 @@ async function runMain(
     await launchUrl(`http://127.0.0.1:${relayPort}/connect`, null)
   }
 
+  function isFailedCommandResponse(payload: unknown): payload is CommandResponse {
+    return isRecord(payload) && (payload as Record<string, unknown>).ok === false
+  }
+
   function writeResult(
     payload:
       | CommandResponse
@@ -1518,6 +1529,9 @@ async function runMain(
   ): void {
     if (flags.json) {
       process.stdout.write(`${JSON.stringify(payload, null, 2)}\n`)
+      if (isFailedCommandResponse(payload)) {
+        throw new CommandResultError(payload.error?.message || 'command failed')
+      }
       return
     }
 
@@ -1534,8 +1548,7 @@ async function runMain(
     const p = payload as CommandResponse
     if (p?.ok === false) {
       process.stderr.write(`${p.error?.message || 'command failed'}\n`)
-      process.exitCode = 1
-      return
+      throw new CommandResultError(p.error?.message || 'command failed')
     }
 
     const result = p?.result ?? payload
@@ -2627,6 +2640,10 @@ export async function main(
   try {
     return await runMain(argv, dependencies)
   } catch (error) {
+    if (error instanceof CommandResultError) {
+      return 1
+    }
+
     process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`)
     return 1
   }

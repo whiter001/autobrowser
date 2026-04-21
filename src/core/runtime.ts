@@ -164,6 +164,12 @@ export async function createRuntime(options: RuntimeOptions = {}): Promise<Runti
     await writeJsonFile(getTokenPath(homeDir), { token: runtime.token })
   }
 
+  let persistChain: Promise<void> = Promise.resolve()
+
+  function schedulePersist(): void {
+    persistChain = persistChain.then(() => persist()).catch(() => {})
+  }
+
   await persist()
 
   function setError(message: string): void {
@@ -171,6 +177,7 @@ export async function createRuntime(options: RuntimeOptions = {}): Promise<Runti
       message,
       at: new Date().toISOString(),
     }
+    schedulePersist()
   }
 
   function setLastCommand(command: string, args: unknown): void {
@@ -179,11 +186,13 @@ export async function createRuntime(options: RuntimeOptions = {}): Promise<Runti
       args,
       at: new Date().toISOString(),
     }
+    schedulePersist()
   }
 
   function setTabs(tabs: TabInfo[] = []): void {
     snapshot.tabs = Array.isArray(tabs) ? tabs : []
     snapshot.activeTabId = snapshot.tabs.find((tab: TabInfo) => tab.active)?.id ?? null
+    schedulePersist()
   }
 
   function attachExtension(
@@ -197,6 +206,7 @@ export async function createRuntime(options: RuntimeOptions = {}): Promise<Runti
       connectedAt: new Date().toISOString(),
       userAgent: (meta.userAgent as string) || null,
     }
+    schedulePersist()
   }
 
   function detachExtension(): void {
@@ -204,6 +214,7 @@ export async function createRuntime(options: RuntimeOptions = {}): Promise<Runti
     runtime.extensionId = null
     snapshot.extension = null
     rejectPendingRequests(pendingRequests, 'extension disconnected')
+    schedulePersist()
   }
 
   interface ExtensionMessage {
@@ -239,6 +250,8 @@ export async function createRuntime(options: RuntimeOptions = {}): Promise<Runti
       if (message.targetTabId !== undefined) {
         snapshot.targetTabId = message.targetTabId ?? null
       }
+
+      schedulePersist()
 
       return
     }

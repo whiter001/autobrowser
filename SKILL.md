@@ -1,13 +1,13 @@
 ---
 name: autobrowser
-description: CLI capability reference for autobrowser browser automation commands.
+description: Automate browser tasks to collect and extract website content, navigate pages, fill forms, inspect state, and manage tabs, windows, screenshots, and network activity.
 ---
 
 # autobrowser Skill
 
 ## Overview
 
-autobrowser is a browser automation CLI for controlling Chrome/Edge through a relay server and extension.
+autobrowser is a browser automation CLI for collecting content and interacting with websites in Chrome/Edge.
 
 ## What it can do
 
