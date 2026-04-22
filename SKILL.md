@@ -31,9 +31,19 @@ autobrowser.cmd connect
 autobrowser.cmd open https://www.example.com
 ```
 
+## Reliable workflows
+
+- `server` starts the relay and IPC servers.
+- `server stop` stops the background servers cleanly.
+- `connect` opens the extension connect page and stores the token plus relay port automatically.
+- If `connect` is launched with a valid token and the extension reports `connected`, the page may close itself. Treat that as a successful connection.
+- `status` is the fastest way to confirm whether the extension is connected.
+- `tab list` is useful after `connect` or `open` to confirm the active tab.
+
 ## Common commands
 
 - `server`
+- `server stop`
 - `status`
 - `connect`
 - `goto <url>`
@@ -49,11 +59,15 @@ autobrowser.cmd open https://www.example.com
 - `screenshot`
 - `network route <url>`
 - `network requests`
+- `network har start`
+- `network har stop [output.har]`
 - `state save <name>`
 - `state load <name|json>`
 
 ## Failure patterns and recovery
 
+- After `connect`, use `status` instead of waiting on the page if the connect tab auto-closes.
+- If `connect` does not open or connect, verify the browser binary points to the profile that has the unpacked extension loaded, or pass `--browser-command` explicitly.
 - `get text` needs a selector. Use `get text body` only when the page body is expected to be small and clean.
 - On x.com and similar SPA feeds, `get text body` can return huge script/config blobs instead of readable posts.
 - For visible feed items, prefer `eval` in the page context and read `article` nodes directly.
