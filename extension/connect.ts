@@ -14,6 +14,63 @@ interface StorageResult {
   [key: string]: unknown
 }
 
+const AUTO_CLOSE_POLL_INTERVAL_MS = 500
+
+let autoCloseTimer: number | null = null
+let autoCloseRequested = false
+let autoCloseEnabled = false
+
+function stopAutoClosePolling(): void {
+  if (autoCloseTimer !== null) {
+    clearInterval(autoCloseTimer)
+    autoCloseTimer = null
+  }
+}
+
+function closeConnectPage(): void {
+  if (autoCloseRequested || !autoCloseEnabled) {
+    return
+  }
+
+  autoCloseRequested = true
+  stopAutoClosePolling()
+
+  const closeWithWindow = () => {
+    try {
+      window.close()
+    } catch {
+      // Ignore: some Chromium contexts refuse script-initiated closes.
+    }
+  }
+
+  try {
+    chrome.tabs.getCurrent((tab) => {
+      const lastError = chrome.runtime.lastError
+      if (lastError) {
+        console.warn('failed to read current tab before closing connect page', lastError.message)
+        closeWithWindow()
+        return
+      }
+
+      if (!tab?.id) {
+        closeWithWindow()
+        return
+      }
+
+      chrome.tabs.remove(tab.id, () => {
+        const removeError = chrome.runtime.lastError
+        if (removeError) {
+          console.warn('failed to close connect page', removeError.message)
+          closeWithWindow()
+        }
+      })
+    })
+  } catch (error) {
+    console.warn('failed to close connect page', error)
+    closeWithWindow()
+  }
+}
+
 function getConnectParams(): { token: string; relayPort: number; ipcPort: number } {
   const url = new URL(globalThis.location.href)
   const token = url.searchParams.get('token') || ''
@@ -45,6 +102,10 @@ async function loadDiagnostics(): Promise<void> {
       statusTextEl.textContent = response.connected
         ? 'extension connected'
         : 'waiting for extension'
+
+      if (response.connected) {
+        closeConnectPage()
+      }
       return
     }
   } catch (error) {
@@ -73,6 +134,8 @@ async function connect(): Promise<void> {
   const statusTextEl = document.getElementById('status-text')
   const { token, relayPort, ipcPort } = getConnectParams()
 
+  autoCloseEnabled = Boolean(token)
+
   if (tokenEl) {
     tokenEl.textContent = token || 'missing token'
   }
@@ -97,6 +160,18 @@ async function connect(): Promise<void> {
   }
 
   await loadDiagnostics()
+
+  if (autoCloseEnabled && !autoCloseRequested) {
+    stopAutoClosePolling()
+    autoCloseTimer = window.setInterval(() => {
+      loadDiagnostics().catch((error: Error) => {
+        const diagnosticsEl = document.getElementById('diagnostics')
+        if (diagnosticsEl) {
+          diagnosticsEl.textContent = error.message
+        }
+      })
+    }, AUTO_CLOSE_POLL_INTERVAL_MS)
+  }
 }
 
 const refreshButton = document.getElementById('refresh')
