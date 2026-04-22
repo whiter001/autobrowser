@@ -8,4 +8,6 @@ node_modules/
 .log
 .playwright-mcp/
 .autobrowser-tmp/
+.env
 *.har
+.chrome-profile/

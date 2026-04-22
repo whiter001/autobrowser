@@ -17,8 +17,9 @@ Example config:
 ```json
 {
   "extensionId": "bfccnpkjkbhceghimfjgnkigilidldep",
-  "browserCommand": "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-  "browserArgs": ["--profile-directory=Profile 1"]
+  "browserCommand": "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+  // windows
+  // "browserCommand": "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe"
 }
 ```
 
