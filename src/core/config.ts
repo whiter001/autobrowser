@@ -148,6 +148,12 @@ export async function resolveExtensionId(
     return config.extensionId
   }
 
+  const envExtensionId = normalizeExtensionIdCandidate(process.env.AUTOBROWSER_EXTENSION_ID)
+  if (isValidExtensionId(envExtensionId)) {
+    await mergeCliConfig(homeDir, { extensionId: envExtensionId })
+    return envExtensionId
+  }
+
   const fallbackExtensionId = getExtensionId()
   await mergeCliConfig(homeDir, { extensionId: fallbackExtensionId })
   return fallbackExtensionId

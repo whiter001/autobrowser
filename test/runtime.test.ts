@@ -4,14 +4,22 @@ import os from 'node:os'
 import path from 'node:path'
 import { createRuntime } from '../src/core/runtime.js'
 
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
 async function waitForStateFile<T>(
   stateFilePath: string,
   predicate: (state: T) => boolean,
 ): Promise<T> {
   for (let attempt = 0; attempt < 20; attempt += 1) {
-    const state = JSON.parse(await readFile(stateFilePath, 'utf8')) as T
-    if (predicate(state)) {
-      return state
+    try {
+      const state = JSON.parse(await readFile(stateFilePath, 'utf8')) as T
+      if (predicate(state)) {
+        return state
+      }
+    } catch {
+      // The state file can briefly be mid-write; keep polling until it settles.
     }
 
     await new Promise((resolve) => setTimeout(resolve, 10))
@@ -75,5 +83,56 @@ describe('runtime snapshot', () => {
 
     expect(persistedState.snapshot.activeTabId).toBe(11)
     expect(persistedState.snapshot.targetTabId).toBe(22)
+  })
+
+  test('waits for the extension to reconnect before dispatching commands', async () => {
+    const homeDir = await mkdtemp(path.join(os.tmpdir(), 'autobrowser-runtime-test-'))
+    tempDirs.push(homeDir)
+
+    const runtime = await createRuntime({ homeDir, requestTimeoutMs: 200 })
+    const sentMessages: Array<Record<string, unknown>> = []
+
+    const socket = {
+      readyState: WebSocket.OPEN,
+      send(payload: string) {
+        const message = JSON.parse(payload) as { id?: string }
+        sentMessages.push(message)
+
+        if (typeof message.id === 'string') {
+          setTimeout(() => {
+            runtime.handleExtensionMessage(
+              JSON.stringify({
+                type: 'response',
+                id: message.id,
+                ok: true,
+                result: { dispatched: true },
+              }),
+            )
+          }, 0)
+        }
+      },
+    } as unknown as Bun.ServerWebSocket<{ extensionId?: string | null; userAgent?: string | null }>
+
+    const commandPromise = runtime.dispatchCommand('goto', { url: 'https://example.com' })
+
+    await delay(25)
+    expect(sentMessages).toHaveLength(0)
+
+    runtime.attachExtension(socket, {
+      extensionId: 'bfccnpkjkbhceghimfjgnkigilidldep',
+      userAgent: 'autobrowser-test',
+    })
+
+    const result = await commandPromise
+
+    expect(sentMessages).toHaveLength(1)
+    expect(sentMessages[0]).toMatchObject({
+      type: 'command',
+      command: 'goto',
+      args: {
+        url: 'https://example.com',
+      },
+    })
+    expect(result).toEqual({ dispatched: true })
   })
 })

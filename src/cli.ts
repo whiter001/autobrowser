@@ -32,6 +32,7 @@ interface CliFlags {
   relayPort: number
   ipcPort: number
   extensionId: string | null
+  autoConnect: boolean
   browserCommand: string | null
   browserArgs: string[]
   stdin: boolean
@@ -82,7 +83,8 @@ function parseCli(argv: string[]): ParsedCli {
     server: `http://127.0.0.1:${DEFAULT_IPC_PORT}`,
     relayPort: DEFAULT_RELAY_PORT,
     ipcPort: DEFAULT_IPC_PORT,
-    extensionId: process.env.AUTOBROWSER_EXTENSION_ID || null,
+    extensionId: null,
+    autoConnect: false,
     browserCommand: null,
     browserArgs: [],
     stdin: false,
@@ -141,6 +143,11 @@ function parseCli(argv: string[]): ParsedCli {
     if (value === '--extension-id') {
       flags.extensionId = argv[index + 1] || flags.extensionId
       index += 1
+      continue
+    }
+
+    if (value === '--auto-connect') {
+      flags.autoConnect = true
       continue
     }
 
@@ -1072,6 +1079,7 @@ const ROOT_HELP_FLAGS = [
   '--stdin       read command body from stdin',
   '--file PATH   read command body from file',
   '--base64      decode command body from base64',
+  '--auto-connect proactively open the extension connect page when disconnected',
 ]
 
 function isHelpToken(value: string | undefined): boolean {
@@ -1202,6 +1210,12 @@ interface CommandResponse {
   error?: { message: string; code?: string }
 }
 
+interface ConnectionTarget {
+  token: string
+  relayPort: number
+  ipcPort: number
+}
+
 function shouldOpenInNewTab(payload: CommandResponse): boolean {
   if (payload.ok !== false) {
     return false
@@ -1213,6 +1227,16 @@ function shouldOpenInNewTab(payload: CommandResponse): boolean {
     message.includes('cannot access chrome://') ||
     message.includes('cannot access edge://')
   )
+}
+
+function shouldTriggerAutoConnect(payload: CommandResponse): boolean {
+  if (payload.ok !== false) {
+    return false
+  }
+
+  const code = String(payload.error?.code || '')
+  const message = String(payload.error?.message || '').toLowerCase()
+  return code === 'EXTENSION_DISCONNECTED' || message.includes('no extension is connected')
 }
 
 interface NetworkRequestSummary {
@@ -1257,7 +1281,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object'
 }
 
-async function requestCommand(
+async function requestCommandRaw(
   baseUrl: string,
   command: string,
   args: object = {},
@@ -1354,7 +1378,7 @@ async function collectHarFromNetwork(
   baseUrl: string,
   startedAt: string | null,
 ): Promise<Record<string, unknown>> {
-  const requestListPayload = await requestCommand(baseUrl, 'network', {
+  const requestListPayload = await requestCommandRaw(baseUrl, 'network', {
     action: 'requests',
   })
 
@@ -1383,7 +1407,7 @@ async function collectHarFromNetwork(
     }
 
     try {
-      const requestPayload = await requestCommand(baseUrl, 'network', {
+      const requestPayload = await requestCommandRaw(baseUrl, 'network', {
         action: 'request',
         requestId,
       })
@@ -1507,9 +1531,135 @@ async function runMain(
   const [command, ...rest] = args
   const homeDir = getHomeDir()
   const launchUrl = dependencies.openUrl ?? openUrl
+  let connectPageOpened = false
 
   const openRelayConnectPage = async (relayPort: number): Promise<void> => {
     await launchUrl(`http://127.0.0.1:${relayPort}/connect`, null)
+  }
+
+  async function resolveConnectionTarget(
+    status: Record<string, unknown> | null,
+  ): Promise<ConnectionTarget> {
+    const serverStatus = isServerSnapshotStatus(status) ? status : null
+    const persistedConnectionInfo = await readPersistedConnectionInfo(
+      flags.relayPort,
+      flags.ipcPort,
+    )
+
+    const token =
+      typeof serverStatus?.token === 'string' && serverStatus.token
+        ? serverStatus.token
+        : persistedConnectionInfo?.token || ''
+
+    const relayPort = normalizeSavedPort(
+      serverStatus?.relayPort ?? persistedConnectionInfo?.relayPort,
+      flags.relayPort,
+    )
+    const ipcPort = normalizeSavedPort(
+      serverStatus?.ipcPort ?? persistedConnectionInfo?.ipcPort,
+      flags.ipcPort,
+    )
+
+    return {
+      token,
+      relayPort,
+      ipcPort,
+    }
+  }
+
+  async function openExtensionConnectPage(target: ConnectionTarget): Promise<void> {
+    const browserConfig = await resolveBrowserLaunchConfig(
+      homeDir,
+      flags.browserCommand,
+      flags.browserArgs,
+    )
+    const extensionId = await resolveExtensionId(homeDir, flags.extensionId)
+
+    await launchUrl(
+      getExtensionUrl(
+        '/connect.html',
+        {
+          token: target.token,
+          relayPort: target.relayPort,
+          ipcPort: target.ipcPort,
+        },
+        extensionId,
+      ),
+      browserConfig,
+    )
+  }
+
+  async function openConnectFlow(
+    status: Record<string, unknown> | null,
+    allowRelayFallback: boolean,
+  ): Promise<boolean> {
+    const target = await resolveConnectionTarget(status)
+
+    if (!target.token) {
+      if (!allowRelayFallback) {
+        return false
+      }
+
+      await openRelayConnectPage(target.relayPort)
+      return true
+    }
+
+    try {
+      await openExtensionConnectPage(target)
+      return true
+    } catch (error) {
+      if (!allowRelayFallback) {
+        throw error
+      }
+
+      await openRelayConnectPage(target.relayPort)
+      return true
+    }
+  }
+
+  async function triggerAutoConnect(baseUrl: string): Promise<boolean> {
+    if (!flags.autoConnect || connectPageOpened) {
+      return false
+    }
+
+    const status = await getStatus(baseUrl).catch(() => null)
+    if (!status || status.extensionConnected !== false) {
+      return false
+    }
+
+    const target = await resolveConnectionTarget(status)
+    if (!target.token) {
+      return false
+    }
+
+    connectPageOpened = true
+    try {
+      await openExtensionConnectPage(target)
+      return true
+    } catch (error) {
+      console.warn('failed to proactively open extension connect page', error)
+      return false
+    }
+  }
+
+  async function requestCommand(
+    baseUrl: string,
+    command: string,
+    args: object = {},
+  ): Promise<CommandResponse> {
+    if (flags.autoConnect && !connectPageOpened) {
+      await triggerAutoConnect(baseUrl)
+    }
+
+    const payload = await requestCommandRaw(baseUrl, command, args)
+    if (flags.autoConnect && !connectPageOpened && shouldTriggerAutoConnect(payload)) {
+      const opened = await triggerAutoConnect(baseUrl)
+      if (opened) {
+        return await requestCommandRaw(baseUrl, command, args)
+      }
+    }
+
+    return payload
   }
 
   function isFailedCommandResponse(payload: unknown): payload is CommandResponse {
@@ -1693,52 +1843,7 @@ async function runMain(
       return writeHelp(['connect'])
     }
     const status = await getStatus(flags.server).catch(() => null)
-    const serverStatus = isServerSnapshotStatus(status) ? status : null
-    const persistedConnectionInfo = await readPersistedConnectionInfo(
-      flags.relayPort,
-      flags.ipcPort,
-    )
-    const token =
-      typeof serverStatus?.token === 'string' && serverStatus.token
-        ? serverStatus.token
-        : persistedConnectionInfo?.token || ''
-    const relayPort = normalizeSavedPort(
-      serverStatus?.relayPort ?? persistedConnectionInfo?.relayPort,
-      flags.relayPort,
-    )
-    const ipcPort = normalizeSavedPort(
-      serverStatus?.ipcPort ?? persistedConnectionInfo?.ipcPort,
-      flags.ipcPort,
-    )
-
-    if (!token) {
-      await openRelayConnectPage(relayPort)
-      return 0
-    }
-
-    const browserConfig = await resolveBrowserLaunchConfig(
-      homeDir,
-      flags.browserCommand,
-      flags.browserArgs,
-    )
-    const extensionId = await resolveExtensionId(homeDir, flags.extensionId)
-
-    try {
-      await launchUrl(
-        getExtensionUrl(
-          '/connect.html',
-          {
-            token,
-            relayPort,
-            ipcPort,
-          },
-          extensionId,
-        ),
-        browserConfig,
-      )
-    } catch {
-      await openRelayConnectPage(relayPort)
-    }
+    await openConnectFlow(status, true)
     return 0
   }
 

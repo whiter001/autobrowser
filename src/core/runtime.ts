@@ -50,6 +50,12 @@ interface PendingRequest {
   timer: ReturnType<typeof setTimeout>
 }
 
+interface ConnectionWaiter {
+  resolve: (socket: Bun.ServerWebSocket<ExtensionMetadata>) => void
+  reject: (error: Error) => void
+  timer: ReturnType<typeof setTimeout>
+}
+
 interface ExtensionMetadata {
   extensionId?: string | null
   userAgent?: string | null
@@ -69,6 +75,12 @@ function rejectPendingRequests(
     pending.reject(new Error(message))
     pendingRequests.delete(id)
   }
+}
+
+function createExtensionDisconnectedError(message: string = 'no extension is connected'): Error {
+  const error = new Error(message) as ErrorWithCode
+  error.code = 'EXTENSION_DISCONNECTED'
+  return error
 }
 
 function createDefaultSnapshot(): Snapshot {
@@ -134,6 +146,7 @@ export async function createRuntime(options: RuntimeOptions = {}): Promise<Runti
 
   // pendingRequests maps CLI commands to extension responses
   const pendingRequests = new Map<string, PendingRequest>()
+  const connectionWaiters = new Set<ConnectionWaiter>()
   const snapshot: Snapshot = createDefaultSnapshot()
 
   const runtime: RuntimeState = {
@@ -168,6 +181,58 @@ export async function createRuntime(options: RuntimeOptions = {}): Promise<Runti
 
   function schedulePersist(): void {
     persistChain = persistChain.then(() => persist()).catch(() => {})
+  }
+
+  function resolveConnectionWaiters(socket: Bun.ServerWebSocket<ExtensionMetadata>): void {
+    for (const waiter of connectionWaiters) {
+      connectionWaiters.delete(waiter)
+      clearTimeout(waiter.timer)
+      waiter.resolve(socket)
+    }
+  }
+
+  function waitForExtensionConnection(
+    timeoutMs: number,
+  ): Promise<Bun.ServerWebSocket<ExtensionMetadata>> {
+    if (runtime.extensionSocket && runtime.extensionSocket.readyState === WebSocket.OPEN) {
+      return Promise.resolve(runtime.extensionSocket)
+    }
+
+    if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
+      return Promise.reject(createExtensionDisconnectedError())
+    }
+
+    return new Promise((resolve, reject) => {
+      let settled = false
+      let waiter: ConnectionWaiter
+
+      const settle = (callback: () => void): void => {
+        if (settled) {
+          return
+        }
+
+        settled = true
+        clearTimeout(waiter.timer)
+        connectionWaiters.delete(waiter)
+        callback()
+      }
+
+      const timer = setTimeout(() => {
+        settle(() => reject(createExtensionDisconnectedError()))
+      }, timeoutMs)
+
+      waiter = {
+        timer,
+        resolve(socket) {
+          settle(() => resolve(socket))
+        },
+        reject(error) {
+          settle(() => reject(error))
+        },
+      }
+
+      connectionWaiters.add(waiter)
+    })
   }
 
   await persist()
@@ -206,6 +271,7 @@ export async function createRuntime(options: RuntimeOptions = {}): Promise<Runti
       connectedAt: new Date().toISOString(),
       userAgent: (meta.userAgent as string) || null,
     }
+    resolveConnectionWaiters(socket)
     schedulePersist()
   }
 
@@ -293,9 +359,8 @@ export async function createRuntime(options: RuntimeOptions = {}): Promise<Runti
   ): Promise<unknown> {
     setLastCommand(command, args)
 
-    if (!runtime.extensionSocket || runtime.extensionSocket.readyState !== WebSocket.OPEN) {
-      throw new Error('no extension is connected')
-    }
+    const connectionTimeoutMs = Math.min(requestTimeoutMs, 10_000)
+    const socket = await waitForExtensionConnection(connectionTimeoutMs)
 
     const id = createId('cmd')
     const payload: CommandPayload = {
@@ -313,7 +378,18 @@ export async function createRuntime(options: RuntimeOptions = {}): Promise<Runti
       }, requestTimeoutMs)
 
       pendingRequests.set(id, { resolve, reject, timer })
-      runtime.extensionSocket!.send(JSON.stringify(payload))
+
+      try {
+        socket.send(JSON.stringify(payload))
+      } catch (error) {
+        clearTimeout(timer)
+        pendingRequests.delete(id)
+        reject(
+          error instanceof Error
+            ? error
+            : createExtensionDisconnectedError('failed to send command to extension'),
+        )
+      }
     })
   }
 

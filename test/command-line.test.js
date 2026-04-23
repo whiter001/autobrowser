@@ -266,6 +266,83 @@ describe('cli command routing', () => {
     expect(result.stdout).toContain('https://www.baidu.com')
   })
 
+  test('auto-connect opens the extension page before dispatching a command when disconnected', async () => {
+    const result = await runCli(
+      ['--auto-connect', 'open', 'https://example.com'],
+      { ok: true, result: { ok: true } },
+      {
+        openUrl: async () => {},
+        fetchImpl: async (url, init = {}) => {
+          const body = init.body ? JSON.parse(init.body) : null
+
+          if (String(url).endsWith('/status')) {
+            return {
+              ok: true,
+              async json() {
+                return {
+                  ok: true,
+                  token: 'live-token',
+                  relayPort: 48011,
+                  ipcPort: 48012,
+                  extensionConnected: false,
+                }
+              },
+              async text() {
+                return `${JSON.stringify({
+                  ok: true,
+                  token: 'live-token',
+                  relayPort: 48011,
+                  ipcPort: 48012,
+                  extensionConnected: false,
+                })}\n`
+              },
+            }
+          }
+
+          if (body?.command === 'goto') {
+            expect(body.args).toEqual({
+              url: 'https://example.com',
+            })
+            return {
+              ok: true,
+              async json() {
+                return {
+                  ok: true,
+                  result: {
+                    navigated: true,
+                  },
+                }
+              },
+              async text() {
+                return `${JSON.stringify({
+                  ok: true,
+                  result: {
+                    navigated: true,
+                  },
+                })}\n`
+              },
+            }
+          }
+
+          throw new Error(`unexpected request: ${String(url)} ${JSON.stringify(body)}`)
+        },
+      },
+    )
+
+    expect(result.exitCode).toBe(0)
+    expect(result.fetchCalls).toHaveLength(2)
+    expect(String(result.fetchCalls[0].url)).toBe('http://127.0.0.1:57979/status')
+    expect(result.fetchCalls[1].body).toEqual({
+      command: 'goto',
+      args: {
+        url: 'https://example.com',
+      },
+    })
+    expect(result.openCalls).toEqual([
+      'chrome-extension://bfccnpkjkbhceghimfjgnkigilidldep/connect.html?token=live-token&relayPort=48011&ipcPort=48012',
+    ])
+  })
+
   test('connect opens the extension page when the server reports a token', async () => {
     const result = await runCli(
       ['connect'],
