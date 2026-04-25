@@ -69,6 +69,11 @@ autobrowser.cmd open https://www.example.com
 - After `connect`, use `status` instead of waiting on the page if the connect tab auto-closes.
 - If `connect` does not open or connect, verify the browser binary points to the profile that has the unpacked extension loaded, or pass `--browser-command` explicitly.
 - `get text` needs a selector. Use `get text body` only when the page body is expected to be small and clean.
+- `snapshot` returns agent-friendly `elements` refs such as `@e1`; prefer acting on those refs instead of brittle CSS selectors when possible.
+- `snapshot` also returns `frames` refs such as `@f1`; prefer `frame @f1` over raw iframe selectors when the page has nested frames.
+- Selector-based commands like `click`, `fill`, `get text`, and `wait` accept snapshot refs directly.
+- `find role`, `find text`, and `find label` let agents locate the right element semantically and then click, read text, fill, or focus it in one command.
+- `tab list` returns stable handles like `t1`, `t2`, and `t3`; prefer `tab select tN` over depending on raw tab ids.
 - On x.com and similar SPA feeds, `get text body` can return huge script/config blobs instead of readable posts.
 - For visible feed items, prefer `eval` in the page context and read `article` nodes directly.
 - A reliable x.com extraction pattern is `Array.from(document.querySelectorAll('article')).slice(0, N).map((article) => article.innerText.trim())`.

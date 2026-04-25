@@ -107,6 +107,37 @@ bun run src/cli.ts screenshot --screenshot-dir ./shots --screenshot-format jpeg 
 
 `--full` captures the full page, `--annotate` adds numbered element labels, and `--screenshot-format` / `--screenshot-quality` control the encoded image output.
 
+## Agent-friendly refs
+
+`snapshot` now emits an `elements` list with stable refs such as `@e1`, `@e2`, and `@e3`, plus a `frames` list with refs like `@f1` for the current page view. Selector-based commands accept element refs anywhere a selector is expected, and `frame` accepts frame refs directly, so an agent can snapshot first and then act on handles instead of guessing CSS selectors.
+
+```bash
+bun run src/cli.ts snapshot
+bun run src/cli.ts click @e2
+bun run src/cli.ts fill @e5 "test@example.com"
+bun run src/cli.ts get text @e3
+bun run src/cli.ts wait @e7 --state hidden
+bun run src/cli.ts frame @f1
+```
+
+Semantic find commands are also available for role, text, and label based lookup:
+
+```bash
+bun run src/cli.ts find role button click --name "Submit"
+bun run src/cli.ts find text "Sign in" text --exact
+bun run src/cli.ts find label "Email" fill "test@example.com"
+```
+
+Tabs now expose stable handles in `tab list`, and the CLI can switch or close them without relying on raw numeric ids:
+
+```bash
+bun run src/cli.ts tab list
+bun run src/cli.ts tab select t2
+bun run src/cli.ts tab close t3
+```
+
+If the page rerenders heavily or navigates, run `snapshot` again to refresh the refs before continuing.
+
 ## Tests
 
 Run `bun test`.

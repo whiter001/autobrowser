@@ -183,6 +183,45 @@ describe('cli command routing', () => {
     expect(result.stderr).toContain('status unavailable')
   })
 
+  test('routes tab selection by stable handle to the extension', async () => {
+    const result = await runCli(['tab', 'select', 't2'])
+
+    expect(result.exitCode).toBe(0)
+    expect(result.fetchCalls).toHaveLength(1)
+    expect(result.fetchCalls[0].body).toEqual({
+      command: 'tab.select',
+      args: {
+        handle: 't2',
+      },
+    })
+  })
+
+  test('routes shorthand tab selection by handle to the extension', async () => {
+    const result = await runCli(['tab', 't3'])
+
+    expect(result.exitCode).toBe(0)
+    expect(result.fetchCalls).toHaveLength(1)
+    expect(result.fetchCalls[0].body).toEqual({
+      command: 'tab.select',
+      args: {
+        handle: 't3',
+      },
+    })
+  })
+
+  test('routes tab close by stable handle to the extension', async () => {
+    const result = await runCli(['tab', 'close', 't4'])
+
+    expect(result.exitCode).toBe(0)
+    expect(result.fetchCalls).toHaveLength(1)
+    expect(result.fetchCalls[0].body).toEqual({
+      command: 'tab.close',
+      args: {
+        handle: 't4',
+      },
+    })
+  })
+
   test('open falls back to a new tab when goto hits a restricted page', async () => {
     const result = await runCli(
       ['open', 'https://www.baidu.com'],
@@ -1024,6 +1063,34 @@ describe('cli command routing', () => {
     expect((await readFile(outputPath)).toString()).toBe('screenshot-bytes')
   })
 
+  test('adds global tab and frame overrides to screenshot commands', async () => {
+    const outputDir = await mkdtemp(path.join(os.tmpdir(), 'autobrowser-screenshot-frame-test-'))
+    const outputPath = path.join(outputDir, 'shot.png')
+    const screenshotBytes = Buffer.from('frame-screenshot-bytes')
+
+    const result = await runCli(['screenshot', '--tab', 't2', '--frame', '@f4', outputPath], {
+      ok: true,
+      result: {
+        data: screenshotBytes.toString('base64'),
+        mimeType: 'image/png',
+      },
+    })
+
+    expect(result.exitCode).toBe(0)
+    expect(result.fetchCalls).toHaveLength(1)
+    expect(result.fetchCalls[0].body).toEqual({
+      command: 'screenshot',
+      args: {
+        full: false,
+        annotate: false,
+        format: 'png',
+        tabId: 't2',
+        frame: '@f4',
+      },
+    })
+    expect((await readFile(outputPath)).toString()).toBe('frame-screenshot-bytes')
+  })
+
   test('saves screenshots into the configured screenshot dir when no path is provided', async () => {
     const outputDir = await mkdtemp(path.join(os.tmpdir(), 'autobrowser-screenshot-dir-test-'))
     const screenshotBytes = Buffer.from('temp-screenshot')
@@ -1128,6 +1195,166 @@ describe('cli command routing', () => {
     })
   })
 
+  test('routes semantic role finds to the extension', async () => {
+    const result = await runCli(['find', 'role', 'button', 'click', '--name', 'Submit'])
+
+    expect(result.exitCode).toBe(0)
+    expect(result.fetchCalls).toHaveLength(1)
+    expect(result.fetchCalls[0].body).toEqual({
+      command: 'find',
+      args: {
+        strategy: 'role',
+        role: 'button',
+        name: 'Submit',
+        exact: false,
+        action: 'click',
+      },
+    })
+  })
+
+  test('routes semantic text finds with exact matching to the extension', async () => {
+    const result = await runCli(['find', 'text', 'Sign in', 'text', '--exact'])
+
+    expect(result.exitCode).toBe(0)
+    expect(result.fetchCalls).toHaveLength(1)
+    expect(result.fetchCalls[0].body).toEqual({
+      command: 'find',
+      args: {
+        strategy: 'text',
+        query: 'Sign in',
+        exact: true,
+        action: 'text',
+      },
+    })
+  })
+
+  test('routes semantic label fills to the extension', async () => {
+    const result = await runCli(['find', 'label', 'Email', 'fill', 'test@example.com'])
+
+    expect(result.exitCode).toBe(0)
+    expect(result.fetchCalls).toHaveLength(1)
+    expect(result.fetchCalls[0].body).toEqual({
+      command: 'find',
+      args: {
+        strategy: 'label',
+        query: 'Email',
+        exact: false,
+        action: 'fill',
+        value: 'test@example.com',
+      },
+    })
+  })
+
+  test('adds global tab and frame overrides to selector commands', async () => {
+    const result = await runCli(['click', '--tab', 't2', '--frame', '@f1', '@e3'])
+
+    expect(result.exitCode).toBe(0)
+    expect(result.fetchCalls).toHaveLength(1)
+    expect(result.fetchCalls[0].body).toEqual({
+      command: 'click',
+      args: {
+        selector: '@e3',
+        tabId: 't2',
+        frame: '@f1',
+      },
+    })
+  })
+
+  test('adds global tab and frame overrides to semantic find commands', async () => {
+    const result = await runCli([
+      'find',
+      'role',
+      'button',
+      'click',
+      '--name',
+      'Submit',
+      '--tab',
+      't3',
+      '--frame',
+      '@f2',
+    ])
+
+    expect(result.exitCode).toBe(0)
+    expect(result.fetchCalls).toHaveLength(1)
+    expect(result.fetchCalls[0].body).toEqual({
+      command: 'find',
+      args: {
+        strategy: 'role',
+        role: 'button',
+        name: 'Submit',
+        exact: false,
+        action: 'click',
+        tabId: 't3',
+        frame: '@f2',
+      },
+    })
+  })
+
+  test('adds global tab overrides without leaking frame overrides to frame selection', async () => {
+    const result = await runCli(['frame', '--tab', 't4', '@f3'])
+
+    expect(result.exitCode).toBe(0)
+    expect(result.fetchCalls).toHaveLength(1)
+    expect(result.fetchCalls[0].body).toEqual({
+      command: 'frame',
+      args: {
+        selector: '@f3',
+        tabId: 't4',
+      },
+    })
+  })
+
+  test('adds global tab and frame overrides to upload commands', async () => {
+    const result = await runCli([
+      'upload',
+      '--tab',
+      't5',
+      '--frame',
+      '@f6',
+      '#avatar',
+      'avatar.png',
+      'avatar@2x.png',
+    ])
+
+    expect(result.exitCode).toBe(0)
+    expect(result.fetchCalls).toHaveLength(1)
+    expect(result.fetchCalls[0].body).toEqual({
+      command: 'upload',
+      args: {
+        selector: '#avatar',
+        files: ['avatar.png', 'avatar@2x.png'],
+        tabId: 't5',
+        frame: '@f6',
+      },
+    })
+  })
+
+  test('adds global tab and frame overrides to storage commands', async () => {
+    const result = await runCli([
+      'storage',
+      'set',
+      '--tab',
+      't6',
+      '--frame',
+      '@f7',
+      'draft',
+      'ready',
+    ])
+
+    expect(result.exitCode).toBe(0)
+    expect(result.fetchCalls).toHaveLength(1)
+    expect(result.fetchCalls[0].body).toEqual({
+      command: 'storage',
+      args: {
+        action: 'set',
+        key: 'draft',
+        value: 'ready',
+        tabId: 't6',
+        frame: '@f7',
+      },
+    })
+  })
+
   test('routes keyboard typing commands to the extension', async () => {
     const result = await runCli(['keyboard', 'type', 'abc'])
 
@@ -1151,6 +1378,19 @@ describe('cli command routing', () => {
       command: 'scrollintoview',
       args: {
         selector: '#footer',
+      },
+    })
+  })
+
+  test('routes stable frame refs to the extension', async () => {
+    const result = await runCli(['frame', '@f1'])
+
+    expect(result.exitCode).toBe(0)
+    expect(result.fetchCalls).toHaveLength(1)
+    expect(result.fetchCalls[0].body).toEqual({
+      command: 'frame',
+      args: {
+        selector: '@f1',
       },
     })
   })

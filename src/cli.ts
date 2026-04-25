@@ -26,6 +26,72 @@ import { startServers } from './server.js'
 
 const execFileAsync = promisify(execFile)
 
+const TAB_TARGET_COMMANDS = new Set([
+  'back',
+  'check',
+  'click',
+  'clipboard',
+  'close',
+  'console',
+  'cookies',
+  'dblclick',
+  'dialog',
+  'drag',
+  'errors',
+  'eval',
+  'fill',
+  'find',
+  'focus',
+  'forward',
+  'frame',
+  'get',
+  'goto',
+  'hover',
+  'is',
+  'keyboard',
+  'network',
+  'pdf',
+  'press',
+  'reload',
+  'screenshot',
+  'scroll',
+  'scrollintoview',
+  'select',
+  'set',
+  'snapshot',
+  'state',
+  'storage',
+  'type',
+  'uncheck',
+  'upload',
+  'wait',
+  'window',
+])
+
+const FRAME_TARGET_COMMANDS = new Set([
+  'check',
+  'click',
+  'dblclick',
+  'drag',
+  'eval',
+  'fill',
+  'find',
+  'focus',
+  'get',
+  'hover',
+  'is',
+  'screenshot',
+  'scroll',
+  'scrollintoview',
+  'select',
+  'snapshot',
+  'storage',
+  'type',
+  'uncheck',
+  'upload',
+  'wait',
+])
+
 interface CliFlags {
   json: boolean
   server: string
@@ -38,6 +104,8 @@ interface CliFlags {
   stdin: boolean
   file: string | null
   base64: boolean
+  tab: string | null
+  frame: string | null
 }
 
 interface ParsedCli {
@@ -90,6 +158,8 @@ function parseCli(argv: string[]): ParsedCli {
     stdin: false,
     file: null,
     base64: false,
+    tab: null,
+    frame: null,
   }
 
   const args: string[] = []
@@ -109,6 +179,18 @@ function parseCli(argv: string[]): ParsedCli {
 
     if (value === '--base64') {
       flags.base64 = true
+      continue
+    }
+
+    if (value === '--tab') {
+      flags.tab = argv[index + 1] || null
+      index += 1
+      continue
+    }
+
+    if (value === '--frame') {
+      flags.frame = argv[index + 1] || null
+      index += 1
       continue
     }
 
@@ -691,6 +773,95 @@ function parseWaitArgs(rest: string[]): WaitArgs {
   return waitArgs
 }
 
+const FIND_ACTIONS = new Set([
+  'locate',
+  'click',
+  'fill',
+  'type',
+  'hover',
+  'focus',
+  'check',
+  'uncheck',
+  'text',
+])
+
+function parseFindArgs(rest: string[]): FindArgs {
+  const strategy = String(rest[0] || '').trim()
+  const queryOrRole = rest[1]
+
+  if (!['role', 'text', 'label'].includes(strategy)) {
+    throw new Error(`unsupported find strategy: ${strategy || '(empty)'}`)
+  }
+
+  if (!queryOrRole) {
+    throw new Error(`missing ${strategy} value`)
+  }
+
+  const findArgs: FindArgs = {
+    strategy: strategy as FindArgs['strategy'],
+    exact: false,
+  }
+
+  if (strategy === 'role') {
+    findArgs.role = queryOrRole
+  } else {
+    findArgs.query = queryOrRole
+  }
+
+  const positionals: string[] = []
+
+  for (let index = 2; index < rest.length; index += 1) {
+    const value = rest[index]
+
+    if (value === '--name') {
+      const rawName = rest[index + 1]
+      if (rawName === undefined) {
+        throw new Error('missing name value')
+      }
+      findArgs.name = rawName
+      index += 1
+      continue
+    }
+
+    if (value === '--exact') {
+      findArgs.exact = true
+      continue
+    }
+
+    if (value.startsWith('--')) {
+      throw new Error(`unsupported find option: ${value}`)
+    }
+
+    positionals.push(value)
+  }
+
+  if (positionals.length === 0) {
+    return findArgs
+  }
+
+  const action = positionals[0]
+  if (!FIND_ACTIONS.has(action)) {
+    throw new Error(`unsupported find action: ${action}`)
+  }
+
+  findArgs.action = action
+
+  if (['fill', 'type'].includes(action)) {
+    const actionValue = positionals.slice(1).join(' ')
+    if (!actionValue) {
+      throw new Error(`missing value for find ${action}`)
+    }
+    findArgs.value = actionValue
+    return findArgs
+  }
+
+  if (positionals.length > 1) {
+    throw new Error(`unexpected extra arguments for find ${action}`)
+  }
+
+  return findArgs
+}
+
 function parseScreenshotArgs(rest: string[]): ScreenshotArgs {
   const screenshotArgs: ScreenshotArgs = {
     path: null,
@@ -856,6 +1027,8 @@ const HELP_ROOT = helpNode(
   [
     '--json',
     '--server <url>',
+    '--tab <tN|id>',
+    '--frame <@fN|selector>',
     '--stdin',
     '--file <path>',
     '--base64',
@@ -878,9 +1051,11 @@ const HELP_ROOT = helpNode(
       'Open the extension connect page.',
       'autobrowser connect [--extension-id <id>] [--browser-command <command>] [--browser-arg <arg>]',
     ),
-    helpNode('tab', 'Manage tabs.', 'autobrowser tab <list|new>', undefined, [
+    helpNode('tab', 'Manage tabs.', 'autobrowser tab <list|new|select|close>', undefined, [
       helpNode('list', 'List tabs.', 'autobrowser tab list'),
       helpNode('new', 'Open a new tab.', 'autobrowser tab new <url>'),
+      helpNode('select', 'Select a tab by handle.', 'autobrowser tab select <tN>'),
+      helpNode('close', 'Close a tab by handle.', 'autobrowser tab close [tN]'),
     ]),
     helpNode('open', 'Navigate to a URL.', 'autobrowser open <url>'),
     helpNode('goto', 'Navigate to a URL.', 'autobrowser goto <url>'),
@@ -899,6 +1074,12 @@ const HELP_ROOT = helpNode(
     helpNode('click', 'Click a selector.', 'autobrowser click <selector>'),
     helpNode('dblclick', 'Double-click a selector.', 'autobrowser dblclick <selector>'),
     helpNode('fill', 'Fill a selector with text.', 'autobrowser fill <selector> <value>'),
+    helpNode(
+      'find',
+      'Find elements by role, text, or label and optionally act on them.',
+      'autobrowser find <role|text|label> ...',
+      ['--name <name>', '--exact'],
+    ),
     helpNode('type', 'Type text into a selector.', 'autobrowser type <selector> <value>'),
     helpNode('press', 'Press a keyboard key.', 'autobrowser press <key>'),
     helpNode(
@@ -927,7 +1108,7 @@ const HELP_ROOT = helpNode(
       'Upload files through a file input.',
       'autobrowser upload <selector> <files...>',
     ),
-    helpNode('frame', 'Select a frame.', 'autobrowser frame <selector|top>'),
+    helpNode('frame', 'Select a frame.', 'autobrowser frame <@fN|selector|top>'),
     helpNode(
       'is',
       'Check element state.',
@@ -1514,6 +1695,16 @@ interface WaitArgs {
   fn?: string
 }
 
+interface FindArgs {
+  strategy: 'role' | 'text' | 'label'
+  role?: string
+  query?: string
+  name?: string
+  exact: boolean
+  action?: string
+  value?: string
+}
+
 interface ScreenshotArgs {
   path: string | null
   full: boolean
@@ -1647,15 +1838,23 @@ async function runMain(
     command: string,
     args: object = {},
   ): Promise<CommandResponse> {
+    const requestArgs: Record<string, unknown> = { ...args }
+    if (TAB_TARGET_COMMANDS.has(command) && requestArgs.tabId === undefined && flags.tab) {
+      requestArgs.tabId = flags.tab
+    }
+    if (FRAME_TARGET_COMMANDS.has(command) && requestArgs.frame === undefined && flags.frame) {
+      requestArgs.frame = flags.frame
+    }
+
     if (flags.autoConnect && !connectPageOpened) {
       await triggerAutoConnect(baseUrl)
     }
 
-    const payload = await requestCommandRaw(baseUrl, command, args)
+    const payload = await requestCommandRaw(baseUrl, command, requestArgs)
     if (flags.autoConnect && !connectPageOpened && shouldTriggerAutoConnect(payload)) {
       const opened = await triggerAutoConnect(baseUrl)
       if (opened) {
-        return await requestCommandRaw(baseUrl, command, args)
+        return await requestCommandRaw(baseUrl, command, requestArgs)
       }
     }
 
@@ -1880,6 +2079,35 @@ async function runMain(
       return 0
     }
 
+    if (subcommand === 'select') {
+      const handle = tabArgs[0]
+      if (isHelpToken(handle)) {
+        return writeHelp(['tab', 'select'])
+      }
+      if (!handle) {
+        return writeHelp(['tab', 'select'])
+      }
+      const payload = await requestCommand(flags.server, 'tab.select', { handle })
+      writeResult(payload)
+      return 0
+    }
+
+    if (subcommand === 'close') {
+      const handle = tabArgs[0]
+      if (isHelpToken(handle)) {
+        return writeHelp(['tab', 'close'])
+      }
+      const payload = await requestCommand(flags.server, 'tab.close', handle ? { handle } : {})
+      writeResult(payload)
+      return 0
+    }
+
+    if (subcommand) {
+      const payload = await requestCommand(flags.server, 'tab.select', { handle: subcommand })
+      writeResult(payload)
+      return 0
+    }
+
     return writeHelp(['tab'])
   }
 
@@ -1957,6 +2185,24 @@ async function runMain(
     })
     writeResult(payload)
     return 0
+  }
+
+  if (command === 'find') {
+    if (isHelpToken(rest[0])) {
+      return writeHelp(['find'])
+    }
+
+    let findArgs: FindArgs
+    try {
+      findArgs = parseFindArgs(rest)
+    } catch (error) {
+      process.stderr.write(`${(error as Error).message}\n`)
+      return 1
+    }
+
+    const payload = await requestCommand(flags.server, 'find', findArgs)
+    writeResult(payload)
+    return payload.ok === false ? 1 : 0
   }
 
   if (command === 'snapshot' || command === 'screenshot') {

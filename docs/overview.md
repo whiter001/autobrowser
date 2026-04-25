@@ -30,6 +30,37 @@ bun run src/cli.ts open https://example.com
 - `connect` opens the extension connect page.
 - `open` navigates the current tab to a URL.
 
+## Agent-friendly workflow
+
+Use `snapshot` before acting on a complex page. The snapshot now includes an `elements` array with refs like `@e1` and `@e2`, plus tag, role, text, and geometry metadata for each visible interactive element. It also includes a `frames` array with refs like `@f1` for visible iframes.
+
+Those refs work anywhere a selector is accepted, so an agent can prefer this pattern:
+
+```bash
+bun run src/cli.ts snapshot
+bun run src/cli.ts click @e2
+bun run src/cli.ts get text @e3
+bun run src/cli.ts fill @e5 "hello"
+bun run src/cli.ts frame @f1
+```
+
+When CSS selectors are still too brittle, prefer semantic lookup:
+
+```bash
+bun run src/cli.ts find role button click --name "Continue"
+bun run src/cli.ts find text "Pricing" click
+bun run src/cli.ts find label "Email" fill "agent@example.com"
+```
+
+For multi-tab flows, prefer stable tab handles from `tab list`:
+
+```bash
+bun run src/cli.ts tab list
+bun run src/cli.ts tab select t2
+```
+
+If the DOM changes significantly, refresh the refs with another `snapshot`.
+
 ## Build and link workflow
 
 ```bash

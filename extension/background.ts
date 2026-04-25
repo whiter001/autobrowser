@@ -10,6 +10,21 @@ import {
   type DiagnosticsState,
   type SocketCloseInfo,
 } from './shared.js'
+import {
+  AGENT_FRAME_REF_ATTRIBUTE,
+  formatAgentFrameRef,
+  getAgentFrameRefPageEpoch,
+  isStaleAgentFrameRef,
+  formatAgentTabHandle,
+  parseAgentTabHandle,
+  resolveAgentFrameSelector,
+} from '../src/core/agent-handles.js'
+import {
+  AGENT_ELEMENT_REF_ATTRIBUTE,
+  getAgentElementRefPageEpoch,
+  isStaleAgentElementRef,
+  resolveAgentSelector,
+} from '../src/core/agent-selectors.js'
 import { clearRemovedTabId, pickLastNonActiveTab } from '../src/core/tab-selection.js'
 
 const DEFAULT_SERVER_PORT = DEFAULT_RELAY_PORT
@@ -17,6 +32,7 @@ const SAVED_STATES_STORAGE_KEY = 'autobrowserSavedStates'
 const FRAME_WORLD_NAME = 'autobrowser-frame'
 const SCREENSHOT_ANNOTATION_OVERLAY_ID = 'autobrowser-screenshot-annotations'
 const SCREENSHOT_ANNOTATION_MAX_ELEMENTS = 200
+const AGENT_SNAPSHOT_MAX_ELEMENTS = 200
 
 interface ScreenshotCaptureOptions {
   full?: boolean
@@ -27,6 +43,10 @@ interface ScreenshotCaptureOptions {
 
 interface ErrorWithCode extends Error {
   code?: string
+  suggestedAction?: string
+  ref?: string
+  expectedPageEpoch?: number
+  currentPageEpoch?: number
 }
 
 const state = {
@@ -37,6 +57,10 @@ const state = {
   attachedTabs: new Set(),
   selectedFrames: new Map(),
   targetTabId: null,
+  tabHandles: new Map(),
+  tabIdsByHandle: new Map(),
+  pageEpochs: new Map(),
+  nextTabHandleIndex: 1,
   dialog: null as {
     open: boolean
     type: string
@@ -553,6 +577,14 @@ function stringifyRemoteValue(value) {
 
 function setupDebuggerEventListeners() {
   chrome.debugger.onEvent.addListener((source, method, params: any) => {
+    if (
+      typeof source?.tabId === 'number' &&
+      ((method === 'Page.frameNavigated' && !params?.frame?.parentId) ||
+        method === 'Page.navigatedWithinDocument')
+    ) {
+      invalidatePageRefs(source.tabId)
+    }
+
     if (method === 'Runtime.consoleAPICalled') {
       pushBounded(
         state.consoleMessages,
@@ -686,9 +718,85 @@ function rememberTargetTab(tabId) {
   state.targetTabId = typeof tabId === 'number' ? tabId : null
 }
 
-async function loadTargetTab(tabId) {
+function getOrCreateTabHandle(tabId) {
+  if (typeof tabId !== 'number') {
+    return null
+  }
+
+  const existingHandle = state.tabHandles.get(tabId)
+  if (existingHandle) {
+    return existingHandle
+  }
+
+  const handle = formatAgentTabHandle(state.nextTabHandleIndex)
+  state.nextTabHandleIndex += 1
+  state.tabHandles.set(tabId, handle)
+  state.tabIdsByHandle.set(handle, tabId)
+  return handle
+}
+
+function clearRemovedTabHandle(tabId) {
+  const handle = state.tabHandles.get(tabId)
+  if (!handle) {
+    return
+  }
+
+  state.tabHandles.delete(tabId)
+  state.tabIdsByHandle.delete(handle)
+}
+
+function resolveTabHandle(tabHandle) {
+  const normalizedHandle = parseAgentTabHandle(tabHandle)
+  if (!normalizedHandle) {
+    return null
+  }
+
+  const tabId = state.tabIdsByHandle.get(normalizedHandle)
+  return typeof tabId === 'number' ? tabId : null
+}
+
+function resolveTabInput(tabId) {
   if (typeof tabId === 'number') {
-    return await promisifyChrome(chrome.tabs, chrome.tabs.get, tabId)
+    return tabId
+  }
+
+  if (typeof tabId === 'string') {
+    const handleTabId = resolveTabHandle(tabId)
+    if (typeof handleTabId === 'number') {
+      return handleTabId
+    }
+
+    const numericTabId = Number(tabId)
+    if (Number.isInteger(numericTabId) && numericTabId > 0) {
+      return numericTabId
+    }
+  }
+
+  return null
+}
+
+function toTabSummary(tab) {
+  return {
+    id: tab.id,
+    handle: typeof tab.id === 'number' ? getOrCreateTabHandle(tab.id) : null,
+    title: tab.title || '',
+    url: tab.url || '',
+    active: Boolean(tab.active),
+    pinned: Boolean(tab.pinned),
+    status: tab.status || '',
+    windowId: tab.windowId,
+  }
+}
+
+async function loadTargetTab(tabId) {
+  const resolvedTabId = resolveTabInput(tabId)
+
+  if (typeof resolvedTabId === 'number') {
+    return await promisifyChrome(chrome.tabs, chrome.tabs.get, resolvedTabId)
+  }
+
+  if (tabId !== undefined && tabId !== null && String(tabId).trim()) {
+    throw new Error(`tab not found: ${tabId}`)
   }
 
   if (typeof state.targetTabId === 'number') {
@@ -762,15 +870,7 @@ async function sendDebuggerCommand(tabId, method, params = {}) {
 
 async function listTabs() {
   const tabs = await promisifyChrome(chrome.tabs, chrome.tabs.query, {})
-  return tabs.map((tab) => ({
-    id: tab.id,
-    title: tab.title || '',
-    url: tab.url || '',
-    active: Boolean(tab.active),
-    pinned: Boolean(tab.pinned),
-    status: tab.status || '',
-    windowId: tab.windowId,
-  }))
+  return tabs.map((tab) => toTabSummary(tab))
 }
 
 async function getTargetTab(tabId) {
@@ -787,17 +887,115 @@ function clearSelectedFrame(tabId) {
   state.selectedFrames.delete(tabId)
 }
 
-async function resolveFrameTarget(tabId, selector) {
+function getPageEpoch(tabId) {
+  const currentEpoch = state.pageEpochs.get(tabId)
+  if (typeof currentEpoch === 'number' && currentEpoch > 0) {
+    return currentEpoch
+  }
+
+  state.pageEpochs.set(tabId, 1)
+  return 1
+}
+
+function bumpPageEpoch(tabId) {
+  const nextEpoch = getPageEpoch(tabId) + 1
+  state.pageEpochs.set(tabId, nextEpoch)
+  return nextEpoch
+}
+
+function invalidatePageRefs(tabId) {
+  clearSelectedFrame(tabId)
+  return bumpPageEpoch(tabId)
+}
+
+function clearRemovedPageEpoch(tabId) {
+  state.pageEpochs.delete(tabId)
+}
+
+function createStaleRefError(refType, selector, expectedPageEpoch, currentPageEpoch) {
+  const error = new Error(
+    `${refType} ref ${selector} is stale for page epoch ${expectedPageEpoch}; current page epoch is ${currentPageEpoch}`,
+  ) as ErrorWithCode
+  error.code = refType === 'frame' ? 'STALE_FRAME_REF' : 'STALE_ELEMENT_REF'
+  error.suggestedAction = 'run snapshot again'
+  error.ref = selector
+  error.expectedPageEpoch = expectedPageEpoch
+  error.currentPageEpoch = currentPageEpoch
+  return error
+}
+
+function assertFreshElementRef(tabId, selector) {
+  const currentPageEpoch = getPageEpoch(tabId)
+  if (!isStaleAgentElementRef(selector, currentPageEpoch)) {
+    return
+  }
+
+  throw createStaleRefError(
+    'element',
+    selector,
+    getAgentElementRefPageEpoch(selector),
+    currentPageEpoch,
+  )
+}
+
+function assertFreshFrameRef(tabId, selector) {
+  const currentPageEpoch = getPageEpoch(tabId)
+  if (isStaleAgentFrameRef(selector, currentPageEpoch)) {
+    throw createStaleRefError(
+      'frame',
+      selector,
+      getAgentFrameRefPageEpoch(selector),
+      currentPageEpoch,
+    )
+  }
+
+  if (isStaleAgentElementRef(selector, currentPageEpoch)) {
+    throw createStaleRefError(
+      'element',
+      selector,
+      getAgentElementRefPageEpoch(selector),
+      currentPageEpoch,
+    )
+  }
+}
+
+async function resolveElementSelectorForTab(tabId, selector) {
   const tab = await getTargetTab(tabId)
+  assertFreshElementRef(tab.id, selector)
+  return {
+    tab,
+    pageEpoch: getPageEpoch(tab.id),
+    resolvedSelector: resolveAgentSelector(selector),
+  }
+}
+
+async function resolveFrameSelectorForTab(tabId, selector) {
+  const tab = await getTargetTab(tabId)
+  assertFreshFrameRef(tab.id, selector)
+  return {
+    tab,
+    pageEpoch: getPageEpoch(tab.id),
+    resolvedSelector: resolveAgentFrameSelector(selector),
+  }
+}
+
+async function resolveFrameTarget(tabId, selector) {
+  const { tab, pageEpoch, resolvedSelector } = await resolveFrameSelectorForTab(tabId, selector)
   const evaluation = await sendDebuggerCommand(tab.id, 'Runtime.evaluate', {
     expression: `(() => {
-      const root = document.querySelector(${JSON.stringify(selector)});
+      const root = document.querySelector(${JSON.stringify(resolvedSelector)});
       if (!root) return null;
       const frame = root.tagName === 'IFRAME' ? root : root.querySelector('iframe');
       if (!frame) return null;
       const rect = frame.getBoundingClientRect();
+      const refValue = frame.getAttribute(${JSON.stringify(AGENT_FRAME_REF_ATTRIBUTE)});
       return {
         src: frame.src || null,
+        refValue: refValue || null,
+        left: rect.left,
+        top: rect.top,
+        width: rect.width,
+        height: rect.height,
         x: rect.left + rect.width / 2,
         y: rect.top + rect.height / 2
       };
@@ -824,13 +1022,37 @@ async function resolveFrameTarget(tabId, selector) {
     tab,
     frameId: location.frameId,
     selector,
+    ref: target.refValue
+      ? formatAgentFrameRef(Number(String(target.refValue).slice(1)), pageEpoch)
+      : null,
     src: target.src,
+    pageEpoch,
+    left: Number(target.left || 0),
+    top: Number(target.top || 0),
+    width: Number(target.width || 0),
+    height: Number(target.height || 0),
   }
 }
 
-async function getFrameExecutionContext(tabId) {
+function resolveEffectiveFrameSelector(tab, frameSelector) {
+  const selector =
+    typeof frameSelector === 'string' && frameSelector.trim()
+      ? frameSelector.trim()
+      : state.selectedFrames.get(tab.id)
+
+  if (!selector) {
+    return null
+  }
+
+  return ['top', 'main', 'default'].includes(selector.toLowerCase()) ? null : selector
+}
+
+async function getFrameExecutionContext(tabId, frameSelector) {
   const tab = await getTargetTab(tabId)
-  const selector = state.selectedFrames.get(tab.id)
+  const selector =
+    typeof frameSelector === 'string' && frameSelector.trim()
+      ? frameSelector.trim()
+      : state.selectedFrames.get(tab.id)
   if (!selector) {
     return { tab, executionContextId: null }
   }
@@ -847,19 +1069,32 @@ async function getFrameExecutionContext(tabId) {
   }
 }
 
-async function evaluateInTabContext(tabId, expression, options = {}) {
-  const { tab, executionContextId } = await getFrameExecutionContext(tabId)
+async function evaluateInTabContext(tabId, expression, options: Record<string, unknown> = {}) {
+  const runtimeConfig = options
+  const { frameSelector, ...runtimeOptions } = runtimeConfig
+  const { tab, executionContextId } = await getFrameExecutionContext(tabId, frameSelector)
   const response = await sendDebuggerCommand(tab.id, 'Runtime.evaluate', {
     expression,
     awaitPromise: true,
     returnByValue: true,
     ...(executionContextId ? { contextId: executionContextId } : {}),
-    ...options,
+    ...runtimeOptions,
   })
   return {
     tab,
     response,
     value: unwrapEvaluationResult(response.result),
+  }
+}
+
+function withFrameSelectorOptions(frameSelector, options = {}) {
+  if (typeof frameSelector !== 'string' || !frameSelector.trim()) {
+    return options
+  }
+
+  return {
+    ...options,
+    frameSelector: frameSelector.trim(),
   }
 }
 
@@ -885,38 +1120,44 @@ function unwrapEvaluationResult(result) {
   return result.description || null
 }
 
-async function evaluateScript(tabId, script) {
-  const { value } = await evaluateInTabContext(tabId, script, {
-    userGesture: true,
-  })
+async function evaluateScript(tabId, script, frameSelector) {
+  const { value } = await evaluateInTabContext(
+    tabId,
+    script,
+    withFrameSelectorOptions(frameSelector, {
+      userGesture: true,
+    }),
+  )
   return value
 }
 
 async function navigateTo(tabId, url) {
   const tab = await getTargetTab(tabId)
-  clearSelectedFrame(tab.id)
+  invalidatePageRefs(tab.id)
   await sendDebuggerCommand(tab.id, 'Page.enable', {})
   await sendDebuggerCommand(tab.id, 'Page.navigate', { url })
   return { tabId: tab.id, url }
 }
 
-async function clickSelector(tabId, selector) {
-  const { tab, value: result } = await evaluateInTabContext(
-    tabId,
+async function clickSelector(tabId, selector, frameSelector) {
+  const { tab, resolvedSelector } = await resolveElementSelectorForTab(tabId, selector)
+  const { value: result } = await evaluateInTabContext(
+    tab.id,
     `(() => {
-      const node = document.querySelector(${JSON.stringify(selector)});
+      const node = document.querySelector(${JSON.stringify(resolvedSelector)});
       if (!node) return { found: false };
       node.scrollIntoView({ block: 'center', inline: 'center' });
       node.click();
       return { found: true, selector: ${JSON.stringify(selector)} };
     })()`,
+    withFrameSelectorOptions(frameSelector),
   )
 
   if (result?.found) {
     return result
   }
 
-  const box = await getElementBox(tabId, selector)
+  const box = await getElementBox(tab.id, selector, frameSelector)
   if (!box) {
     throw new Error(`element not found: ${selector}`)
   }
@@ -939,7 +1180,7 @@ async function clickSelector(tabId, selector) {
   return { found: true, selector }
 }
 
-async function clearScreenshotAnnotations(tabId) {
+async function clearScreenshotAnnotations(tabId, frameSelector) {
   await evaluateInTabContext(
     tabId,
     `(() => {
@@ -965,10 +1206,11 @@ async function clearScreenshotAnnotations(tabId) {
 
       return true
     })()`,
+    withFrameSelectorOptions(frameSelector),
   )
 }
 
-async function addScreenshotAnnotations(tabId) {
+async function addScreenshotAnnotations(tabId, frameSelector) {
   const { value } = await evaluateInTabContext(
     tabId,
     `(() => {
@@ -1065,30 +1307,48 @@ async function addScreenshotAnnotations(tabId) {
       body.appendChild(overlay)
       return { count }
     })()`,
+    withFrameSelectorOptions(frameSelector),
   )
 
   return Number(value?.count || 0)
 }
 
-async function captureScreenshot(tabId, options: ScreenshotCaptureOptions = {}) {
+async function captureScreenshot(tabId, options: ScreenshotCaptureOptions = {}, frameSelector) {
   const tab = await getTargetTab(tabId)
+  const effectiveFrameSelector = resolveEffectiveFrameSelector(tab, frameSelector)
   await sendDebuggerCommand(tab.id, 'Page.enable', {})
 
   let annotationCount = 0
   try {
     if (options.annotate) {
-      await clearScreenshotAnnotations(tab.id).catch(() => {})
-      annotationCount = await addScreenshotAnnotations(tab.id)
+      await clearScreenshotAnnotations(tab.id, effectiveFrameSelector).catch(() => {})
+      annotationCount = await addScreenshotAnnotations(tab.id, effectiveFrameSelector)
     }
 
     const format = options.format === 'jpeg' ? 'jpeg' : 'png'
     const captureOptions = {
       format,
       fromSurface: true,
-      ...(options.full ? { captureBeyondViewport: true } : {}),
       ...(format === 'jpeg' && typeof options.quality === 'number'
         ? { quality: options.quality }
         : {}),
+    }
+
+    if (effectiveFrameSelector) {
+      const frame = await resolveFrameTarget(tab.id, effectiveFrameSelector)
+      Object.assign(captureOptions, {
+        clip: {
+          x: Math.max(0, frame.left),
+          y: Math.max(0, frame.top),
+          width: Math.max(1, frame.width),
+          height: Math.max(1, frame.height),
+          scale: 1,
+        },
+      })
+    } else if (options.full) {
+      Object.assign(captureOptions, {
+        captureBeyondViewport: true,
+      })
     }
 
     const result = await sendDebuggerCommand(tab.id, 'Page.captureScreenshot', captureOptions)
@@ -1105,33 +1365,232 @@ async function captureScreenshot(tabId, options: ScreenshotCaptureOptions = {}) 
     }
   } finally {
     if (options.annotate) {
-      await clearScreenshotAnnotations(tab.id).catch((error) => {
+      await clearScreenshotAnnotations(tab.id, effectiveFrameSelector).catch((error) => {
         console.error('failed to clear screenshot annotations', error)
       })
     }
   }
 }
 
-async function snapshotTab(tabId) {
+async function snapshotTab(tabId, frameSelector) {
+  const tab = await getTargetTab(tabId)
+  const pageEpoch = getPageEpoch(tab.id)
+  const refAttribute = AGENT_ELEMENT_REF_ATTRIBUTE
+  const frameAttribute = AGENT_FRAME_REF_ATTRIBUTE
+  const frameRefPrefix = formatAgentFrameRef(1).replace('1', '')
   const { value } = await evaluateInTabContext(
-    tabId,
+    tab.id,
     `(() => {
+      const refAttribute = ${JSON.stringify(refAttribute)};
+      const frameAttribute = ${JSON.stringify(frameAttribute)};
+      const frameRefPrefix = ${JSON.stringify(frameRefPrefix)};
+      const pageEpoch = ${pageEpoch};
+
+      const readText = (node) => (node.innerText || node.textContent || '').replace(/\s+/g, ' ').trim();
+
+      const getAssociatedLabel = (node) => {
+        if (!(node instanceof HTMLElement) || !node.id) {
+          return '';
+        }
+
+        try {
+          const label = document.querySelector('label[for="' + CSS.escape(node.id) + '"]');
+          return label ? readText(label) : '';
+        } catch {
+          return '';
+        }
+      };
+
+      const getAriaLabelledByText = (node) => {
+        const labelledBy = node.getAttribute('aria-labelledby');
+        if (!labelledBy) {
+          return '';
+        }
+
+        return labelledBy
+          .split(/\s+/)
+          .map((id) => document.getElementById(id))
+          .filter(Boolean)
+          .map((element) => readText(element))
+          .filter(Boolean)
+          .join(' ')
+          .trim();
+      };
+
+      const inferRole = (node) => {
+        const explicitRole = node.getAttribute('role');
+        if (explicitRole) {
+          return explicitRole;
+        }
+
+        const tagName = node.tagName.toLowerCase();
+        if (tagName === 'a' && node.getAttribute('href')) return 'link';
+        if (tagName === 'button') return 'button';
+        if (tagName === 'select') return 'combobox';
+        if (tagName === 'textarea') return 'textbox';
+        if (tagName === 'summary') return 'button';
+        if (tagName === 'input') {
+          const inputType = (node.getAttribute('type') || 'text').toLowerCase();
+          if (['button', 'submit', 'reset'].includes(inputType)) return 'button';
+          if (inputType === 'checkbox') return 'checkbox';
+          if (inputType === 'radio') return 'radio';
+          return 'textbox';
+        }
+
+        return null;
+      };
+
+      const getName = (node) => {
+        const candidates = [
+          node.getAttribute('aria-label') || '',
+          getAriaLabelledByText(node),
+          getAssociatedLabel(node),
+          node.getAttribute('alt') || '',
+          node.getAttribute('title') || '',
+          node.getAttribute('placeholder') || '',
+          typeof node.value === 'string' ? node.value : '',
+          readText(node),
+        ]
+
+        return candidates.find((value) => value && value.trim()) || '';
+      };
+
       const toNodeSummary = (node) => ({
         tag: node.tagName,
-        text: (node.innerText || node.textContent || "").trim().slice(0, 120),
+        text: readText(node).slice(0, 120),
         id: node.id || null,
         className: typeof node.className === "string" ? node.className : null,
+        ref: node.getAttribute(refAttribute)
+          ? '@' + node.getAttribute(refAttribute) + '#p' + pageEpoch
+          : null,
       });
 
+      for (const element of document.querySelectorAll('[' + refAttribute + ']')) {
+        element.removeAttribute(refAttribute);
+      }
+
+      for (const frameElement of document.querySelectorAll('[' + frameAttribute + ']')) {
+        frameElement.removeAttribute(frameAttribute);
+      }
+
+      const selectors = [
+        'a[href]',
+        'button',
+        'input:not([type="hidden"])',
+        'textarea',
+        'select',
+        'summary',
+        '[role]',
+        '[tabindex]:not([tabindex="-1"])',
+      ];
+
+      const seen = new Set();
+      const candidates = [];
+      for (const selector of selectors) {
+        for (const element of document.querySelectorAll(selector)) {
+          if (seen.has(element)) {
+            continue;
+          }
+
+          seen.add(element);
+          candidates.push(element);
+        }
+      }
+
+      const elements = [];
+      for (const element of candidates) {
+        if (!(element instanceof HTMLElement)) {
+          continue;
+        }
+
+        if (elements.length >= ${AGENT_SNAPSHOT_MAX_ELEMENTS}) {
+          break;
+        }
+
+        const rect = element.getBoundingClientRect();
+        const style = getComputedStyle(element);
+        const visible =
+          rect.width > 0 &&
+          rect.height > 0 &&
+          style.display !== 'none' &&
+          style.visibility !== 'hidden' &&
+          Number(style.opacity || '1') !== 0;
+
+        if (!visible) {
+          continue;
+        }
+
+        const refValue = 'e' + (elements.length + 1);
+        element.setAttribute(refAttribute, refValue);
+
+        elements.push({
+          ref: '@' + refValue + '#p' + pageEpoch,
+          tag: element.tagName.toLowerCase(),
+          role: inferRole(element),
+          text: readText(element).slice(0, 240),
+          name: getName(element).slice(0, 240),
+          placeholder: element.getAttribute('placeholder') || null,
+          type: element instanceof HTMLInputElement ? element.type || 'text' : null,
+          href: element instanceof HTMLAnchorElement ? element.href || null : null,
+          disabled: 'disabled' in element ? Boolean(element.disabled) : false,
+          checked: 'checked' in element ? Boolean(element.checked) : null,
+          x: Math.round(rect.left + rect.width / 2),
+          y: Math.round(rect.top + rect.height / 2),
+          width: Math.round(rect.width),
+          height: Math.round(rect.height),
+        });
+      }
+
+      const frames = [];
+      for (const frameElement of document.querySelectorAll('iframe')) {
+        if (!(frameElement instanceof HTMLIFrameElement)) {
+          continue;
+        }
+
+        if (frames.length >= ${AGENT_SNAPSHOT_MAX_ELEMENTS}) {
+          break;
+        }
+
+        const rect = frameElement.getBoundingClientRect();
+        const style = getComputedStyle(frameElement);
+        const visible =
+          rect.width > 0 &&
+          rect.height > 0 &&
+          style.display !== 'none' &&
+          style.visibility !== 'hidden' &&
+          Number(style.opacity || '1') !== 0;
+
+        if (!visible) {
+          continue;
+        }
+
+        const refValue = 'f' + (frames.length + 1);
+        frameElement.setAttribute(frameAttribute, refValue);
+        frames.push({
+          ref: frameRefPrefix + (frames.length + 1) + '#p' + pageEpoch,
+          name: frameElement.name || null,
+          title: frameElement.title || null,
+          src: frameElement.src || frameElement.getAttribute('src') || null,
+          x: Math.round(rect.left + rect.width / 2),
+          y: Math.round(rect.top + rect.height / 2),
+          width: Math.round(rect.width),
+          height: Math.round(rect.height),
+        });
+      }
+
       return {
+        pageEpoch,
         title: document.title,
         url: location.href,
         readyState: document.readyState,
         text: (document.body?.innerText || "").slice(0, 5000),
+        elements,
+        frames,
         headings: Array.from(document.querySelectorAll("h1,h2,h3")).slice(0, 20).map(toNodeSummary),
         buttons: Array.from(document.querySelectorAll("button,[role='button'],input[type='button'],input[type='submit']")).slice(0, 20).map(toNodeSummary),
       };
     })()`,
+    withFrameSelectorOptions(frameSelector),
   )
 
   return value
@@ -1170,11 +1629,12 @@ function parseKeyboardKey(key) {
   return { key: remaining, modifiers: mask }
 }
 
-async function getElementBox(tabId, selector) {
+async function getElementBox(tabId, selector, frameSelector) {
+  const { tab, resolvedSelector } = await resolveElementSelectorForTab(tabId, selector)
   const { value } = await evaluateInTabContext(
-    tabId,
+    tab.id,
     `(() => {
-      const node = document.querySelector(${JSON.stringify(selector)});
+      const node = document.querySelector(${JSON.stringify(resolvedSelector)});
       if (!node) return null;
       const rect = node.getBoundingClientRect();
       return {
@@ -1184,23 +1644,23 @@ async function getElementBox(tabId, selector) {
         height: rect.height
       };
     })()`,
+    withFrameSelectorOptions(frameSelector),
   )
   return value
 }
 
-async function hoverElement(tabId, selector) {
-  const box = await getElementBox(tabId, selector)
+async function hoverElement(tabId, selector, frameSelector) {
+  const { tab, resolvedSelector } = await resolveElementSelectorForTab(tabId, selector)
+  const box = await getElementBox(tab.id, selector, frameSelector)
   if (!box) {
     throw new Error(`element not found: ${selector}`)
   }
 
-  const tab = await getTargetTab(tabId)
-
   // 先尝试 JS 方式
   const { value } = await evaluateInTabContext(
-    tabId,
+    tab.id,
     `(() => {
-      const node = document.querySelector(${JSON.stringify(selector)});
+      const node = document.querySelector(${JSON.stringify(resolvedSelector)});
       if (!node) return false;
       const rect = node.getBoundingClientRect();
       const x = rect.left + rect.width / 2;
@@ -1214,6 +1674,7 @@ async function hoverElement(tabId, selector) {
       node.dispatchEvent(new MouseEvent('mousemove', opts));
       return true;
     })()`,
+    withFrameSelectorOptions(frameSelector),
   )
 
   if (value) {
@@ -1253,15 +1714,17 @@ async function pressKey(tabId, key) {
   return { key, pressed: true }
 }
 
-async function focusElement(tabId, selector) {
+async function focusElement(tabId, selector, frameSelector) {
+  const { tab, resolvedSelector } = await resolveElementSelectorForTab(tabId, selector)
   const { value } = await evaluateInTabContext(
-    tabId,
+    tab.id,
     `(() => {
-      const node = document.querySelector(${JSON.stringify(selector)});
+      const node = document.querySelector(${JSON.stringify(resolvedSelector)});
       if (!node) return { found: false };
       node.focus();
       return { found: true, focused: document.activeElement === node };
     })()`,
+    withFrameSelectorOptions(frameSelector),
   )
 
   if (value?.found) {
@@ -1271,11 +1734,12 @@ async function focusElement(tabId, selector) {
   throw new Error(`element not found: ${selector}`)
 }
 
-async function selectOption(tabId, selector, value) {
+async function selectOption(tabId, selector, value, frameSelector) {
+  const { tab, resolvedSelector } = await resolveElementSelectorForTab(tabId, selector)
   const { value: result } = await evaluateInTabContext(
-    tabId,
+    tab.id,
     `(() => {
-      const node = document.querySelector(${JSON.stringify(selector)});
+      const node = document.querySelector(${JSON.stringify(resolvedSelector)});
       if (!node) return { found: false };
       node.focus();
       node.value = ${JSON.stringify(value)};
@@ -1283,6 +1747,7 @@ async function selectOption(tabId, selector, value) {
       node.dispatchEvent(new Event('change', { bubbles: true }));
       return { found: true, value: node.value };
     })()`,
+    withFrameSelectorOptions(frameSelector),
   )
 
   if (result?.found) {
@@ -1291,11 +1756,12 @@ async function selectOption(tabId, selector, value) {
   throw new Error(`element not found: ${selector}`)
 }
 
-async function checkElement(tabId, selector, checked) {
+async function checkElement(tabId, selector, checked, frameSelector) {
+  const { tab, resolvedSelector } = await resolveElementSelectorForTab(tabId, selector)
   const { value: result } = await evaluateInTabContext(
-    tabId,
+    tab.id,
     `(() => {
-      const node = document.querySelector(${JSON.stringify(selector)});
+      const node = document.querySelector(${JSON.stringify(resolvedSelector)});
       if (!node) return { found: false };
       node.focus();
       node.checked = ${checked};
@@ -1303,6 +1769,7 @@ async function checkElement(tabId, selector, checked) {
       node.dispatchEvent(new Event('change', { bubbles: true }));
       return { found: true, checked: node.checked };
     })()`,
+    withFrameSelectorOptions(frameSelector),
   )
 
   if (result?.found) {
@@ -1311,14 +1778,18 @@ async function checkElement(tabId, selector, checked) {
   throw new Error(`element not found: ${selector}`)
 }
 
-async function scrollElement(tabId, selector, deltaX = 0, deltaY = 100) {
+async function scrollElement(tabId, selector, deltaX = 0, deltaY = 100, frameSelector) {
+  let resolvedSelector = ''
+  if (selector) {
+    ;({ resolvedSelector } = await resolveElementSelectorForTab(tabId, selector))
+  }
   const { value } = await evaluateInTabContext(
     tabId,
     `(() => {
       ${
         selector
           ? `
-      const node = document.querySelector(${JSON.stringify(selector)});
+      const node = document.querySelector(${JSON.stringify(resolvedSelector)});
       if (!node) return { found: false };
       node.scrollIntoView({ block: 'center', inline: 'center' });
       `
@@ -1327,20 +1798,21 @@ async function scrollElement(tabId, selector, deltaX = 0, deltaY = 100) {
       window.scrollBy(${deltaX}, ${deltaY});
       return { found: true, scrolled: true };
     })()`,
+    withFrameSelectorOptions(frameSelector),
   )
 
   return value || { found: true, scrolled: true }
 }
 
-async function dragElement(tabId, startSelector, endSelector) {
-  const startBox = await getElementBox(tabId, startSelector)
+async function dragElement(tabId, startSelector, endSelector, frameSelector) {
+  const startBox = await getElementBox(tabId, startSelector, frameSelector)
   if (!startBox) {
     throw new Error(`start element not found: ${startSelector}`)
   }
 
   let endBox
   if (endSelector) {
-    endBox = await getElementBox(tabId, endSelector)
+    endBox = await getElementBox(tabId, endSelector, frameSelector)
     if (!endBox) {
       throw new Error(`end element not found: ${endSelector}`)
     }
@@ -1385,42 +1857,41 @@ async function dragElement(tabId, startSelector, endSelector) {
   return { found: true, dragged: true }
 }
 
-async function uploadFiles(tabId, selector, filePaths) {
-  const tab = await getTargetTab(tabId)
+async function uploadFiles(tabId, selector, filePaths, frameSelector) {
+  const { resolvedSelector } = await resolveElementSelectorForTab(tabId, selector)
+  const { tab, executionContextId } = await getFrameExecutionContext(tabId, frameSelector)
   const result = await sendDebuggerCommand(tab.id, 'Runtime.evaluate', {
     expression: `(() => {
-      const node = document.querySelector(${JSON.stringify(selector)});
-      return Boolean(node && node.tagName === 'INPUT' && node.type === 'file');
+      const node = document.querySelector(${JSON.stringify(resolvedSelector)});
+      return node && node.tagName === 'INPUT' && node.type === 'file' ? node : null;
     })()`,
     awaitPromise: true,
-    returnByValue: true,
+    returnByValue: false,
+    ...(executionContextId ? { contextId: executionContextId } : {}),
   })
 
-  if (!unwrapEvaluationResult(result.result)) {
+  const objectId = result?.result?.objectId
+  if (!objectId) {
     throw new Error(`file input not found: ${selector}`)
   }
 
-  await sendDebuggerCommand(tab.id, 'DOM.enable', {})
-  const documentNode = await sendDebuggerCommand(tab.id, 'DOM.getDocument', {})
-  const node = await sendDebuggerCommand(tab.id, 'DOM.querySelector', {
-    nodeId: documentNode.root.nodeId,
-    selector,
-  })
-  if (!node.nodeId) {
-    throw new Error(`file input not found: ${selector}`)
+  try {
+    await sendDebuggerCommand(tab.id, 'DOM.setFileInputFiles', {
+      files: filePaths,
+      objectId,
+    })
+  } finally {
+    await sendDebuggerCommand(tab.id, 'Runtime.releaseObject', {
+      objectId,
+    }).catch(() => {})
   }
-
-  await sendDebuggerCommand(tab.id, 'DOM.setFileInputFiles', {
-    files: filePaths,
-    nodeId: node.nodeId,
-  })
 
   return { found: true, files: filePaths }
 }
 
 async function navigateBack(tabId) {
   const tab = await getTargetTab(tabId)
-  clearSelectedFrame(tab.id)
+  invalidatePageRefs(tab.id)
   // 获取导航历史
   const history = await sendDebuggerCommand(tab.id, 'Page.getNavigationHistory')
   const entries = history.entries || []
@@ -1441,7 +1912,7 @@ async function navigateBack(tabId) {
 
 async function navigateForward(tabId) {
   const tab = await getTargetTab(tabId)
-  clearSelectedFrame(tab.id)
+  invalidatePageRefs(tab.id)
   const history = await sendDebuggerCommand(tab.id, 'Page.getNavigationHistory')
   const entries = history.entries || []
   const currentIndex = history.currentIndex
@@ -1461,7 +1932,7 @@ async function navigateForward(tabId) {
 
 async function reloadPage(tabId) {
   const tab = await getTargetTab(tabId)
-  clearSelectedFrame(tab.id)
+  invalidatePageRefs(tab.id)
   await sendDebuggerCommand(tab.id, 'Page.reload', {})
   return { reloaded: true }
 }
@@ -1478,24 +1949,367 @@ async function switchToFrame(tabId, selector) {
   const tab = await getTargetTab(tabId)
   if (['top', 'main', 'default'].includes(selector)) {
     clearSelectedFrame(tab.id)
-    return { found: true, cleared: true, frame: null }
+    return { found: true, cleared: true, pageEpoch: getPageEpoch(tab.id), frame: null }
   }
 
   const frame = await resolveFrameTarget(tab.id, selector)
   state.selectedFrames.set(tab.id, selector)
   return {
     found: true,
+    pageEpoch: frame.pageEpoch,
     frame: {
+      ref: frame.ref,
       selector: frame.selector,
       src: frame.src,
     },
   }
 }
 
-async function checkIsState(tabId, selector, stateType) {
+async function findSemanticTarget(tabId, args, frameSelector) {
+  const tab = await getTargetTab(tabId)
+  const pageEpoch = getPageEpoch(tab.id)
+  const strategy = String(args.strategy || '').trim()
+  const role = String(args.role || '').trim()
+  const query = String(args.query || '').trim()
+  const name = String(args.name || '').trim()
+  const exact = args.exact === true
+
+  if (!['role', 'text', 'label'].includes(strategy)) {
+    throw new Error(`unsupported find strategy: ${strategy || '(empty)'}`)
+  }
+
+  if (strategy === 'role' && !role) {
+    throw new Error('missing role value')
+  }
+
+  if (strategy !== 'role' && !query) {
+    throw new Error(`missing ${strategy} value`)
+  }
+
+  const { value } = await evaluateInTabContext(
+    tab.id,
+    `(() => {
+      const refAttribute = ${JSON.stringify(AGENT_ELEMENT_REF_ATTRIBUTE)};
+      const pageEpoch = ${pageEpoch};
+      const strategy = ${JSON.stringify(strategy)};
+      const role = ${JSON.stringify(role.toLowerCase())};
+      const query = ${JSON.stringify(query)};
+      const name = ${JSON.stringify(name)};
+      const exact = ${exact ? 'true' : 'false'};
+      const actionableSelector = 'a[href],button,input:not([type="hidden"]),textarea,select,summary,[role],[tabindex]:not([tabindex="-1"])';
+
+      const normalizeText = (value) => String(value || '').replace(/\s+/g, ' ').trim();
+
+      const matchesText = (candidate, needle) => {
+        const normalizedCandidate = normalizeText(candidate).toLowerCase();
+        const normalizedNeedle = normalizeText(needle).toLowerCase();
+        if (!normalizedNeedle) {
+          return false;
+        }
+
+        return exact
+          ? normalizedCandidate === normalizedNeedle
+          : normalizedCandidate.includes(normalizedNeedle);
+      };
+
+      const isVisible = (node) => {
+        if (!(node instanceof HTMLElement)) {
+          return false;
+        }
+
+        const rect = node.getBoundingClientRect();
+        if (rect.width <= 0 || rect.height <= 0) {
+          return false;
+        }
+
+        const style = node.ownerDocument.defaultView.getComputedStyle(node);
+        return style.display !== 'none' && style.visibility !== 'hidden' && Number(style.opacity || '1') !== 0;
+      };
+
+      const readText = (node) => normalizeText(node?.innerText || node?.textContent || '');
+
+      const getAssociatedLabelText = (node) => {
+        const labels = [];
+
+        if ('labels' in node && node.labels) {
+          labels.push(
+            ...Array.from(node.labels)
+              .map((label) => readText(label))
+              .filter(Boolean),
+          );
+        }
+
+        if (node.id) {
+          try {
+            const externalLabel = document.querySelector('label[for="' + CSS.escape(node.id) + '"]');
+            if (externalLabel) {
+              labels.push(readText(externalLabel));
+            }
+          } catch {
+            // Ignore invalid selectors.
+          }
+        }
+
+        return normalizeText(labels.join(' '));
+      };
+
+      const getAriaLabelledByText = (node) => {
+        const labelledBy = normalizeText(node.getAttribute('aria-labelledby'));
+        if (!labelledBy) {
+          return '';
+        }
+
+        return normalizeText(
+          labelledBy
+            .split(/\s+/)
+            .map((id) => document.getElementById(id))
+            .filter(Boolean)
+            .map((element) => readText(element))
+            .filter(Boolean)
+            .join(' '),
+        );
+      };
+
+      const inferRole = (node) => {
+        const explicitRole = normalizeText(node.getAttribute('role'));
+        if (explicitRole) {
+          return explicitRole.toLowerCase();
+        }
+
+        const tagName = String(node.tagName || '').toLowerCase();
+        if (tagName === 'a' && node.getAttribute('href')) return 'link';
+        if (tagName === 'button') return 'button';
+        if (tagName === 'select') return 'combobox';
+        if (tagName === 'textarea') return 'textbox';
+        if (tagName === 'summary') return 'button';
+        if (tagName === 'input') {
+          const inputType = normalizeText(node.getAttribute('type') || 'text').toLowerCase();
+          if (['button', 'submit', 'reset'].includes(inputType)) return 'button';
+          if (inputType === 'checkbox') return 'checkbox';
+          if (inputType === 'radio') return 'radio';
+          return 'textbox';
+        }
+
+        return null;
+      };
+
+      const getAccessibleName = (node) => {
+        const candidates = [
+          normalizeText(node.getAttribute('aria-label')),
+          getAriaLabelledByText(node),
+          getAssociatedLabelText(node),
+          normalizeText(node.getAttribute('alt')),
+          normalizeText(node.getAttribute('title')),
+          normalizeText(node.getAttribute('placeholder')),
+          typeof node.value === 'string' ? normalizeText(node.value) : '',
+          readText(node),
+        ];
+
+        return candidates.find(Boolean) || '';
+      };
+
+      const uniqueCandidates = (selectors) => {
+        const seen = new Set();
+        const candidates = [];
+
+        for (const selector of selectors) {
+          for (const node of document.querySelectorAll(selector)) {
+            if (!(node instanceof HTMLElement) || seen.has(node)) {
+              continue;
+            }
+
+            seen.add(node);
+            if (isVisible(node)) {
+              candidates.push(node);
+            }
+          }
+        }
+
+        return candidates;
+      };
+
+      const interactiveCandidates = uniqueCandidates([
+        'a[href]',
+        'button',
+        'input:not([type="hidden"])',
+        'textarea',
+        'select',
+        'summary',
+        '[role]',
+        '[tabindex]:not([tabindex="-1"])',
+      ]);
+
+      const broadTextCandidates = Array.from(document.querySelectorAll('body *')).filter(
+        (node) => node instanceof HTMLElement && isVisible(node),
+      );
+
+      const pickActionableNode = (node) => {
+        if (!(node instanceof HTMLElement)) {
+          return null;
+        }
+
+        return node.matches(actionableSelector) ? node : node.closest(actionableSelector) || node;
+      };
+
+      const ensureRef = (node) => {
+        const currentRef = normalizeText(node.getAttribute(refAttribute));
+        if (currentRef) {
+          return '@' + currentRef + '#p' + pageEpoch;
+        }
+
+        let maxIndex = 0;
+        for (const element of document.querySelectorAll('[' + refAttribute + ']')) {
+          const refValue = normalizeText(element.getAttribute(refAttribute));
+          const match = /^e(\d+)$/.exec(refValue);
+          if (match) {
+            maxIndex = Math.max(maxIndex, Number(match[1]));
+          }
+        }
+
+        const refValue = 'e' + (maxIndex + 1);
+        node.setAttribute(refAttribute, refValue);
+        return '@' + refValue + '#p' + pageEpoch;
+      };
+
+      let match = null;
+
+      if (strategy === 'role') {
+        match = interactiveCandidates.find((node) => {
+          if (inferRole(node) !== role) {
+            return false;
+          }
+
+          if (!name) {
+            return true;
+          }
+
+          return matchesText(getAccessibleName(node), name);
+        }) || null;
+      }
+
+      if (strategy === 'text') {
+        match = interactiveCandidates.find((node) => {
+          return matchesText(getAccessibleName(node), query) || matchesText(readText(node), query);
+        }) || null;
+
+        if (!match) {
+          match = broadTextCandidates.find((node) => matchesText(readText(node), query)) || null;
+        }
+
+        match = pickActionableNode(match);
+      }
+
+      if (strategy === 'label') {
+        match = uniqueCandidates(['input:not([type="hidden"])', 'textarea', 'select']).find((node) => {
+          return (
+            matchesText(getAssociatedLabelText(node), query) ||
+            matchesText(getAccessibleName(node), query)
+          );
+        }) || null;
+      }
+
+      if (!match) {
+        return {
+          found: false,
+          reason:
+            strategy === 'role'
+              ? 'no role match found: ' + role + (name ? ' (' + name + ')' : '')
+              : 'no ' + strategy + ' match found: ' + query,
+        };
+      }
+
+      const rect = match.getBoundingClientRect();
+      return {
+        found: true,
+        pageEpoch,
+        match: {
+          ref: ensureRef(match),
+          tag: String(match.tagName || '').toLowerCase(),
+          role: inferRole(match),
+          text: readText(match).slice(0, 240),
+          name: getAccessibleName(match).slice(0, 240),
+          x: Math.round(rect.left + rect.width / 2),
+          y: Math.round(rect.top + rect.height / 2),
+          width: Math.round(rect.width),
+          height: Math.round(rect.height),
+        },
+      };
+    })()`,
+    withFrameSelectorOptions(frameSelector),
+  )
+
+  if (!value?.found || !value?.match?.ref) {
+    throw new Error(value?.reason || `failed to find ${strategy} target`)
+  }
+
+  return value
+}
+
+async function handleFindCommand(tabId, args, frameSelector) {
+  const action = String(args.action || 'locate').trim()
+  const result = await findSemanticTarget(tabId, args, frameSelector)
+  const ref = result.match.ref
+
+  if (action === 'locate') {
+    return result
+  }
+
+  if (action === 'click') {
+    return { ...result, action, result: await clickSelector(tabId, ref, frameSelector) }
+  }
+
+  if (action === 'fill') {
+    return {
+      ...result,
+      action,
+      result: await fillSelector(tabId, ref, args.value || '', frameSelector),
+    }
+  }
+
+  if (action === 'type') {
+    return {
+      ...result,
+      action,
+      result: await typeIntoSelector(tabId, ref, args.value || '', frameSelector),
+    }
+  }
+
+  if (action === 'hover') {
+    return { ...result, action, result: await hoverElement(tabId, ref, frameSelector) }
+  }
+
+  if (action === 'focus') {
+    return { ...result, action, result: await focusElement(tabId, ref, frameSelector) }
+  }
+
+  if (action === 'check') {
+    return { ...result, action, result: await checkElement(tabId, ref, true, frameSelector) }
+  }
+
+  if (action === 'uncheck') {
+    return { ...result, action, result: await checkElement(tabId, ref, false, frameSelector) }
+  }
+
+  if (action === 'text') {
+    const textResult = await getAttribute(tabId, ref, 'text', frameSelector)
+    return {
+      ...result,
+      action,
+      result: {
+        found: true,
+        value: textResult.value,
+      },
+    }
+  }
+
+  throw new Error(`unsupported find action: ${action}`)
+}
+
+async function checkIsState(tabId, selector, stateType, frameSelector) {
+  const { tab, resolvedSelector } = await resolveElementSelectorForTab(tabId, selector)
   const checkJs = {
     visible: `(() => {
-      const node = document.querySelector(${JSON.stringify(selector)});
+      const node = document.querySelector(${JSON.stringify(resolvedSelector)});
       if (!node) return false;
       const rect = node.getBoundingClientRect();
       const style = node.ownerDocument.defaultView.getComputedStyle(node);
@@ -1503,19 +2317,19 @@ async function checkIsState(tabId, selector, stateType) {
         style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0';
     })()`,
     enabled: `(() => {
-      const node = document.querySelector(${JSON.stringify(selector)});
+      const node = document.querySelector(${JSON.stringify(resolvedSelector)});
       return node && !node.disabled;
     })()`,
     checked: `(() => {
-      const node = document.querySelector(${JSON.stringify(selector)});
+      const node = document.querySelector(${JSON.stringify(resolvedSelector)});
       return node && node.checked === true;
     })()`,
     disabled: `(() => {
-      const node = document.querySelector(${JSON.stringify(selector)});
+      const node = document.querySelector(${JSON.stringify(resolvedSelector)});
       return node && node.disabled === true;
     })()`,
     focused: `(() => {
-      const node = document.querySelector(${JSON.stringify(selector)});
+      const node = document.querySelector(${JSON.stringify(resolvedSelector)});
       return node && node === node.ownerDocument.activeElement;
     })()`,
   }
@@ -1525,7 +2339,7 @@ async function checkIsState(tabId, selector, stateType) {
     throw new Error(`unknown state type: ${stateType}`)
   }
 
-  const { value } = await evaluateInTabContext(tabId, js)
+  const { value } = await evaluateInTabContext(tab.id, js, withFrameSelectorOptions(frameSelector))
   return {
     found: true,
     state: stateType,
@@ -1533,7 +2347,7 @@ async function checkIsState(tabId, selector, stateType) {
   }
 }
 
-async function getAttribute(tabId, selector, attrName) {
+async function getAttribute(tabId, selector, attrName, frameSelector) {
   if (attrName === 'cdp-url') {
     if (!state.token) {
       throw new Error('missing token')
@@ -1545,101 +2359,122 @@ async function getAttribute(tabId, selector, attrName) {
     }
   }
 
+  const selectorContext = ['title', 'url'].includes(attrName)
+    ? null
+    : await resolveElementSelectorForTab(tabId, selector)
+  const resolvedSelector = selectorContext?.resolvedSelector || resolveAgentSelector(selector)
+  const resolvedTabId = selectorContext?.tab.id ?? tabId
+
   if (attrName === 'text') {
     const { value } = await evaluateInTabContext(
-      tabId,
+      resolvedTabId,
       `(() => {
-        const node = document.querySelector(${JSON.stringify(selector)});
+        const node = document.querySelector(${JSON.stringify(resolvedSelector)});
         return node ? node.textContent : null;
       })()`,
+      withFrameSelectorOptions(frameSelector),
     )
     return { found: true, value }
   }
 
   if (attrName === 'html') {
     const { value } = await evaluateInTabContext(
-      tabId,
+      resolvedTabId,
       `(() => {
-        const node = document.querySelector(${JSON.stringify(selector)});
+        const node = document.querySelector(${JSON.stringify(resolvedSelector)});
         return node ? node.innerHTML : null;
       })()`,
+      withFrameSelectorOptions(frameSelector),
     )
     return { found: true, value }
   }
 
   if (attrName === 'value') {
     const { value } = await evaluateInTabContext(
-      tabId,
+      resolvedTabId,
       `(() => {
-        const node = document.querySelector(${JSON.stringify(selector)});
+        const node = document.querySelector(${JSON.stringify(resolvedSelector)});
         return node ? node.value : null;
       })()`,
+      withFrameSelectorOptions(frameSelector),
     )
     return { found: true, value }
   }
 
   if (attrName === 'title') {
-    const { value } = await evaluateInTabContext(tabId, 'document.title')
+    const { value } = await evaluateInTabContext(
+      resolvedTabId,
+      'document.title',
+      withFrameSelectorOptions(frameSelector),
+    )
     return { found: true, value }
   }
 
   if (attrName === 'url') {
-    const { value } = await evaluateInTabContext(tabId, 'window.location.href')
+    const { value } = await evaluateInTabContext(
+      resolvedTabId,
+      'window.location.href',
+      withFrameSelectorOptions(frameSelector),
+    )
     return { found: true, value }
   }
 
   if (attrName === 'count') {
     const { value } = await evaluateInTabContext(
-      tabId,
+      resolvedTabId,
       `(() => {
-        return document.querySelectorAll(${JSON.stringify(selector)}).length;
+        return document.querySelectorAll(${JSON.stringify(resolvedSelector)}).length;
       })()`,
+      withFrameSelectorOptions(frameSelector),
     )
     return { found: true, value }
   }
 
   if (attrName === 'box') {
     const { value } = await evaluateInTabContext(
-      tabId,
+      resolvedTabId,
       `(() => {
-        const node = document.querySelector(${JSON.stringify(selector)});
+        const node = document.querySelector(${JSON.stringify(resolvedSelector)});
         if (!node) return null;
         const rect = node.getBoundingClientRect();
         return { x: rect.x, y: rect.y, width: rect.width, height: rect.height };
       })()`,
+      withFrameSelectorOptions(frameSelector),
     )
     return { found: true, value }
   }
 
   if (attrName === 'styles') {
     const { value } = await evaluateInTabContext(
-      tabId,
+      resolvedTabId,
       `(() => {
-        const node = document.querySelector(${JSON.stringify(selector)});
+        const node = document.querySelector(${JSON.stringify(resolvedSelector)});
         if (!node) return null;
         const styles = window.getComputedStyle(node);
         return Object.fromEntries(Array.from(styles).map((name) => [name, styles.getPropertyValue(name)]));
       })()`,
+      withFrameSelectorOptions(frameSelector),
     )
     return { found: true, value }
   }
 
   // 其他属性
   const { value } = await evaluateInTabContext(
-    tabId,
+    resolvedTabId,
     `(() => {
-      const node = document.querySelector(${JSON.stringify(selector)});
+      const node = document.querySelector(${JSON.stringify(resolvedSelector)});
       return node ? node.getAttribute(${JSON.stringify(attrName)}) : null;
     })()`,
+    withFrameSelectorOptions(frameSelector),
   )
   return { found: true, value }
 }
 
-async function waitFor(tabId, condition, timeout = 30000) {
-  const tab = await getTargetTab(tabId)
+async function waitFor(tabId, condition, timeout = 30000, frameSelector) {
   const startTime = Date.now()
 
   if (condition === 'load') {
+    const tab = await getTargetTab(tabId)
     // 等待页面加载
     return new Promise((resolve, reject) => {
       const listener = (source, method) => {
@@ -1666,6 +2501,7 @@ async function waitFor(tabId, condition, timeout = 30000) {
   }
 
   if (condition === 'networkidle') {
+    const tab = await getTargetTab(tabId)
     // 等待网络空闲
     return new Promise((resolve, reject) => {
       const listener = (source, method, params) => {
@@ -1697,16 +2533,22 @@ async function waitFor(tabId, condition, timeout = 30000) {
     })
   }
 
+  const { tab, resolvedSelector: resolvedCondition } = await resolveElementSelectorForTab(
+    tabId,
+    condition,
+  )
+
   // 轮询方式等待 selector
   while (Date.now() - startTime < timeout) {
     const { value } = await evaluateInTabContext(
       tab.id,
       `(() => {
-        const node = document.querySelector(${JSON.stringify(condition)});
+        const node = document.querySelector(${JSON.stringify(resolvedCondition)});
         if (!node) return false;
         const rect = node.getBoundingClientRect();
         return rect.width > 0 && rect.height > 0;
       })()`,
+      withFrameSelectorOptions(frameSelector),
     )
 
     if (value === true) {
@@ -1756,8 +2598,14 @@ function matchesUrlPattern(currentUrl: string, pattern: string): boolean {
   }
 }
 
-async function waitForSelectorState(tabId, selector, state = 'visible', timeout = 30000) {
-  const tab = await getTargetTab(tabId)
+async function waitForSelectorState(
+  tabId,
+  selector,
+  state = 'visible',
+  timeout = 30000,
+  frameSelector,
+) {
+  const { tab, resolvedSelector } = await resolveElementSelectorForTab(tabId, selector)
   const startTime = Date.now()
   const hidden = state === 'hidden'
 
@@ -1765,7 +2613,7 @@ async function waitForSelectorState(tabId, selector, state = 'visible', timeout 
     const { value } = await evaluateInTabContext(
       tab.id,
       `(() => {
-        const node = document.querySelector(${JSON.stringify(selector)});
+        const node = document.querySelector(${JSON.stringify(resolvedSelector)});
         const visible = Boolean(node) && (() => {
           const rect = node.getBoundingClientRect();
           const style = node.ownerDocument.defaultView.getComputedStyle(node);
@@ -1774,6 +2622,7 @@ async function waitForSelectorState(tabId, selector, state = 'visible', timeout 
         })();
         return ${hidden ? '!visible' : 'visible'};
       })()`,
+      withFrameSelectorOptions(frameSelector),
     )
 
     if (value === true) {
@@ -1786,11 +2635,15 @@ async function waitForSelectorState(tabId, selector, state = 'visible', timeout 
   throw new Error(`wait selector timeout: ${selector}`)
 }
 
-async function waitForUrl(tabId, urlPattern, timeout = 30000) {
+async function waitForUrl(tabId, urlPattern, timeout = 30000, frameSelector) {
   const startTime = Date.now()
 
   while (Date.now() - startTime < timeout) {
-    const { value } = await evaluateInTabContext(tabId, 'window.location.href')
+    const { value } = await evaluateInTabContext(
+      tabId,
+      'window.location.href',
+      withFrameSelectorOptions(frameSelector),
+    )
     const currentUrl = value || ''
     if (matchesUrlPattern(currentUrl, urlPattern)) {
       return {
@@ -1807,13 +2660,14 @@ async function waitForUrl(tabId, urlPattern, timeout = 30000) {
   throw new Error(`wait url timeout: ${urlPattern}`)
 }
 
-async function waitForText(tabId, text, timeout = 30000) {
+async function waitForText(tabId, text, timeout = 30000, frameSelector) {
   const startTime = Date.now()
 
   while (Date.now() - startTime < timeout) {
     const { value } = await evaluateInTabContext(
       tabId,
       "document.body ? document.body.innerText : ''",
+      withFrameSelectorOptions(frameSelector),
     )
     const pageText = (value || '').toLowerCase()
     if (pageText.includes(text.toLowerCase())) {
@@ -1826,7 +2680,7 @@ async function waitForText(tabId, text, timeout = 30000) {
   throw new Error(`wait text timeout: ${text}`)
 }
 
-async function waitForExpression(tabId, expression, timeout = 30000) {
+async function waitForExpression(tabId, expression, timeout = 30000, frameSelector) {
   const startTime = Date.now()
 
   while (Date.now() - startTime < timeout) {
@@ -1839,6 +2693,7 @@ async function waitForExpression(tabId, expression, timeout = 30000) {
           return false;
         }
       })()`,
+      withFrameSelectorOptions(frameSelector),
     )
 
     if (value === true) {
@@ -1856,7 +2711,7 @@ async function waitWithTimeout(tabId, ms) {
   return { waited: true, condition: 'time', ms }
 }
 
-async function handleWait(tabId, args) {
+async function handleWait(tabId, args, frameSelector) {
   const timeout = args.timeout || 30000
 
   if (args.type === 'time' || args.ms) {
@@ -1864,27 +2719,33 @@ async function handleWait(tabId, args) {
   }
 
   if (args.type === 'selector' || args.selector) {
-    return await waitForSelectorState(tabId, args.selector, args.state || 'visible', timeout)
+    return await waitForSelectorState(
+      tabId,
+      args.selector,
+      args.state || 'visible',
+      timeout,
+      frameSelector,
+    )
   }
 
   if (args.type === 'url' || args.url) {
-    return await waitForUrl(tabId, args.url, timeout)
+    return await waitForUrl(tabId, args.url, timeout, frameSelector)
   }
 
   if (args.type === 'text' || args.text) {
-    return await waitForText(tabId, args.text, timeout)
+    return await waitForText(tabId, args.text, timeout, frameSelector)
   }
 
   if (args.type === 'load') {
-    return await waitFor(tabId, 'load', timeout)
+    return await waitFor(tabId, 'load', timeout, frameSelector)
   }
 
   if (args.type === 'networkidle') {
-    return await waitFor(tabId, 'networkidle', timeout)
+    return await waitFor(tabId, 'networkidle', timeout, frameSelector)
   }
 
   if (args.type === 'fn' || args.fn) {
-    return await waitForExpression(tabId, args.fn || '', timeout)
+    return await waitForExpression(tabId, args.fn || '', timeout, frameSelector)
   }
 
   throw new Error(`unsupported wait type: ${args.type}`)
@@ -1914,7 +2775,7 @@ async function cookiesClear(tabId) {
 }
 
 // Storage commands
-async function storageGet(tabId, key) {
+async function storageGet(tabId, key, frameSelector) {
   if (!key) {
     // 获取所有 localStorage
     const { value } = await evaluateInTabContext(
@@ -1927,6 +2788,7 @@ async function storageGet(tabId, key) {
         }
         return items;
       })()`,
+      withFrameSelectorOptions(frameSelector),
     )
     return { storage: value || {} }
   }
@@ -1934,20 +2796,22 @@ async function storageGet(tabId, key) {
   const { value } = await evaluateInTabContext(
     tabId,
     `localStorage.getItem(${JSON.stringify(key)})`,
+    withFrameSelectorOptions(frameSelector),
   )
   return { key, value }
 }
 
-async function storageSet(tabId, key, value) {
+async function storageSet(tabId, key, value, frameSelector) {
   await evaluateInTabContext(
     tabId,
     `localStorage.setItem(${JSON.stringify(key)}, ${JSON.stringify(value)})`,
+    withFrameSelectorOptions(frameSelector),
   )
   return { key, value, set: true }
 }
 
-async function storageClear(tabId) {
-  await evaluateInTabContext(tabId, 'localStorage.clear()')
+async function storageClear(tabId, frameSelector) {
+  await evaluateInTabContext(tabId, 'localStorage.clear()', withFrameSelectorOptions(frameSelector))
   return { cleared: true }
 }
 
@@ -2168,11 +3032,12 @@ function getDialogStatus(): Record<string, unknown> {
   }
 }
 
-async function fillSelector(tabId, selector, value) {
+async function fillSelector(tabId, selector, value, frameSelector) {
+  const { tab, resolvedSelector } = await resolveElementSelectorForTab(tabId, selector)
   const { value: result } = await evaluateInTabContext(
-    tabId,
+    tab.id,
     `(() => {
-      const node = document.querySelector(${JSON.stringify(selector)});
+      const node = document.querySelector(${JSON.stringify(resolvedSelector)});
       if (!node) {
         return { found: false };
       }
@@ -2187,6 +3052,7 @@ async function fillSelector(tabId, selector, value) {
       node.dispatchEvent(new Event("change", { bubbles: true }));
       return { found: true, selector: ${JSON.stringify(selector)} };
     })()`,
+    withFrameSelectorOptions(frameSelector),
   )
 
   return result
@@ -2242,8 +3108,8 @@ async function keyUpOnly(tabId, key) {
   return { key, released: true, type: 'keyup' }
 }
 
-async function typeIntoSelector(tabId, selector, value) {
-  await focusElement(tabId, selector)
+async function typeIntoSelector(tabId, selector, value, frameSelector) {
+  await focusElement(tabId, selector, frameSelector)
   const typed = await insertTextSequentially(tabId, value)
   return {
     found: true,
@@ -2252,8 +3118,8 @@ async function typeIntoSelector(tabId, selector, value) {
   }
 }
 
-async function doubleClickSelector(tabId, selector) {
-  const box = await getElementBox(tabId, selector)
+async function doubleClickSelector(tabId, selector, frameSelector) {
+  const box = await getElementBox(tabId, selector, frameSelector)
   if (!box) {
     throw new Error(`element not found: ${selector}`)
   }
@@ -2278,12 +3144,13 @@ async function doubleClickSelector(tabId, selector) {
   return { found: true, selector, doubleClicked: true }
 }
 
-async function scrollIntoViewSelector(tabId, selector) {
+async function scrollIntoViewSelector(tabId, selector, frameSelector) {
+  const { tab, resolvedSelector } = await resolveElementSelectorForTab(tabId, selector)
   const { value } = await evaluateInTabContext(
-    tabId,
+    tab.id,
     `(() => {
       try {
-        const node = document.querySelector(${JSON.stringify(selector)});
+        const node = document.querySelector(${JSON.stringify(resolvedSelector)});
         if (!node) return { found: false, reason: 'element not found' };
         node.scrollIntoView({ block: 'center', inline: 'center' });
         return { found: true, selector: ${JSON.stringify(selector)} };
@@ -2294,6 +3161,7 @@ async function scrollIntoViewSelector(tabId, selector) {
         };
       }
     })()`,
+    withFrameSelectorOptions(frameSelector),
   )
 
   return value
@@ -2497,9 +3365,48 @@ async function closeTabs(tabId, closeAll) {
   return { closed: true, all: false, tabId: tab.id }
 }
 
+async function selectTab(tabHandle) {
+  const tab = await getTargetTab(tabHandle)
+  const updatedTab = await promisifyChrome(chrome.tabs, chrome.tabs.update, tab.id, {
+    active: true,
+  })
+
+  rememberTargetTab(tab.id)
+
+  if (typeof updatedTab?.windowId === 'number') {
+    try {
+      await promisifyChrome(chrome.windows, chrome.windows.update, updatedTab.windowId, {
+        focused: true,
+      })
+    } catch {
+      // Best effort only.
+    }
+  }
+
+  return {
+    selected: true,
+    tab: toTabSummary(updatedTab || tab),
+  }
+}
+
+async function closeTab(tabHandle) {
+  const tab = await getTargetTab(tabHandle)
+  const handle = getOrCreateTabHandle(tab.id)
+  await promisifyChrome(chrome.tabs, chrome.tabs.remove, tab.id)
+  return {
+    closed: true,
+    tab: {
+      ...toTabSummary(tab),
+      handle,
+    },
+  }
+}
+
 async function handleCommand(message) {
   const { command, args = {} } = message
-  const tabId = args.tabId || undefined
+  const tabId = args.tabId ?? undefined
+  const frameSelector =
+    typeof args.frame === 'string' && args.frame.trim() ? args.frame.trim() : null
 
   switch (command) {
     case 'status':
@@ -2509,6 +3416,8 @@ async function handleCommand(message) {
       }
     case 'tab.list':
       return { tabs: await listTabs() }
+    case 'tab.select':
+      return await selectTab(args.handle || args.tabId)
     case 'tab.new': {
       const tab = await promisifyChrome(chrome.tabs, chrome.tabs.create, {
         url: args.url || 'about:blank',
@@ -2518,27 +3427,31 @@ async function handleCommand(message) {
         rememberTargetTab(tab.id)
       }
 
-      return { tab }
+      return { tab: toTabSummary(tab) }
     }
+    case 'tab.close':
+      return await closeTab(args.handle || args.tabId)
     case 'goto':
     case 'open':
       return await navigateTo(tabId, args.url || 'about:blank')
     case 'eval':
-      return await evaluateScript(tabId, args.script || 'document.title')
+      return await evaluateScript(tabId, args.script || 'document.title', frameSelector)
     case 'snapshot':
-      return await snapshotTab(tabId)
+      return await snapshotTab(tabId, frameSelector)
     case 'screenshot':
-      return await captureScreenshot(tabId, args)
+      return await captureScreenshot(tabId, args, frameSelector)
     case 'click':
-      return await clickSelector(tabId, args.selector || '')
+      return await clickSelector(tabId, args.selector || '', frameSelector)
     case 'dblclick':
-      return await doubleClickSelector(tabId, args.selector || '')
+      return await doubleClickSelector(tabId, args.selector || '', frameSelector)
     case 'fill':
-      return await fillSelector(tabId, args.selector || '', args.value || '')
+      return await fillSelector(tabId, args.selector || '', args.value || '', frameSelector)
+    case 'find':
+      return await handleFindCommand(tabId, args, frameSelector)
     case 'type':
-      return await typeIntoSelector(tabId, args.selector || '', args.value || '')
+      return await typeIntoSelector(tabId, args.selector || '', args.value || '', frameSelector)
     case 'hover':
-      return await hoverElement(tabId, args.selector || '')
+      return await hoverElement(tabId, args.selector || '', frameSelector)
     case 'press':
       return await pressKey(tabId, args.key || '')
     case 'keyboard':
@@ -2556,21 +3469,27 @@ async function handleCommand(message) {
       }
       throw new Error(`unsupported keyboard action: ${args.action}`)
     case 'focus':
-      return await focusElement(tabId, args.selector || '')
+      return await focusElement(tabId, args.selector || '', frameSelector)
     case 'select':
-      return await selectOption(tabId, args.selector || '', args.value || '')
+      return await selectOption(tabId, args.selector || '', args.value || '', frameSelector)
     case 'check':
-      return await checkElement(tabId, args.selector || '', true)
+      return await checkElement(tabId, args.selector || '', true, frameSelector)
     case 'uncheck':
-      return await checkElement(tabId, args.selector || '', false)
+      return await checkElement(tabId, args.selector || '', false, frameSelector)
     case 'scroll':
-      return await scrollElement(tabId, args.selector || null, args.deltaX || 0, args.deltaY || 100)
+      return await scrollElement(
+        tabId,
+        args.selector || null,
+        args.deltaX || 0,
+        args.deltaY || 100,
+        frameSelector,
+      )
     case 'scrollintoview':
-      return await scrollIntoViewSelector(tabId, args.selector || '')
+      return await scrollIntoViewSelector(tabId, args.selector || '', frameSelector)
     case 'drag':
-      return await dragElement(tabId, args.start || '', args.end || '')
+      return await dragElement(tabId, args.start || '', args.end || '', frameSelector)
     case 'upload':
-      return await uploadFiles(tabId, args.selector || '', args.files || [])
+      return await uploadFiles(tabId, args.selector || '', args.files || [], frameSelector)
     case 'back':
       return await navigateBack(tabId)
     case 'forward':
@@ -2587,16 +3506,16 @@ async function handleCommand(message) {
     case 'frame':
       return await switchToFrame(tabId, args.selector || '')
     case 'is':
-      return await checkIsState(tabId, args.selector || '', args.state || 'visible')
+      return await checkIsState(tabId, args.selector || '', args.state || 'visible', frameSelector)
     case 'get':
-      return await getAttribute(tabId, args.selector || '', args.attr || 'text')
+      return await getAttribute(tabId, args.selector || '', args.attr || 'text', frameSelector)
     case 'dialog':
       if (args.action === 'status') {
         return getDialogStatus()
       }
       return await handleDialog(tabId, args.accept !== false, args.promptText)
     case 'wait':
-      return await handleWait(tabId, args)
+      return await handleWait(tabId, args, frameSelector)
     case 'cookies':
       if (args.action === 'get') {
         return await cookiesGet(tabId)
@@ -2610,13 +3529,13 @@ async function handleCommand(message) {
       throw new Error(`unsupported cookies action: ${args.action}`)
     case 'storage':
       if (args.action === 'get') {
-        return await storageGet(tabId, args.key)
+        return await storageGet(tabId, args.key, frameSelector)
       }
       if (args.action === 'set') {
-        return await storageSet(tabId, args.key || '', args.value || '')
+        return await storageSet(tabId, args.key || '', args.value || '', frameSelector)
       }
       if (args.action === 'clear') {
-        return await storageClear(tabId)
+        return await storageClear(tabId, frameSelector)
       }
       throw new Error(`unsupported storage action: ${args.action}`)
     case 'console':
@@ -2787,6 +3706,14 @@ async function connect() {
             error: {
               message: err.message,
               code: err.code || 'EXTENSION_COMMAND_ERROR',
+              ...(err.suggestedAction ? { suggestedAction: err.suggestedAction } : {}),
+              ...(err.ref ? { ref: err.ref } : {}),
+              ...(typeof err.expectedPageEpoch === 'number'
+                ? { expectedPageEpoch: err.expectedPageEpoch }
+                : {}),
+              ...(typeof err.currentPageEpoch === 'number'
+                ? { currentPageEpoch: err.currentPageEpoch }
+                : {}),
             },
           }),
         )
@@ -2913,6 +3840,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 chrome.tabs.onRemoved.addListener((tabId) => {
   clearSelectedFrame(tabId)
   state.targetTabId = clearRemovedTabId(state.targetTabId, tabId)
+  clearRemovedTabHandle(tabId)
+  clearRemovedPageEpoch(tabId)
   detachDebugger(tabId).catch(() => {})
 })
 
