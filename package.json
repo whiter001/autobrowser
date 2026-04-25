@@ -13,9 +13,9 @@
     "fmt": "oxfmt src/ extension/",
     "lint": "oxlint src/ extension/",
     "fix": "oxfmt --fix src/ extension/ && oxlint --fix src/ extension/",
-    "typecheck": "bun scripts/run-typescript-compiler.ts --noEmit && bun scripts/run-typescript-compiler.ts -p extension/tsconfig.json",
-    "typecheck:native": "tsgo --noEmit && tsgo -p extension/tsconfig.json",
-    "typecheck:tsc": "tsc --noEmit && tsc -p extension/tsconfig.json",
+    "typecheck": "bun scripts/run-typescript-compiler.ts --noEmit && bun scripts/run-typescript-compiler.ts -p extension/tsconfig.json && bun scripts/run-typescript-compiler.ts -p extension/background/tsconfig.json",
+    "typecheck:native": "tsgo --noEmit && tsgo -p extension/tsconfig.json && tsgo -p extension/background/tsconfig.json",
+    "typecheck:tsc": "tsc --noEmit && tsc -p extension/tsconfig.json && tsc -p extension/background/tsconfig.json",
     "check": "bun run typecheck && oxlint src/ extension/ && oxfmt src/ extension/",
     "build:cli": "bun scripts/build-cli.ts",
     "build:chrome": "bun scripts/build-chrome.ts",
@@ -26,10 +26,10 @@
   "devDependencies": {
     "@types/chrome": "^0.1.40",
     "@types/node": "^25.6.0",
-    "@typescript/native-preview": "beta",
-    "bun-types": "^1.3.12",
+    "@typescript/native-preview": "7.0.0-dev.20260425.1",
+    "bun-types": "^1.3.13",
     "husky": "^9.1.7",
-    "typescript": "^6.0.2"
+    "typescript": "^6.0.3"
   },
   "engines": {
     "bun": ">=1.3.12"

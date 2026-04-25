@@ -11,20 +11,57 @@ import {
   type SocketCloseInfo,
 } from './shared.js'
 import {
+  debuggerAttach,
+  debuggerDetach,
+  debuggerSendCommand,
+  storageLocalGet,
+  storageLocalSet,
+  tabsCreate,
+  tabsGet,
+  tabsQuery,
+  tabsRemove,
+  tabsUpdate,
+  windowsCreate,
+  windowsUpdate,
+} from './background/chrome.js'
+import { createNetworkDomain } from './background/network.js'
+import { createExtensionState } from './background/state.js'
+import {
+  assertFreshElementRef,
+  assertFreshFrameRef,
+  clearRemovedPageEpoch,
+  clearRemovedTabHandle,
+  clearSelectedFrame,
+  getOrCreateTabHandle,
+  getPageEpoch,
+  invalidatePageRefs,
+  rememberTargetTab,
+  resolveEffectiveFrameSelector,
+  resolveTabInput,
+  toTabSummary,
+  withFrameSelectorOptions,
+} from './background/targeting.js'
+import type {
+  CommandArgs,
+  CommandMessage,
+  ErrorWithCode,
+  EvaluateInTabContextOptions,
+  FrameExecutionContext,
+  FrameSelector,
+  ResolvedFrameTarget,
+  ResolvedSelectorTarget,
+  SavedStateData,
+  SavedStatesMap,
+  ScreenshotCaptureOptions,
+  TabInput,
+  TabWithId,
+} from './background/types.js'
+import {
   AGENT_FRAME_REF_ATTRIBUTE,
   formatAgentFrameRef,
-  getAgentFrameRefPageEpoch,
-  isStaleAgentFrameRef,
-  formatAgentTabHandle,
-  parseAgentTabHandle,
   resolveAgentFrameSelector,
 } from '../src/core/agent-handles.js'
-import {
-  AGENT_ELEMENT_REF_ATTRIBUTE,
-  getAgentElementRefPageEpoch,
-  isStaleAgentElementRef,
-  resolveAgentSelector,
-} from '../src/core/agent-selectors.js'
+import { AGENT_ELEMENT_REF_ATTRIBUTE, resolveAgentSelector } from '../src/core/agent-selectors.js'
 import { clearRemovedTabId, pickLastNonActiveTab } from '../src/core/tab-selection.js'
 
 const DEFAULT_SERVER_PORT = DEFAULT_RELAY_PORT
@@ -34,466 +71,140 @@ const SCREENSHOT_ANNOTATION_OVERLAY_ID = 'autobrowser-screenshot-annotations'
 const SCREENSHOT_ANNOTATION_MAX_ELEMENTS = 200
 const AGENT_SNAPSHOT_MAX_ELEMENTS = 200
 
-interface ScreenshotCaptureOptions {
-  full?: boolean
-  annotate?: boolean
-  format?: string
-  quality?: number
+interface FrameTargetEvaluation {
+  refValue: string | null
+  src: string | null
+  left: number
+  top: number
+  width: number
+  height: number
+  x: number
+  y: number
 }
 
-interface ErrorWithCode extends Error {
-  code?: string
-  suggestedAction?: string
+interface ElementBox {
+  x: number
+  y: number
+  width: number
+  height: number
+}
+
+interface ElementActionResult extends Record<string, unknown> {
+  found: boolean
+  reason?: string
+}
+
+interface ScreenshotAnnotationResult {
+  count?: number
+}
+
+interface SemanticTargetMatch extends Record<string, unknown> {
   ref?: string
-  expectedPageEpoch?: number
-  currentPageEpoch?: number
+  tag?: string
+  role?: string
+  text?: string
+  name?: string
+  x?: number
+  y?: number
+  width?: number
+  height?: number
 }
 
-const state = {
-  socket: null,
-  reconnectTimer: null,
-  connecting: false,
-  suppressCloseError: false,
-  attachedTabs: new Set(),
-  selectedFrames: new Map(),
-  targetTabId: null,
-  tabHandles: new Map(),
-  tabIdsByHandle: new Map(),
-  pageEpochs: new Map(),
-  nextTabHandleIndex: 1,
-  dialog: null as {
-    open: boolean
-    type: string
-    message: string
-    defaultPrompt: string
-    url: string | null
-    openedAt: string
-  } | null,
-  network: {
-    routes: [],
-    requests: [],
-    requestMap: new Map(),
-    harRecording: false,
-    harStartedAt: null,
-  },
-  shouldReconnect: true,
-  token: '',
-  relayPort: DEFAULT_SERVER_PORT,
-  consoleMessages: [],
-  pageErrors: [],
-  connectionStatus: 'idle' as ConnectionStatus,
-  connectionError: null as ConnectionErrorInfo | null,
-  lastSocketClose: null as SocketCloseInfo | null,
-  lastCommandError: null as CommandErrorInfo | null,
+interface SemanticTargetResult extends Record<string, unknown> {
+  found: boolean
+  reason?: string
+  pageEpoch?: number
+  match?: SemanticTargetMatch
 }
 
-function createNetworkRouteId(): string {
-  return `route_${crypto.randomUUID().replaceAll('-', '')}`
-}
+const state = createExtensionState(DEFAULT_SERVER_PORT)
 
-function createNetworkRequestKey(tabId: number | null, requestId: string): string {
-  return `${tabId === null ? 'global' : tabId}:${requestId}`
-}
+const network = createNetworkDomain({
+  state,
+  getTargetTab,
+  sendRawDebuggerCommand,
+  sendDebuggerCommand,
+})
 
-function normalizeHeaders(headers: Record<string, unknown> | undefined): Record<string, string> {
-  if (!headers || typeof headers !== 'object') {
-    return {}
-  }
-
-  return Object.fromEntries(
-    Object.entries(headers).map(([name, value]) => [String(name), String(value ?? '')]),
-  )
-}
-
-function normalizeHeaderPairs(
-  headers: Record<string, string>,
-): Array<{ name: string; value: string }> {
-  return Object.entries(headers).map(([name, value]) => ({ name, value }))
-}
-
-function encodeBase64(value: string): string {
-  const bytes = new TextEncoder().encode(value)
-  let binary = ''
-  for (const byte of bytes) {
-    binary += String.fromCharCode(byte)
-  }
-  return btoa(binary)
-}
-
-function stringifyNetworkBody(body: unknown): { text: string; base64Encoded: boolean } {
-  const text = `${JSON.stringify(body, null, 2)}\n`
-  return { text, base64Encoded: false }
-}
-
-function matchesNetworkRoute(pattern: string, url: string): boolean {
-  const normalizedPattern = String(pattern || '').trim()
-  if (!normalizedPattern) {
-    return false
-  }
-
-  if (normalizedPattern === '*') {
-    return true
-  }
-
-  return String(url || '').includes(normalizedPattern)
-}
-
-function findMatchingNetworkRoute(
-  url: string,
-): { id: string; pattern: string; abort: boolean; body?: unknown } | null {
-  return state.network.routes.find((route) => matchesNetworkRoute(route.pattern, url)) || null
-}
-
-function upsertNetworkRequest(record: Record<string, unknown>): Record<string, unknown> {
-  const key = String(record.id || '')
-  if (!key) {
-    return record
-  }
-
-  const existing = state.network.requestMap.get(key) || { id: key }
-  const merged = { ...existing, ...record }
-  state.network.requestMap.set(key, merged)
-
-  const index = state.network.requests.findIndex((item) => item.id === key)
-  if (index >= 0) {
-    state.network.requests[index] = merged
-  } else {
-    state.network.requests.push(merged)
-  }
-
-  if (state.network.requests.length > 1000) {
-    const removed = state.network.requests.splice(0, state.network.requests.length - 1000)
-    for (const item of removed) {
-      if (item && typeof item.id === 'string') {
-        state.network.requestMap.delete(item.id)
-      }
-    }
-  }
-
-  return merged
-}
-
-function getNetworkRequestById(requestId: string): Record<string, unknown> | null {
-  if (!requestId) {
-    return null
-  }
-
-  const exact = state.network.requestMap.get(requestId)
-  if (exact) {
-    return exact
-  }
-
-  return (
-    state.network.requests.find(
-      (item) => item?.requestId === requestId || item?.id === requestId,
-    ) || null
-  )
-}
-
-function summarizeNetworkRequest(record: Record<string, unknown>): Record<string, unknown> {
-  return {
-    id: record.id,
-    requestId: record.requestId,
-    tabId: record.tabId,
-    url: record.url,
-    method: record.method,
-    resourceType: record.resourceType,
-    status: record.status ?? null,
-    statusText: record.statusText ?? null,
-    routeId: record.routeId ?? null,
-    routeAction: record.routeAction ?? null,
-    finishedAt: record.finishedAt ?? null,
-    startedAt: record.startedAt ?? null,
-    durationMs: record.durationMs ?? null,
-    errorText: record.errorText ?? null,
-  }
-}
-
-function buildHarEntry(record: Record<string, unknown>): Record<string, unknown> {
-  const requestHeaders = normalizeHeaderPairs(
-    normalizeHeaders(record.requestHeaders as Record<string, unknown> | undefined),
-  )
-  const responseHeaders = normalizeHeaderPairs(
-    normalizeHeaders(record.responseHeaders as Record<string, unknown> | undefined),
-  )
-  const responseBody = typeof record.responseBody === 'string' ? record.responseBody : ''
-  const responseBodyBase64 = Boolean(record.responseBodyBase64)
-  const responseMimeType = String(record.responseMimeType || 'application/octet-stream')
-  const bodySize = responseBodyBase64
-    ? Math.max(0, Math.floor(responseBody.length * 0.75))
-    : new TextEncoder().encode(responseBody).length
-
-  return {
-    startedDateTime: record.startedAt,
-    time: typeof record.durationMs === 'number' ? record.durationMs : 0,
-    request: {
-      method: record.method || 'GET',
-      url: record.url || '',
-      httpVersion: 'HTTP/1.1',
-      cookies: [],
-      headers: requestHeaders,
-      queryString: [],
-      headersSize: -1,
-      bodySize:
-        typeof record.postData === 'string' ? new TextEncoder().encode(record.postData).length : 0,
-      postData:
-        typeof record.postData === 'string'
-          ? {
-              mimeType: 'application/json',
-              text: record.postData,
-            }
-          : undefined,
-    },
-    response: {
-      status: Number(record.status || 0),
-      statusText: String(record.statusText || ''),
-      httpVersion: 'HTTP/1.1',
-      cookies: [],
-      headers: responseHeaders,
-      content: {
-        size: bodySize,
-        mimeType: responseMimeType,
-        text: responseBody,
-        encoding: responseBodyBase64 ? 'base64' : undefined,
-      },
-      redirectURL: '',
-      headersSize: -1,
-      bodySize,
-    },
-    cache: {},
-    timings: {
-      send: 0,
-      wait: typeof record.waitMs === 'number' ? record.waitMs : 0,
-      receive: typeof record.receiveMs === 'number' ? record.receiveMs : 0,
-    },
-    pageref:
-      record.tabId === null || record.tabId === undefined ? undefined : `tab-${record.tabId}`,
-  }
-}
-
-async function refreshNetworkInterceptors(): Promise<void> {
-  await Promise.allSettled(
-    Array.from(state.attachedTabs).map(async (tabId) => {
-      if (state.network.routes.length === 0) {
-        await sendRawDebuggerCommand(tabId, 'Fetch.disable', {})
-        return
-      }
-
-      await sendRawDebuggerCommand(tabId, 'Fetch.enable', {
-        patterns: [{ urlPattern: '*' }],
-        handleAuthRequests: false,
-      })
-    }),
-  )
-}
-
-async function handleNetworkRequestPaused(tabId: number, params: any): Promise<void> {
-  const request = params?.request || {}
-  const requestId = String(params?.requestId || '')
-  if (!requestId) {
-    return
-  }
-
-  try {
-    const route = findMatchingNetworkRoute(String(request.url || ''))
-    const key = createNetworkRequestKey(tabId, requestId)
-    const record = upsertNetworkRequest({
-      id: key,
-      requestId,
-      tabId,
-      url: String(request.url || ''),
-      method: String(request.method || 'GET'),
-      resourceType: String(params?.resourceType || params?.requestStage || ''),
-      requestHeaders: normalizeHeaders(request.headers),
-      postData: typeof request.postData === 'string' ? request.postData : null,
-      startedAt: new Date().toISOString(),
-      requestWillBeSentAt: typeof params?.timestamp === 'number' ? params.timestamp : null,
-      routeId: route?.id || null,
-      routeAction: route?.abort ? 'abort' : route?.body !== undefined ? 'mock' : 'continue',
-    })
-
-    if (route?.abort) {
-      try {
-        await sendRawDebuggerCommand(tabId, 'Fetch.failRequest', {
-          requestId,
-          errorReason: 'Failed',
-        })
-        return
-      } catch (error) {
-        console.error('failed to abort network request', error)
-        await sendRawDebuggerCommand(tabId, 'Fetch.continueRequest', { requestId })
-        return
-      }
-    }
-
-    if (route && route.body !== undefined) {
-      const body = stringifyNetworkBody(route.body)
-      try {
-        await sendRawDebuggerCommand(tabId, 'Fetch.fulfillRequest', {
-          requestId,
-          responseCode: 200,
-          responsePhrase: 'OK',
-          responseHeaders: [{ name: 'content-type', value: 'application/json; charset=utf-8' }],
-          body: encodeBase64(body.text),
-        })
-        upsertNetworkRequest({
-          ...record,
-          responseBody: body.text,
-          responseBodyBase64: false,
-          responseMimeType: 'application/json; charset=utf-8',
-          status: 200,
-          statusText: 'OK',
-          finishedAt: new Date().toISOString(),
-          durationMs: 0,
-        })
-        return
-      } catch (error) {
-        console.error('failed to fulfill network request', error)
-        await sendRawDebuggerCommand(tabId, 'Fetch.continueRequest', { requestId })
-        return
-      }
-    }
-
-    await sendRawDebuggerCommand(tabId, 'Fetch.continueRequest', { requestId })
-  } catch (error) {
-    console.error('failed to process paused network request', error)
-  }
-}
-
-async function finalizeNetworkRequestBody(tabId: number, requestId: string): Promise<void> {
-  const key = createNetworkRequestKey(tabId, requestId)
-  const record = getNetworkRequestById(key)
-  if (!record) {
-    return
-  }
-
-  try {
-    const result = await sendRawDebuggerCommand(tabId, 'Network.getResponseBody', { requestId })
-    const responseBody = String(result?.body || '')
-    const bodyRecord = upsertNetworkRequest({
-      ...record,
-      responseBody,
-      responseBodyBase64: Boolean(result?.base64Encoded),
-    })
-
-    if (!bodyRecord.responseMimeType) {
-      bodyRecord.responseMimeType = 'application/octet-stream'
-    }
-  } catch {
-    // Best effort only.
-  }
-}
-
-async function handleNetworkEvent(source: any, method: string, params: any): Promise<void> {
-  const tabId = typeof source?.tabId === 'number' ? source.tabId : null
-  if (tabId === null) {
-    return
-  }
-
-  if (method === 'Network.requestWillBeSent') {
-    const requestId = String(params?.requestId || '')
-    if (!requestId) {
-      return
-    }
-
-    upsertNetworkRequest({
-      id: createNetworkRequestKey(tabId, requestId),
-      requestId,
-      tabId,
-      url: String(params?.request?.url || ''),
-      method: String(params?.request?.method || 'GET'),
-      resourceType: String(params?.type || ''),
-      requestHeaders: normalizeHeaders(params?.request?.headers),
-      postData: typeof params?.request?.postData === 'string' ? params.request.postData : null,
-      startedAt: new Date().toISOString(),
-      requestWillBeSentAt: typeof params?.timestamp === 'number' ? params.timestamp : null,
-      wallTime: typeof params?.wallTime === 'number' ? params.wallTime : null,
-      documentUrl: String(params?.documentURL || ''),
-    })
-    return
-  }
-
-  if (method === 'Network.responseReceived') {
-    const requestId = String(params?.requestId || '')
-    if (!requestId) {
-      return
-    }
-
-    upsertNetworkRequest({
-      id: createNetworkRequestKey(tabId, requestId),
-      requestId,
-      tabId,
-      status: Number(params?.response?.status || 0),
-      statusText: String(params?.response?.statusText || ''),
-      responseHeaders: normalizeHeaders(params?.response?.headers),
-      responseMimeType: String(params?.response?.mimeType || 'application/octet-stream'),
-      responseReceivedAt: typeof params?.timestamp === 'number' ? params.timestamp : null,
-    })
-    return
-  }
-
-  if (method === 'Network.loadingFinished') {
-    const requestId = String(params?.requestId || '')
-    if (!requestId) {
-      return
-    }
-
-    const key = createNetworkRequestKey(tabId, requestId)
-    const record = getNetworkRequestById(key)
-    const finishedAt = new Date().toISOString()
-    const requestWillBeSentAt =
-      typeof record?.requestWillBeSentAt === 'number' ? record.requestWillBeSentAt : null
-    const responseReceivedAt =
-      typeof record?.responseReceivedAt === 'number' ? record.responseReceivedAt : null
-    const baseRecord = record || {}
-
-    upsertNetworkRequest({
-      ...baseRecord,
-      id: key,
-      requestId,
-      tabId,
-      finishedAt,
-      durationMs:
-        requestWillBeSentAt !== null && typeof params?.timestamp === 'number'
-          ? Math.max(0, (params.timestamp - requestWillBeSentAt) * 1000)
-          : null,
-      waitMs:
-        requestWillBeSentAt !== null && responseReceivedAt !== null
-          ? Math.max(0, (responseReceivedAt - requestWillBeSentAt) * 1000)
-          : null,
-      receiveMs:
-        responseReceivedAt !== null && typeof params?.timestamp === 'number'
-          ? Math.max(0, (params.timestamp - responseReceivedAt) * 1000)
-          : null,
-      encodedDataLength:
-        typeof params?.encodedDataLength === 'number' ? params.encodedDataLength : null,
-    })
-
-    void finalizeNetworkRequestBody(tabId, requestId)
-    return
-  }
-
-  if (method === 'Network.loadingFailed') {
-    const requestId = String(params?.requestId || '')
-    if (!requestId) {
-      return
-    }
-
-    upsertNetworkRequest({
-      id: createNetworkRequestKey(tabId, requestId),
-      requestId,
-      tabId,
-      errorText: String(params?.errorText || 'request failed'),
-      canceled: Boolean(params?.canceled),
-      finishedAt: new Date().toISOString(),
-    })
-  }
-}
-
-function pushBounded(list, item, maxSize) {
+function pushBounded<T>(list: T[], item: T, maxSize: number): void {
   list.push(item)
   if (list.length > maxSize) {
     list.splice(0, list.length - maxSize)
+  }
+}
+
+function readStringArg(args: CommandArgs, key: string, fallback = ''): string {
+  const value = args[key]
+  return typeof value === 'string' ? value : fallback
+}
+
+function readOptionalStringArg(args: CommandArgs, key: string): string | undefined {
+  const value = args[key]
+  return typeof value === 'string' ? value : undefined
+}
+
+function readNumberArg(args: CommandArgs, key: string, fallback = 0): number {
+  const value = args[key]
+  return typeof value === 'number' && Number.isFinite(value) ? value : fallback
+}
+
+function readBooleanArg(args: CommandArgs, key: string, fallback = false): boolean {
+  const value = args[key]
+  return typeof value === 'boolean' ? value : fallback
+}
+
+function readStringArrayArg(args: CommandArgs, key: string): string[] {
+  const value = args[key]
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : []
+}
+
+function readTabInputArg(args: CommandArgs, key: string): TabInput {
+  const value = args[key]
+  return typeof value === 'number' || typeof value === 'string' || value == null ? value : undefined
+}
+
+function readFrameSelectorArg(args: CommandArgs, key: string): FrameSelector {
+  const value = readOptionalStringArg(args, key)
+  return value && value.trim() ? value.trim() : null
+}
+
+function readObjectArg(args: CommandArgs, key: string): Record<string, unknown> | undefined {
+  const value = args[key]
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : undefined
+}
+
+function readSavedStateArg(args: CommandArgs, key: string): SavedStateData | undefined {
+  const value = args[key]
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? (value as SavedStateData)
+    : undefined
+}
+
+function readHeadersArg(
+  args: CommandArgs,
+  key: string,
+): Array<{ name?: string; value?: unknown }> | Record<string, unknown> | undefined {
+  const value = args[key]
+  if (Array.isArray(value)) {
+    return value.filter(
+      (item): item is { name?: string; value?: unknown } => Boolean(item) && typeof item === 'object',
+    )
+  }
+
+  return readObjectArg(args, key)
+}
+
+function readScreenshotOptions(args: CommandArgs): ScreenshotCaptureOptions {
+  const format = readOptionalStringArg(args, 'format')
+  const quality = readNumberArg(args, 'quality', 80)
+
+  return {
+    full: readBooleanArg(args, 'full', false),
+    annotate: readBooleanArg(args, 'annotate', false),
+    ...(format ? { format } : {}),
+    ...(quality ? { quality } : {}),
   }
 }
 
@@ -550,48 +261,64 @@ function recordSocketClose(close: { code: number; reason: string; wasClean: bool
   persistDiagnostics()
 }
 
-function stringifyRemoteValue(value) {
+function stringifyRemoteValue(value: unknown): string {
   if (!value) {
     return ''
   }
 
-  if (Object.prototype.hasOwnProperty.call(value, 'value')) {
-    if (typeof value.value === 'string') {
-      return value.value
+  const remoteValue = value as {
+    value?: unknown
+    unserializableValue?: string
+    description?: string
+    type?: string
+  }
+
+  if (Object.prototype.hasOwnProperty.call(remoteValue, 'value')) {
+    if (typeof remoteValue.value === 'string') {
+      return remoteValue.value
     }
 
     try {
-      return JSON.stringify(value.value)
+      return JSON.stringify(remoteValue.value)
     } catch (error) {
       console.debug('failed to stringify remote value', error)
-      return String(value.value)
+      return String(remoteValue.value)
     }
   }
 
-  if (value.unserializableValue) {
-    return value.unserializableValue
+  if (remoteValue.unserializableValue) {
+    return remoteValue.unserializableValue
   }
 
-  return value.description || value.type || ''
+  return remoteValue.description || remoteValue.type || ''
 }
 
 function setupDebuggerEventListeners() {
-  chrome.debugger.onEvent.addListener((source, method, params: any) => {
+  chrome.debugger.onEvent.addListener((source, method, params) => {
+    const navigationParams = params as {
+      frame?: { parentId?: string | null }
+    }
+
     if (
       typeof source?.tabId === 'number' &&
-      ((method === 'Page.frameNavigated' && !params?.frame?.parentId) ||
+      ((method === 'Page.frameNavigated' && !navigationParams.frame?.parentId) ||
         method === 'Page.navigatedWithinDocument')
     ) {
-      invalidatePageRefs(source.tabId)
+      invalidatePageRefs(state, source.tabId)
     }
 
     if (method === 'Runtime.consoleAPICalled') {
+      const consoleParams = params as {
+        type?: string
+        args?: unknown[]
+      }
+
       pushBounded(
         state.consoleMessages,
         {
-          type: params.type,
-          text: Array.isArray(params.args)
-            ? params.args.map((item) => stringifyRemoteValue(item)).join(' ')
+          type: String(consoleParams.type || ''),
+          text: Array.isArray(consoleParams.args)
+            ? consoleParams.args.map((item: unknown) => stringifyRemoteValue(item)).join(' ')
             : '',
           timestamp: Date.now(),
         },
@@ -599,13 +326,26 @@ function setupDebuggerEventListeners() {
       )
     }
     if (method === 'Runtime.exceptionThrown') {
+      const exceptionParams = params as {
+        exceptionDetails?: {
+          exception?: { description?: string }
+          text?: string
+          url?: string
+          lineNumber?: number
+          columnNumber?: number
+        }
+      }
+
       pushBounded(
         state.pageErrors,
         {
-          error: params.exceptionDetails.exception?.description || params.exceptionDetails.text,
-          url: params.exceptionDetails.url || null,
-          line: params.exceptionDetails.lineNumber,
-          column: params.exceptionDetails.columnNumber,
+          error:
+            exceptionParams.exceptionDetails?.exception?.description ||
+            exceptionParams.exceptionDetails?.text ||
+            '',
+          url: exceptionParams.exceptionDetails?.url || null,
+          line: exceptionParams.exceptionDetails?.lineNumber,
+          column: exceptionParams.exceptionDetails?.columnNumber,
           timestamp: Date.now(),
         },
         100,
@@ -613,12 +353,19 @@ function setupDebuggerEventListeners() {
     }
 
     if (method === 'Page.javascriptDialogOpening') {
+      const dialogParams = params as {
+        type?: string
+        message?: string
+        defaultPrompt?: string
+        url?: string
+      }
+
       state.dialog = {
         open: true,
-        type: String(params?.type || ''),
-        message: String(params?.message || ''),
-        defaultPrompt: String(params?.defaultPrompt || ''),
-        url: params?.url ? String(params.url) : null,
+        type: String(dialogParams.type || ''),
+        message: String(dialogParams.message || ''),
+        defaultPrompt: String(dialogParams.defaultPrompt || ''),
+        url: dialogParams.url ? String(dialogParams.url) : null,
         openedAt: new Date().toISOString(),
       }
 
@@ -645,7 +392,7 @@ function setupDebuggerEventListeners() {
     if (method === 'Fetch.requestPaused') {
       const tabId = typeof source?.tabId === 'number' ? source.tabId : null
       if (tabId !== null) {
-        void handleNetworkRequestPaused(tabId, params).catch((error) => {
+        void network.handleRequestPaused(tabId, params).catch((error) => {
           console.error('failed to handle paused network request', error)
         })
       }
@@ -657,50 +404,32 @@ function setupDebuggerEventListeners() {
       method === 'Network.loadingFinished' ||
       method === 'Network.loadingFailed'
     ) {
-      void handleNetworkEvent(source, method, params).catch((error) => {
+      void network.handleEvent(source, method, params).catch((error) => {
         console.error('failed to record network event', error)
       })
     }
   })
 }
 
-function promisifyChrome(thisArg: any, fn: any, ...args: any[]): Promise<any> {
-  return new Promise((resolve, reject) => {
-    fn.call(thisArg, ...args, (result) => {
-      const error = chrome.runtime.lastError
-      if (error) {
-        reject(new Error(error.message))
-        return
-      }
-
-      resolve(result)
-    })
-  })
+async function getToken(): Promise<string> {
+  const result = await storageLocalGet(STORAGE_KEY)
+  return String(result?.[STORAGE_KEY] || '')
 }
 
-async function getToken() {
-  const result = await promisifyChrome(chrome.storage.local, chrome.storage.local.get, STORAGE_KEY)
-  return result?.[STORAGE_KEY] || ''
-}
-
-async function getRelayPort() {
-  const result = await promisifyChrome(
-    chrome.storage.local,
-    chrome.storage.local.get,
-    RELAY_PORT_STORAGE_KEY,
-  )
+async function getRelayPort(): Promise<number> {
+  const result = await storageLocalGet(RELAY_PORT_STORAGE_KEY)
   return normalizeRelayPort(result?.[RELAY_PORT_STORAGE_KEY])
 }
 
-async function saveToken(token) {
-  await promisifyChrome(chrome.storage.local, chrome.storage.local.set, {
+async function saveToken(token: string): Promise<void> {
+  await storageLocalSet({
     [STORAGE_KEY]: token.trim(),
   })
   state.token = token.trim()
   requestReconnect()
 }
 
-function requestReconnect() {
+function requestReconnect(): void {
   if (state.socket && state.socket.readyState < WebSocket.CLOSING) {
     state.suppressCloseError = true
     try {
@@ -714,85 +443,11 @@ function requestReconnect() {
   reconnect()
 }
 
-function rememberTargetTab(tabId) {
-  state.targetTabId = typeof tabId === 'number' ? tabId : null
-}
-
-function getOrCreateTabHandle(tabId) {
-  if (typeof tabId !== 'number') {
-    return null
-  }
-
-  const existingHandle = state.tabHandles.get(tabId)
-  if (existingHandle) {
-    return existingHandle
-  }
-
-  const handle = formatAgentTabHandle(state.nextTabHandleIndex)
-  state.nextTabHandleIndex += 1
-  state.tabHandles.set(tabId, handle)
-  state.tabIdsByHandle.set(handle, tabId)
-  return handle
-}
-
-function clearRemovedTabHandle(tabId) {
-  const handle = state.tabHandles.get(tabId)
-  if (!handle) {
-    return
-  }
-
-  state.tabHandles.delete(tabId)
-  state.tabIdsByHandle.delete(handle)
-}
-
-function resolveTabHandle(tabHandle) {
-  const normalizedHandle = parseAgentTabHandle(tabHandle)
-  if (!normalizedHandle) {
-    return null
-  }
-
-  const tabId = state.tabIdsByHandle.get(normalizedHandle)
-  return typeof tabId === 'number' ? tabId : null
-}
-
-function resolveTabInput(tabId) {
-  if (typeof tabId === 'number') {
-    return tabId
-  }
-
-  if (typeof tabId === 'string') {
-    const handleTabId = resolveTabHandle(tabId)
-    if (typeof handleTabId === 'number') {
-      return handleTabId
-    }
-
-    const numericTabId = Number(tabId)
-    if (Number.isInteger(numericTabId) && numericTabId > 0) {
-      return numericTabId
-    }
-  }
-
-  return null
-}
-
-function toTabSummary(tab) {
-  return {
-    id: tab.id,
-    handle: typeof tab.id === 'number' ? getOrCreateTabHandle(tab.id) : null,
-    title: tab.title || '',
-    url: tab.url || '',
-    active: Boolean(tab.active),
-    pinned: Boolean(tab.pinned),
-    status: tab.status || '',
-    windowId: tab.windowId,
-  }
-}
-
-async function loadTargetTab(tabId) {
-  const resolvedTabId = resolveTabInput(tabId)
+async function loadTargetTab(tabId: TabInput): Promise<TabWithId | null> {
+  const resolvedTabId = resolveTabInput(state, tabId)
 
   if (typeof resolvedTabId === 'number') {
-    return await promisifyChrome(chrome.tabs, chrome.tabs.get, resolvedTabId)
+    return await tabsGet(resolvedTabId)
   }
 
   if (tabId !== undefined && tabId !== null && String(tabId).trim()) {
@@ -801,43 +456,59 @@ async function loadTargetTab(tabId) {
 
   if (typeof state.targetTabId === 'number') {
     try {
-      return await promisifyChrome(chrome.tabs, chrome.tabs.get, state.targetTabId)
+      return await tabsGet(state.targetTabId)
     } catch {
-      rememberTargetTab(null)
+      rememberTargetTab(state, null)
     }
   }
 
-  const tabs = await promisifyChrome(chrome.tabs, chrome.tabs.query, {
+  const tabs = await tabsQuery({
     currentWindow: true,
   })
-  return pickLastNonActiveTab(tabs)
+  const fallbackTab = pickLastNonActiveTab(
+    tabs
+      .filter(
+        (candidate): candidate is chrome.tabs.Tab & { id: number } =>
+          typeof candidate.id === 'number',
+      )
+      .map((candidate) => ({
+        ...candidate,
+        active: Boolean(candidate.active),
+      })),
+  )
+  if (!fallbackTab || typeof fallbackTab.id !== 'number') {
+    return null
+  }
+
+  return await tabsGet(fallbackTab.id)
 }
 
-async function ensureDebuggerAttached(tabId) {
+async function ensureDebuggerAttached(tabId: number): Promise<void> {
   if (state.attachedTabs.has(tabId)) {
     return
   }
 
   try {
-    await promisifyChrome(chrome.debugger, chrome.debugger.attach, { tabId }, '1.3')
+    await debuggerAttach({ tabId }, '1.3')
   } catch (error) {
-    if (!String(error.message || '').includes('already attached')) {
+    const errorMessage = error instanceof Error ? error.message : String(error)
+    if (!errorMessage.includes('already attached')) {
       throw error
     }
   }
 
   state.attachedTabs.add(tabId)
   await enableDebuggerDomains(tabId)
-  await refreshNetworkInterceptors()
+  await network.refreshInterceptors()
 }
 
-async function detachDebugger(tabId) {
+async function detachDebugger(tabId: number): Promise<void> {
   if (!state.attachedTabs.has(tabId)) {
     return
   }
 
   try {
-    await promisifyChrome(chrome.debugger, chrome.debugger.detach, { tabId })
+    await debuggerDetach({ tabId })
   } catch (error) {
     console.warn('failed to detach debugger from tab', tabId, error)
   }
@@ -845,17 +516,15 @@ async function detachDebugger(tabId) {
   state.attachedTabs.delete(tabId)
 }
 
-async function sendRawDebuggerCommand(tabId, method, params = {}) {
-  return await promisifyChrome(
-    chrome.debugger,
-    chrome.debugger.sendCommand,
-    { tabId },
-    method,
-    params,
-  )
+async function sendRawDebuggerCommand<TResult = unknown>(
+  tabId: number,
+  method: string,
+  params: Record<string, unknown> = {},
+): Promise<TResult> {
+  return await debuggerSendCommand<TResult>({ tabId }, method, params)
 }
 
-async function enableDebuggerDomains(tabId) {
+async function enableDebuggerDomains(tabId: number): Promise<void> {
   await Promise.allSettled([
     sendRawDebuggerCommand(tabId, 'Runtime.enable', {}),
     sendRawDebuggerCommand(tabId, 'Console.enable', {}),
@@ -863,125 +532,59 @@ async function enableDebuggerDomains(tabId) {
   ])
 }
 
-async function sendDebuggerCommand(tabId, method, params = {}) {
+async function sendDebuggerCommand<TResult = unknown>(
+  tabId: number,
+  method: string,
+  params: Record<string, unknown> = {},
+): Promise<TResult> {
   await ensureDebuggerAttached(tabId)
-  return await sendRawDebuggerCommand(tabId, method, params)
+  return await sendRawDebuggerCommand<TResult>(tabId, method, params)
 }
 
 async function listTabs() {
-  const tabs = await promisifyChrome(chrome.tabs, chrome.tabs.query, {})
-  return tabs.map((tab) => toTabSummary(tab))
+  const tabs = await tabsQuery({})
+  return tabs.map((tab) => toTabSummary(state, tab))
 }
 
-async function getTargetTab(tabId) {
+async function getTargetTab(tabId: TabInput): Promise<TabWithId> {
   const tab = await loadTargetTab(tabId)
-  if (!tab || typeof tab.id !== 'number') {
+  if (!tab) {
     throw new Error('no target tab available')
   }
 
-  rememberTargetTab(tab.id)
+  rememberTargetTab(state, tab.id)
   return tab
 }
 
-function clearSelectedFrame(tabId) {
-  state.selectedFrames.delete(tabId)
-}
-
-function getPageEpoch(tabId) {
-  const currentEpoch = state.pageEpochs.get(tabId)
-  if (typeof currentEpoch === 'number' && currentEpoch > 0) {
-    return currentEpoch
-  }
-
-  state.pageEpochs.set(tabId, 1)
-  return 1
-}
-
-function bumpPageEpoch(tabId) {
-  const nextEpoch = getPageEpoch(tabId) + 1
-  state.pageEpochs.set(tabId, nextEpoch)
-  return nextEpoch
-}
-
-function invalidatePageRefs(tabId) {
-  clearSelectedFrame(tabId)
-  return bumpPageEpoch(tabId)
-}
-
-function clearRemovedPageEpoch(tabId) {
-  state.pageEpochs.delete(tabId)
-}
-
-function createStaleRefError(refType, selector, expectedPageEpoch, currentPageEpoch) {
-  const error = new Error(
-    `${refType} ref ${selector} is stale for page epoch ${expectedPageEpoch}; current page epoch is ${currentPageEpoch}`,
-  ) as ErrorWithCode
-  error.code = refType === 'frame' ? 'STALE_FRAME_REF' : 'STALE_ELEMENT_REF'
-  error.suggestedAction = 'run snapshot again'
-  error.ref = selector
-  error.expectedPageEpoch = expectedPageEpoch
-  error.currentPageEpoch = currentPageEpoch
-  return error
-}
-
-function assertFreshElementRef(tabId, selector) {
-  const currentPageEpoch = getPageEpoch(tabId)
-  if (!isStaleAgentElementRef(selector, currentPageEpoch)) {
-    return
-  }
-
-  throw createStaleRefError(
-    'element',
-    selector,
-    getAgentElementRefPageEpoch(selector),
-    currentPageEpoch,
-  )
-}
-
-function assertFreshFrameRef(tabId, selector) {
-  const currentPageEpoch = getPageEpoch(tabId)
-  if (isStaleAgentFrameRef(selector, currentPageEpoch)) {
-    throw createStaleRefError(
-      'frame',
-      selector,
-      getAgentFrameRefPageEpoch(selector),
-      currentPageEpoch,
-    )
-  }
-
-  if (isStaleAgentElementRef(selector, currentPageEpoch)) {
-    throw createStaleRefError(
-      'element',
-      selector,
-      getAgentElementRefPageEpoch(selector),
-      currentPageEpoch,
-    )
-  }
-}
-
-async function resolveElementSelectorForTab(tabId, selector) {
+async function resolveElementSelectorForTab(
+  tabId: TabInput,
+  selector: string,
+): Promise<ResolvedSelectorTarget> {
   const tab = await getTargetTab(tabId)
-  assertFreshElementRef(tab.id, selector)
+  assertFreshElementRef(state, tab.id, selector)
   return {
     tab,
-    pageEpoch: getPageEpoch(tab.id),
+    pageEpoch: getPageEpoch(state, tab.id),
     resolvedSelector: resolveAgentSelector(selector),
   }
 }
 
-async function resolveFrameSelectorForTab(tabId, selector) {
+async function resolveFrameSelectorForTab(
+  tabId: TabInput,
+  selector: string,
+): Promise<ResolvedSelectorTarget> {
   const tab = await getTargetTab(tabId)
-  assertFreshFrameRef(tab.id, selector)
+  assertFreshFrameRef(state, tab.id, selector)
   return {
     tab,
-    pageEpoch: getPageEpoch(tab.id),
+    pageEpoch: getPageEpoch(state, tab.id),
     resolvedSelector: resolveAgentFrameSelector(selector),
   }
 }
 
-async function resolveFrameTarget(tabId, selector) {
+async function resolveFrameTarget(tabId: TabInput, selector: string): Promise<ResolvedFrameTarget> {
   const { tab, pageEpoch, resolvedSelector } = await resolveFrameSelectorForTab(tabId, selector)
-  const evaluation = await sendDebuggerCommand(tab.id, 'Runtime.evaluate', {
+  const evaluation = await sendDebuggerCommand<{ result: unknown }>(tab.id, 'Runtime.evaluate', {
     expression: `(() => {
       const root = document.querySelector(${JSON.stringify(resolvedSelector)});
       if (!root) return null;
@@ -1003,17 +606,21 @@ async function resolveFrameTarget(tabId, selector) {
     awaitPromise: true,
     returnByValue: true,
   })
-  const target = unwrapEvaluationResult(evaluation.result)
+  const target = unwrapEvaluationResult<FrameTargetEvaluation>(evaluation.result)
   if (!target) {
     throw new Error(`frame not found: ${selector}`)
   }
 
   await sendDebuggerCommand(tab.id, 'DOM.enable', {})
-  const location = await sendDebuggerCommand(tab.id, 'DOM.getNodeForLocation', {
-    x: Math.round(target.x),
-    y: Math.round(target.y),
-    ignorePointerEventsNone: true,
-  })
+  const location = await sendDebuggerCommand<{ frameId?: string }>(
+    tab.id,
+    'DOM.getNodeForLocation',
+    {
+      x: Math.round(target.x),
+      y: Math.round(target.y),
+      ignorePointerEventsNone: true,
+    },
+  )
   if (!location.frameId) {
     throw new Error(`frame is not ready: ${selector}`)
   }
@@ -1034,20 +641,10 @@ async function resolveFrameTarget(tabId, selector) {
   }
 }
 
-function resolveEffectiveFrameSelector(tab, frameSelector) {
-  const selector =
-    typeof frameSelector === 'string' && frameSelector.trim()
-      ? frameSelector.trim()
-      : state.selectedFrames.get(tab.id)
-
-  if (!selector) {
-    return null
-  }
-
-  return ['top', 'main', 'default'].includes(selector.toLowerCase()) ? null : selector
-}
-
-async function getFrameExecutionContext(tabId, frameSelector) {
+async function getFrameExecutionContext(
+  tabId: TabInput,
+  frameSelector: FrameSelector,
+): Promise<FrameExecutionContext> {
   const tab = await getTargetTab(tabId)
   const selector =
     typeof frameSelector === 'string' && frameSelector.trim()
@@ -1059,21 +656,33 @@ async function getFrameExecutionContext(tabId, frameSelector) {
 
   const frame = await resolveFrameTarget(tab.id, selector)
   await sendDebuggerCommand(tab.id, 'Page.enable', {})
-  const isolatedWorld = await sendDebuggerCommand(tab.id, 'Page.createIsolatedWorld', {
-    frameId: frame.frameId,
-    worldName: FRAME_WORLD_NAME,
-  })
+  const isolatedWorld = await sendDebuggerCommand<{ executionContextId?: number | null }>(
+    tab.id,
+    'Page.createIsolatedWorld',
+    {
+      frameId: frame.frameId,
+      worldName: FRAME_WORLD_NAME,
+    },
+  )
   return {
     tab,
-    executionContextId: isolatedWorld.executionContextId,
+    executionContextId: isolatedWorld.executionContextId ?? null,
   }
 }
 
-async function evaluateInTabContext(tabId, expression, options: Record<string, unknown> = {}) {
+async function evaluateInTabContext<TValue = unknown>(
+  tabId: TabInput,
+  expression: string,
+  options: EvaluateInTabContextOptions = {},
+): Promise<{
+  tab: TabWithId
+  response: { result: unknown }
+  value: TValue | null
+}> {
   const runtimeConfig = options
   const { frameSelector, ...runtimeOptions } = runtimeConfig
   const { tab, executionContextId } = await getFrameExecutionContext(tabId, frameSelector)
-  const response = await sendDebuggerCommand(tab.id, 'Runtime.evaluate', {
+  const response = await sendDebuggerCommand<{ result: unknown }>(tab.id, 'Runtime.evaluate', {
     expression,
     awaitPromise: true,
     returnByValue: true,
@@ -1083,44 +692,34 @@ async function evaluateInTabContext(tabId, expression, options: Record<string, u
   return {
     tab,
     response,
-    value: unwrapEvaluationResult(response.result),
+    value: unwrapEvaluationResult<TValue>(response.result),
   }
 }
 
-function withFrameSelectorOptions(frameSelector, options = {}) {
-  if (typeof frameSelector !== 'string' || !frameSelector.trim()) {
-    return options
-  }
-
-  return {
-    ...options,
-    frameSelector: frameSelector.trim(),
-  }
-}
-
-async function getSavedStates() {
-  const result = await promisifyChrome(
-    chrome.storage.local,
-    chrome.storage.local.get,
-    SAVED_STATES_STORAGE_KEY,
-  )
+async function getSavedStates(): Promise<SavedStatesMap> {
+  const result = await storageLocalGet(SAVED_STATES_STORAGE_KEY)
   const savedStates = result?.[SAVED_STATES_STORAGE_KEY]
-  return savedStates && typeof savedStates === 'object' ? savedStates : {}
+  return savedStates && typeof savedStates === 'object' ? (savedStates as SavedStatesMap) : {}
 }
 
-function unwrapEvaluationResult(result) {
+function unwrapEvaluationResult<TValue = unknown>(result: unknown): TValue | null {
   if (!result) {
     return null
   }
 
-  if (Object.prototype.hasOwnProperty.call(result, 'value')) {
-    return result.value
+  const evaluationResult = result as {
+    value?: unknown
+    description?: string | null
   }
 
-  return result.description || null
+  if (Object.prototype.hasOwnProperty.call(evaluationResult, 'value')) {
+    return evaluationResult.value as TValue
+  }
+
+  return (evaluationResult.description || null) as TValue | null
 }
 
-async function evaluateScript(tabId, script, frameSelector) {
+async function evaluateScript(tabId: TabInput, script: string, frameSelector: FrameSelector) {
   const { value } = await evaluateInTabContext(
     tabId,
     script,
@@ -1131,17 +730,17 @@ async function evaluateScript(tabId, script, frameSelector) {
   return value
 }
 
-async function navigateTo(tabId, url) {
+async function navigateTo(tabId: TabInput, url: string) {
   const tab = await getTargetTab(tabId)
-  invalidatePageRefs(tab.id)
+  invalidatePageRefs(state, tab.id)
   await sendDebuggerCommand(tab.id, 'Page.enable', {})
   await sendDebuggerCommand(tab.id, 'Page.navigate', { url })
   return { tabId: tab.id, url }
 }
 
-async function clickSelector(tabId, selector, frameSelector) {
+async function clickSelector(tabId: TabInput, selector: string, frameSelector: FrameSelector) {
   const { tab, resolvedSelector } = await resolveElementSelectorForTab(tabId, selector)
-  const { value: result } = await evaluateInTabContext(
+  const { value: result } = await evaluateInTabContext<ElementActionResult>(
     tab.id,
     `(() => {
       const node = document.querySelector(${JSON.stringify(resolvedSelector)});
@@ -1180,7 +779,7 @@ async function clickSelector(tabId, selector, frameSelector) {
   return { found: true, selector }
 }
 
-async function clearScreenshotAnnotations(tabId, frameSelector) {
+async function clearScreenshotAnnotations(tabId: TabInput, frameSelector: FrameSelector) {
   await evaluateInTabContext(
     tabId,
     `(() => {
@@ -1210,8 +809,8 @@ async function clearScreenshotAnnotations(tabId, frameSelector) {
   )
 }
 
-async function addScreenshotAnnotations(tabId, frameSelector) {
-  const { value } = await evaluateInTabContext(
+async function addScreenshotAnnotations(tabId: TabInput, frameSelector: FrameSelector) {
+  const { value } = await evaluateInTabContext<ScreenshotAnnotationResult>(
     tabId,
     `(() => {
       const body = document.body
@@ -1313,9 +912,13 @@ async function addScreenshotAnnotations(tabId, frameSelector) {
   return Number(value?.count || 0)
 }
 
-async function captureScreenshot(tabId, options: ScreenshotCaptureOptions = {}, frameSelector) {
+async function captureScreenshot(
+  tabId: TabInput,
+  options: ScreenshotCaptureOptions = {},
+  frameSelector: FrameSelector,
+) {
   const tab = await getTargetTab(tabId)
-  const effectiveFrameSelector = resolveEffectiveFrameSelector(tab, frameSelector)
+  const effectiveFrameSelector = resolveEffectiveFrameSelector(state, tab, frameSelector)
   await sendDebuggerCommand(tab.id, 'Page.enable', {})
 
   let annotationCount = 0
@@ -1351,7 +954,11 @@ async function captureScreenshot(tabId, options: ScreenshotCaptureOptions = {}, 
       })
     }
 
-    const result = await sendDebuggerCommand(tab.id, 'Page.captureScreenshot', captureOptions)
+    const result = await sendDebuggerCommand<{ data: string }>(
+      tab.id,
+      'Page.captureScreenshot',
+      captureOptions,
+    )
 
     return {
       tabId: tab.id,
@@ -1372,9 +979,9 @@ async function captureScreenshot(tabId, options: ScreenshotCaptureOptions = {}, 
   }
 }
 
-async function snapshotTab(tabId, frameSelector) {
+async function snapshotTab(tabId: TabInput, frameSelector: FrameSelector) {
   const tab = await getTargetTab(tabId)
-  const pageEpoch = getPageEpoch(tab.id)
+  const pageEpoch = getPageEpoch(state, tab.id)
   const refAttribute = AGENT_ELEMENT_REF_ATTRIBUTE
   const frameAttribute = AGENT_FRAME_REF_ATTRIBUTE
   const frameRefPrefix = formatAgentFrameRef(1).replace('1', '')
@@ -1597,7 +1204,7 @@ async function snapshotTab(tabId, frameSelector) {
 }
 
 // 解析组合键，返回 { key, modifiers }
-function parseKeyboardKey(key) {
+function parseKeyboardKey(key: string): { key: string; modifiers: number } {
   const modifiers = { shift: false, ctrl: false, alt: false, meta: false }
   let remaining = key
 
@@ -1629,9 +1236,9 @@ function parseKeyboardKey(key) {
   return { key: remaining, modifiers: mask }
 }
 
-async function getElementBox(tabId, selector, frameSelector) {
+async function getElementBox(tabId: TabInput, selector: string, frameSelector: FrameSelector) {
   const { tab, resolvedSelector } = await resolveElementSelectorForTab(tabId, selector)
-  const { value } = await evaluateInTabContext(
+  const { value } = await evaluateInTabContext<ElementBox>(
     tab.id,
     `(() => {
       const node = document.querySelector(${JSON.stringify(resolvedSelector)});
@@ -1649,7 +1256,7 @@ async function getElementBox(tabId, selector, frameSelector) {
   return value
 }
 
-async function hoverElement(tabId, selector, frameSelector) {
+async function hoverElement(tabId: TabInput, selector: string, frameSelector: FrameSelector) {
   const { tab, resolvedSelector } = await resolveElementSelectorForTab(tabId, selector)
   const box = await getElementBox(tab.id, selector, frameSelector)
   if (!box) {
@@ -1657,7 +1264,7 @@ async function hoverElement(tabId, selector, frameSelector) {
   }
 
   // 先尝试 JS 方式
-  const { value } = await evaluateInTabContext(
+  const { value } = await evaluateInTabContext<boolean>(
     tab.id,
     `(() => {
       const node = document.querySelector(${JSON.stringify(resolvedSelector)});
@@ -1693,7 +1300,7 @@ async function hoverElement(tabId, selector, frameSelector) {
   return { found: true, selector }
 }
 
-async function pressKey(tabId, key) {
+async function pressKey(tabId: TabInput, key: string) {
   const { key: keyName, modifiers } = parseKeyboardKey(key)
   const tab = await getTargetTab(tabId)
 
@@ -1714,9 +1321,9 @@ async function pressKey(tabId, key) {
   return { key, pressed: true }
 }
 
-async function focusElement(tabId, selector, frameSelector) {
+async function focusElement(tabId: TabInput, selector: string, frameSelector: FrameSelector) {
   const { tab, resolvedSelector } = await resolveElementSelectorForTab(tabId, selector)
-  const { value } = await evaluateInTabContext(
+  const { value } = await evaluateInTabContext<ElementActionResult>(
     tab.id,
     `(() => {
       const node = document.querySelector(${JSON.stringify(resolvedSelector)});
@@ -1734,9 +1341,14 @@ async function focusElement(tabId, selector, frameSelector) {
   throw new Error(`element not found: ${selector}`)
 }
 
-async function selectOption(tabId, selector, value, frameSelector) {
+async function selectOption(
+  tabId: TabInput,
+  selector: string,
+  value: string,
+  frameSelector: FrameSelector,
+) {
   const { tab, resolvedSelector } = await resolveElementSelectorForTab(tabId, selector)
-  const { value: result } = await evaluateInTabContext(
+  const { value: result } = await evaluateInTabContext<ElementActionResult>(
     tab.id,
     `(() => {
       const node = document.querySelector(${JSON.stringify(resolvedSelector)});
@@ -1756,9 +1368,14 @@ async function selectOption(tabId, selector, value, frameSelector) {
   throw new Error(`element not found: ${selector}`)
 }
 
-async function checkElement(tabId, selector, checked, frameSelector) {
+async function checkElement(
+  tabId: TabInput,
+  selector: string,
+  checked: boolean,
+  frameSelector: FrameSelector,
+) {
   const { tab, resolvedSelector } = await resolveElementSelectorForTab(tabId, selector)
-  const { value: result } = await evaluateInTabContext(
+  const { value: result } = await evaluateInTabContext<ElementActionResult>(
     tab.id,
     `(() => {
       const node = document.querySelector(${JSON.stringify(resolvedSelector)});
@@ -1778,12 +1395,18 @@ async function checkElement(tabId, selector, checked, frameSelector) {
   throw new Error(`element not found: ${selector}`)
 }
 
-async function scrollElement(tabId, selector, deltaX = 0, deltaY = 100, frameSelector) {
+async function scrollElement(
+  tabId: TabInput,
+  selector: string | null,
+  deltaX = 0,
+  deltaY = 100,
+  frameSelector: FrameSelector,
+) {
   let resolvedSelector = ''
   if (selector) {
     ;({ resolvedSelector } = await resolveElementSelectorForTab(tabId, selector))
   }
-  const { value } = await evaluateInTabContext(
+  const { value } = await evaluateInTabContext<ElementActionResult>(
     tabId,
     `(() => {
       ${
@@ -1804,20 +1427,31 @@ async function scrollElement(tabId, selector, deltaX = 0, deltaY = 100, frameSel
   return value || { found: true, scrolled: true }
 }
 
-async function dragElement(tabId, startSelector, endSelector, frameSelector) {
+async function dragElement(
+  tabId: TabInput,
+  startSelector: string,
+  endSelector: string,
+  frameSelector: FrameSelector,
+) {
   const startBox = await getElementBox(tabId, startSelector, frameSelector)
   if (!startBox) {
     throw new Error(`start element not found: ${startSelector}`)
   }
 
-  let endBox
+  let endBox: ElementBox
   if (endSelector) {
-    endBox = await getElementBox(tabId, endSelector, frameSelector)
-    if (!endBox) {
+    const resolvedEndBox = await getElementBox(tabId, endSelector, frameSelector)
+    if (!resolvedEndBox) {
       throw new Error(`end element not found: ${endSelector}`)
     }
+    endBox = resolvedEndBox
   } else {
-    endBox = { x: startBox.x, y: startBox.y + 100 }
+    endBox = {
+      x: startBox.x,
+      y: startBox.y + 100,
+      width: startBox.width,
+      height: startBox.height,
+    }
   }
 
   const tab = await getTargetTab(tabId)
@@ -1857,18 +1491,27 @@ async function dragElement(tabId, startSelector, endSelector, frameSelector) {
   return { found: true, dragged: true }
 }
 
-async function uploadFiles(tabId, selector, filePaths, frameSelector) {
+async function uploadFiles(
+  tabId: TabInput,
+  selector: string,
+  filePaths: string[],
+  frameSelector: FrameSelector,
+) {
   const { resolvedSelector } = await resolveElementSelectorForTab(tabId, selector)
   const { tab, executionContextId } = await getFrameExecutionContext(tabId, frameSelector)
-  const result = await sendDebuggerCommand(tab.id, 'Runtime.evaluate', {
-    expression: `(() => {
+  const result = await sendDebuggerCommand<{ result?: { objectId?: string } }>(
+    tab.id,
+    'Runtime.evaluate',
+    {
+      expression: `(() => {
       const node = document.querySelector(${JSON.stringify(resolvedSelector)});
       return node && node.tagName === 'INPUT' && node.type === 'file' ? node : null;
     })()`,
-    awaitPromise: true,
-    returnByValue: false,
-    ...(executionContextId ? { contextId: executionContextId } : {}),
-  })
+      awaitPromise: true,
+      returnByValue: false,
+      ...(executionContextId ? { contextId: executionContextId } : {}),
+    },
+  )
 
   const objectId = result?.result?.objectId
   if (!objectId) {
@@ -1889,15 +1532,18 @@ async function uploadFiles(tabId, selector, filePaths, frameSelector) {
   return { found: true, files: filePaths }
 }
 
-async function navigateBack(tabId) {
+async function navigateBack(tabId: TabInput) {
   const tab = await getTargetTab(tabId)
-  invalidatePageRefs(tab.id)
+  invalidatePageRefs(state, tab.id)
   // 获取导航历史
-  const history = await sendDebuggerCommand(tab.id, 'Page.getNavigationHistory')
+  const history = await sendDebuggerCommand<{
+    entries?: Array<{ id: number }>
+    currentIndex?: number
+  }>(tab.id, 'Page.getNavigationHistory')
   const entries = history.entries || []
   const currentIndex = history.currentIndex
 
-  if (currentIndex > 0) {
+  if (typeof currentIndex === 'number' && currentIndex > 0) {
     const targetIndex = currentIndex - 1
     const targetEntry = entries[targetIndex]
     if (targetEntry) {
@@ -1910,14 +1556,17 @@ async function navigateBack(tabId) {
   return { navigated: false, reason: 'no back history' }
 }
 
-async function navigateForward(tabId) {
+async function navigateForward(tabId: TabInput) {
   const tab = await getTargetTab(tabId)
-  invalidatePageRefs(tab.id)
-  const history = await sendDebuggerCommand(tab.id, 'Page.getNavigationHistory')
+  invalidatePageRefs(state, tab.id)
+  const history = await sendDebuggerCommand<{
+    entries?: Array<{ id: number }>
+    currentIndex?: number
+  }>(tab.id, 'Page.getNavigationHistory')
   const entries = history.entries || []
   const currentIndex = history.currentIndex
 
-  if (currentIndex < entries.length - 1) {
+  if (typeof currentIndex === 'number' && currentIndex < entries.length - 1) {
     const targetIndex = currentIndex + 1
     const targetEntry = entries[targetIndex]
     if (targetEntry) {
@@ -1930,26 +1579,31 @@ async function navigateForward(tabId) {
   return { navigated: false, reason: 'no forward history' }
 }
 
-async function reloadPage(tabId) {
+async function reloadPage(tabId: TabInput) {
   const tab = await getTargetTab(tabId)
-  invalidatePageRefs(tab.id)
+  invalidatePageRefs(state, tab.id)
   await sendDebuggerCommand(tab.id, 'Page.reload', {})
   return { reloaded: true }
 }
 
 async function createWindow() {
-  const window = await promisifyChrome(chrome.windows, chrome.windows.create, {
+  const window = await windowsCreate({
     url: 'about:blank',
     focused: true,
   })
-  return { windowId: window.id, tabId: window.tabs?.[0]?.id }
+  return { windowId: window?.id ?? null, tabId: window?.tabs?.[0]?.id ?? null }
 }
 
-async function switchToFrame(tabId, selector) {
+async function switchToFrame(tabId: TabInput, selector: string) {
   const tab = await getTargetTab(tabId)
   if (['top', 'main', 'default'].includes(selector)) {
-    clearSelectedFrame(tab.id)
-    return { found: true, cleared: true, pageEpoch: getPageEpoch(tab.id), frame: null }
+    clearSelectedFrame(state, tab.id)
+    return {
+      found: true,
+      cleared: true,
+      pageEpoch: getPageEpoch(state, tab.id),
+      frame: null as null,
+    }
   }
 
   const frame = await resolveFrameTarget(tab.id, selector)
@@ -1965,13 +1619,17 @@ async function switchToFrame(tabId, selector) {
   }
 }
 
-async function findSemanticTarget(tabId, args, frameSelector) {
+async function findSemanticTarget(
+  tabId: TabInput,
+  args: CommandArgs,
+  frameSelector: FrameSelector,
+): Promise<SemanticTargetResult> {
   const tab = await getTargetTab(tabId)
-  const pageEpoch = getPageEpoch(tab.id)
-  const strategy = String(args.strategy || '').trim()
-  const role = String(args.role || '').trim()
-  const query = String(args.query || '').trim()
-  const name = String(args.name || '').trim()
+  const pageEpoch = getPageEpoch(state, tab.id)
+  const strategy = readStringArg(args, 'strategy').trim()
+  const role = readStringArg(args, 'role').trim()
+  const query = readStringArg(args, 'query').trim()
+  const name = readStringArg(args, 'name').trim()
   const exact = args.exact === true
 
   if (!['role', 'text', 'label'].includes(strategy)) {
@@ -1986,7 +1644,7 @@ async function findSemanticTarget(tabId, args, frameSelector) {
     throw new Error(`missing ${strategy} value`)
   }
 
-  const { value } = await evaluateInTabContext(
+  const { value } = await evaluateInTabContext<SemanticTargetResult>(
     tab.id,
     `(() => {
       const refAttribute = ${JSON.stringify(AGENT_ELEMENT_REF_ATTRIBUTE)};
@@ -2245,10 +1903,14 @@ async function findSemanticTarget(tabId, args, frameSelector) {
   return value
 }
 
-async function handleFindCommand(tabId, args, frameSelector) {
-  const action = String(args.action || 'locate').trim()
+async function handleFindCommand(tabId: TabInput, args: CommandArgs, frameSelector: FrameSelector) {
+  const action = readStringArg(args, 'action', 'locate').trim()
+  const actionValue = readStringArg(args, 'value')
   const result = await findSemanticTarget(tabId, args, frameSelector)
-  const ref = result.match.ref
+  const ref = result.match?.ref
+  if (!ref) {
+    throw new Error(result.reason || 'semantic target ref missing')
+  }
 
   if (action === 'locate') {
     return result
@@ -2262,7 +1924,7 @@ async function handleFindCommand(tabId, args, frameSelector) {
     return {
       ...result,
       action,
-      result: await fillSelector(tabId, ref, args.value || '', frameSelector),
+      result: await fillSelector(tabId, ref, actionValue, frameSelector),
     }
   }
 
@@ -2270,7 +1932,7 @@ async function handleFindCommand(tabId, args, frameSelector) {
     return {
       ...result,
       action,
-      result: await typeIntoSelector(tabId, ref, args.value || '', frameSelector),
+      result: await typeIntoSelector(tabId, ref, actionValue, frameSelector),
     }
   }
 
@@ -2305,7 +1967,12 @@ async function handleFindCommand(tabId, args, frameSelector) {
   throw new Error(`unsupported find action: ${action}`)
 }
 
-async function checkIsState(tabId, selector, stateType, frameSelector) {
+async function checkIsState(
+  tabId: TabInput,
+  selector: string,
+  stateType: string,
+  frameSelector: FrameSelector,
+) {
   const { tab, resolvedSelector } = await resolveElementSelectorForTab(tabId, selector)
   const checkJs = {
     visible: `(() => {
@@ -2334,7 +2001,8 @@ async function checkIsState(tabId, selector, stateType, frameSelector) {
     })()`,
   }
 
-  const js = checkJs[stateType]
+  const normalizedStateType = stateType as keyof typeof checkJs
+  const js = checkJs[normalizedStateType]
   if (!js) {
     throw new Error(`unknown state type: ${stateType}`)
   }
@@ -2347,7 +2015,12 @@ async function checkIsState(tabId, selector, stateType, frameSelector) {
   }
 }
 
-async function getAttribute(tabId, selector, attrName, frameSelector) {
+async function getAttribute(
+  tabId: TabInput,
+  selector: string,
+  attrName: string,
+  frameSelector: FrameSelector,
+) {
   if (attrName === 'cdp-url') {
     if (!state.token) {
       throw new Error('missing token')
@@ -2470,14 +2143,19 @@ async function getAttribute(tabId, selector, attrName, frameSelector) {
   return { found: true, value }
 }
 
-async function waitFor(tabId, condition, timeout = 30000, frameSelector) {
+async function waitFor(
+  tabId: TabInput,
+  condition: string,
+  timeout = 30000,
+  frameSelector: FrameSelector,
+) {
   const startTime = Date.now()
 
   if (condition === 'load') {
     const tab = await getTargetTab(tabId)
     // 等待页面加载
     return new Promise((resolve, reject) => {
-      const listener = (source, method) => {
+      const listener = (source: { tabId?: number }, method: string) => {
         if (source.tabId === tab.id && method === 'Page.loadEventFired') {
           chrome.debugger.onEvent.removeListener(listener)
           clearTimeout(timeoutId)
@@ -2504,11 +2182,11 @@ async function waitFor(tabId, condition, timeout = 30000, frameSelector) {
     const tab = await getTargetTab(tabId)
     // 等待网络空闲
     return new Promise((resolve, reject) => {
-      const listener = (source, method, params) => {
+      const listener = (source: { tabId?: number }, method: string, params?: { name?: string }) => {
         if (
           source.tabId === tab.id &&
           method === 'Page.lifecycleEvent' &&
-          params.name === 'networkidle'
+          params?.name === 'networkidle'
         ) {
           chrome.debugger.onEvent.removeListener(listener)
           clearTimeout(timeoutId)
@@ -2599,11 +2277,11 @@ function matchesUrlPattern(currentUrl: string, pattern: string): boolean {
 }
 
 async function waitForSelectorState(
-  tabId,
-  selector,
+  tabId: TabInput,
+  selector: string,
   state = 'visible',
   timeout = 30000,
-  frameSelector,
+  frameSelector: FrameSelector,
 ) {
   const { tab, resolvedSelector } = await resolveElementSelectorForTab(tabId, selector)
   const startTime = Date.now()
@@ -2635,11 +2313,16 @@ async function waitForSelectorState(
   throw new Error(`wait selector timeout: ${selector}`)
 }
 
-async function waitForUrl(tabId, urlPattern, timeout = 30000, frameSelector) {
+async function waitForUrl(
+  tabId: TabInput,
+  urlPattern: string,
+  timeout = 30000,
+  frameSelector: FrameSelector,
+) {
   const startTime = Date.now()
 
   while (Date.now() - startTime < timeout) {
-    const { value } = await evaluateInTabContext(
+    const { value } = await evaluateInTabContext<string>(
       tabId,
       'window.location.href',
       withFrameSelectorOptions(frameSelector),
@@ -2660,11 +2343,16 @@ async function waitForUrl(tabId, urlPattern, timeout = 30000, frameSelector) {
   throw new Error(`wait url timeout: ${urlPattern}`)
 }
 
-async function waitForText(tabId, text, timeout = 30000, frameSelector) {
+async function waitForText(
+  tabId: TabInput,
+  text: string,
+  timeout = 30000,
+  frameSelector: FrameSelector,
+) {
   const startTime = Date.now()
 
   while (Date.now() - startTime < timeout) {
-    const { value } = await evaluateInTabContext(
+    const { value } = await evaluateInTabContext<string>(
       tabId,
       "document.body ? document.body.innerText : ''",
       withFrameSelectorOptions(frameSelector),
@@ -2680,7 +2368,12 @@ async function waitForText(tabId, text, timeout = 30000, frameSelector) {
   throw new Error(`wait text timeout: ${text}`)
 }
 
-async function waitForExpression(tabId, expression, timeout = 30000, frameSelector) {
+async function waitForExpression(
+  tabId: TabInput,
+  expression: string,
+  timeout = 30000,
+  frameSelector: FrameSelector,
+) {
   const startTime = Date.now()
 
   while (Date.now() - startTime < timeout) {
@@ -2706,59 +2399,70 @@ async function waitForExpression(tabId, expression, timeout = 30000, frameSelect
   throw new Error(`wait fn timeout: ${expression}`)
 }
 
-async function waitWithTimeout(tabId, ms) {
+async function waitWithTimeout(tabId: TabInput, ms: number) {
   await new Promise((resolve) => setTimeout(resolve, ms))
   return { waited: true, condition: 'time', ms }
 }
 
-async function handleWait(tabId, args, frameSelector) {
-  const timeout = args.timeout || 30000
+async function handleWait(tabId: TabInput, args: CommandArgs, frameSelector: FrameSelector) {
+  const timeout = readNumberArg(args, 'timeout', 30000)
+  const waitType = readStringArg(args, 'type')
+  const waitMs = readNumberArg(args, 'ms', 0)
+  const waitSelector = readStringArg(args, 'selector')
+  const waitState = readStringArg(args, 'state', 'visible')
+  const waitUrl = readStringArg(args, 'url')
+  const waitText = readStringArg(args, 'text')
+  const waitFn = readStringArg(args, 'fn')
 
-  if (args.type === 'time' || args.ms) {
-    return await waitWithTimeout(tabId, args.ms || args.timeout || 30000)
+  if (waitType === 'time' || waitMs > 0) {
+    return await waitWithTimeout(tabId, waitMs || timeout)
   }
 
-  if (args.type === 'selector' || args.selector) {
+  if (waitType === 'selector' || waitSelector) {
     return await waitForSelectorState(
       tabId,
-      args.selector,
-      args.state || 'visible',
+      waitSelector,
+      waitState,
       timeout,
       frameSelector,
     )
   }
 
-  if (args.type === 'url' || args.url) {
-    return await waitForUrl(tabId, args.url, timeout, frameSelector)
+  if (waitType === 'url' || waitUrl) {
+    return await waitForUrl(tabId, waitUrl, timeout, frameSelector)
   }
 
-  if (args.type === 'text' || args.text) {
-    return await waitForText(tabId, args.text, timeout, frameSelector)
+  if (waitType === 'text' || waitText) {
+    return await waitForText(tabId, waitText, timeout, frameSelector)
   }
 
-  if (args.type === 'load') {
+  if (waitType === 'load') {
     return await waitFor(tabId, 'load', timeout, frameSelector)
   }
 
-  if (args.type === 'networkidle') {
+  if (waitType === 'networkidle') {
     return await waitFor(tabId, 'networkidle', timeout, frameSelector)
   }
 
-  if (args.type === 'fn' || args.fn) {
-    return await waitForExpression(tabId, args.fn || '', timeout, frameSelector)
+  if (waitType === 'fn' || waitFn) {
+    return await waitForExpression(tabId, waitFn, timeout, frameSelector)
   }
 
-  throw new Error(`unsupported wait type: ${args.type}`)
+  throw new Error(`unsupported wait type: ${waitType}`)
 }
 
 // Cookies commands
-async function cookiesGet(tabId) {
+async function cookiesGet(tabId: TabInput) {
   const tab = await getTargetTab(tabId)
-  const result = await sendDebuggerCommand(tab.id, 'Network.getCookies', {})
+  const result = await sendDebuggerCommand<{ cookies?: unknown[] }>(
+    tab.id,
+    'Network.getCookies',
+    {},
+  )
   return { cookies: result.cookies || [] }
 }
 
-async function cookiesSet(tabId, name, value, domain) {
+async function cookiesSet(tabId: TabInput, name: string, value: string, domain?: string) {
   const tab = await getTargetTab(tabId)
   const cookie: { name: string; value: string; domain?: string } = { name, value }
   if (domain) {
@@ -2768,14 +2472,18 @@ async function cookiesSet(tabId, name, value, domain) {
   return { set: true, name, value, domain }
 }
 
-async function cookiesClear(tabId) {
+async function cookiesClear(tabId: TabInput) {
   const tab = await getTargetTab(tabId)
   await sendDebuggerCommand(tab.id, 'Network.clearBrowserCookies', {})
   return { cleared: true }
 }
 
 // Storage commands
-async function storageGet(tabId, key, frameSelector) {
+async function storageGet(
+  tabId: TabInput,
+  key: string | null | undefined,
+  frameSelector: FrameSelector,
+) {
   if (!key) {
     // 获取所有 localStorage
     const { value } = await evaluateInTabContext(
@@ -2801,7 +2509,12 @@ async function storageGet(tabId, key, frameSelector) {
   return { key, value }
 }
 
-async function storageSet(tabId, key, value, frameSelector) {
+async function storageSet(
+  tabId: TabInput,
+  key: string,
+  value: string,
+  frameSelector: FrameSelector,
+) {
   await evaluateInTabContext(
     tabId,
     `localStorage.setItem(${JSON.stringify(key)}, ${JSON.stringify(value)})`,
@@ -2810,13 +2523,19 @@ async function storageSet(tabId, key, value, frameSelector) {
   return { key, value, set: true }
 }
 
-async function storageClear(tabId, frameSelector) {
+async function storageClear(tabId: TabInput, frameSelector: FrameSelector) {
   await evaluateInTabContext(tabId, 'localStorage.clear()', withFrameSelectorOptions(frameSelector))
   return { cleared: true }
 }
 
 // Set commands
-async function setViewport(tabId, width, height, deviceScaleFactor = 1, mobile = false) {
+async function setViewport(
+  tabId: TabInput,
+  width: number,
+  height: number,
+  deviceScaleFactor = 1,
+  mobile = false,
+) {
   const tab = await getTargetTab(tabId)
   await sendDebuggerCommand(tab.id, 'Emulation.setDeviceMetricsOverride', {
     width: Number(width),
@@ -2827,7 +2546,7 @@ async function setViewport(tabId, width, height, deviceScaleFactor = 1, mobile =
   return { viewport: { width, height, deviceScaleFactor, mobile } }
 }
 
-async function setOffline(tabId, enabled) {
+async function setOffline(tabId: TabInput, enabled: boolean) {
   const tab = await getTargetTab(tabId)
   await sendDebuggerCommand(tab.id, 'Network.emulateNetworkConditions', {
     offline: enabled,
@@ -2838,7 +2557,10 @@ async function setOffline(tabId, enabled) {
   return { offline: enabled }
 }
 
-async function setHeaders(tabId, headers) {
+async function setHeaders(
+  tabId: TabInput,
+  headers: Array<{ name?: string; value?: unknown }> | Record<string, unknown> | null | undefined,
+) {
   const tab = await getTargetTab(tabId)
   const normalizedHeaders = Array.isArray(headers)
     ? Object.fromEntries(
@@ -2858,7 +2580,7 @@ async function setHeaders(tabId, headers) {
   return { headers: normalizedHeaders }
 }
 
-async function setGeo(tabId, latitude, longitude, accuracy = 1) {
+async function setGeo(tabId: TabInput, latitude: number, longitude: number, accuracy = 1) {
   const tab = await getTargetTab(tabId)
   await sendDebuggerCommand(tab.id, 'Emulation.setGeolocationOverride', {
     latitude: Number(latitude),
@@ -2868,7 +2590,7 @@ async function setGeo(tabId, latitude, longitude, accuracy = 1) {
   return { geo: { latitude, longitude, accuracy } }
 }
 
-async function setMedia(tabId, media) {
+async function setMedia(tabId: TabInput, media: string | null | undefined) {
   const tab = await getTargetTab(tabId)
   await sendDebuggerCommand(tab.id, 'Emulation.setEmulatedMedia', {
     features: media ? [{ name: 'prefers-color-scheme', value: media }] : [],
@@ -2876,9 +2598,9 @@ async function setMedia(tabId, media) {
   return { media }
 }
 
-async function generatePdf(tabId) {
+async function generatePdf(tabId: TabInput) {
   const tab = await getTargetTab(tabId)
-  const result = await sendDebuggerCommand(tab.id, 'Page.printToPDF', {
+  const result = await sendDebuggerCommand<{ data: string }>(tab.id, 'Page.printToPDF', {
     printBackground: true,
     paperWidth: 8.5,
     paperHeight: 11,
@@ -2890,7 +2612,7 @@ async function generatePdf(tabId) {
   }
 }
 
-async function clipboardRead(tabId) {
+async function clipboardRead(tabId: TabInput) {
   const tab = await getTargetTab(tabId)
   // 首先请求剪贴板权限
   try {
@@ -2911,7 +2633,7 @@ async function clipboardRead(tabId) {
   return { text: value || '' }
 }
 
-async function clipboardWrite(tabId, text) {
+async function clipboardWrite(tabId: TabInput, text: string) {
   const tab = await getTargetTab(tabId)
   try {
     await sendDebuggerCommand(tab.id, 'Browser.setPermission', {
@@ -2929,9 +2651,13 @@ async function clipboardWrite(tabId, text) {
   return { written: true, text }
 }
 
-async function saveState(tabId, name) {
+async function saveState(tabId: TabInput, name: string) {
   const tab = await getTargetTab(tabId)
-  const cookiesResult = await sendDebuggerCommand(tab.id, 'Network.getCookies', {})
+  const cookiesResult = await sendDebuggerCommand<{ cookies?: unknown[] }>(
+    tab.id,
+    'Network.getCookies',
+    {},
+  )
   const { value } = await evaluateInTabContext(
     tabId,
     `(() => {
@@ -2943,13 +2669,13 @@ async function saveState(tabId, name) {
       return items;
     })()`,
   )
-  const savedState = {
+  const savedState: SavedStateData = {
     name,
-    cookies: cookiesResult.cookies || [],
-    storage: value || {},
+    cookies: (cookiesResult.cookies || []) as SavedStateData['cookies'],
+    storage: value && typeof value === 'object' ? (value as SavedStateData['storage']) : {},
   }
   const savedStates = await getSavedStates()
-  await promisifyChrome(chrome.storage.local, chrome.storage.local.set, {
+  await storageLocalSet({
     [SAVED_STATES_STORAGE_KEY]: {
       ...savedStates,
       [name]: savedState,
@@ -2962,7 +2688,7 @@ async function saveState(tabId, name) {
   }
 }
 
-async function loadState(tabId, stateData) {
+async function loadState(tabId: TabInput, stateData: SavedStateData) {
   const tab = await getTargetTab(tabId)
 
   // 恢复 cookies
@@ -2991,7 +2717,7 @@ async function loadState(tabId, stateData) {
   return { loaded: true, name: stateData.name }
 }
 
-async function handleDialog(tabId, accept, promptText) {
+async function handleDialog(tabId: TabInput, accept: boolean, promptText?: string) {
   const tab = await getTargetTab(tabId)
   await sendDebuggerCommand(tab.id, 'Page.enable', {})
 
@@ -3003,11 +2729,8 @@ async function handleDialog(tabId, accept, promptText) {
     state.dialog = null
     return { handled: true, accepted: accept }
   } catch (error) {
-    if (
-      String(error.message || '')
-        .toLowerCase()
-        .includes('no dialog')
-    ) {
+    const errorMessage = error instanceof Error ? error.message : String(error)
+    if (errorMessage.toLowerCase().includes('no dialog')) {
       return { handled: false, reason: 'no dialog opened' }
     }
 
@@ -3032,9 +2755,14 @@ function getDialogStatus(): Record<string, unknown> {
   }
 }
 
-async function fillSelector(tabId, selector, value, frameSelector) {
+async function fillSelector(
+  tabId: TabInput,
+  selector: string,
+  value: string,
+  frameSelector: FrameSelector,
+) {
   const { tab, resolvedSelector } = await resolveElementSelectorForTab(tabId, selector)
-  const { value: result } = await evaluateInTabContext(
+  const { value: result } = await evaluateInTabContext<ElementActionResult>(
     tab.id,
     `(() => {
       const node = document.querySelector(${JSON.stringify(resolvedSelector)});
@@ -3058,7 +2786,7 @@ async function fillSelector(tabId, selector, value, frameSelector) {
   return result
 }
 
-async function dispatchInsertText(tabId, text) {
+async function dispatchInsertText(tabId: TabInput, text: string) {
   const tab = await getTargetTab(tabId)
   await sendDebuggerCommand(tab.id, 'Input.insertText', {
     text: String(text || ''),
@@ -3066,7 +2794,7 @@ async function dispatchInsertText(tabId, text) {
   return { inserted: true, text }
 }
 
-async function insertTextSequentially(tabId, text) {
+async function insertTextSequentially(tabId: TabInput, text: string) {
   const normalizedText = String(text || '')
 
   for (const character of normalizedText) {
@@ -3076,11 +2804,11 @@ async function insertTextSequentially(tabId, text) {
   return { typed: true, text: normalizedText }
 }
 
-async function insertTextOnce(tabId, text) {
+async function insertTextOnce(tabId: TabInput, text: string) {
   return await dispatchInsertText(tabId, text)
 }
 
-async function keyDownOnly(tabId, key) {
+async function keyDownOnly(tabId: TabInput, key: string) {
   const { key: keyName, modifiers } = parseKeyboardKey(String(key || ''))
   const tab = await getTargetTab(tabId)
 
@@ -3094,7 +2822,7 @@ async function keyDownOnly(tabId, key) {
   return { key, pressed: true, type: 'keydown' }
 }
 
-async function keyUpOnly(tabId, key) {
+async function keyUpOnly(tabId: TabInput, key: string) {
   const { key: keyName, modifiers } = parseKeyboardKey(String(key || ''))
   const tab = await getTargetTab(tabId)
 
@@ -3108,7 +2836,12 @@ async function keyUpOnly(tabId, key) {
   return { key, released: true, type: 'keyup' }
 }
 
-async function typeIntoSelector(tabId, selector, value, frameSelector) {
+async function typeIntoSelector(
+  tabId: TabInput,
+  selector: string,
+  value: string,
+  frameSelector: FrameSelector,
+) {
   await focusElement(tabId, selector, frameSelector)
   const typed = await insertTextSequentially(tabId, value)
   return {
@@ -3118,7 +2851,11 @@ async function typeIntoSelector(tabId, selector, value, frameSelector) {
   }
 }
 
-async function doubleClickSelector(tabId, selector, frameSelector) {
+async function doubleClickSelector(
+  tabId: TabInput,
+  selector: string,
+  frameSelector: FrameSelector,
+) {
   const box = await getElementBox(tabId, selector, frameSelector)
   if (!box) {
     throw new Error(`element not found: ${selector}`)
@@ -3144,9 +2881,13 @@ async function doubleClickSelector(tabId, selector, frameSelector) {
   return { found: true, selector, doubleClicked: true }
 }
 
-async function scrollIntoViewSelector(tabId, selector, frameSelector) {
+async function scrollIntoViewSelector(
+  tabId: TabInput,
+  selector: string,
+  frameSelector: FrameSelector,
+) {
   const { tab, resolvedSelector } = await resolveElementSelectorForTab(tabId, selector)
-  const { value } = await evaluateInTabContext(
+  const { value } = await evaluateInTabContext<ElementActionResult>(
     tab.id,
     `(() => {
       try {
@@ -3167,215 +2908,34 @@ async function scrollIntoViewSelector(tabId, selector, frameSelector) {
   return value
 }
 
-function parseNetworkStatusFilter(
-  statusFilter: string,
-): (status: number | null | undefined) => boolean {
-  const tokens = String(statusFilter || '')
-    .split(',')
-    .map((token) => token.trim())
-    .filter(Boolean)
-
-  if (tokens.length === 0) {
-    return () => true
-  }
-
-  return (status) => {
-    const numericStatus = Number(status || 0)
-    return tokens.some((token) => {
-      if (/^\dxx$/i.test(token)) {
-        return Math.floor(numericStatus / 100) === Number(token[0])
-      }
-
-      if (/^\d{3}-\d{3}$/.test(token)) {
-        const [start, end] = token.split('-').map((value) => Number(value))
-        return numericStatus >= start && numericStatus <= end
-      }
-
-      return numericStatus === Number(token)
-    })
-  }
-}
-
-function matchesNetworkRequestFilters(
-  record: Record<string, unknown>,
-  filters: Record<string, unknown>,
-): boolean {
-  const filterText = String(filters.filter || '')
-    .trim()
-    .toLowerCase()
-  const typeFilter = String(filters.type || '')
-    .split(',')
-    .map((value) => value.trim().toLowerCase())
-    .filter(Boolean)
-  const methodFilter = String(filters.method || '')
-    .trim()
-    .toUpperCase()
-  const statusMatches = parseNetworkStatusFilter(String(filters.status || ''))
-
-  if (filterText) {
-    const haystack = [
-      record.id,
-      record.requestId,
-      record.url,
-      record.method,
-      record.resourceType,
-      record.statusText,
-      record.errorText,
-    ]
-      .map((value) => String(value || '').toLowerCase())
-      .join(' ')
-
-    if (!haystack.includes(filterText)) {
-      return false
-    }
-  }
-
-  if (typeFilter.length > 0) {
-    const requestType = String(record.resourceType || '')
-      .trim()
-      .toLowerCase()
-    if (!typeFilter.includes(requestType)) {
-      return false
-    }
-  }
-
-  if (methodFilter && String(record.method || '').toUpperCase() !== methodFilter) {
-    return false
-  }
-
-  if (!statusMatches(record.status as number | null | undefined)) {
-    return false
-  }
-
-  return true
-}
-
-async function routeNetworkRequest(tabId, url, abort = false, body = undefined) {
-  const tab = await getTargetTab(tabId)
-  await sendDebuggerCommand(tab.id, 'Network.enable', {})
-  const route = {
-    id: createNetworkRouteId(),
-    pattern: String(url || '').trim(),
-    abort: Boolean(abort),
-    body: body === undefined ? undefined : body,
-    createdAt: new Date().toISOString(),
-  }
-
-  if (!route.pattern) {
-    throw new Error('missing url pattern')
-  }
-
-  state.network.routes.push(route)
-  await refreshNetworkInterceptors()
-
-  return {
-    route,
-    routes: state.network.routes,
-  }
-}
-
-async function unrouteNetworkRequest(tabId, url) {
-  if (tabId !== null && tabId !== undefined) {
-    await getTargetTab(tabId)
-  }
-
-  if (url) {
-    state.network.routes = state.network.routes.filter((route) => route.pattern !== String(url))
-  } else {
-    state.network.routes = []
-  }
-
-  await refreshNetworkInterceptors()
-
-  return {
-    routes: state.network.routes,
-  }
-}
-
-function listNetworkRequests(filters: Record<string, unknown> = {}): Record<string, unknown> {
-  const requests = state.network.requests.filter((record) =>
-    matchesNetworkRequestFilters(record, filters),
-  )
-  return {
-    total: requests.length,
-    requests: requests.map((record) => summarizeNetworkRequest(record)),
-  }
-}
-
-function getNetworkRequestDetail(requestId: string): Record<string, unknown> {
-  const record = getNetworkRequestById(String(requestId || ''))
-  if (!record) {
-    throw new Error(`network request not found: ${requestId}`)
-  }
-
-  return {
-    request: record,
-    summary: summarizeNetworkRequest(record),
-    harEntry: buildHarEntry(record),
-  }
-}
-
-async function startNetworkHar(tabId): Promise<Record<string, unknown>> {
-  const tab = await getTargetTab(tabId)
-  await sendDebuggerCommand(tab.id, 'Network.enable', {})
-  state.network.harRecording = true
-  state.network.harStartedAt = new Date().toISOString()
-  return {
-    recording: true,
-    startedAt: state.network.harStartedAt,
-  }
-}
-
-function stopNetworkHar(): Record<string, unknown> {
-  const startedAt = state.network.harStartedAt
-  const stoppedAt = new Date().toISOString()
-  state.network.harRecording = false
-  state.network.harStartedAt = null
-
-  const requests = state.network.requests.filter((record) => {
-    if (!startedAt) {
-      return true
-    }
-
-    return String(record.startedAt || '') >= startedAt
-  })
-
-  return {
-    recording: false,
-    startedAt,
-    stoppedAt,
-    requestCount: requests.length,
-  }
-}
-
-async function closeTabs(tabId, closeAll) {
+async function closeTabs(tabId: TabInput, closeAll: boolean) {
   if (closeAll) {
-    const tabs = await promisifyChrome(chrome.tabs, chrome.tabs.query, {
+    const tabs = await tabsQuery({
       currentWindow: true,
     })
     const tabIds = tabs.map((tab) => tab.id).filter((tabId) => typeof tabId === 'number')
     if (tabIds.length > 0) {
-      await promisifyChrome(chrome.tabs, chrome.tabs.remove, tabIds)
+      await tabsRemove(tabIds)
     }
     return { closed: true, all: true, count: tabIds.length }
   }
 
   const tab = await getTargetTab(tabId)
-  await promisifyChrome(chrome.tabs, chrome.tabs.remove, tab.id)
+  await tabsRemove([tab.id])
   return { closed: true, all: false, tabId: tab.id }
 }
 
-async function selectTab(tabHandle) {
+async function selectTab(tabHandle: TabInput) {
   const tab = await getTargetTab(tabHandle)
-  const updatedTab = await promisifyChrome(chrome.tabs, chrome.tabs.update, tab.id, {
+  const updatedTab = await tabsUpdate(tab.id, {
     active: true,
   })
 
-  rememberTargetTab(tab.id)
+  rememberTargetTab(state, tab.id)
 
   if (typeof updatedTab?.windowId === 'number') {
     try {
-      await promisifyChrome(chrome.windows, chrome.windows.update, updatedTab.windowId, {
+      await windowsUpdate(updatedTab.windowId, {
         focused: true,
       })
     } catch {
@@ -3385,28 +2945,64 @@ async function selectTab(tabHandle) {
 
   return {
     selected: true,
-    tab: toTabSummary(updatedTab || tab),
+    tab: toTabSummary(state, updatedTab || tab),
   }
 }
 
-async function closeTab(tabHandle) {
+async function closeTab(tabHandle: TabInput) {
   const tab = await getTargetTab(tabHandle)
-  const handle = getOrCreateTabHandle(tab.id)
-  await promisifyChrome(chrome.tabs, chrome.tabs.remove, tab.id)
+  const handle = getOrCreateTabHandle(state, tab.id)
+  await tabsRemove([tab.id])
   return {
     closed: true,
     tab: {
-      ...toTabSummary(tab),
+      ...toTabSummary(state, tab),
       handle,
     },
   }
 }
 
-async function handleCommand(message) {
+async function handleCommand(message: CommandMessage) {
   const { command, args = {} } = message
-  const tabId = args.tabId ?? undefined
-  const frameSelector =
-    typeof args.frame === 'string' && args.frame.trim() ? args.frame.trim() : null
+  const tabId = readTabInputArg(args, 'tabId')
+  const handle = readTabInputArg(args, 'handle')
+  const frameSelector = readFrameSelectorArg(args, 'frame')
+  const action = readStringArg(args, 'action')
+  const url = readStringArg(args, 'url', 'about:blank')
+  const script = readStringArg(args, 'script', 'document.title')
+  const selector = readStringArg(args, 'selector')
+  const value = readStringArg(args, 'value')
+  const key = readStringArg(args, 'key')
+  const text = readStringArg(args, 'text')
+  const start = readStringArg(args, 'start')
+  const end = readStringArg(args, 'end')
+  const stateName = readStringArg(args, 'state', 'visible')
+  const attr = readStringArg(args, 'attr', 'text')
+  const name = readStringArg(args, 'name', 'default')
+  const domain = readOptionalStringArg(args, 'domain')
+  const promptText = readOptionalStringArg(args, 'promptText')
+  const files = readStringArrayArg(args, 'files')
+  const scrollSelector = selector || null
+  const deltaX = readNumberArg(args, 'deltaX', 0)
+  const deltaY = readNumberArg(args, 'deltaY', 100)
+  const viewportWidth = readNumberArg(args, 'width', 0)
+  const viewportHeight = readNumberArg(args, 'height', 0)
+  const deviceScaleFactor = readNumberArg(args, 'deviceScaleFactor', 1)
+  const mobile = readBooleanArg(args, 'mobile', false)
+  const enabled = readBooleanArg(args, 'enabled', true)
+  const accept = readBooleanArg(args, 'accept', true)
+  const headers = readHeadersArg(args, 'headers')
+  const latitude = readNumberArg(args, 'latitude', 0)
+  const longitude = readNumberArg(args, 'longitude', 0)
+  const accuracy = readNumberArg(args, 'accuracy', 1)
+  const media = readOptionalStringArg(args, 'media')
+  const requestId = readStringArg(args, 'requestId')
+  const subaction = readStringArg(args, 'subaction')
+  const storageKey = readOptionalStringArg(args, 'key')
+  const storageValue = readStringArg(args, 'value')
+  const savedStateData = readSavedStateArg(args, 'data')
+  const screenshotOptions = readScreenshotOptions(args)
+  const tabTarget = handle || tabId
 
   switch (command) {
     case 'status':
@@ -3417,79 +3013,73 @@ async function handleCommand(message) {
     case 'tab.list':
       return { tabs: await listTabs() }
     case 'tab.select':
-      return await selectTab(args.handle || args.tabId)
+      return await selectTab(tabTarget)
     case 'tab.new': {
-      const tab = await promisifyChrome(chrome.tabs, chrome.tabs.create, {
-        url: args.url || 'about:blank',
+      const tab = await tabsCreate({
+        url,
       })
 
       if (tab && typeof tab.id === 'number') {
-        rememberTargetTab(tab.id)
+        rememberTargetTab(state, tab.id)
       }
 
-      return { tab: toTabSummary(tab) }
+      return { tab: toTabSummary(state, tab || {}) }
     }
     case 'tab.close':
-      return await closeTab(args.handle || args.tabId)
+      return await closeTab(tabTarget)
     case 'goto':
     case 'open':
-      return await navigateTo(tabId, args.url || 'about:blank')
+      return await navigateTo(tabId, url)
     case 'eval':
-      return await evaluateScript(tabId, args.script || 'document.title', frameSelector)
+      return await evaluateScript(tabId, script, frameSelector)
     case 'snapshot':
       return await snapshotTab(tabId, frameSelector)
     case 'screenshot':
-      return await captureScreenshot(tabId, args, frameSelector)
+      return await captureScreenshot(tabId, screenshotOptions, frameSelector)
     case 'click':
-      return await clickSelector(tabId, args.selector || '', frameSelector)
+      return await clickSelector(tabId, selector, frameSelector)
     case 'dblclick':
-      return await doubleClickSelector(tabId, args.selector || '', frameSelector)
+      return await doubleClickSelector(tabId, selector, frameSelector)
     case 'fill':
-      return await fillSelector(tabId, args.selector || '', args.value || '', frameSelector)
+      return await fillSelector(tabId, selector, value, frameSelector)
     case 'find':
       return await handleFindCommand(tabId, args, frameSelector)
     case 'type':
-      return await typeIntoSelector(tabId, args.selector || '', args.value || '', frameSelector)
+      return await typeIntoSelector(tabId, selector, value, frameSelector)
     case 'hover':
-      return await hoverElement(tabId, args.selector || '', frameSelector)
+      return await hoverElement(tabId, selector, frameSelector)
     case 'press':
-      return await pressKey(tabId, args.key || '')
+      return await pressKey(tabId, key)
     case 'keyboard':
-      if (args.action === 'type') {
-        return await insertTextSequentially(tabId, args.text || '')
+      if (action === 'type') {
+        return await insertTextSequentially(tabId, text)
       }
-      if (args.action === 'inserttext') {
-        return await insertTextOnce(tabId, args.text || '')
+      if (action === 'inserttext') {
+        return await insertTextOnce(tabId, text)
       }
-      if (args.action === 'keydown') {
-        return await keyDownOnly(tabId, args.text || '')
+      if (action === 'keydown') {
+        return await keyDownOnly(tabId, text)
       }
-      if (args.action === 'keyup') {
-        return await keyUpOnly(tabId, args.text || '')
+      if (action === 'keyup') {
+        return await keyUpOnly(tabId, text)
       }
-      throw new Error(`unsupported keyboard action: ${args.action}`)
+      throw new Error(`unsupported keyboard action: ${action}`)
     case 'focus':
-      return await focusElement(tabId, args.selector || '', frameSelector)
+      return await focusElement(tabId, selector, frameSelector)
     case 'select':
-      return await selectOption(tabId, args.selector || '', args.value || '', frameSelector)
+      return await selectOption(tabId, selector, value, frameSelector)
     case 'check':
-      return await checkElement(tabId, args.selector || '', true, frameSelector)
+      return await checkElement(tabId, selector, true, frameSelector)
     case 'uncheck':
-      return await checkElement(tabId, args.selector || '', false, frameSelector)
+      return await checkElement(tabId, selector, false, frameSelector)
     case 'scroll':
-      return await scrollElement(
-        tabId,
-        args.selector || null,
-        args.deltaX || 0,
-        args.deltaY || 100,
-        frameSelector,
-      )
+      return await scrollElement(tabId, scrollSelector, deltaX, deltaY, frameSelector)
     case 'scrollintoview':
-      return await scrollIntoViewSelector(tabId, args.selector || '', frameSelector)
+      return await scrollIntoViewSelector(tabId, selector, frameSelector)
     case 'drag':
-      return await dragElement(tabId, args.start || '', args.end || '', frameSelector)
+      return await dragElement(tabId, start, end, frameSelector)
     case 'upload':
-      return await uploadFiles(tabId, args.selector || '', args.files || [], frameSelector)
+      return await uploadFiles(tabId, selector, files, frameSelector)
     case 'back':
       return await navigateBack(tabId)
     case 'forward':
@@ -3497,124 +3087,124 @@ async function handleCommand(message) {
     case 'reload':
       return await reloadPage(tabId)
     case 'close':
-      return await closeTabs(tabId, Boolean(args.all))
+      return await closeTabs(tabId, readBooleanArg(args, 'all', false))
     case 'window':
-      if (args.action === 'new') {
+      if (action === 'new') {
         return await createWindow()
       }
-      throw new Error(`unsupported window action: ${args.action}`)
+      throw new Error(`unsupported window action: ${action}`)
     case 'frame':
-      return await switchToFrame(tabId, args.selector || '')
+      return await switchToFrame(tabId, selector)
     case 'is':
-      return await checkIsState(tabId, args.selector || '', args.state || 'visible', frameSelector)
+      return await checkIsState(tabId, selector, stateName, frameSelector)
     case 'get':
-      return await getAttribute(tabId, args.selector || '', args.attr || 'text', frameSelector)
+      return await getAttribute(tabId, selector, attr, frameSelector)
     case 'dialog':
-      if (args.action === 'status') {
+      if (action === 'status') {
         return getDialogStatus()
       }
-      return await handleDialog(tabId, args.accept !== false, args.promptText)
+      return await handleDialog(tabId, accept, promptText)
     case 'wait':
       return await handleWait(tabId, args, frameSelector)
     case 'cookies':
-      if (args.action === 'get') {
+      if (action === 'get') {
         return await cookiesGet(tabId)
       }
-      if (args.action === 'set') {
-        return await cookiesSet(tabId, args.name || '', args.value || '', args.domain)
+      if (action === 'set') {
+        return await cookiesSet(tabId, name, value, domain)
       }
-      if (args.action === 'clear') {
+      if (action === 'clear') {
         return await cookiesClear(tabId)
       }
-      throw new Error(`unsupported cookies action: ${args.action}`)
+      throw new Error(`unsupported cookies action: ${action}`)
     case 'storage':
-      if (args.action === 'get') {
-        return await storageGet(tabId, args.key, frameSelector)
+      if (action === 'get') {
+        return await storageGet(tabId, storageKey, frameSelector)
       }
-      if (args.action === 'set') {
-        return await storageSet(tabId, args.key || '', args.value || '', frameSelector)
+      if (action === 'set') {
+        return await storageSet(tabId, storageKey || '', storageValue, frameSelector)
       }
-      if (args.action === 'clear') {
+      if (action === 'clear') {
         return await storageClear(tabId, frameSelector)
       }
-      throw new Error(`unsupported storage action: ${args.action}`)
+      throw new Error(`unsupported storage action: ${action}`)
     case 'console':
       return { messages: state.consoleMessages }
     case 'errors':
       return { errors: state.pageErrors }
     case 'network':
-      if (args.action === 'route') {
-        return await routeNetworkRequest(tabId, args.url || '', args.abort === true, args.body)
+      if (action === 'route') {
+        return await network.routeRequest(tabId, url, args.abort === true, args.body)
       }
-      if (args.action === 'unroute') {
-        return await unrouteNetworkRequest(tabId, args.url ? String(args.url) : '')
+      if (action === 'unroute') {
+        return await network.unrouteRequest(tabId, readStringArg(args, 'url'))
       }
-      if (args.action === 'requests') {
-        return listNetworkRequests(args)
+      if (action === 'requests') {
+        return network.listRequests(args)
       }
-      if (args.action === 'request') {
-        return getNetworkRequestDetail(String(args.requestId || ''))
+      if (action === 'request') {
+        return network.getRequestDetail(requestId)
       }
-      if (args.action === 'har') {
-        if (args.subaction === 'start') {
-          return await startNetworkHar(tabId)
+      if (action === 'har') {
+        if (subaction === 'start') {
+          return await network.startHar(tabId)
         }
-        if (args.subaction === 'stop') {
-          return stopNetworkHar()
+        if (subaction === 'stop') {
+          return network.stopHar()
         }
-        throw new Error(`unsupported network har action: ${args.subaction}`)
+        throw new Error(`unsupported network har action: ${subaction}`)
       }
-      throw new Error(`unsupported network action: ${args.action}`)
+      throw new Error(`unsupported network action: ${action}`)
     case 'set':
-      if (args.type === 'viewport') {
+      if (readStringArg(args, 'type') === 'viewport') {
         return await setViewport(
           tabId,
-          args.width,
-          args.height,
-          args.deviceScaleFactor,
-          args.mobile,
+          viewportWidth,
+          viewportHeight,
+          deviceScaleFactor,
+          mobile,
         )
       }
-      if (args.type === 'offline') {
-        return await setOffline(tabId, args.enabled !== false)
+      if (readStringArg(args, 'type') === 'offline') {
+        return await setOffline(tabId, enabled)
       }
-      if (args.type === 'headers') {
-        return await setHeaders(tabId, args.headers)
+      if (readStringArg(args, 'type') === 'headers') {
+        return await setHeaders(tabId, headers)
       }
-      if (args.type === 'geo') {
-        return await setGeo(tabId, args.latitude, args.longitude, args.accuracy)
+      if (readStringArg(args, 'type') === 'geo') {
+        return await setGeo(tabId, latitude, longitude, accuracy)
       }
-      if (args.type === 'media') {
-        return await setMedia(tabId, args.media)
+      if (readStringArg(args, 'type') === 'media') {
+        return await setMedia(tabId, media)
       }
-      throw new Error(`unsupported set type: ${args.type}`)
+      throw new Error(`unsupported set type: ${readStringArg(args, 'type')}`)
     case 'pdf':
       return await generatePdf(tabId)
     case 'clipboard':
-      if (args.action === 'read') {
+      if (action === 'read') {
         return await clipboardRead(tabId)
       }
-      if (args.action === 'write') {
-        return await clipboardWrite(tabId, args.text || '')
+      if (action === 'write') {
+        return await clipboardWrite(tabId, text)
       }
-      throw new Error(`unsupported clipboard action: ${args.action}`)
+      throw new Error(`unsupported clipboard action: ${action}`)
     case 'state':
-      if (args.action === 'save') {
-        return await saveState(tabId, args.name || 'default')
+      if (action === 'save') {
+        return await saveState(tabId, name)
       }
-      if (args.action === 'load') {
-        if (args.data && typeof args.data === 'object') {
-          return await loadState(tabId, args.data)
+      if (action === 'load') {
+        if (savedStateData) {
+          return await loadState(tabId, savedStateData)
         }
 
         const savedStates = await getSavedStates()
-        const savedState = savedStates[args.name || 'default']
+        const savedState = savedStates[name]
         if (!savedState) {
-          throw new Error(`saved state not found: ${args.name || 'default'}`)
+          throw new Error(`saved state not found: ${name}`)
         }
         return await loadState(tabId, savedState)
       }
-      throw new Error(`unsupported state action: ${args.action}`)
+      throw new Error(`unsupported state action: ${action}`)
     default:
       throw new Error(`unsupported command: ${command}`)
   }
@@ -3838,10 +3428,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 })
 
 chrome.tabs.onRemoved.addListener((tabId) => {
-  clearSelectedFrame(tabId)
+  clearSelectedFrame(state, tabId)
   state.targetTabId = clearRemovedTabId(state.targetTabId, tabId)
-  clearRemovedTabHandle(tabId)
-  clearRemovedPageEpoch(tabId)
+  clearRemovedTabHandle(state, tabId)
+  clearRemovedPageEpoch(state, tabId)
   detachDebugger(tabId).catch(() => {})
 })
 

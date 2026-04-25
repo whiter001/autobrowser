@@ -6,9 +6,10 @@
     "moduleDetection": "force",
     "lib": ["ES2022", "DOM"],
     "types": ["chrome"],
-    "strict": false,
+    "strict": true,
+    "noImplicitAny": true,
     "skipLibCheck": true,
     "noEmit": true
   },
-  "include": ["*.ts"]
+  "include": ["**/*.ts"]
 }
