@@ -155,7 +155,9 @@ function readBooleanArg(args: CommandArgs, key: string, fallback = false): boole
 
 function readStringArrayArg(args: CommandArgs, key: string): string[] {
   const value = args[key]
-  return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : []
+  return Array.isArray(value)
+    ? value.filter((item): item is string => typeof item === 'string')
+    : []
 }
 
 function readTabInputArg(args: CommandArgs, key: string): TabInput {
@@ -189,7 +191,8 @@ function readHeadersArg(
   const value = args[key]
   if (Array.isArray(value)) {
     return value.filter(
-      (item): item is { name?: string; value?: unknown } => Boolean(item) && typeof item === 'object',
+      (item): item is { name?: string; value?: unknown } =>
+        Boolean(item) && typeof item === 'object',
     )
   }
 
@@ -2419,13 +2422,7 @@ async function handleWait(tabId: TabInput, args: CommandArgs, frameSelector: Fra
   }
 
   if (waitType === 'selector' || waitSelector) {
-    return await waitForSelectorState(
-      tabId,
-      waitSelector,
-      waitState,
-      timeout,
-      frameSelector,
-    )
+    return await waitForSelectorState(tabId, waitSelector, waitState, timeout, frameSelector)
   }
 
   if (waitType === 'url' || waitUrl) {
@@ -3157,13 +3154,7 @@ async function handleCommand(message: CommandMessage) {
       throw new Error(`unsupported network action: ${action}`)
     case 'set':
       if (readStringArg(args, 'type') === 'viewport') {
-        return await setViewport(
-          tabId,
-          viewportWidth,
-          viewportHeight,
-          deviceScaleFactor,
-          mobile,
-        )
+        return await setViewport(tabId, viewportWidth, viewportHeight, deviceScaleFactor, mobile)
       }
       if (readStringArg(args, 'type') === 'offline') {
         return await setOffline(tabId, enabled)
