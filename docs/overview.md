@@ -27,7 +27,7 @@ bun run src/cli.ts open https://example.com
 ```
 
 - `server` starts the local relay and IPC servers.
-- `connect` opens the extension connect page.
+- `connect` opens the extension connect page and starts the local server first when needed.
 - `open` navigates the current tab to a URL.
 
 ## Agent-friendly workflow

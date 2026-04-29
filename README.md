@@ -33,6 +33,8 @@ Then open the connect page from another terminal:
 bun run src/cli.ts connect
 ```
 
+`connect` will start the local background server automatically if it is not already running.
+
 ## Check State
 
 Use `is` to inspect element state:

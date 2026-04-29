@@ -523,7 +523,46 @@ describe('cli command routing', () => {
     })
   })
 
-  test('connect falls back to persisted token and ports when status is unavailable', async () => {
+  test('connect starts the detached background process when the local server is unavailable', async () => {
+    let callCount = 0
+
+    const result = await runCli(
+      ['connect'],
+      { ok: true, result: { ok: true } },
+      {
+        fetchImpl: async () => {
+          callCount += 1
+
+          if (callCount < 3) {
+            throw new Error('status unavailable')
+          }
+
+          return {
+            ok: true,
+            async json() {
+              return { token: 'live-token', relayPort: 57978, ipcPort: 57979 }
+            },
+          }
+        },
+        openUrl: async () => {},
+        spawnDetachedProcess: () => ({
+          pid: 12345,
+          unref() {},
+        }),
+      },
+    )
+
+    expect(result.exitCode).toBe(0)
+    expect(result.fetchCalls).toHaveLength(3)
+    expect(result.spawnCalls).toHaveLength(1)
+    expect(result.spawnCalls[0].command).toBe('bun')
+    expect(result.openCalls).toEqual([
+      'chrome-extension://bfccnpkjkbhceghimfjgnkigilidldep/connect.html?token=live-token&relayPort=57978&ipcPort=57979',
+    ])
+    expect(result.stdout).toContain('autobrowser server started in background')
+  })
+
+  test('connect falls back to persisted token and ports when a remote server is unavailable', async () => {
     const homeDir = await mkdtemp(path.join(os.tmpdir(), 'autobrowser-home-'))
     const stateDir = path.join(homeDir, '.autobrowser')
     await mkdir(stateDir, { recursive: true })
@@ -538,7 +577,7 @@ describe('cli command routing', () => {
     await writeFile(path.join(stateDir, 'token'), JSON.stringify({ token: 'saved-token' }))
 
     const result = await runCli(
-      ['connect'],
+      ['connect', '--server', 'http://remote.example:57979'],
       { ok: true, result: { ok: true } },
       {
         homeDir,
@@ -551,29 +590,35 @@ describe('cli command routing', () => {
 
     expect(result.exitCode).toBe(0)
     expect(result.fetchCalls).toHaveLength(1)
+    expect(result.spawnCalls).toHaveLength(0)
     expect(result.openCalls).toEqual([
       'chrome-extension://bfccnpkjkbhceghimfjgnkigilidldep/connect.html?token=saved-token&relayPort=49001&ipcPort=49002',
     ])
   })
 
-  test('connect falls back to the relay page when no token is available', async () => {
-    const homeDir = await mkdtemp(path.join(os.tmpdir(), 'autobrowser-home-empty-'))
-
+  test('connect returns a non-zero code when the local server cannot be started', async () => {
     const result = await runCli(
       ['connect'],
       { ok: true, result: { ok: true } },
       {
-        homeDir,
         fetchImpl: async () => {
           throw new Error('status unavailable')
         },
         openUrl: async () => {},
+        spawnDetachedProcess: () => ({
+          pid: 12345,
+          unref() {},
+          async waitForExit() {
+            return { code: 1, signal: null }
+          },
+        }),
       },
     )
 
-    expect(result.exitCode).toBe(0)
-    expect(result.fetchCalls).toHaveLength(1)
-    expect(result.openCalls).toEqual(['http://127.0.0.1:57978/connect'])
+    expect(result.exitCode).toBe(1)
+    expect(result.spawnCalls).toHaveLength(1)
+    expect(result.openCalls).toEqual([])
+    expect(result.stderr).toContain('Background server exited before becoming ready')
   })
 
   test('server starts the detached background process and waits for status', async () => {

@@ -50,7 +50,7 @@ const HELP_ROOT = helpNode(
     helpNode('status', 'Show server status.', 'autobrowser status'),
     helpNode(
       'connect',
-      'Open the extension connect page.',
+      'Open the extension connect page, starting the local server when needed.',
       'autobrowser connect [--extension-id <id>] [--browser-command <command>] [--browser-arg <arg>]',
     ),
     helpNode('tab', 'Manage tabs.', 'autobrowser tab <list|new|select|close>', undefined, [
