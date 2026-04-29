@@ -137,7 +137,16 @@ export function createConnectionRuntime({
   }
 
   async function publishState(socket: WebSocket): Promise<void> {
+    if (socket.readyState !== WebSocket.OPEN) {
+      return
+    }
+
     const tabs = await listTabs()
+
+    if (socket.readyState !== WebSocket.OPEN) {
+      return
+    }
+
     socket.send(
       JSON.stringify({
         type: 'state',
@@ -336,6 +345,10 @@ export function createConnectionRuntime({
             version: chrome.runtime.getManifest().version,
           }),
         )
+
+        void publishState(socket).catch((error) => {
+          console.error('failed to publish initial extension state', error)
+        })
       })
 
       socket.addEventListener('message', async (event) => {
@@ -428,12 +441,6 @@ export function createConnectionRuntime({
           console.warn('failed to close relay socket after websocket error', error)
         }
       })
-
-      try {
-        await publishState(socket)
-      } catch (error) {
-        console.error('failed to publish initial extension state', error)
-      }
     } catch (error) {
       const err = error as ErrorWithCode
       setConnectionStatus('error')
