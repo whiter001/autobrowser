@@ -1,6 +1,6 @@
 ---
 name: autobrowser
-description: Automate browser tasks to collect and extract website content, navigate pages, fill forms, inspect state, and manage tabs, windows, screenshots, and network activity.
+description: Automate browser tasks to collect and extract website content, navigate pages, fill forms, inspect state, export HAR, and manage tabs, windows, screenshots, and network activity.
 ---
 
 # autobrowser Skill
@@ -11,14 +11,14 @@ autobrowser is a browser automation CLI for collecting content and interacting w
 
 ## What it can do
 
-- start and inspect the automation server
+- start, inspect, and stop the automation server
 - open pages, move between tabs, and manage windows
 - click, fill, type, scroll, drag, and upload on pages
 - run JavaScript in the page context
-- wait on selectors, text, URLs, loads, and time
+- wait on selectors, text, URLs, load states, JavaScript conditions, and fixed delays in milliseconds
 - inspect elements, screenshots, dialogs, and browser state
 - manage cookies, storage, clipboard, PDFs, and viewport/session settings
-- route requests and inspect network activity
+- route requests, inspect network activity, and export HAR files
 
 ## Run
 
@@ -36,9 +36,11 @@ autobrowser.cmd open https://www.example.com
 - `server` starts the relay and IPC servers.
 - `server stop` stops the background servers cleanly.
 - `connect` opens the extension connect page and stores the token plus relay port automatically.
+- `connect` also persists a valid `--extension-id`, `--browser-command`, and `--browser-arg` configuration for later runs.
 - If `connect` is launched with a valid token and the extension reports `connected`, the page may close itself. Treat that as a successful connection.
 - `status` is the fastest way to confirm whether the extension is connected.
 - `tab list` is useful after `connect` or `open` to confirm the active tab.
+- `network har stop [output.har]` returns a complete HAR on current extension builds; the CLI only falls back to rebuilding from network requests when talking to an older extension.
 
 ## Common commands
 
@@ -50,11 +52,13 @@ autobrowser.cmd open https://www.example.com
 - `open <url>`
 - `tab list`
 - `tab new <url>`
+- `tab select tN`
 - `eval [--stdin|--file path|--base64] <script>`
 - `click <selector>`
 - `fill <selector> <value>`
 - `type <selector> <value>`
-- `wait <selector|url|text|time|load|networkidle> [value] [timeout]`
+- `find role|text|label ...`
+- `wait [selector|time <ms>|ms <ms>|--text <text>|--url <pattern>|--load [networkidle]|--fn <expression>] [--state visible|hidden] [--timeout <ms>]`
 - `snapshot`
 - `screenshot`
 - `network route <url>`
@@ -63,6 +67,13 @@ autobrowser.cmd open https://www.example.com
 - `network har stop [output.har]`
 - `state save <name>`
 - `state load <name|json>`
+
+## Wait and timing semantics
+
+- `wait time 3`, `wait ms 3`, and `wait 3` all mean **3 milliseconds**.
+- To wait 3 seconds, use `wait time 3000`.
+- `--timeout <ms>` is also in milliseconds.
+- If a page is still loading, prefer `open <url>` followed by a short millisecond wait or `wait --load networkidle` before extracting content.
 
 ## Failure patterns and recovery
 
@@ -74,10 +85,11 @@ autobrowser.cmd open https://www.example.com
 - Selector-based commands like `click`, `fill`, `get text`, and `wait` accept snapshot refs directly.
 - `find role`, `find text`, and `find label` let agents locate the right element semantically and then click, read text, fill, or focus it in one command.
 - `tab list` returns stable handles like `t1`, `t2`, and `t3`; prefer `tab select tN` over depending on raw tab ids.
+- `wait time 3` is not 3 seconds. Convert seconds to milliseconds explicitly.
+- On older extensions, `network har stop` may return only metadata; prefer letting the CLI rebuild automatically instead of manually stitching HAR entries.
 - On x.com and similar SPA feeds, `get text body` can return huge script/config blobs instead of readable posts.
 - For visible feed items, prefer `eval` in the page context and read `article` nodes directly.
 - A reliable x.com extraction pattern is `Array.from(document.querySelectorAll('article')).slice(0, N).map((article) => article.innerText.trim())`.
-- When a page is still loading, run `open <url>` first and then a short `wait <ms>` before extracting.
 - If the page looks empty or wrong, verify whether the current view is a login screen, a captcha, or a virtualized timeline before retrying.
 
 ## Add New Failures
