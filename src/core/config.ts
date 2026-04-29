@@ -12,6 +12,17 @@ export interface CliConfig {
   browserArgs?: string[]
 }
 
+export interface ResolveConnectLaunchOptions {
+  extensionId?: string | null
+  browserCommand?: string | null
+  browserArgs?: string[]
+}
+
+export interface ResolvedConnectLaunchConfig {
+  extensionId: string
+  browserConfig: BrowserLaunchConfig | null
+}
+
 function normalizeString(value: unknown): string {
   return typeof value === 'string' ? value.trim() : ''
 }
@@ -66,6 +77,10 @@ function normalizeCliConfig(value: unknown): CliConfig {
   return config
 }
 
+function areStringArraysEqual(left: string[], right: string[]): boolean {
+  return left.length === right.length && left.every((value, index) => value === right[index])
+}
+
 async function readRawCliConfig(homeDir: string): Promise<Record<string, unknown>> {
   try {
     const rawConfig = await readJsonFile<Record<string, unknown> | null>(
@@ -86,6 +101,64 @@ async function writeCliConfig(homeDir: string, config: Record<string, unknown>):
   }
 }
 
+function applyCliConfigUpdates(
+  config: Record<string, unknown>,
+  updates: {
+    extensionId?: string | null
+    browserCommand?: string | null
+    browserArgs?: string[] | null
+  },
+): boolean {
+  let changed = false
+
+  if ('extensionId' in updates) {
+    const extensionId = normalizeExtensionIdCandidate(updates.extensionId)
+    if (extensionId) {
+      if (config.extensionId !== extensionId) {
+        config.extensionId = extensionId
+        changed = true
+      }
+    } else if ('extensionId' in config) {
+      delete config.extensionId
+      changed = true
+    }
+  }
+
+  if ('browserCommand' in updates) {
+    const browserCommand = normalizeString(updates.browserCommand)
+    if (browserCommand) {
+      if (config.browserCommand !== browserCommand) {
+        config.browserCommand = browserCommand
+        changed = true
+      }
+    } else if ('browserCommand' in config) {
+      delete config.browserCommand
+      changed = true
+    }
+  }
+
+  if ('browserArgs' in updates) {
+    const browserArgs = Array.isArray(updates.browserArgs)
+      ? normalizeStringArray(updates.browserArgs)
+      : []
+    const currentArgs = Array.isArray(config.browserArgs)
+      ? normalizeStringArray(config.browserArgs)
+      : []
+
+    if (browserArgs.length > 0) {
+      if (!areStringArraysEqual(currentArgs, browserArgs)) {
+        config.browserArgs = browserArgs
+        changed = true
+      }
+    } else if ('browserArgs' in config) {
+      delete config.browserArgs
+      changed = true
+    }
+  }
+
+  return changed
+}
+
 export async function readCliConfig(homeDir: string = getHomeDir()): Promise<CliConfig> {
   const rawConfig = await readRawCliConfig(homeDir)
   return normalizeCliConfig(rawConfig)
@@ -101,36 +174,54 @@ async function mergeCliConfig(
 ): Promise<void> {
   const nextConfig = await readRawCliConfig(homeDir)
 
-  if ('extensionId' in updates) {
-    const extensionId = normalizeExtensionIdCandidate(updates.extensionId)
-    if (extensionId) {
-      nextConfig.extensionId = extensionId
-    } else {
-      delete nextConfig.extensionId
-    }
-  }
-
-  if ('browserCommand' in updates) {
-    const browserCommand = normalizeString(updates.browserCommand)
-    if (browserCommand) {
-      nextConfig.browserCommand = browserCommand
-    } else {
-      delete nextConfig.browserCommand
-    }
-  }
-
-  if ('browserArgs' in updates) {
-    const browserArgs = Array.isArray(updates.browserArgs)
-      ? normalizeStringArray(updates.browserArgs)
-      : []
-    if (browserArgs.length > 0) {
-      nextConfig.browserArgs = browserArgs
-    } else {
-      delete nextConfig.browserArgs
-    }
+  if (!applyCliConfigUpdates(nextConfig, updates)) {
+    return
   }
 
   await writeCliConfig(homeDir, nextConfig)
+}
+
+export async function resolveConnectLaunchConfig(
+  homeDir: string = getHomeDir(),
+  options: ResolveConnectLaunchOptions = {},
+): Promise<ResolvedConnectLaunchConfig> {
+  const rawConfig = await readRawCliConfig(homeDir)
+  const config = normalizeCliConfig(rawConfig)
+  const nextConfig = { ...rawConfig }
+
+  const explicitExtensionId = normalizeExtensionIdCandidate(options.extensionId)
+  const envExtensionId = normalizeExtensionIdCandidate(process.env.AUTOBROWSER_EXTENSION_ID)
+  const extensionId = isValidExtensionId(explicitExtensionId)
+    ? explicitExtensionId
+    : config.extensionId || (isValidExtensionId(envExtensionId) ? envExtensionId : getExtensionId())
+
+  let shouldWrite = applyCliConfigUpdates(nextConfig, { extensionId })
+
+  const explicitBrowserCommand = normalizeString(options.browserCommand)
+  const browserConfig = explicitBrowserCommand
+    ? {
+        command: explicitBrowserCommand,
+        args: normalizeStringArray(options.browserArgs),
+      }
+    : normalizeBrowserLaunchConfig(config.browserCommand, config.browserArgs)
+
+  if (browserConfig) {
+    shouldWrite =
+      applyCliConfigUpdates(nextConfig, {
+        browserCommand: browserConfig.command,
+        browserArgs: browserConfig.args,
+      }) || shouldWrite
+  }
+
+  if (shouldWrite) {
+    // connect 流程里会同时用到扩展 ID 和浏览器启动配置，这里合并成一次持久化，减少热路径上的重复读写。
+    await writeCliConfig(homeDir, nextConfig)
+  }
+
+  return {
+    extensionId,
+    browserConfig,
+  }
 }
 
 export async function resolveExtensionId(

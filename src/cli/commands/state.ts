@@ -12,7 +12,10 @@ import type { CommandContext, CommandRegistry } from './types.js'
 
 interface NetworkHarStopResult {
   har?: unknown
+  recording?: boolean
+  requestCount?: number
   startedAt?: string
+  stoppedAt?: string
 }
 
 const COOKIE_ACTIONS = ['get', 'set', 'clear'] as const
@@ -286,7 +289,8 @@ async function handleNetwork(rest: string[], context: CommandContext): Promise<n
       const har =
         result && isRecord(result.har)
           ? result.har
-          : await context.collectHarFromNetwork(
+          : // 这里保留 CLI 侧重建兜底，兼容旧扩展版本或 stopHar 降级为只回元数据的场景。
+            await context.collectHarFromNetwork(
               context.flags.server,
               typeof result?.startedAt === 'string' ? result.startedAt : null,
             )

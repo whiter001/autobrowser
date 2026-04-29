@@ -5,6 +5,7 @@ import type {
   TabInput,
   TabWithId,
 } from './types.js'
+import { buildHarPayload, compareHarRecords } from '../../src/core/har.js'
 
 type SendDebuggerCommand = <TResult = unknown>(
   tabId: number,
@@ -273,6 +274,10 @@ function buildHarEntry(record: NetworkRequestRecord): Record<string, unknown> {
     pageref:
       record.tabId === null || record.tabId === undefined ? undefined : `tab-${record.tabId}`,
   }
+}
+
+function buildHar(records: NetworkRequestRecord[]): Record<string, unknown> {
+  return buildHarPayload(records.map((record) => buildHarEntry(record)))
 }
 
 function matchesNetworkRequestFilters(
@@ -661,11 +666,15 @@ export function createNetworkDomain({
       return String(record.startedAt || '') >= startedAt
     })
 
+    const harRequests = [...requests].sort((left, right) => compareHarRecords(left, right))
+
     return {
       recording: false,
       startedAt,
       stoppedAt,
       requestCount: requests.length,
+      // 直接在扩展侧生成 HAR，避免 CLI 为了导出再逐条回拉 request detail，形成 N+1 往返。
+      har: buildHar(harRequests),
     }
   }
 

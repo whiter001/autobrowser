@@ -7,12 +7,9 @@ import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import os from 'node:os'
 import path from 'node:path'
-import {
-  resolveBrowserLaunchConfig,
-  resolveExtensionId,
-  type BrowserLaunchConfig,
-} from './core/config.js'
+import { resolveConnectLaunchConfig, type BrowserLaunchConfig } from './core/config.js'
 import { getExtensionUrl } from './core/extension.js'
+import { buildHarPayload, compareHarRecords } from './core/har.js'
 import { DEFAULT_IPC_PORT, DEFAULT_RELAY_PORT, getHomeDir } from './core/protocol.js'
 import { printHelp } from './cli/help.js'
 import { type ScreenshotArgs } from './cli/parse.js'
@@ -29,7 +26,6 @@ import {
   normalizeSavedPort,
   parseWindowsNetstatListeningPid,
   readPersistedConnectionInfo,
-  type ServerSnapshotStatus,
 } from './cli/server-control.js'
 import { COMMAND_REGISTRY } from './cli/commands/index.js'
 import { type CommandContext } from './cli/commands/types.js'
@@ -347,11 +343,6 @@ interface NetworkRequestSummary {
   durationMs?: number
 }
 
-const HAR_CREATOR = {
-  name: 'autobrowser',
-  version: '0.1.0',
-}
-
 const HAR_MIME_TYPES: Record<string, string> = {
   Document: 'text/html',
   XHR: 'application/json',
@@ -363,32 +354,6 @@ const HAR_MIME_TYPES: Record<string, string> = {
   Ping: 'text/plain',
   Manifest: 'application/json',
   Other: 'application/octet-stream',
-}
-
-function compareNetworkRequestSummaries(
-  left: NetworkRequestSummary,
-  right: NetworkRequestSummary,
-): number {
-  const leftStartedAt = Date.parse(left.startedAt || '') || 0
-  const rightStartedAt = Date.parse(right.startedAt || '') || 0
-
-  if (leftStartedAt !== rightStartedAt) {
-    return leftStartedAt - rightStartedAt
-  }
-
-  const leftId = String(left.id || left.requestId || '')
-  const rightId = String(right.id || right.requestId || '')
-  return leftId.localeCompare(rightId)
-}
-
-function buildHar(entries: Record<string, unknown>[]): Record<string, unknown> {
-  return {
-    log: {
-      version: '1.2',
-      creator: HAR_CREATOR,
-      entries,
-    },
-  }
 }
 
 function buildFallbackHarEntry(summary: NetworkRequestSummary): Record<string, unknown> {
@@ -458,7 +423,7 @@ async function collectHarFromNetwork(
 
   const filteredSummaries = requestSummaries
     .filter((request) => !startedAt || String(request.startedAt || '') >= startedAt)
-    .sort(compareNetworkRequestSummaries)
+    .sort((left, right) => compareHarRecords(left, right))
 
   const entries: Record<string, unknown>[] = []
 
@@ -491,7 +456,7 @@ async function collectHarFromNetwork(
     }
   }
 
-  return buildHar(entries)
+  return buildHarPayload(entries)
 }
 
 async function resolveEvalScript(flags: CliFlags, rest: string[]): Promise<string> {
@@ -560,12 +525,11 @@ async function runMain(
   }
 
   async function openExtensionConnectPage(target: ConnectionTarget): Promise<void> {
-    const browserConfig = await resolveBrowserLaunchConfig(
-      homeDir,
-      flags.browserCommand,
-      flags.browserArgs,
-    )
-    const extensionId = await resolveExtensionId(homeDir, flags.extensionId)
+    const { browserConfig, extensionId } = await resolveConnectLaunchConfig(homeDir, {
+      extensionId: flags.extensionId,
+      browserCommand: flags.browserCommand,
+      browserArgs: flags.browserArgs,
+    })
 
     await launchUrl(
       getExtensionUrl(

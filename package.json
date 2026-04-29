@@ -14,7 +14,7 @@
     "lint": "oxlint src/ extension/",
     "fix": "oxfmt --fix src/ extension/ && oxlint --fix src/ extension/",
     "typecheck": "bun scripts/run-typescript-compiler.ts --noEmit && bun scripts/run-typescript-compiler.ts -p extension/tsconfig.json && bun scripts/run-typescript-compiler.ts -p extension/background/tsconfig.json",
-    "typecheck:native": "tsgo --noEmit && tsgo -p extension/tsconfig.json && tsgo -p extension/background/tsconfig.json",
+    "typecheck:native": "bun scripts/run-typescript-compiler.ts --native-only --noEmit && bun scripts/run-typescript-compiler.ts --native-only -p extension/tsconfig.json && bun scripts/run-typescript-compiler.ts --native-only -p extension/background/tsconfig.json",
     "typecheck:tsc": "tsc --noEmit && tsc -p extension/tsconfig.json && tsc -p extension/background/tsconfig.json",
     "check": "bun run typecheck && oxlint src/ extension/ && oxfmt src/ extension/",
     "build:cli": "bun scripts/build-cli.ts",

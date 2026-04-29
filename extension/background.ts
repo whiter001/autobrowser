@@ -4,11 +4,8 @@ import {
   RELAY_PORT_STORAGE_KEY,
   STORAGE_KEY,
   normalizeRelayPort,
-  type CommandErrorInfo,
-  type ConnectionErrorInfo,
   type ConnectionStatus,
   type DiagnosticsState,
-  type SocketCloseInfo,
 } from './shared.js'
 import {
   debuggerAttach,
@@ -25,6 +22,11 @@ import {
   windowsUpdate,
 } from './background/chrome.js'
 import { createNetworkDomain } from './background/network.js'
+import {
+  collapseWhitespace,
+  parsePageContextElementRefIndex,
+  splitWhitespaceTokens,
+} from './background/page-context-helpers.js'
 import { createExtensionState } from './background/state.js'
 import {
   assertFreshElementRef,
@@ -118,6 +120,16 @@ interface SemanticTargetResult extends Record<string, unknown> {
 }
 
 const state = createExtensionState(DEFAULT_SERVER_PORT)
+
+const PAGE_CONTEXT_TEXT_HELPERS_SOURCE = [
+  collapseWhitespace.toString(),
+  splitWhitespaceTokens.toString(),
+].join('\n')
+
+const PAGE_CONTEXT_FIND_HELPERS_SOURCE = [
+  PAGE_CONTEXT_TEXT_HELPERS_SOURCE,
+  parsePageContextElementRefIndex.toString(),
+].join('\n')
 
 const network = createNetworkDomain({
   state,
@@ -996,7 +1008,9 @@ async function snapshotTab(tabId: TabInput, frameSelector: FrameSelector) {
       const frameRefPrefix = ${JSON.stringify(frameRefPrefix)};
       const pageEpoch = ${pageEpoch};
 
-      const readText = (node) => (node.innerText || node.textContent || '').replace(/\s+/g, ' ').trim();
+${PAGE_CONTEXT_TEXT_HELPERS_SOURCE}
+
+      const readText = (node) => collapseWhitespace(node.innerText || node.textContent || '');
 
       const getAssociatedLabel = (node) => {
         if (!(node instanceof HTMLElement) || !node.id) {
@@ -1017,8 +1031,7 @@ async function snapshotTab(tabId: TabInput, frameSelector: FrameSelector) {
           return '';
         }
 
-        return labelledBy
-          .split(/\s+/)
+        return splitWhitespaceTokens(labelledBy)
           .map((id) => document.getElementById(id))
           .filter(Boolean)
           .map((element) => readText(element))
@@ -1659,7 +1672,9 @@ async function findSemanticTarget(
       const exact = ${exact ? 'true' : 'false'};
       const actionableSelector = 'a[href],button,input:not([type="hidden"]),textarea,select,summary,[role],[tabindex]:not([tabindex="-1"])';
 
-      const normalizeText = (value) => String(value || '').replace(/\s+/g, ' ').trim();
+${PAGE_CONTEXT_FIND_HELPERS_SOURCE}
+
+      const normalizeText = (value) => collapseWhitespace(value);
 
       const matchesText = (candidate, needle) => {
         const normalizedCandidate = normalizeText(candidate).toLowerCase();
@@ -1721,8 +1736,7 @@ async function findSemanticTarget(
         }
 
         return normalizeText(
-          labelledBy
-            .split(/\s+/)
+          splitWhitespaceTokens(labelledBy)
             .map((id) => document.getElementById(id))
             .filter(Boolean)
             .map((element) => readText(element))
@@ -1821,9 +1835,9 @@ async function findSemanticTarget(
         let maxIndex = 0;
         for (const element of document.querySelectorAll('[' + refAttribute + ']')) {
           const refValue = normalizeText(element.getAttribute(refAttribute));
-          const match = /^e(\d+)$/.exec(refValue);
-          if (match) {
-            maxIndex = Math.max(maxIndex, Number(match[1]));
+          const refIndex = parsePageContextElementRefIndex(refValue);
+          if (refIndex !== null) {
+            maxIndex = Math.max(maxIndex, refIndex);
           }
         }
 

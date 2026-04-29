@@ -3,6 +3,7 @@ import { isPortInUse } from '../../core/protocol.js'
 import { isHelpToken } from '../help.js'
 import {
   buildServerLaunchArgs,
+  isServerSnapshotStatus,
   isServerSnapshotOnPorts,
   killDetachedProcess,
   readPersistedConnectionInfo,
@@ -204,10 +205,11 @@ async function handleConnect(rest: string[], context: CommandContext): Promise<n
   }
 
   let status = await context.getStatus(context.flags.server).catch(() => null)
+  const hasReachableServerStatus = Boolean(status && isServerSnapshotStatus(status))
 
   if (
     targetsLocalControlServer(context.flags.server, context.flags.ipcPort) &&
-    !isServerSnapshotOnPorts(status, context.flags.relayPort, context.flags.ipcPort)
+    !hasReachableServerStatus
   ) {
     const serverState = await ensureBackgroundServer(context, {
       announceAlreadyRunning: false,
