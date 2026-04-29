@@ -1,13 +1,15 @@
-import { afterEach, describe, expect, test } from 'bun:test'
+import { describe, expect, test } from 'bun:test'
 import { chmod, mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { buildSystemOpenCommand, main, parseWindowsNetstatListeningPid } from '../src/cli.js'
+import { parseWaitArgs } from '../src/cli/parse.js'
 
 const originalFetch = globalThis.fetch
 const originalStdoutWrite = process.stdout.write.bind(process.stdout)
 const originalStderrWrite = process.stderr.write.bind(process.stderr)
 const originalAutobrowserHome = process.env.AUTOBROWSER_HOME
+let cliRunQueue = Promise.resolve()
 
 function interceptStream(chunks) {
   return (chunk, encoding, callback) => {
@@ -23,95 +25,90 @@ function interceptStream(chunks) {
 }
 
 async function runCli(argv, payload = { ok: true, result: { ok: true } }, options = {}) {
-  const fetchCalls = []
-  const spawnCalls = []
-  const stdout = []
-  const stderr = []
-  const openCalls = []
-  const browserCalls = []
-  const previousAutobrowserHome = process.env.AUTOBROWSER_HOME
-  const homeDir =
-    options.homeDir || (await mkdtemp(path.join(os.tmpdir(), 'autobrowser-home-run-')))
+  const run = cliRunQueue.then(async () => {
+    const fetchCalls = []
+    const spawnCalls = []
+    const stdout = []
+    const stderr = []
+    const openCalls = []
+    const browserCalls = []
+    const previousAutobrowserHome = process.env.AUTOBROWSER_HOME
+    const homeDir =
+      options.homeDir || (await mkdtemp(path.join(os.tmpdir(), 'autobrowser-home-run-')))
 
-  process.env.AUTOBROWSER_HOME = homeDir
+    process.env.AUTOBROWSER_HOME = homeDir
 
-  globalThis.fetch = async (url, init = {}) => {
-    fetchCalls.push({
-      url,
-      init,
-      body: init.body ? JSON.parse(init.body) : null,
-    })
+    globalThis.fetch = async (url, init = {}) => {
+      fetchCalls.push({
+        url,
+        init,
+        body: init.body ? JSON.parse(init.body) : null,
+      })
 
-    if (options.fetchImpl) {
-      return options.fetchImpl(url, init)
+      if (options.fetchImpl) {
+        return options.fetchImpl(url, init)
+      }
+
+      return {
+        ok: true,
+        async json() {
+          return payload
+        },
+        async text() {
+          return `${JSON.stringify(payload)}\n`
+        },
+      }
     }
 
-    return {
-      ok: true,
-      async json() {
-        return payload
-      },
-      async text() {
-        return `${JSON.stringify(payload)}\n`
-      },
+    process.stdout.write = interceptStream(stdout)
+    process.stderr.write = interceptStream(stderr)
+
+    try {
+      const exitCode = await main(argv, {
+        openUrl: options.openUrl
+          ? async (url, browserConfig) => {
+              openCalls.push(url)
+              browserCalls.push(browserConfig)
+              await options.openUrl(url, browserConfig)
+            }
+          : undefined,
+        spawnDetachedProcess: options.spawnDetachedProcess
+          ? (command, args) => {
+              const child = options.spawnDetachedProcess(command, args)
+              spawnCalls.push({ command, args })
+              return child
+            }
+          : undefined,
+        findProcessIdByPort: options.findProcessIdByPort,
+        killProcess: options.killProcess,
+      })
+
+      return {
+        exitCode,
+        fetchCalls,
+        spawnCalls,
+        openCalls,
+        browserCalls,
+        stdout: stdout.join(''),
+        stderr: stderr.join(''),
+      }
+    } finally {
+      globalThis.fetch = originalFetch
+      process.stdout.write = originalStdoutWrite
+      process.stderr.write = originalStderrWrite
+
+      if (previousAutobrowserHome === undefined) {
+        delete process.env.AUTOBROWSER_HOME
+      } else {
+        process.env.AUTOBROWSER_HOME = previousAutobrowserHome
+      }
     }
-  }
+  })
 
-  process.stdout.write = interceptStream(stdout)
-  process.stderr.write = interceptStream(stderr)
-
-  try {
-    const exitCode = await main(argv, {
-      openUrl: options.openUrl
-        ? async (url, browserConfig) => {
-            openCalls.push(url)
-            browserCalls.push(browserConfig)
-            await options.openUrl(url, browserConfig)
-          }
-        : undefined,
-      spawnDetachedProcess: options.spawnDetachedProcess
-        ? (command, args) => {
-            const child = options.spawnDetachedProcess(command, args)
-            spawnCalls.push({ command, args })
-            return child
-          }
-        : undefined,
-      findProcessIdByPort: options.findProcessIdByPort,
-      killProcess: options.killProcess,
-    })
-
-    return {
-      exitCode,
-      fetchCalls,
-      spawnCalls,
-      openCalls,
-      browserCalls,
-      stdout: stdout.join(''),
-      stderr: stderr.join(''),
-    }
-  } finally {
-    globalThis.fetch = originalFetch
-    process.stdout.write = originalStdoutWrite
-    process.stderr.write = originalStderrWrite
-
-    if (previousAutobrowserHome === undefined) {
-      delete process.env.AUTOBROWSER_HOME
-    } else {
-      process.env.AUTOBROWSER_HOME = previousAutobrowserHome
-    }
-  }
+  // 这些 CLI 测试会临时替换全局 fetch/stdout/stderr；串行化能避免全量并发执行时互相踩状态。
+  cliRunQueue = run.catch(() => {})
+  return await run
 }
-
-afterEach(() => {
-  globalThis.fetch = originalFetch
-  process.stdout.write = originalStdoutWrite
-  process.stderr.write = originalStderrWrite
-  if (originalAutobrowserHome === undefined) {
-    delete process.env.AUTOBROWSER_HOME
-  } else {
-    process.env.AUTOBROWSER_HOME = originalAutobrowserHome
-  }
-})
 
 describe('cli helpers', () => {
   test('uses rundll32 on windows for system url opens', () => {
@@ -136,6 +133,30 @@ describe('cli helpers', () => {
     ].join('\n')
 
     expect(parseWindowsNetstatListeningPid(stdout, 57978)).toBe(12345)
+  })
+
+  test('parses wait time aliases as milliseconds', () => {
+    expect(parseWaitArgs(['time', '3'])).toMatchObject({
+      type: 'time',
+      ms: 3,
+      timeout: 30000,
+    })
+
+    expect(parseWaitArgs(['3'])).toMatchObject({
+      type: 'time',
+      ms: 3,
+      timeout: 30000,
+    })
+  })
+
+  test('documents wait durations as milliseconds in help output', async () => {
+    const result = await runCli(['help', 'wait'])
+
+    expect(result.exitCode).toBe(0)
+    expect(result.fetchCalls).toHaveLength(0)
+    expect(result.stdout).toContain('time <ms>')
+    expect(result.stdout).toContain('fixed duration in milliseconds')
+    expect(result.stdout).toContain('--ms <ms> wait a fixed duration in milliseconds')
   })
 })
 

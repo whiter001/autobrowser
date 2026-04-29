@@ -128,16 +128,17 @@ const HELP_ROOT = helpNode(
     ]),
     helpNode(
       'wait',
-      'Wait for a selector, text, URL, load state, function, or time.',
-      'autobrowser wait <selector|ms> [--state visible|hidden] [--timeout <ms>]',
+      'Wait for a selector, text, URL, load state, function, or a fixed duration in milliseconds.',
+      'autobrowser wait [selector|time <ms>|ms <ms>|--text <text>|--url <pattern>|--load [networkidle]|--fn <expression>] [--state visible|hidden] [--timeout <ms>]',
       [
         '--state <visible|hidden>',
-        '--timeout <ms>',
+        '--timeout <ms> total timeout in milliseconds',
         '--text <text>',
         '--url <pattern>',
         '--load [networkidle]',
         '--fn <expression>',
-        '--ms <ms>',
+        '--ms <ms> wait a fixed duration in milliseconds',
+        'time <ms> positional alias for waiting a fixed duration in milliseconds',
       ],
     ),
     helpNode(
