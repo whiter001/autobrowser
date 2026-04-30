@@ -94,6 +94,78 @@ function createDefaultSnapshot(): Snapshot {
   }
 }
 
+const REDACTED_VALUE = '[redacted]'
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
+}
+
+function redactCommandArgs(command: string, args: unknown): unknown {
+  if (!isRecord(args)) {
+    return args
+  }
+
+  const redactedArgs: Record<string, unknown> = { ...args }
+  const action = typeof redactedArgs.action === 'string' ? redactedArgs.action : ''
+  const type = typeof redactedArgs.type === 'string' ? redactedArgs.type : ''
+  const redact = (...keys: string[]): void => {
+    for (const key of keys) {
+      if (key in redactedArgs) {
+        redactedArgs[key] = REDACTED_VALUE
+      }
+    }
+  }
+
+  // lastCommand 会持久化到 state.json，这里只保留排障所需的结构信息。
+  if (command === 'eval') {
+    redact('script')
+  }
+  if (command === 'fill' || command === 'type') {
+    redact('value')
+  }
+  if (command === 'find' && (action === 'fill' || action === 'type')) {
+    redact('value')
+  }
+  if (command === 'keyboard') {
+    redact('text')
+  }
+  if (command === 'dialog') {
+    redact('promptText')
+  }
+  if (command === 'clipboard' && action === 'write') {
+    redact('text')
+  }
+  if (command === 'cookies' && action === 'set') {
+    redact('value')
+  }
+  if (command === 'storage' && action === 'set') {
+    redact('value')
+  }
+  if (command === 'network' && action === 'route') {
+    redact('body')
+  }
+  if (command === 'set' && type === 'headers') {
+    redact('headers')
+  }
+  if (command === 'state' && action === 'load') {
+    redact('data')
+  }
+
+  return redactedArgs
+}
+
+function normalizeLastCommand(value: unknown): Snapshot['lastCommand'] {
+  if (!isRecord(value) || typeof value.command !== 'string' || !value.command) {
+    return null
+  }
+
+  return {
+    command: value.command,
+    args: redactCommandArgs(value.command, value.args),
+    at: typeof value.at === 'string' ? value.at : new Date().toISOString(),
+  }
+}
+
 interface RuntimeState {
   homeDir: string
   relayPort: number
@@ -162,7 +234,7 @@ export async function createRuntime(options: RuntimeOptions = {}): Promise<Runti
 
   // Only restore stable state, avoid stale tab lists
   if (persistedState?.snapshot && typeof persistedState.snapshot === 'object') {
-    snapshot.lastCommand = persistedState.snapshot.lastCommand ?? null
+    snapshot.lastCommand = normalizeLastCommand(persistedState.snapshot.lastCommand)
     snapshot.lastError = persistedState.snapshot.lastError ?? null
   }
 
@@ -248,7 +320,7 @@ export async function createRuntime(options: RuntimeOptions = {}): Promise<Runti
   function setLastCommand(command: string, args: unknown): void {
     snapshot.lastCommand = {
       command,
-      args,
+      args: redactCommandArgs(command, args),
       at: new Date().toISOString(),
     }
     schedulePersist()

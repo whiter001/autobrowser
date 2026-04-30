@@ -364,10 +364,16 @@ function buildFallbackHarEntry(summary: NetworkRequestSummary): Record<string, u
 async function collectHarFromNetwork(
   baseUrl: string,
   startedAt: string | null,
+  token: string | null = null,
 ): Promise<Record<string, unknown>> {
-  const requestListPayload = await requestCommandRaw(baseUrl, 'network', {
-    action: 'requests',
-  })
+  const requestListPayload = await requestCommandRaw(
+    baseUrl,
+    'network',
+    {
+      action: 'requests',
+    },
+    { token },
+  )
 
   if (requestListPayload?.ok === false) {
     throw new Error(requestListPayload.error?.message || 'failed to read network requests')
@@ -394,10 +400,15 @@ async function collectHarFromNetwork(
     }
 
     try {
-      const requestPayload = await requestCommandRaw(baseUrl, 'network', {
-        action: 'request',
-        requestId,
-      })
+      const requestPayload = await requestCommandRaw(
+        baseUrl,
+        'network',
+        {
+          action: 'request',
+          requestId,
+        },
+        { token },
+      )
 
       if (requestPayload?.ok === false) {
         entries.push(buildFallbackHarEntry(request))
@@ -448,6 +459,7 @@ async function runMain(
   const homeDir = getHomeDir()
   const launchUrl = dependencies.openUrl ?? openUrl
   let connectPageOpened = false
+  let commandToken: string | null | undefined
 
   const openRelayConnectPage = async (relayPort: number): Promise<void> => {
     await launchUrl(`http://127.0.0.1:${relayPort}/connect`, null)
@@ -466,6 +478,10 @@ async function runMain(
       typeof serverStatus?.token === 'string' && serverStatus.token
         ? serverStatus.token
         : persistedConnectionInfo?.token || ''
+
+    if (token) {
+      commandToken = token
+    }
 
     const relayPort = normalizeSavedPort(
       serverStatus?.relayPort ?? persistedConnectionInfo?.relayPort,
@@ -557,6 +573,39 @@ async function runMain(
     }
   }
 
+  async function resolveCommandToken(): Promise<string | null> {
+    if (commandToken !== undefined) {
+      return commandToken
+    }
+
+    const persistedConnectionInfo = await readPersistedConnectionInfo(
+      flags.relayPort,
+      flags.ipcPort,
+    )
+    commandToken = persistedConnectionInfo?.token || null
+    return commandToken
+  }
+
+  async function requestCommandWithToken(
+    baseUrl: string,
+    command: string,
+    args: Record<string, unknown>,
+  ): Promise<CommandResponse> {
+    const token = await resolveCommandToken()
+    const payload = await requestCommandRaw(baseUrl, command, args, { token })
+    if (payload.ok !== false || payload.error?.code !== 'UNAUTHORIZED') {
+      return payload
+    }
+
+    const status = await getStatus(baseUrl).catch(() => null)
+    const target = await resolveConnectionTarget(status)
+    if (!target.token || target.token === token) {
+      return payload
+    }
+
+    return await requestCommandRaw(baseUrl, command, args, { token: target.token })
+  }
+
   async function requestCommand(
     baseUrl: string,
     command: string,
@@ -574,11 +623,11 @@ async function runMain(
       await triggerAutoConnect(baseUrl)
     }
 
-    const payload = await requestCommandRaw(baseUrl, command, requestArgs)
+    const payload = await requestCommandWithToken(baseUrl, command, requestArgs)
     if (flags.autoConnect && !connectPageOpened && shouldTriggerAutoConnect(payload)) {
       const opened = await triggerAutoConnect(baseUrl)
       if (opened) {
-        return await requestCommandRaw(baseUrl, command, requestArgs)
+        return await requestCommandWithToken(baseUrl, command, requestArgs)
       }
     }
 
@@ -612,7 +661,8 @@ async function runMain(
     getCdpUrl,
     extractScreenshotData,
     resolveScreenshotOutputPath,
-    collectHarFromNetwork,
+    collectHarFromNetwork: async (baseUrl, startedAt) =>
+      await collectHarFromNetwork(baseUrl, startedAt, await resolveCommandToken()),
     writeHarFile,
   }
 
