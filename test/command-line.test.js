@@ -148,6 +148,12 @@ describe('cli helpers', () => {
     })
   })
 
+  test('rejects invalid wait durations', () => {
+    expect(() => parseWaitArgs(['--timeout', 'soon'])).toThrow('invalid timeout')
+    expect(() => parseWaitArgs(['--ms', ''])).toThrow('invalid ms')
+    expect(() => parseWaitArgs(['time'])).toThrow('missing wait time value')
+  })
+
   test('documents wait durations as milliseconds in help output', async () => {
     const result = await runCli(['help', 'wait'])
 
@@ -173,6 +179,27 @@ describe('cli helpers', () => {
       expect(result.exitCode).toBe(1)
       expect(result.fetchCalls).toHaveLength(0)
       expect(result.stderr).toContain('invalid --ipc-port')
+    }
+  })
+
+  test('rejects invalid numeric command values before dispatching commands', async () => {
+    const cases = [
+      { argv: ['wait', '--ms', 'soon'], message: 'invalid ms' },
+      {
+        argv: ['screenshot', '--screenshot-quality', '101'],
+        message: 'invalid screenshot quality',
+      },
+      { argv: ['set', 'viewport', 'wide'], message: 'invalid viewport width' },
+      { argv: ['set', 'geo', '91', '0'], message: 'invalid latitude' },
+      { argv: ['scroll', '#main', 'left'], message: 'invalid scroll deltaX' },
+    ]
+
+    for (const testCase of cases) {
+      const result = await runCli(testCase.argv)
+
+      expect(result.exitCode).toBe(1)
+      expect(result.fetchCalls).toHaveLength(0)
+      expect(result.stderr).toContain(testCase.message)
     }
   })
 })

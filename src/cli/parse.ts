@@ -28,6 +28,65 @@ export interface ScreenshotArgs {
   quality: number | null
 }
 
+export interface NumberArgOptions {
+  min?: number
+  max?: number
+  integer?: boolean
+}
+
+function validateNumberValue(
+  numberValue: number,
+  rawValue: unknown,
+  label: string,
+  options: NumberArgOptions,
+): number {
+  if (!Number.isFinite(numberValue)) {
+    throw new Error(`invalid ${label} ${JSON.stringify(rawValue)}: expected a finite number`)
+  }
+
+  if (options.integer === true && !Number.isInteger(numberValue)) {
+    throw new Error(`invalid ${label} ${JSON.stringify(rawValue)}: expected an integer`)
+  }
+
+  if (options.min !== undefined && numberValue < options.min) {
+    throw new Error(`invalid ${label} ${JSON.stringify(rawValue)}: expected >= ${options.min}`)
+  }
+
+  if (options.max !== undefined && numberValue > options.max) {
+    throw new Error(`invalid ${label} ${JSON.stringify(rawValue)}: expected <= ${options.max}`)
+  }
+
+  return numberValue
+}
+
+export function parseNumberArg(
+  value: string | undefined,
+  label: string,
+  options: NumberArgOptions = {},
+): number {
+  if (value === undefined) {
+    throw new Error(`missing ${label} value`)
+  }
+
+  if (value.trim() === '') {
+    throw new Error(`invalid ${label} ${JSON.stringify(value)}: expected a finite number`)
+  }
+
+  const numberValue = Number(value)
+  return validateNumberValue(numberValue, value, label, options)
+}
+
+export function parseOptionalNumberArg(
+  value: string | undefined,
+  label: string,
+  fallback: number,
+  options: NumberArgOptions = {},
+): number {
+  return value === undefined
+    ? validateNumberValue(fallback, fallback, label, options)
+    : parseNumberArg(value, label, options)
+}
+
 function parseJsonValue(value: string): unknown {
   try {
     return JSON.parse(value)
@@ -117,10 +176,7 @@ export function parseWaitArgs(rest: string[]): WaitArgs {
 
     if (value === '--timeout') {
       const rawTimeout = rest[index + 1]
-      if (rawTimeout === undefined) {
-        throw new Error('missing timeout value')
-      }
-      waitArgs.timeout = Number(rawTimeout) || waitArgs.timeout
+      waitArgs.timeout = parseNumberArg(rawTimeout, 'timeout', { min: 1, integer: true })
       index += 1
       continue
     }
@@ -181,11 +237,8 @@ export function parseWaitArgs(rest: string[]): WaitArgs {
 
     if (value === '--ms') {
       const rawMs = rest[index + 1]
-      if (rawMs === undefined) {
-        throw new Error('missing ms value')
-      }
       waitArgs.type = 'time'
-      waitArgs.ms = Number(rawMs)
+      waitArgs.ms = parseNumberArg(rawMs, 'ms', { min: 0, integer: true })
       index += 1
       continue
     }
@@ -209,14 +262,14 @@ export function parseWaitArgs(rest: string[]): WaitArgs {
       waitArgs.text = second || ''
     } else if (first === 'time' || first === 'ms') {
       waitArgs.type = 'time'
-      waitArgs.ms = Number(second || first)
+      waitArgs.ms = parseNumberArg(second, 'wait time', { min: 0, integer: true })
     } else if (first === 'load') {
       waitArgs.type = second === 'networkidle' ? 'networkidle' : 'load'
     } else if (first === 'networkidle') {
       waitArgs.type = 'networkidle'
     } else if (!isNaN(Number(first)) && positionals.length === 1) {
       waitArgs.type = 'time'
-      waitArgs.ms = Number(first)
+      waitArgs.ms = parseNumberArg(first, 'wait time', { min: 0, integer: true })
     } else {
       waitArgs.type = 'selector'
       waitArgs.selector = first
@@ -379,10 +432,11 @@ export function parseScreenshotArgs(rest: string[]): ScreenshotArgs {
 
     if (value === '--screenshot-quality') {
       const rawQuality = rest[index + 1]
-      if (rawQuality === undefined) {
-        throw new Error('missing screenshot quality value')
-      }
-      screenshotArgs.quality = Number(rawQuality)
+      screenshotArgs.quality = parseNumberArg(rawQuality, 'screenshot quality', {
+        min: 0,
+        max: 100,
+        integer: true,
+      })
       index += 1
       continue
     }
