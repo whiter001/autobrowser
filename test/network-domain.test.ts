@@ -53,14 +53,15 @@ describe('network domain HAR export', () => {
     state.network.requestMap = new Map(
       [beforeRecording, firstRecorded, secondRecorded].map((record) => [record.id, record]),
     )
+    const emptyDebuggerCommand = async <TResult = unknown>(): Promise<TResult> => ({}) as TResult
 
     const network = createNetworkDomain({
       state,
       getTargetTab: async () => {
         throw new Error('not used in this test')
       },
-      sendRawDebuggerCommand: async () => ({}),
-      sendDebuggerCommand: async () => ({}),
+      sendRawDebuggerCommand: emptyDebuggerCommand,
+      sendDebuggerCommand: emptyDebuggerCommand,
     })
 
     const result = network.stopHar() as {

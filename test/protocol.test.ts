@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from 'bun:test'
 import { mkdtemp, rm, stat } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
-import { readJsonFile, writeJsonFile } from '../src/core/protocol.js'
+import { isValidPort, readJsonFile, writeJsonFile } from '../src/core/protocol.js'
 
 describe('protocol file helpers', () => {
   const tempDirs: string[] = []
@@ -26,5 +26,15 @@ describe('protocol file helpers', () => {
     if (process.platform !== 'win32') {
       expect((await stat(filePath)).mode & 0o777).toBe(0o600)
     }
+  })
+})
+
+describe('protocol validation helpers', () => {
+  test('validates TCP port ranges', () => {
+    expect(isValidPort(1)).toBe(true)
+    expect(isValidPort(65535)).toBe(true)
+    expect(isValidPort(0)).toBe(false)
+    expect(isValidPort(65536)).toBe(false)
+    expect(isValidPort(Number.NaN)).toBe(false)
   })
 })

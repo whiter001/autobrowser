@@ -8,7 +8,6 @@ import { parseWaitArgs } from '../src/cli/parse.js'
 const originalFetch = globalThis.fetch
 const originalStdoutWrite = process.stdout.write.bind(process.stdout)
 const originalStderrWrite = process.stderr.write.bind(process.stderr)
-const originalAutobrowserHome = process.env.AUTOBROWSER_HOME
 let cliRunQueue = Promise.resolve()
 
 function interceptStream(chunks) {
@@ -157,6 +156,24 @@ describe('cli helpers', () => {
     expect(result.stdout).toContain('time <ms>')
     expect(result.stdout).toContain('fixed duration in milliseconds')
     expect(result.stdout).toContain('--ms <ms> wait a fixed duration in milliseconds')
+  })
+
+  test('rejects missing global flag values before dispatching commands', async () => {
+    const result = await runCli(['click', '--tab'])
+
+    expect(result.exitCode).toBe(1)
+    expect(result.fetchCalls).toHaveLength(0)
+    expect(result.stderr).toContain('missing value for --tab')
+  })
+
+  test('rejects invalid global port values before dispatching commands', async () => {
+    for (const portValue of ['not-a-port', '0', '65536']) {
+      const result = await runCli(['--ipc-port', portValue, 'status'])
+
+      expect(result.exitCode).toBe(1)
+      expect(result.fetchCalls).toHaveLength(0)
+      expect(result.stderr).toContain('invalid --ipc-port')
+    }
   })
 })
 
@@ -515,6 +532,26 @@ describe('cli command routing', () => {
     ])
   })
 
+  test('allows browser args that look like CLI flags', async () => {
+    const browserArg = '--profile-directory=Profile 1'
+
+    const result = await runCli(
+      ['connect', '--browser-command', 'chrome', '--browser-arg', browserArg],
+      { ok: true, token: 'live-token', relayPort: 48011, ipcPort: 48012 },
+      {
+        openUrl: async () => {},
+      },
+    )
+
+    expect(result.exitCode).toBe(0)
+    expect(result.browserCalls).toEqual([
+      {
+        command: 'chrome',
+        args: [browserArg],
+      },
+    ])
+  })
+
   test('connect repairs an invalid persisted extension id', async () => {
     const homeDir = await mkdtemp(path.join(os.tmpdir(), 'autobrowser-invalid-config-'))
     const stateDir = path.join(homeDir, '.autobrowser')
@@ -664,7 +701,7 @@ describe('cli command routing', () => {
             },
           }
         },
-        spawnDetachedProcess: (command, args) => ({
+        spawnDetachedProcess: () => ({
           pid: 12345,
           unref() {},
         }),

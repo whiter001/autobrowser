@@ -11,7 +11,7 @@ import { resolveConnectLaunchConfig, type BrowserLaunchConfig } from './core/con
 import { getExtensionUrl } from './core/extension.js'
 import { buildHarPayload, compareHarRecords } from './core/har.js'
 import { commandSupportsFrameTarget, commandSupportsTabTarget } from './core/command-spec.js'
-import { DEFAULT_IPC_PORT, DEFAULT_RELAY_PORT, getHomeDir } from './core/protocol.js'
+import { DEFAULT_IPC_PORT, DEFAULT_RELAY_PORT, getHomeDir, isValidPort } from './core/protocol.js'
 import { printHelp } from './cli/help.js'
 import { type ScreenshotArgs } from './cli/parse.js'
 import {
@@ -33,6 +33,30 @@ import { type CommandContext } from './cli/commands/types.js'
 import { type CliDependencies, type CliFlags, type ParsedCli } from './cli/types.js'
 
 const execFileAsync = promisify(execFile)
+
+function readFlagValue(argv: string[], index: number, flag: string): string {
+  if (index + 1 >= argv.length) {
+    throw new Error(`missing value for ${flag}`)
+  }
+
+  const value = argv[index + 1]
+  if (value === undefined) {
+    throw new Error(`missing value for ${flag}`)
+  }
+
+  return value
+}
+
+function parsePortFlag(value: string, flag: string): number {
+  const port = Number(value)
+  if (!isValidPort(port)) {
+    throw new Error(
+      `invalid ${flag} ${JSON.stringify(value)}: expected an integer between 1 and 65535`,
+    )
+  }
+
+  return port
+}
 
 function parseCli(argv: string[]): ParsedCli {
   const flags: CliFlags = {
@@ -72,38 +96,38 @@ function parseCli(argv: string[]): ParsedCli {
     }
 
     if (value === '--tab') {
-      flags.tab = argv[index + 1] || null
+      flags.tab = readFlagValue(argv, index, value)
       index += 1
       continue
     }
 
     if (value === '--frame') {
-      flags.frame = argv[index + 1] || null
+      flags.frame = readFlagValue(argv, index, value)
       index += 1
       continue
     }
 
     if (value === '--file') {
-      flags.file = argv[index + 1] || null
+      flags.file = readFlagValue(argv, index, value)
       index += 1
       continue
     }
 
     if (value === '--server') {
-      flags.server = argv[index + 1] || flags.server
+      flags.server = readFlagValue(argv, index, value)
       serverExplicitlySet = true
       index += 1
       continue
     }
 
     if (value === '--relay-port') {
-      flags.relayPort = Number(argv[index + 1] || flags.relayPort)
+      flags.relayPort = parsePortFlag(readFlagValue(argv, index, value), value)
       index += 1
       continue
     }
 
     if (value === '--ipc-port') {
-      flags.ipcPort = Number(argv[index + 1] || flags.ipcPort)
+      flags.ipcPort = parsePortFlag(readFlagValue(argv, index, value), value)
       if (!serverExplicitlySet) {
         flags.server = `http://127.0.0.1:${flags.ipcPort}`
       }
@@ -112,7 +136,7 @@ function parseCli(argv: string[]): ParsedCli {
     }
 
     if (value === '--extension-id') {
-      flags.extensionId = argv[index + 1] || flags.extensionId
+      flags.extensionId = readFlagValue(argv, index, value)
       index += 1
       continue
     }
@@ -123,13 +147,13 @@ function parseCli(argv: string[]): ParsedCli {
     }
 
     if (value === '--browser-command') {
-      flags.browserCommand = argv[index + 1] || flags.browserCommand
+      flags.browserCommand = readFlagValue(argv, index, value)
       index += 1
       continue
     }
 
     if (value === '--browser-arg') {
-      flags.browserArgs.push(argv[index + 1] || '')
+      flags.browserArgs.push(readFlagValue(argv, index, value))
       index += 1
       continue
     }

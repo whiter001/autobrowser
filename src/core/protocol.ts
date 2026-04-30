@@ -44,6 +44,10 @@ export function createId(prefix: string = 'req'): string {
   return `${prefix}_${crypto.randomUUID().replaceAll('-', '')}`
 }
 
+export function isValidPort(port: number): boolean {
+  return Number.isInteger(port) && port >= 1 && port <= 65535
+}
+
 export async function ensureStateDir(homeDir: string = getHomeDir()): Promise<void> {
   await mkdir(getStateDir(homeDir), { recursive: true })
 }
