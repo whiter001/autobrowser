@@ -10,6 +10,7 @@ import path from 'node:path'
 import { resolveConnectLaunchConfig, type BrowserLaunchConfig } from './core/config.js'
 import { getExtensionUrl } from './core/extension.js'
 import { buildHarPayload, compareHarRecords } from './core/har.js'
+import { commandSupportsFrameTarget, commandSupportsTabTarget } from './core/command-spec.js'
 import { DEFAULT_IPC_PORT, DEFAULT_RELAY_PORT, getHomeDir } from './core/protocol.js'
 import { printHelp } from './cli/help.js'
 import { type ScreenshotArgs } from './cli/parse.js'
@@ -32,72 +33,6 @@ import { type CommandContext } from './cli/commands/types.js'
 import { type CliDependencies, type CliFlags, type ParsedCli } from './cli/types.js'
 
 const execFileAsync = promisify(execFile)
-
-const TAB_TARGET_COMMANDS = new Set([
-  'back',
-  'check',
-  'click',
-  'clipboard',
-  'close',
-  'console',
-  'cookies',
-  'dblclick',
-  'dialog',
-  'drag',
-  'errors',
-  'eval',
-  'fill',
-  'find',
-  'focus',
-  'forward',
-  'frame',
-  'get',
-  'goto',
-  'hover',
-  'is',
-  'keyboard',
-  'network',
-  'pdf',
-  'press',
-  'reload',
-  'screenshot',
-  'scroll',
-  'scrollintoview',
-  'select',
-  'set',
-  'snapshot',
-  'state',
-  'storage',
-  'type',
-  'uncheck',
-  'upload',
-  'wait',
-  'window',
-])
-
-const FRAME_TARGET_COMMANDS = new Set([
-  'check',
-  'click',
-  'dblclick',
-  'drag',
-  'eval',
-  'fill',
-  'find',
-  'focus',
-  'get',
-  'hover',
-  'is',
-  'screenshot',
-  'scroll',
-  'scrollintoview',
-  'select',
-  'snapshot',
-  'storage',
-  'type',
-  'uncheck',
-  'upload',
-  'wait',
-])
 
 function parseCli(argv: string[]): ParsedCli {
   const flags: CliFlags = {
@@ -604,10 +539,10 @@ async function runMain(
     args: object = {},
   ): Promise<CommandResponse> {
     const requestArgs: Record<string, unknown> = { ...args }
-    if (TAB_TARGET_COMMANDS.has(command) && requestArgs.tabId === undefined && flags.tab) {
+    if (commandSupportsTabTarget(command) && requestArgs.tabId === undefined && flags.tab) {
       requestArgs.tabId = flags.tab
     }
-    if (FRAME_TARGET_COMMANDS.has(command) && requestArgs.frame === undefined && flags.frame) {
+    if (commandSupportsFrameTarget(command) && requestArgs.frame === undefined && flags.frame) {
       requestArgs.frame = flags.frame
     }
 

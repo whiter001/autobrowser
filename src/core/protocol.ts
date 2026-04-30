@@ -1,4 +1,4 @@
-import { mkdir, readFile, writeFile } from 'node:fs/promises'
+import { chmod, mkdir, readFile, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 
@@ -66,6 +66,17 @@ export async function readJsonFile<T>(
 export async function writeJsonFile(filePath: string, value: unknown): Promise<void> {
   await mkdir(path.dirname(filePath), { recursive: true })
   await writeFile(filePath, `${JSON.stringify(value, null, 2)}\n`, 'utf8')
+  if (process.platform !== 'win32') {
+    // 本地状态文件可能包含连接 token；权限收紧失败时直接报错，避免留下可被其他用户读取的凭据。
+    try {
+      await chmod(filePath, 0o600)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      throw new Error(`failed to set private file permissions for ${filePath}: ${message}`, {
+        cause: error,
+      })
+    }
+  }
 }
 
 export function jsonResponse(value: unknown, init: ResponseInit = {}): Response {
