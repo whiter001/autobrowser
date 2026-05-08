@@ -258,7 +258,8 @@ const HELP_ROOT = helpNode(
 )
 
 const ROOT_HELP_FLAGS = [
-  '--json        output JSON',
+  '--json        output JSON (default)',
+  '--raw         output raw text',
   '--server URL  target server base URL, default http://127.0.0.1:57979',
   '--stdin       read command body from stdin',
   '--file PATH   read command body from file',

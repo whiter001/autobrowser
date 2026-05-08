@@ -60,7 +60,7 @@ function parsePortFlag(value: string, flag: string): number {
 
 function parseCli(argv: string[]): ParsedCli {
   const flags: CliFlags = {
-    json: false,
+    json: true,
     server: `http://127.0.0.1:${DEFAULT_IPC_PORT}`,
     relayPort: DEFAULT_RELAY_PORT,
     ipcPort: DEFAULT_IPC_PORT,
@@ -82,6 +82,11 @@ function parseCli(argv: string[]): ParsedCli {
     const value = argv[index]
     if (value === '--json') {
       flags.json = true
+      continue
+    }
+
+    if (value === '--raw') {
+      flags.json = false
       continue
     }
 

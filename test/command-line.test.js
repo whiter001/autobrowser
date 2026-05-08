@@ -217,7 +217,10 @@ describe('cli command routing', () => {
       command: 'get',
       args: { attr: 'title' },
     })
-    expect(result.stdout).toContain('Example title')
+    expect(JSON.parse(result.stdout)).toMatchObject({
+      ok: true,
+      result: 'Example title',
+    })
   })
 
   test('returns the local cdp websocket url without requiring a selector', async () => {
@@ -229,7 +232,19 @@ describe('cli command routing', () => {
     expect(result.exitCode).toBe(0)
     expect(result.fetchCalls).toHaveLength(1)
     expect(String(result.fetchCalls[0].url)).toBe('http://127.0.0.1:57979/status')
-    expect(result.stdout).toContain('ws://127.0.0.1:48001/ws?token=test-token')
+    expect(JSON.parse(result.stdout)).toBe('ws://127.0.0.1:48001/ws?token=test-token')
+  })
+
+  test('returns raw text when --raw is set', async () => {
+    const result = await runCli(['--raw', 'get', 'cdp-url'], {
+      token: 'test-token',
+      relayPort: 48001,
+    })
+
+    expect(result.exitCode).toBe(0)
+    expect(result.fetchCalls).toHaveLength(1)
+    expect(String(result.fetchCalls[0].url)).toBe('http://127.0.0.1:57979/status')
+    expect(result.stdout.trim()).toBe('ws://127.0.0.1:48001/ws?token=test-token')
   })
 
   test('returns a non-zero code when status lookup fails', async () => {
@@ -1252,7 +1267,13 @@ describe('cli command routing', () => {
         quality: 80,
       },
     })
-    expect(result.stdout.trim()).toBe(outputPath)
+    expect(JSON.parse(result.stdout)).toMatchObject({
+      path: outputPath,
+      mimeType: 'image/jpeg',
+      format: 'jpeg',
+      full: true,
+      annotate: true,
+    })
     expect((await readFile(outputPath)).toString()).toBe('screenshot-bytes')
   })
 
@@ -1299,7 +1320,7 @@ describe('cli command routing', () => {
       },
     )
 
-    const savedPath = result.stdout.trim()
+    const savedPath = JSON.parse(result.stdout).path
     expect(result.exitCode).toBe(0)
     expect(result.fetchCalls).toHaveLength(1)
     expect(result.fetchCalls[0].body).toEqual({
@@ -1326,7 +1347,7 @@ describe('cli command routing', () => {
       },
     })
 
-    const savedPath = result.stdout.trim()
+    const savedPath = JSON.parse(result.stdout).path
     expect(result.exitCode).toBe(0)
     expect(result.fetchCalls).toHaveLength(1)
     expect(result.fetchCalls[0].body).toEqual({
@@ -1371,7 +1392,13 @@ describe('cli command routing', () => {
         selector: '#submit',
       },
     })
-    expect(result.stderr).toContain('click failed')
+    expect(JSON.parse(result.stdout)).toMatchObject({
+      ok: false,
+      error: {
+        message: 'click failed',
+      },
+    })
+    expect(result.stderr).toBe('')
   })
 
   test('routes type commands to the extension', async () => {
@@ -1673,7 +1700,7 @@ describe('cli command routing', () => {
     expect(result.exitCode).toBe(0)
     expect(result.fetchCalls).toHaveLength(1)
 
-    const outputPath = result.stdout.trim()
+    const outputPath = JSON.parse(result.stdout).result
     expect(outputPath.length).toBeGreaterThan(0)
 
     const harContent = await readFile(outputPath, 'utf8')
