@@ -823,6 +823,42 @@ describe('cli command routing', () => {
     expect(result.stdout).toContain('background')
   })
 
+  test('server serve refuses to start when the ipc port is already in use', async () => {
+    const result = await runCli(
+      ['server', '--serve'],
+      { ok: true, result: { ok: true } },
+      {
+        fetchImpl: async (url) => {
+          if (String(url) === 'http://127.0.0.1:57978/status') {
+            return {
+              ok: false,
+              async json() {
+                return { ok: false }
+              },
+            }
+          }
+
+          if (String(url) === 'http://127.0.0.1:57979/status') {
+            return {
+              ok: true,
+              async json() {
+                return { ok: true }
+              },
+            }
+          }
+
+          throw new Error(`unexpected request: ${String(url)}`)
+        },
+      },
+    )
+
+    expect(result.exitCode).toBe(1)
+    expect(result.fetchCalls).toHaveLength(2)
+    expect(result.spawnCalls).toHaveLength(0)
+    expect(result.stdout).not.toContain('autobrowser server started')
+    expect(result.stderr).toContain('Server already running on port 57979')
+  })
+
   test('server ignores unrelated ipc responses before deciding it is already running', async () => {
     let callCount = 0
     const result = await runCli(
