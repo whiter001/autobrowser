@@ -86,7 +86,7 @@ export interface PageErrorRecord {
 
 export interface ExtensionState {
   socket: WebSocket | null
-  reconnectTimer: ReturnType<typeof setTimeout> | null
+  reconnectTimer: number | ReturnType<typeof setTimeout> | null
   connecting: boolean
   suppressCloseError: boolean
   attachedTabs: Set<number>

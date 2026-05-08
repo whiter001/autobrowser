@@ -197,11 +197,11 @@ describe('extension background connection', () => {
         if (Array.isArray(keys)) {
           return Object.fromEntries(
             keys.map((key) => [key, storageValues[key as keyof typeof storageValues]]),
-          ) as T
+          ) as unknown as T
         }
 
         if (typeof keys === 'string') {
-          return { [keys]: storageValues[keys as keyof typeof storageValues] } as T
+          return { [keys]: storageValues[keys as keyof typeof storageValues] } as unknown as T
         }
 
         return storageValues as unknown as T
