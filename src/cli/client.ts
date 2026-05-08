@@ -4,6 +4,10 @@ export interface CommandResponse {
   error?: { message: string; code?: string }
 }
 
+export interface RequestCommandOptions {
+  token?: string | null
+}
+
 export function shouldOpenInNewTab(payload: CommandResponse): boolean {
   if (payload.ok !== false) {
     return false
@@ -35,12 +39,18 @@ export async function requestCommandRaw(
   baseUrl: string,
   command: string,
   args: object = {},
+  options: RequestCommandOptions = {},
 ): Promise<CommandResponse> {
+  const headers: Record<string, string> = {
+    'content-type': 'application/json',
+  }
+  if (options.token) {
+    headers.authorization = `Bearer ${options.token}`
+  }
+
   const response = await fetch(`${baseUrl}/command`, {
     method: 'POST',
-    headers: {
-      'content-type': 'application/json',
-    },
+    headers,
     body: JSON.stringify({ command, args }),
   })
 

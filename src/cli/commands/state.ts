@@ -1,5 +1,9 @@
 import { isRecord } from '../client.js'
-import { parseNetworkRequestsArgs, parseNetworkRouteArgs } from '../parse.js'
+import {
+  parseNetworkRequestsArgs,
+  parseNetworkRouteArgs,
+  parseOptionalNumberArg,
+} from '../parse.js'
 import {
   createActionCommand,
   helpRequested,
@@ -89,12 +93,27 @@ async function handleSet(rest: string[], context: CommandContext): Promise<numbe
   }
 
   if (type === 'viewport') {
+    const viewportArgs = parseOrWriteError(() => ({
+      width: parseOptionalNumberArg(subArgs[0], 'viewport width', 1280, {
+        min: 1,
+        integer: true,
+      }),
+      height: parseOptionalNumberArg(subArgs[1], 'viewport height', 720, {
+        min: 1,
+        integer: true,
+      }),
+      deviceScaleFactor: parseOptionalNumberArg(subArgs[2], 'device scale factor', 1, {
+        min: 0,
+      }),
+      mobile: subArgs[3] === 'mobile',
+    }))
+    if (!viewportArgs) {
+      return 1
+    }
+
     await requestAndWrite(context, 'set', {
       type: 'viewport',
-      width: Number(subArgs[0] || 1280),
-      height: Number(subArgs[1] || 720),
-      deviceScaleFactor: Number(subArgs[2] || 1),
-      mobile: subArgs[3] === 'mobile',
+      ...viewportArgs,
     })
     return 0
   }
@@ -124,11 +143,18 @@ async function handleSet(rest: string[], context: CommandContext): Promise<numbe
   }
 
   if (type === 'geo') {
+    const geoArgs = parseOrWriteError(() => ({
+      latitude: parseOptionalNumberArg(subArgs[0], 'latitude', 0, { min: -90, max: 90 }),
+      longitude: parseOptionalNumberArg(subArgs[1], 'longitude', 0, { min: -180, max: 180 }),
+      accuracy: parseOptionalNumberArg(subArgs[2], 'accuracy', 1, { min: 0 }),
+    }))
+    if (!geoArgs) {
+      return 1
+    }
+
     await requestAndWrite(context, 'set', {
       type: 'geo',
-      latitude: Number(subArgs[0] || 0),
-      longitude: Number(subArgs[1] || 0),
-      accuracy: Number(subArgs[2] || 1),
+      ...geoArgs,
     })
     return 0
   }

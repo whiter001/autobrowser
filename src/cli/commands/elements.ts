@@ -1,4 +1,4 @@
-import { parseFindArgs } from '../parse.js'
+import { parseFindArgs, parseOptionalNumberArg } from '../parse.js'
 import {
   createSingleArgRequestCommand,
   helpRequested,
@@ -101,10 +101,17 @@ async function handleScroll(rest: string[], context: CommandContext): Promise<nu
     return 0
   }
 
+  const scrollArgs = parseOrWriteError(() => ({
+    deltaX: parseOptionalNumberArg(rest[1], 'scroll deltaX', 0),
+    deltaY: parseOptionalNumberArg(rest[2], 'scroll deltaY', 100),
+  }))
+  if (!scrollArgs) {
+    return 1
+  }
+
   await requestAndWrite(context, 'scroll', {
     selector: rest[0] || null,
-    deltaX: Number(rest[1] || 0),
-    deltaY: Number(rest[2] || 100),
+    ...scrollArgs,
   })
   return 0
 }

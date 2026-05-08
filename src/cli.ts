@@ -10,7 +10,8 @@ import path from 'node:path'
 import { resolveConnectLaunchConfig, type BrowserLaunchConfig } from './core/config.js'
 import { getExtensionUrl } from './core/extension.js'
 import { buildHarPayload, compareHarRecords } from './core/har.js'
-import { DEFAULT_IPC_PORT, DEFAULT_RELAY_PORT, getHomeDir } from './core/protocol.js'
+import { commandSupportsFrameTarget, commandSupportsTabTarget } from './core/command-spec.js'
+import { DEFAULT_IPC_PORT, DEFAULT_RELAY_PORT, getHomeDir, isValidPort } from './core/protocol.js'
 import { printHelp } from './cli/help.js'
 import { type ScreenshotArgs } from './cli/parse.js'
 import {
@@ -33,71 +34,29 @@ import { type CliDependencies, type CliFlags, type ParsedCli } from './cli/types
 
 const execFileAsync = promisify(execFile)
 
-const TAB_TARGET_COMMANDS = new Set([
-  'back',
-  'check',
-  'click',
-  'clipboard',
-  'close',
-  'console',
-  'cookies',
-  'dblclick',
-  'dialog',
-  'drag',
-  'errors',
-  'eval',
-  'fill',
-  'find',
-  'focus',
-  'forward',
-  'frame',
-  'get',
-  'goto',
-  'hover',
-  'is',
-  'keyboard',
-  'network',
-  'pdf',
-  'press',
-  'reload',
-  'screenshot',
-  'scroll',
-  'scrollintoview',
-  'select',
-  'set',
-  'snapshot',
-  'state',
-  'storage',
-  'type',
-  'uncheck',
-  'upload',
-  'wait',
-  'window',
-])
+function readFlagValue(argv: string[], index: number, flag: string): string {
+  if (index + 1 >= argv.length) {
+    throw new Error(`missing value for ${flag}`)
+  }
 
-const FRAME_TARGET_COMMANDS = new Set([
-  'check',
-  'click',
-  'dblclick',
-  'drag',
-  'eval',
-  'fill',
-  'find',
-  'focus',
-  'get',
-  'hover',
-  'is',
-  'screenshot',
-  'scroll',
-  'scrollintoview',
-  'select',
-  'snapshot',
-  'storage',
-  'type',
-  'uncheck',
-  'upload',
-  'wait',
-])
+  const value = argv[index + 1]
+  if (value === undefined) {
+    throw new Error(`missing value for ${flag}`)
+  }
+
+  return value
+}
+
+function parsePortFlag(value: string, flag: string): number {
+  const port = Number(value)
+  if (!isValidPort(port)) {
+    throw new Error(
+      `invalid ${flag} ${JSON.stringify(value)}: expected an integer between 1 and 65535`,
+    )
+  }
+
+  return port
+}
 
 function parseCli(argv: string[]): ParsedCli {
   const flags: CliFlags = {
@@ -137,38 +96,38 @@ function parseCli(argv: string[]): ParsedCli {
     }
 
     if (value === '--tab') {
-      flags.tab = argv[index + 1] || null
+      flags.tab = readFlagValue(argv, index, value)
       index += 1
       continue
     }
 
     if (value === '--frame') {
-      flags.frame = argv[index + 1] || null
+      flags.frame = readFlagValue(argv, index, value)
       index += 1
       continue
     }
 
     if (value === '--file') {
-      flags.file = argv[index + 1] || null
+      flags.file = readFlagValue(argv, index, value)
       index += 1
       continue
     }
 
     if (value === '--server') {
-      flags.server = argv[index + 1] || flags.server
+      flags.server = readFlagValue(argv, index, value)
       serverExplicitlySet = true
       index += 1
       continue
     }
 
     if (value === '--relay-port') {
-      flags.relayPort = Number(argv[index + 1] || flags.relayPort)
+      flags.relayPort = parsePortFlag(readFlagValue(argv, index, value), value)
       index += 1
       continue
     }
 
     if (value === '--ipc-port') {
-      flags.ipcPort = Number(argv[index + 1] || flags.ipcPort)
+      flags.ipcPort = parsePortFlag(readFlagValue(argv, index, value), value)
       if (!serverExplicitlySet) {
         flags.server = `http://127.0.0.1:${flags.ipcPort}`
       }
@@ -177,7 +136,7 @@ function parseCli(argv: string[]): ParsedCli {
     }
 
     if (value === '--extension-id') {
-      flags.extensionId = argv[index + 1] || flags.extensionId
+      flags.extensionId = readFlagValue(argv, index, value)
       index += 1
       continue
     }
@@ -188,13 +147,13 @@ function parseCli(argv: string[]): ParsedCli {
     }
 
     if (value === '--browser-command') {
-      flags.browserCommand = argv[index + 1] || flags.browserCommand
+      flags.browserCommand = readFlagValue(argv, index, value)
       index += 1
       continue
     }
 
     if (value === '--browser-arg') {
-      flags.browserArgs.push(argv[index + 1] || '')
+      flags.browserArgs.push(readFlagValue(argv, index, value))
       index += 1
       continue
     }
@@ -405,10 +364,16 @@ function buildFallbackHarEntry(summary: NetworkRequestSummary): Record<string, u
 async function collectHarFromNetwork(
   baseUrl: string,
   startedAt: string | null,
+  token: string | null = null,
 ): Promise<Record<string, unknown>> {
-  const requestListPayload = await requestCommandRaw(baseUrl, 'network', {
-    action: 'requests',
-  })
+  const requestListPayload = await requestCommandRaw(
+    baseUrl,
+    'network',
+    {
+      action: 'requests',
+    },
+    { token },
+  )
 
   if (requestListPayload?.ok === false) {
     throw new Error(requestListPayload.error?.message || 'failed to read network requests')
@@ -435,10 +400,15 @@ async function collectHarFromNetwork(
     }
 
     try {
-      const requestPayload = await requestCommandRaw(baseUrl, 'network', {
-        action: 'request',
-        requestId,
-      })
+      const requestPayload = await requestCommandRaw(
+        baseUrl,
+        'network',
+        {
+          action: 'request',
+          requestId,
+        },
+        { token },
+      )
 
       if (requestPayload?.ok === false) {
         entries.push(buildFallbackHarEntry(request))
@@ -489,6 +459,7 @@ async function runMain(
   const homeDir = getHomeDir()
   const launchUrl = dependencies.openUrl ?? openUrl
   let connectPageOpened = false
+  let commandToken: string | null | undefined
 
   const openRelayConnectPage = async (relayPort: number): Promise<void> => {
     await launchUrl(`http://127.0.0.1:${relayPort}/connect`, null)
@@ -507,6 +478,10 @@ async function runMain(
       typeof serverStatus?.token === 'string' && serverStatus.token
         ? serverStatus.token
         : persistedConnectionInfo?.token || ''
+
+    if (token) {
+      commandToken = token
+    }
 
     const relayPort = normalizeSavedPort(
       serverStatus?.relayPort ?? persistedConnectionInfo?.relayPort,
@@ -598,16 +573,49 @@ async function runMain(
     }
   }
 
+  async function resolveCommandToken(): Promise<string | null> {
+    if (commandToken !== undefined) {
+      return commandToken
+    }
+
+    const persistedConnectionInfo = await readPersistedConnectionInfo(
+      flags.relayPort,
+      flags.ipcPort,
+    )
+    commandToken = persistedConnectionInfo?.token || null
+    return commandToken
+  }
+
+  async function requestCommandWithToken(
+    baseUrl: string,
+    command: string,
+    args: Record<string, unknown>,
+  ): Promise<CommandResponse> {
+    const token = await resolveCommandToken()
+    const payload = await requestCommandRaw(baseUrl, command, args, { token })
+    if (payload.ok !== false || payload.error?.code !== 'UNAUTHORIZED') {
+      return payload
+    }
+
+    const status = await getStatus(baseUrl).catch(() => null)
+    const target = await resolveConnectionTarget(status)
+    if (!target.token || target.token === token) {
+      return payload
+    }
+
+    return await requestCommandRaw(baseUrl, command, args, { token: target.token })
+  }
+
   async function requestCommand(
     baseUrl: string,
     command: string,
     args: object = {},
   ): Promise<CommandResponse> {
     const requestArgs: Record<string, unknown> = { ...args }
-    if (TAB_TARGET_COMMANDS.has(command) && requestArgs.tabId === undefined && flags.tab) {
+    if (commandSupportsTabTarget(command) && requestArgs.tabId === undefined && flags.tab) {
       requestArgs.tabId = flags.tab
     }
-    if (FRAME_TARGET_COMMANDS.has(command) && requestArgs.frame === undefined && flags.frame) {
+    if (commandSupportsFrameTarget(command) && requestArgs.frame === undefined && flags.frame) {
       requestArgs.frame = flags.frame
     }
 
@@ -615,11 +623,11 @@ async function runMain(
       await triggerAutoConnect(baseUrl)
     }
 
-    const payload = await requestCommandRaw(baseUrl, command, requestArgs)
+    const payload = await requestCommandWithToken(baseUrl, command, requestArgs)
     if (flags.autoConnect && !connectPageOpened && shouldTriggerAutoConnect(payload)) {
       const opened = await triggerAutoConnect(baseUrl)
       if (opened) {
-        return await requestCommandRaw(baseUrl, command, requestArgs)
+        return await requestCommandWithToken(baseUrl, command, requestArgs)
       }
     }
 
@@ -653,7 +661,8 @@ async function runMain(
     getCdpUrl,
     extractScreenshotData,
     resolveScreenshotOutputPath,
-    collectHarFromNetwork,
+    collectHarFromNetwork: async (baseUrl, startedAt) =>
+      await collectHarFromNetwork(baseUrl, startedAt, await resolveCommandToken()),
     writeHarFile,
   }
 

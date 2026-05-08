@@ -8,7 +8,6 @@ import { parseWaitArgs } from '../src/cli/parse.js'
 const originalFetch = globalThis.fetch
 const originalStdoutWrite = process.stdout.write.bind(process.stdout)
 const originalStderrWrite = process.stderr.write.bind(process.stderr)
-const originalAutobrowserHome = process.env.AUTOBROWSER_HOME
 let cliRunQueue = Promise.resolve()
 
 function interceptStream(chunks) {
@@ -149,6 +148,12 @@ describe('cli helpers', () => {
     })
   })
 
+  test('rejects invalid wait durations', () => {
+    expect(() => parseWaitArgs(['--timeout', 'soon'])).toThrow('invalid timeout')
+    expect(() => parseWaitArgs(['--ms', ''])).toThrow('invalid ms')
+    expect(() => parseWaitArgs(['time'])).toThrow('missing wait time value')
+  })
+
   test('documents wait durations as milliseconds in help output', async () => {
     const result = await runCli(['help', 'wait'])
 
@@ -157,6 +162,45 @@ describe('cli helpers', () => {
     expect(result.stdout).toContain('time <ms>')
     expect(result.stdout).toContain('fixed duration in milliseconds')
     expect(result.stdout).toContain('--ms <ms> wait a fixed duration in milliseconds')
+  })
+
+  test('rejects missing global flag values before dispatching commands', async () => {
+    const result = await runCli(['click', '--tab'])
+
+    expect(result.exitCode).toBe(1)
+    expect(result.fetchCalls).toHaveLength(0)
+    expect(result.stderr).toContain('missing value for --tab')
+  })
+
+  test('rejects invalid global port values before dispatching commands', async () => {
+    for (const portValue of ['not-a-port', '0', '65536']) {
+      const result = await runCli(['--ipc-port', portValue, 'status'])
+
+      expect(result.exitCode).toBe(1)
+      expect(result.fetchCalls).toHaveLength(0)
+      expect(result.stderr).toContain('invalid --ipc-port')
+    }
+  })
+
+  test('rejects invalid numeric command values before dispatching commands', async () => {
+    const cases = [
+      { argv: ['wait', '--ms', 'soon'], message: 'invalid ms' },
+      {
+        argv: ['screenshot', '--screenshot-quality', '101'],
+        message: 'invalid screenshot quality',
+      },
+      { argv: ['set', 'viewport', 'wide'], message: 'invalid viewport width' },
+      { argv: ['set', 'geo', '91', '0'], message: 'invalid latitude' },
+      { argv: ['scroll', '#main', 'left'], message: 'invalid scroll deltaX' },
+    ]
+
+    for (const testCase of cases) {
+      const result = await runCli(testCase.argv)
+
+      expect(result.exitCode).toBe(1)
+      expect(result.fetchCalls).toHaveLength(0)
+      expect(result.stderr).toContain(testCase.message)
+    }
   })
 })
 
@@ -202,6 +246,69 @@ describe('cli command routing', () => {
     expect(result.exitCode).toBe(1)
     expect(result.fetchCalls).toHaveLength(1)
     expect(result.stderr).toContain('status unavailable')
+  })
+
+  test('sends the persisted token as bearer auth for commands', async () => {
+    const homeDir = await mkdtemp(path.join(os.tmpdir(), 'autobrowser-command-token-'))
+    const stateDir = path.join(homeDir, '.autobrowser')
+    await mkdir(stateDir, { recursive: true })
+    await writeFile(path.join(stateDir, 'token'), JSON.stringify({ token: 'command-token' }))
+
+    const result = await runCli(['click', '#submit'], undefined, { homeDir })
+
+    expect(result.exitCode).toBe(0)
+    expect(result.fetchCalls).toHaveLength(1)
+    expect(result.fetchCalls[0].init.headers.authorization).toBe('Bearer command-token')
+  })
+
+  test('refreshes command auth after an unauthorized response', async () => {
+    const homeDir = await mkdtemp(path.join(os.tmpdir(), 'autobrowser-stale-token-'))
+    const stateDir = path.join(homeDir, '.autobrowser')
+    await mkdir(stateDir, { recursive: true })
+    await writeFile(path.join(stateDir, 'token'), JSON.stringify({ token: 'stale-token' }))
+
+    const result = await runCli(['click', '#submit'], undefined, {
+      homeDir,
+      fetchImpl: async (url, init = {}) => {
+        const body = init.body ? JSON.parse(init.body) : null
+        if (String(url).endsWith('/status')) {
+          return {
+            ok: true,
+            async json() {
+              return { token: 'fresh-token', relayPort: 57978, ipcPort: 57979 }
+            },
+          }
+        }
+
+        if (body?.command === 'click' && init.headers.authorization === 'Bearer stale-token') {
+          return {
+            ok: false,
+            async json() {
+              return { ok: false, error: { message: 'unauthorized', code: 'UNAUTHORIZED' } }
+            },
+          }
+        }
+
+        if (body?.command === 'click' && init.headers.authorization === 'Bearer fresh-token') {
+          return {
+            ok: true,
+            async json() {
+              return { ok: true, result: { clicked: true } }
+            },
+          }
+        }
+
+        throw new Error(`unexpected request: ${String(url)} ${JSON.stringify(body)}`)
+      },
+    })
+
+    expect(result.exitCode).toBe(0)
+    expect(result.fetchCalls.map((call) => String(call.url))).toEqual([
+      'http://127.0.0.1:57979/command',
+      'http://127.0.0.1:57979/status',
+      'http://127.0.0.1:57979/command',
+    ])
+    expect(result.fetchCalls[2].init.headers.authorization).toBe('Bearer fresh-token')
   })
 
   test('routes tab selection by stable handle to the extension', async () => {
@@ -515,6 +622,26 @@ describe('cli command routing', () => {
     ])
   })
 
+  test('allows browser args that look like CLI flags', async () => {
+    const browserArg = '--profile-directory=Profile 1'
+
+    const result = await runCli(
+      ['connect', '--browser-command', 'chrome', '--browser-arg', browserArg],
+      { ok: true, token: 'live-token', relayPort: 48011, ipcPort: 48012 },
+      {
+        openUrl: async () => {},
+      },
+    )
+
+    expect(result.exitCode).toBe(0)
+    expect(result.browserCalls).toEqual([
+      {
+        command: 'chrome',
+        args: [browserArg],
+      },
+    ])
+  })
+
   test('connect repairs an invalid persisted extension id', async () => {
     const homeDir = await mkdtemp(path.join(os.tmpdir(), 'autobrowser-invalid-config-'))
     const stateDir = path.join(homeDir, '.autobrowser')
@@ -664,7 +791,7 @@ describe('cli command routing', () => {
             },
           }
         },
-        spawnDetachedProcess: (command, args) => ({
+        spawnDetachedProcess: () => ({
           pid: 12345,
           unref() {},
         }),

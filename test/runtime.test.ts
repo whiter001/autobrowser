@@ -135,4 +135,40 @@ describe('runtime snapshot', () => {
     })
     expect(result).toEqual({ dispatched: true })
   })
+
+  test('redacts sensitive last command arguments before persisting state', async () => {
+    const homeDir = await mkdtemp(path.join(os.tmpdir(), 'autobrowser-runtime-test-'))
+    tempDirs.push(homeDir)
+
+    const runtime = await createRuntime({ homeDir })
+
+    runtime.setLastCommand('fill', { selector: '#password', value: 'secret-password' })
+    expect(runtime.snapshot().snapshot.lastCommand?.args).toEqual({
+      selector: '#password',
+      value: '[redacted]',
+    })
+
+    runtime.setLastCommand('set', {
+      type: 'headers',
+      headers: [{ name: 'authorization', value: 'Bearer secret' }],
+    })
+    expect(runtime.snapshot().snapshot.lastCommand?.args).toEqual({
+      type: 'headers',
+      headers: '[redacted]',
+    })
+
+    runtime.setLastCommand('eval', { script: 'document.cookie' })
+    expect(runtime.snapshot().snapshot.lastCommand?.args).toEqual({
+      script: '[redacted]',
+    })
+
+    const stateFilePath = path.join(homeDir, '.autobrowser', 'state.json')
+    const persistedState = await waitForStateFile<{
+      snapshot: { lastCommand: { args: Record<string, unknown> } | null }
+    }>(stateFilePath, (state) => state.snapshot?.lastCommand?.args?.script === '[redacted]')
+
+    expect(persistedState.snapshot.lastCommand?.args).toEqual({
+      script: '[redacted]',
+    })
+  })
 })

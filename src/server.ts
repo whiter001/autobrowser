@@ -207,6 +207,19 @@ interface ErrorWithCode extends Error {
   code?: string
 }
 
+function readBearerToken(request: Request): string {
+  const authorization = request.headers.get('authorization') || ''
+  const match = /^Bearer\s+(.+)$/i.exec(authorization)
+  return match?.[1]?.trim() || ''
+}
+
+function unauthorizedResponse(): Response {
+  return jsonResponse(
+    { ok: false, error: { message: 'unauthorized', code: 'UNAUTHORIZED' } },
+    { status: 401 },
+  )
+}
+
 export async function startServers(options: ServerOptions = {}): Promise<StartServersResult> {
   const runtime = await createRuntime(options)
   let shuttingDown = false
@@ -306,6 +319,10 @@ export async function startServers(options: ServerOptions = {}): Promise<StartSe
       }
 
       if (url.pathname === '/command' && request.method === 'POST') {
+        if (readBearerToken(request) !== runtime.runtime.token) {
+          return unauthorizedResponse()
+        }
+
         return request
           .json()
           .then(async (body: unknown) => {
