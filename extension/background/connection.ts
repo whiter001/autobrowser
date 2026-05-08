@@ -336,6 +336,10 @@ export function createConnectionRuntime({
             version: chrome.runtime.getManifest().version,
           }),
         )
+
+        publishState(socket).catch((error) => {
+          console.error('failed to publish initial extension state', error)
+        })
       })
 
       socket.addEventListener('message', async (event) => {
@@ -428,12 +432,6 @@ export function createConnectionRuntime({
           console.warn('failed to close relay socket after websocket error', error)
         }
       })
-
-      try {
-        await publishState(socket)
-      } catch (error) {
-        console.error('failed to publish initial extension state', error)
-      }
     } catch (error) {
       const err = error as ErrorWithCode
       setConnectionStatus('error')
@@ -469,10 +467,6 @@ export function createConnectionRuntime({
       connect().catch((error) => {
         console.error('failed to connect autobrowser extension on startup', error)
       })
-    })
-
-    connect().catch((error) => {
-      console.error('failed to connect autobrowser extension', error)
     })
 
     chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
