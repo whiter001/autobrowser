@@ -11,7 +11,14 @@ import { resolveConnectLaunchConfig, type BrowserLaunchConfig } from './core/con
 import { getExtensionUrl } from './core/extension.js'
 import { buildHarPayload, compareHarRecords } from './core/har.js'
 import { commandSupportsFrameTarget, commandSupportsTabTarget } from './core/command-spec.js'
-import { DEFAULT_IPC_PORT, DEFAULT_RELAY_PORT, getHomeDir, isValidPort } from './core/protocol.js'
+import {
+  DEFAULT_IPC_PORT,
+  DEFAULT_RELAY_PORT,
+  getHomeDir,
+  getTokenPath,
+  isValidPort,
+  writeJsonFile,
+} from './core/protocol.js'
 import { printHelp } from './cli/help.js'
 import { type ScreenshotArgs } from './cli/parse.js'
 import {
@@ -568,9 +575,9 @@ async function runMain(
       return false
     }
 
-    connectPageOpened = true
     try {
       await openExtensionConnectPage(target)
+      connectPageOpened = true
       return true
     } catch (error) {
       console.warn('failed to proactively open extension connect page', error)
@@ -606,6 +613,13 @@ async function runMain(
     const target = await resolveConnectionTarget(status)
     if (!target.token || target.token === token) {
       return payload
+    }
+
+    commandToken = target.token
+    try {
+      await writeJsonFile(getTokenPath(homeDir), { token: target.token })
+    } catch {
+      // 令牌写盘失败不应阻断本次重试；下一次运行仍可重新读取状态重新发现。
     }
 
     return await requestCommandRaw(baseUrl, command, args, { token: target.token })

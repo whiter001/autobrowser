@@ -324,6 +324,9 @@ describe('cli command routing', () => {
       'http://127.0.0.1:57979/command',
     ])
     expect(result.fetchCalls[2].init.headers.authorization).toBe('Bearer fresh-token')
+    expect(JSON.parse(await readFile(path.join(stateDir, 'token'), 'utf8'))).toEqual({
+      token: 'fresh-token',
+    })
   })
 
   test('routes tab selection by stable handle to the extension', async () => {
@@ -523,6 +526,90 @@ describe('cli command routing', () => {
     expect(result.openCalls).toEqual([
       'chrome-extension://bfccnpkjkbhceghimfjgnkigilidldep/connect.html?token=live-token&relayPort=48011&ipcPort=48012',
     ])
+  })
+
+  test('auto-connect retries after an initial connect page launch failure', async () => {
+    let commandCallCount = 0
+    let openCallCount = 0
+
+    const result = await runCli(
+      ['--auto-connect', 'open', 'https://example.com'],
+      { ok: true, result: { navigated: true } },
+      {
+        openUrl: async () => {
+          openCallCount += 1
+          if (openCallCount === 1) {
+            throw new Error('failed to open connect page')
+          }
+        },
+        fetchImpl: async (url, init = {}) => {
+          const body = init.body ? JSON.parse(init.body) : null
+
+          if (String(url).endsWith('/status')) {
+            return {
+              ok: true,
+              async json() {
+                return {
+                  ok: true,
+                  token: 'live-token',
+                  relayPort: 48011,
+                  ipcPort: 48012,
+                  extensionConnected: false,
+                }
+              },
+            }
+          }
+
+          if (body?.command === 'goto') {
+            commandCallCount += 1
+            if (commandCallCount === 1) {
+              return {
+                ok: true,
+                async json() {
+                  return {
+                    ok: false,
+                    error: {
+                      message: 'no extension is connected',
+                      code: 'EXTENSION_DISCONNECTED',
+                    },
+                  }
+                },
+              }
+            }
+
+            return {
+              ok: true,
+              async json() {
+                return {
+                  ok: true,
+                  result: {
+                    navigated: true,
+                  },
+                }
+              },
+            }
+          }
+
+          throw new Error(`unexpected request: ${String(url)} ${JSON.stringify(body)}`)
+        },
+      },
+    )
+
+    expect(result.exitCode).toBe(0)
+    expect(result.openCalls).toHaveLength(2)
+    expect(result.fetchCalls).toHaveLength(4)
+    expect(result.fetchCalls.map((call) => String(call.url))).toEqual([
+      'http://127.0.0.1:57979/status',
+      'http://127.0.0.1:57979/command',
+      'http://127.0.0.1:57979/status',
+      'http://127.0.0.1:57979/command',
+    ])
+    expect(JSON.parse(result.stdout)).toMatchObject({
+      ok: true,
+      result: {
+        navigated: true,
+      },
+    })
   })
 
   test('connect opens the extension page when the server reports a token', async () => {
