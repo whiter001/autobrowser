@@ -41,6 +41,11 @@ const HELP_ROOT = helpNode(
   [
     helpNode('help', 'Show help for a command path.', 'autobrowser help [command ...]'),
     helpNode(
+      'batch',
+      'Execute a JSON array of commands in sequence.',
+      'autobrowser batch [--stdin|--file <path>|--base64] <json-array>',
+    ),
+    helpNode(
       'server',
       'Manage the background relay and IPC servers.',
       'autobrowser server [--extension-id <id>] [--browser-command <command>] [--browser-arg <arg>]',

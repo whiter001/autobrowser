@@ -1,3 +1,4 @@
+import { batchCommandRegistry } from './batch.js'
 import { elementCommandRegistry } from './elements.js'
 import { pageCommandRegistry } from './page.js'
 import { serverCommandRegistry } from './server.js'
@@ -6,6 +7,7 @@ import { tabCommandRegistry } from './tabs.js'
 import type { CommandRegistry } from './types.js'
 
 export const COMMAND_REGISTRY: CommandRegistry = {
+  ...batchCommandRegistry,
   ...serverCommandRegistry,
   ...tabCommandRegistry,
   ...elementCommandRegistry,

@@ -1,4 +1,4 @@
-/// <reference types="bun-types" />
+/// <reference types="bun" />
 /// <reference types="node" />
 /// <reference lib="dom" />
 
