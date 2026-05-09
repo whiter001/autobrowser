@@ -10,6 +10,7 @@ import {
   readJsonFile,
   writeJsonFile,
 } from './protocol.js'
+import { validateCommandArgs } from './command-spec.js'
 
 export interface TabInfo {
   id: number
@@ -451,6 +452,7 @@ export async function createRuntime(options: RuntimeOptions = {}): Promise<Runti
     command: string,
     args: Record<string, unknown> = {},
   ): Promise<unknown> {
+    validateCommandArgs(command, args)
     setLastCommand(command, args)
 
     const connectionTimeoutMs = Math.min(requestTimeoutMs, 10_000)

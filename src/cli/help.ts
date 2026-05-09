@@ -29,6 +29,8 @@ const HELP_ROOT = helpNode(
   [
     '--json',
     '--server <url>',
+    '--relay-port <port>',
+    '--ipc-port <port>',
     '--tab <tN|id>',
     '--frame <@fN|selector>',
     '--stdin',
@@ -48,7 +50,7 @@ const HELP_ROOT = helpNode(
     helpNode(
       'server',
       'Manage the background relay and IPC servers.',
-      'autobrowser server [--extension-id <id>] [--browser-command <command>] [--browser-arg <arg>]',
+      'autobrowser server [--serve] [--relay-port <port>] [--ipc-port <port>] [--extension-id <id>] [--browser-command <command>] [--browser-arg <arg>]',
       undefined,
       [helpNode('stop', 'Stop the background servers.', 'autobrowser server stop')],
     ),
@@ -56,13 +58,13 @@ const HELP_ROOT = helpNode(
     helpNode(
       'connect',
       'Open the extension connect page, starting the local server when needed.',
-      'autobrowser connect [--extension-id <id>] [--browser-command <command>] [--browser-arg <arg>]',
+      'autobrowser connect [--relay-port <port>] [--ipc-port <port>] [--extension-id <id>] [--browser-command <command>] [--browser-arg <arg>]',
     ),
     helpNode('tab', 'Manage tabs.', 'autobrowser tab <list|new|select|close>', undefined, [
       helpNode('list', 'List tabs.', 'autobrowser tab list'),
-      helpNode('new', 'Open a new tab.', 'autobrowser tab new <url>'),
+      helpNode('new', 'Open a new tab.', 'autobrowser tab new [url]'),
       helpNode('select', 'Select a tab by handle.', 'autobrowser tab select <tN>'),
-      helpNode('close', 'Close a tab by handle.', 'autobrowser tab close [tN]'),
+      helpNode('close', 'Close the current tab, a specific tab, or all tabs.', 'autobrowser tab close [tN|--all]'),
     ]),
     helpNode('open', 'Navigate to a URL.', 'autobrowser open <url>'),
     helpNode('goto', 'Navigate to a URL.', 'autobrowser goto <url>'),
@@ -84,7 +86,7 @@ const HELP_ROOT = helpNode(
     helpNode(
       'find',
       'Find elements by role, text, or label and optionally act on them.',
-      'autobrowser find <role|text|label> ...',
+      'autobrowser find <role|text|label> <query> [locate|click|fill|type|hover|focus|check|uncheck|text] [value]',
       ['--name <name>', '--exact'],
     ),
     helpNode('type', 'Type text into a selector.', 'autobrowser type <selector> <value>'),
@@ -124,7 +126,12 @@ const HELP_ROOT = helpNode(
     helpNode(
       'get',
       'Read page or element data.',
-      'autobrowser get <text|html|value|title|url|cdp-url|count|attr|box|styles> [selector]',
+      'autobrowser get <attribute> [selector]',
+      [
+        'title, url, and cdp-url read the current page and ignore selector',
+        'text, html, value, count, box, and styles read from the selector',
+        'other attribute names are passed through to the page element',
+      ],
     ),
     helpNode('dialog', 'Handle dialogs.', 'autobrowser dialog <accept|dismiss|status>', undefined, [
       helpNode('accept', 'Accept the active dialog.', 'autobrowser dialog accept [promptText]'),
@@ -271,6 +278,8 @@ const ROOT_HELP_FLAGS = [
   '--json        output JSON (default)',
   '--raw         output raw text',
   '--server URL  target server base URL, default http://127.0.0.1:57979',
+  '--relay-port <port> relay server port',
+  '--ipc-port <port> control server port',
   '--stdin       read command body from stdin',
   '--file PATH   read command body from file',
   '--base64      decode command body from base64',
@@ -334,6 +343,7 @@ function renderHelp(node: HelpNode, isRoot = false): string {
     lines.push('Commands:')
     for (const child of node.children) {
       lines.push(`  ${child.name.padEnd(18)} ${child.summary}`)
+      lines.push(`    ${child.usage}`)
     }
   }
 

@@ -13,6 +13,7 @@ import path from 'node:path'
 import { resolveConnectLaunchConfig, type BrowserLaunchConfig } from './core/config.js'
 import { getExtensionUrl } from './core/extension.js'
 import { buildHarPayload, compareHarRecords } from './core/har.js'
+import { validateCommandArgs } from './core/command-spec.js'
 import { commandSupportsFrameTarget, commandSupportsTabTarget } from './core/command-spec.js'
 import {
   DEFAULT_IPC_PORT,
@@ -340,6 +341,22 @@ function writeHelp(pathParts: string[] = []): 0 {
     process.stdout.write(`${line}\n`)
   }
   return 0
+}
+
+function createInvalidCommandArgsResponse(error: unknown): CommandResponse {
+  const message = error instanceof Error ? error.message : String(error)
+  const validationError = error as { code?: string; details?: unknown }
+
+  return {
+    ok: false,
+    error: {
+      message,
+      code: validationError.code || 'INVALID_COMMAND_ARGS',
+      ...(typeof validationError.details !== 'undefined'
+        ? { details: validationError.details }
+        : {}),
+    },
+  }
 }
 
 async function readStdin(): Promise<string> {
@@ -724,6 +741,12 @@ async function runMain(
     }
     if (commandSupportsFrameTarget(command) && requestArgs.frame === undefined && flags.frame) {
       requestArgs.frame = flags.frame
+    }
+
+    try {
+      validateCommandArgs(command, requestArgs)
+    } catch (error) {
+      return createInvalidCommandArgsResponse(error)
     }
 
     if (flags.autoConnect && !connectPageOpened) {

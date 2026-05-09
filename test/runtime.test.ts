@@ -136,6 +136,17 @@ describe('runtime snapshot', () => {
     expect(result).toEqual({ dispatched: true })
   })
 
+  test('rejects invalid command arguments before waiting for an extension', async () => {
+    const homeDir = await mkdtemp(path.join(os.tmpdir(), 'autobrowser-runtime-test-'))
+    tempDirs.push(homeDir)
+
+    const runtime = await createRuntime({ homeDir, requestTimeoutMs: 200 })
+
+    await expect(runtime.dispatchCommand('goto', { url: 123 as never })).rejects.toMatchObject({
+      code: 'INVALID_COMMAND_ARGS',
+    })
+  })
+
   test('records heartbeat acknowledgements from the extension', async () => {
     const homeDir = await mkdtemp(path.join(os.tmpdir(), 'autobrowser-runtime-test-'))
     tempDirs.push(homeDir)

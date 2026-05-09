@@ -116,6 +116,11 @@ async function handleBatch(rest: string[], context: CommandContext): Promise<num
   })
 
   if (payload.ok === false) {
+    if (payload.error?.code === 'INVALID_COMMAND_ARGS') {
+      context.writeResult(payload)
+      return 1
+    }
+
     context.writeResult(buildBatchFailurePayload(payload))
     return 1
   }

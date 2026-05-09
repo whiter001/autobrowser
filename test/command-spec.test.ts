@@ -5,10 +5,12 @@ import {
   commandSupportsFrameTarget,
   commandSupportsTabTarget,
   getCommandSpec,
+  validateCommandArgs,
 } from '../src/core/command-spec.js'
 
 const NON_AMBIENT_ROUTER_COMMANDS = new Set([
   'open',
+  'batch',
   'status',
   'tab.close',
   'tab.list',
@@ -83,5 +85,46 @@ describe('command specs', () => {
     const missingRouterCommands = cliCommands.filter((command) => !routerCommands.has(command))
 
     expect(missingRouterCommands).toEqual([])
+  })
+
+  test('validates common command argument shapes', () => {
+    expect(() => validateCommandArgs('goto', { url: 123 })).toThrow(
+      'invalid command arguments for goto: url must be a string',
+    )
+    expect(() =>
+      validateCommandArgs('batch', { steps: [{ command: 'goto', args: { url: 123 } }] }),
+    ).toThrow(
+      'invalid command arguments for batch: step 1: invalid command arguments for goto: url must be a string',
+    )
+    expect(() => validateCommandArgs('goto', { url: 'https://example.com' })).not.toThrow()
+  })
+
+  test('covers the remaining command schema gaps', () => {
+    expect(() => validateCommandArgs('close', { all: 'yes' })).toThrow(
+      'invalid command arguments for close: all must be a boolean',
+    )
+    expect(() => validateCommandArgs('dialog', { action: 'dismiss' })).toThrow(
+      'invalid command arguments for dialog: unsupported action',
+    )
+    expect(() => validateCommandArgs('scroll', { selector: 123 })).toThrow(
+      'invalid command arguments for scroll: selector must be a string',
+    )
+    expect(() => validateCommandArgs('upload', { selector: '#file', files: [] })).toThrow(
+      'invalid command arguments for upload: files must not be empty',
+    )
+    expect(() => validateCommandArgs('find', { strategy: 'role', query: 'button' })).toThrow(
+      'invalid command arguments for find: role must be a non-empty string',
+    )
+    expect(() => validateCommandArgs('window', { action: 'close' })).toThrow(
+      'invalid command arguments for window: unsupported action',
+    )
+    expect(() =>
+      validateCommandArgs('find', {
+        strategy: 'text',
+        query: 'submit',
+        action: 'fill',
+        value: 'ok',
+      }),
+    ).not.toThrow()
   })
 })

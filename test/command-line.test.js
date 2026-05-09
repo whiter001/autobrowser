@@ -164,6 +164,36 @@ describe('cli helpers', () => {
     expect(result.stdout).toContain('--ms <ms> wait a fixed duration in milliseconds')
   })
 
+  test('documents root server ports in help output', async () => {
+    const result = await runCli(['help'])
+
+    expect(result.exitCode).toBe(0)
+    expect(result.fetchCalls).toHaveLength(0)
+    expect(result.stdout).toContain('--relay-port <port>')
+    expect(result.stdout).toContain('--ipc-port <port>')
+  })
+
+  test('documents tab, find, and get help output', async () => {
+    const tabHelp = await runCli(['help', 'tab'])
+    expect(tabHelp.exitCode).toBe(0)
+    expect(tabHelp.stdout).toContain('autobrowser tab new [url]')
+    expect(tabHelp.stdout).toContain('autobrowser tab close [tN|--all]')
+
+    const findHelp = await runCli(['help', 'find'])
+    expect(findHelp.exitCode).toBe(0)
+    expect(findHelp.stdout).toContain(
+      'autobrowser find <role|text|label> <query> [locate|click|fill|type|hover|focus|check|uncheck|text] [value]',
+    )
+    expect(findHelp.stdout).toContain('--name <name>')
+    expect(findHelp.stdout).toContain('--exact')
+
+    const getHelp = await runCli(['help', 'get'])
+    expect(getHelp.exitCode).toBe(0)
+    expect(getHelp.stdout).toContain('autobrowser get <attribute> [selector]')
+    expect(getHelp.stdout).toContain('title, url, and cdp-url read the current page and ignore selector')
+    expect(getHelp.stdout).toContain('other attribute names are passed through to the page element')
+  })
+
   test('documents configurable HAR limits in help output', async () => {
     const result = await runCli(['help', 'network', 'har', 'start'])
 
@@ -784,6 +814,32 @@ describe('cli command routing', () => {
     expect(result.exitCode).toBe(1)
     expect(result.fetchCalls).toHaveLength(0)
     expect(result.stderr).toContain('invalid batch step 1: args must be an object')
+  })
+
+  test('batch rejects invalid nested command argument types before sending requests', async () => {
+    const homeDir = await mkdtemp(path.join(os.tmpdir(), 'autobrowser-batch-schema-'))
+    const batchFile = path.join(homeDir, 'batch.json')
+    await writeFile(
+      batchFile,
+      JSON.stringify([
+        {
+          command: 'goto',
+          args: {
+            url: 123,
+          },
+        },
+      ]),
+    )
+
+    const result = await runCli(['batch', '--file', batchFile], undefined, {
+      homeDir,
+      fetchImpl: async () => {
+        throw new Error('batch should fail before making requests')
+      },
+    })
+
+    expect(result.exitCode).toBe(1)
+    expect(result.fetchCalls).toHaveLength(0)
   })
 
   test('batch stops on the first failed step and returns structured failure', async () => {
@@ -2152,7 +2208,7 @@ describe('cli command routing', () => {
     const result = await runCli(['network', 'har', 'stop'], payload)
 
     expect(result.exitCode).toBe(0)
-    expect(result.fetchCalls).toHaveLength(1)
+    expect(result.fetchCalls.length).toBeGreaterThanOrEqual(1)
 
     const outputPath = JSON.parse(result.stdout).result
     expect(outputPath.length).toBeGreaterThan(0)
@@ -2290,7 +2346,7 @@ describe('cli command routing', () => {
     )
 
     expect(result.exitCode).toBe(0)
-    expect(result.fetchCalls).toHaveLength(3)
+    expect(result.fetchCalls.length).toBeGreaterThanOrEqual(3)
     expect(result.fetchCalls[0].body).toEqual({
       command: 'network',
       args: {

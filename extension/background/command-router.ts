@@ -7,6 +7,7 @@ import {
   windowsUpdate,
 } from './chrome.js'
 import { getOrCreateTabHandle, rememberTargetTab, toTabSummary } from './targeting.js'
+import { validateCommandArgs } from '../../src/core/command-spec.js'
 import type {
   CommandArgs,
   CommandMessage,
@@ -646,9 +647,7 @@ export function createCommandRouter({
   }
 
   async function executeCommand(command: string, args: CommandArgs = {}) {
-    if (command === 'batch') {
-      return await handleBatchCommand(args)
-    }
+    validateCommandArgs(command, args)
 
     const tabId = readTabInputArg(args, 'tabId')
     const handle = readTabInputArg(args, 'handle')
@@ -818,6 +817,8 @@ export function createCommandRouter({
         return { messages: state.consoleMessages }
       case 'errors':
         return { errors: state.pageErrors }
+      case 'batch':
+        return await handleBatchCommand(args)
       case 'network':
         if (action === 'route') {
           return await network.routeRequest(tabId, url, args.abort === true, args.body)

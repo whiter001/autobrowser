@@ -1,6 +1,6 @@
 ---
 name: autobrowser
-description: "Use when automating browser tasks with autobrowser: start the server, connect the extension, navigate pages, click/fill/type, inspect tabs and windows, manage state/cookies/storage, capture screenshots and PDFs, route network requests, and export HAR files."
+description: 'Use when automating browser tasks with autobrowser: start the server, connect the extension, navigate pages, click/fill/type, inspect tabs and windows, manage state/cookies/storage, capture screenshots and PDFs, route network requests, and export HAR files.'
 ---
 
 # autobrowser Skill
