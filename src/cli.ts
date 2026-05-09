@@ -2,7 +2,10 @@
 /// <reference types="node" />
 /// <reference lib="dom" />
 
-import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises'
+import { createWriteStream } from 'node:fs'
+import { mkdir, mkdtemp, readFile } from 'node:fs/promises'
+import { Readable } from 'node:stream'
+import { pipeline } from 'node:stream/promises'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import os from 'node:os'
@@ -40,6 +43,7 @@ import { type CommandContext } from './cli/commands/types.js'
 import { type CliDependencies, type CliFlags, type ParsedCli } from './cli/types.js'
 
 const execFileAsync = promisify(execFile)
+const JSON_INDENT = '  '
 
 function readFlagValue(argv: string[], index: number, flag: string): string {
   if (index + 1 >= argv.length) {
@@ -176,11 +180,95 @@ function parseCli(argv: string[]): ParsedCli {
   return { flags, args }
 }
 
+function* serializeJsonValue(
+  value: unknown,
+  depth: number = 0,
+  seen: Set<object> = new Set<object>(),
+): Generator<string> {
+  if (value === null) {
+    yield 'null'
+    return
+  }
+
+  const valueType = typeof value
+  if (valueType === 'string' || valueType === 'number' || valueType === 'boolean') {
+    yield JSON.stringify(value)
+    return
+  }
+
+  if (valueType === 'bigint') {
+    throw new TypeError('Do not know how to serialize a BigInt')
+  }
+
+  if (valueType === 'undefined' || valueType === 'function' || valueType === 'symbol') {
+    yield 'null'
+    return
+  }
+
+  const objectValue = value as Record<string, unknown>
+  if (seen.has(objectValue)) {
+    throw new TypeError('Converting circular structure to JSON')
+  }
+
+  seen.add(objectValue)
+  try {
+    if (Array.isArray(objectValue)) {
+      if (objectValue.length === 0) {
+        yield '[]'
+        return
+      }
+
+      yield '[\n'
+      for (let index = 0; index < objectValue.length; index += 1) {
+        yield `${JSON_INDENT.repeat(depth + 1)}`
+        const item = objectValue[index]
+        yield* serializeJsonValue(
+          item === undefined || typeof item === 'function' || typeof item === 'symbol'
+            ? null
+            : item,
+          depth + 1,
+          seen,
+        )
+        yield index < objectValue.length - 1 ? ',\n' : '\n'
+      }
+
+      yield `${JSON_INDENT.repeat(depth)}]`
+      return
+    }
+
+    const entries = Object.entries(objectValue).filter(([, entryValue]) => {
+      const entryType = typeof entryValue
+      return entryValue !== undefined && entryType !== 'function' && entryType !== 'symbol'
+    })
+
+    if (entries.length === 0) {
+      yield '{}'
+      return
+    }
+
+    yield '{\n'
+    for (let index = 0; index < entries.length; index += 1) {
+      const [key, entryValue] = entries[index]!
+      yield `${JSON_INDENT.repeat(depth + 1)}${JSON.stringify(key)}: `
+      yield* serializeJsonValue(entryValue, depth + 1, seen)
+      yield index < entries.length - 1 ? ',\n' : '\n'
+    }
+
+    yield `${JSON_INDENT.repeat(depth)}}`
+  } finally {
+    seen.delete(objectValue)
+  }
+}
+
+function* serializeJsonDocument(value: unknown): Generator<string> {
+  yield* serializeJsonValue(value)
+  yield '\n'
+}
+
 async function writeHarFile(har: unknown, outputPath: string | null): Promise<string> {
-  const serialized = `${JSON.stringify(har, null, 2)}\n`
   const targetPath = outputPath || path.join(await mkTempHarDir(), 'network.har')
   await mkdir(path.dirname(targetPath), { recursive: true })
-  await writeFile(targetPath, serialized, 'utf8')
+  await pipeline(Readable.from(serializeJsonDocument(har)), createWriteStream(targetPath, 'utf8'))
   return targetPath
 }
 

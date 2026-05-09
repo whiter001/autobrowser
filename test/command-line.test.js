@@ -2050,7 +2050,44 @@ describe('cli command routing', () => {
           log: {
             version: '1.2',
             creator: { name: 'autobrowser', version: '0.1.0' },
-            entries: [],
+            entries: [
+              {
+                startedDateTime: '2026-04-20T15:00:00.000Z',
+                time: 12,
+                request: {
+                  method: 'GET',
+                  url: 'https://example.com/',
+                  httpVersion: 'HTTP/1.1',
+                  cookies: [],
+                  headers: [],
+                  queryString: [],
+                  headersSize: -1,
+                  bodySize: 0,
+                },
+                response: {
+                  status: 200,
+                  statusText: 'OK',
+                  httpVersion: 'HTTP/1.1',
+                  cookies: [],
+                  headers: [],
+                  content: {
+                    size: 19,
+                    mimeType: 'text/html',
+                    text: 'hello from response',
+                  },
+                  redirectURL: '',
+                  headersSize: -1,
+                  bodySize: 19,
+                },
+                cache: {},
+                timings: {
+                  send: 0,
+                  wait: 12,
+                  receive: 0,
+                },
+                pageref: 'tab-1275677941',
+              },
+            ],
           },
         },
       },
@@ -2066,6 +2103,8 @@ describe('cli command routing', () => {
     const harContent = await readFile(outputPath, 'utf8')
     expect(harContent).toContain('"version": "1.2"')
     expect(harContent).toContain('"creator"')
+    expect(harContent).toContain('"https://example.com/"')
+    expect(harContent).toContain('"entries": [')
   })
 
   test('reconstructs HAR output when stop only returns metadata', async () => {
