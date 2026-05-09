@@ -12,5 +12,6 @@ This folder holds the longer-lived usage guidance for autobrowser.
 
 - [`overview.md`](overview.md) — the core workflow, common commands, and the feature map.
 - [`install.md`](install.md) — unpacked extension install, saved connection settings, and the fallback path.
+- [`windows-demo.md`](windows-demo.md) — a Windows-focused launcher demo that uses the minimal `autobrowser.cmd` forwarder.
 - [`bun-link.md`](bun-link.md) — Bun wrapper behavior and link-script details.
 - [`agent-design.md`](agent-design.md) — the agent-first roadmap, contract gaps, and recommended next adjustments.

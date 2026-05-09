@@ -15,6 +15,8 @@ This repository now contains a Bun implementation with the main automation flows
 
 Run `bun run src/cli.ts help` to see the full command tree.
 
+For a Windows-specific launcher demo that uses the minimal `autobrowser.cmd` forwarder, see [`docs/windows-demo.md`](docs/windows-demo.md).
+
 ## Run
 
 ```bash
