@@ -93,7 +93,7 @@ function createMinimalRouter() {
       stopHar: () => undefined,
     } as never,
     listTabs: async () => [],
-    getTargetTab: async () => ({ id: 1 } as never),
+    getTargetTab: async () => ({ id: 1 }) as never,
   } as never)
 
   return { router, snapshotCalls, navigateCalls }
@@ -106,10 +106,7 @@ describe('command router batch handling', () => {
     const result = await router.handleCommand({
       command: 'batch',
       args: {
-        steps: [
-          { command: 'snapshot' },
-          { command: 'goto', args: { url: 'https://example.com' } },
-        ],
+        steps: [{ command: 'snapshot' }, { command: 'goto', args: { url: 'https://example.com' } }],
       },
     })
 
@@ -148,10 +145,7 @@ describe('command router batch handling', () => {
       router.handleCommand({
         command: 'batch',
         args: {
-          steps: [
-            { command: 'snapshot' },
-            { command: 'goto', args: { url: 'chrome://settings' } },
-          ],
+          steps: [{ command: 'snapshot' }, { command: 'goto', args: { url: 'chrome://settings' } }],
         },
       }),
     ).rejects.toMatchObject({

@@ -520,7 +520,9 @@ export function createCommandRouter({
     command: string
     args: CommandArgs
     label: string | null
-    response: { ok: true; result: unknown } | { ok: false; error: { message: string; code?: string; details?: unknown } }
+    response:
+      | { ok: true; result: unknown }
+      | { ok: false; error: { message: string; code?: string; details?: unknown } }
   }
 
   function isRecord(value: unknown): value is Record<string, unknown> {
@@ -560,7 +562,7 @@ export function createCommandRouter({
 
     const command = typeof value.command === 'string' ? value.command.trim() : ''
     if (!command) {
-      throw new Error(`invalid batch step ${index + 1}: missing command`) 
+      throw new Error(`invalid batch step ${index + 1}: missing command`)
     }
 
     const args = value.args === undefined ? {} : value.args
@@ -601,7 +603,9 @@ export function createCommandRouter({
     }
   }
 
-  async function handleBatchCommand(args: CommandArgs): Promise<{ steps: BatchCommandStepResult[] }> {
+  async function handleBatchCommand(
+    args: CommandArgs,
+  ): Promise<{ steps: BatchCommandStepResult[] }> {
     const steps = readBatchCommandSteps(args)
     const results: BatchCommandStepResult[] = []
 
@@ -626,7 +630,9 @@ export function createCommandRouter({
         }
         results.push(failedStep)
 
-        const batchError = new Error(`batch step ${index + 1} failed: ${step.command}`) as ErrorWithCode
+        const batchError = new Error(
+          `batch step ${index + 1} failed: ${step.command}`,
+        ) as ErrorWithCode
         batchError.code = 'BATCH_STEP_FAILED'
         batchError.details = {
           steps: results,

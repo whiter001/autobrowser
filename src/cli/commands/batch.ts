@@ -79,9 +79,10 @@ function parseBatchSteps(raw: string): BatchStep[] {
   return parsed.map((value, index) => normalizeBatchStep(value, index))
 }
 
-function buildBatchFailurePayload(
-  payload: { ok?: boolean; error?: { message?: string; code?: string; details?: unknown } },
-) {
+function buildBatchFailurePayload(payload: {
+  ok?: boolean
+  error?: { message?: string; code?: string; details?: unknown }
+}) {
   const details = isRecord(payload.error?.details) ? payload.error.details : null
   const steps = Array.isArray(details?.steps) ? details.steps.filter(isRecord) : []
 
