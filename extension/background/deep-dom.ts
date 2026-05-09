@@ -12,16 +12,30 @@ function toArray<T>(value: ArrayLike<T> | Iterable<T> | null | undefined): T[] {
   return value ? Array.from(value as ArrayLike<T> | Iterable<T>) : []
 }
 
-export function deepCollectElements(root: DeepDomRootLike | null | undefined): DeepDomNodeLike[] {
+function normalizeMaxDepth(maxDepth: number | null | undefined): number {
+  if (typeof maxDepth !== 'number' || !Number.isFinite(maxDepth)) {
+    return 25
+  }
+
+  return Math.max(0, Math.floor(maxDepth))
+}
+
+export function deepCollectElements(
+  root: DeepDomRootLike | null | undefined,
+  maxDepth: number = 25,
+): DeepDomNodeLike[] {
   const results: DeepDomNodeLike[] = []
   const seen = new Set<DeepDomNodeLike>()
+  const depthLimit = normalizeMaxDepth(maxDepth)
 
-  const visitRoot = (currentRoot: DeepDomRootLike | null | undefined) => {
+  const visitRoot = (currentRoot: DeepDomRootLike | null | undefined, depth: number) => {
     if (!currentRoot || typeof currentRoot.querySelectorAll !== 'function') {
       return
     }
 
-    for (const node of toArray(currentRoot.querySelectorAll('*'))) {
+    const nodes = toArray(currentRoot.querySelectorAll('*'))
+
+    for (const node of nodes) {
       if (!node || seen.has(node)) {
         continue
       }
@@ -30,24 +44,26 @@ export function deepCollectElements(root: DeepDomRootLike | null | undefined): D
       results.push(node)
 
       const shadowRoot = node.shadowRoot
-      if (shadowRoot) {
-        visitRoot(shadowRoot)
+      if (shadowRoot && depth < depthLimit) {
+        visitRoot(shadowRoot, depth + 1)
       }
     }
   }
 
-  visitRoot(root)
+  visitRoot(root, 0)
   return results
 }
 
 export function deepQuerySelectorAll(
   root: DeepDomRootLike | null | undefined,
   selector: string,
+  maxDepth: number = 25,
 ): DeepDomNodeLike[] {
   const results: DeepDomNodeLike[] = []
   const seen = new Set<DeepDomNodeLike>()
+  const depthLimit = normalizeMaxDepth(maxDepth)
 
-  const visitRoot = (currentRoot: DeepDomRootLike | null | undefined) => {
+  const visitRoot = (currentRoot: DeepDomRootLike | null | undefined, depth: number) => {
     if (!currentRoot || typeof currentRoot.querySelectorAll !== 'function') {
       return
     }
@@ -61,59 +77,77 @@ export function deepQuerySelectorAll(
       results.push(node)
     }
 
+    if (depth >= depthLimit) {
+      return
+    }
+
     for (const node of toArray(currentRoot.querySelectorAll('*'))) {
       if (node?.shadowRoot) {
-        visitRoot(node.shadowRoot)
+        visitRoot(node.shadowRoot, depth + 1)
       }
     }
   }
 
-  visitRoot(root)
+  visitRoot(root, 0)
   return results
 }
 
 export function deepQuerySelector(
   root: DeepDomRootLike | null | undefined,
   selector: string,
+  maxDepth: number = 25,
 ): DeepDomNodeLike | null {
-  return deepQuerySelectorAll(root, selector)[0] || null
+  return deepQuerySelectorAll(root, selector, maxDepth)[0] || null
 }
 
 export function deepGetElementById(
   root: DeepDomRootLike | null | undefined,
   id: string | null | undefined,
+  maxDepth: number = 25,
 ): DeepDomNodeLike | null {
   const normalizedId = String(id || '').trim()
   if (!normalizedId) {
     return null
   }
 
-  return deepCollectElements(root).find((node) => String(node.id || '') === normalizedId) || null
+  return (
+    deepCollectElements(root, maxDepth).find((node) => String(node.id || '') === normalizedId) ||
+    null
+  )
 }
 
 export function isDeepActiveElement(
   root: DeepDomRootLike | null | undefined,
   node: DeepDomNodeLike | null | undefined,
+  maxDepth: number = 25,
 ): boolean {
   if (!root || !node) {
     return false
   }
 
-  const activeElement = root.activeElement || null
-  if (!activeElement) {
-    return false
+  const depthLimit = normalizeMaxDepth(maxDepth)
+  let currentRoot: DeepDomRootLike | null | undefined = root
+
+  for (let depth = 0; currentRoot && depth <= depthLimit; depth += 1) {
+    const activeElement: DeepDomNodeLike | null = currentRoot.activeElement || null
+    if (!activeElement) {
+      return false
+    }
+
+    if (activeElement === node) {
+      return true
+    }
+
+    currentRoot = activeElement.shadowRoot || null
   }
 
-  if (activeElement === node) {
-    return true
-  }
-
-  return Boolean(activeElement.shadowRoot && isDeepActiveElement(activeElement.shadowRoot, node))
+  return false
 }
 
 export function buildDeepDomTraversalHelpersSource(): string {
   return [
     toArray.toString(),
+    normalizeMaxDepth.toString(),
     deepCollectElements.toString(),
     deepQuerySelectorAll.toString(),
     deepQuerySelector.toString(),

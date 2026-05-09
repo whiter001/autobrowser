@@ -104,6 +104,27 @@ describe('deep dom traversal helpers', () => {
     ])
   })
 
+  test('respects the maximum shadow traversal depth', () => {
+    const nestedShadowButton: MockNode = { tagName: 'BUTTON', id: 'nested-shadow-button' }
+    const nestedHost: MockNode = {
+      tagName: 'DIV',
+      id: 'nested-host',
+      shadowRoot: new MockRoot([nestedShadowButton]),
+    }
+    const shadowButton: MockNode = { tagName: 'BUTTON', id: 'shadow-button' }
+    const host: MockNode = {
+      tagName: 'DIV',
+      id: 'shadow-host',
+      shadowRoot: new MockRoot([shadowButton, nestedHost]),
+    }
+    const lightButton: MockNode = { tagName: 'BUTTON', id: 'light-button' }
+    const root = new MockRoot([lightButton, host], host)
+
+    expect(deepQuerySelectorAll(root, 'button', 1)).toEqual([lightButton, shadowButton])
+    expect(deepGetElementById(root, 'nested-shadow-button', 1)).toBeNull()
+    expect(isDeepActiveElement(root, nestedShadowButton, 1)).toBe(false)
+  })
+
   test('finds ids and active elements inside nested shadow roots', () => {
     const innerButton: MockNode = { tagName: 'BUTTON', id: 'inner-button' }
     const nestedHost: MockNode = {

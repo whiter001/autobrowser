@@ -21,9 +21,14 @@ export const HAR_CREATOR = {
   version: '0.1.0',
 } as const
 
+function toStartedAtTimestamp(value: string | null | undefined): number {
+  const parsed = Date.parse(String(value || ''))
+  return Number.isFinite(parsed) ? parsed : Number.POSITIVE_INFINITY
+}
+
 export function compareHarRecords(left: HarSortableRecord, right: HarSortableRecord): number {
-  const leftStartedAt = Date.parse(String(left.startedAt || '')) || 0
-  const rightStartedAt = Date.parse(String(right.startedAt || '')) || 0
+  const leftStartedAt = toStartedAtTimestamp(left.startedAt)
+  const rightStartedAt = toStartedAtTimestamp(right.startedAt)
 
   if (leftStartedAt !== rightStartedAt) {
     return leftStartedAt - rightStartedAt
@@ -34,12 +39,12 @@ export function compareHarRecords(left: HarSortableRecord, right: HarSortableRec
   return leftId.localeCompare(rightId)
 }
 
-export function buildHarPayload(entries: Array<Record<string, unknown>>): HarPayload {
+export function buildHarPayload(entries: Iterable<Record<string, unknown>>): HarPayload {
   return {
     log: {
       version: HAR_LOG_VERSION,
       creator: HAR_CREATOR,
-      entries,
+      entries: Array.from(entries),
     },
   }
 }
