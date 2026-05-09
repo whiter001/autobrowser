@@ -429,7 +429,11 @@ export function validateCommandArgs(command: string, args: unknown): void {
         return
       }
 
-      if (!['locate', 'click', 'fill', 'type', 'hover', 'focus', 'check', 'uncheck', 'text'].includes(action)) {
+      if (
+        !['locate', 'click', 'fill', 'type', 'hover', 'focus', 'check', 'uncheck', 'text'].includes(
+          action,
+        )
+      ) {
         throw createCommandArgsValidationError(command, 'unsupported action', {
           field: 'action',
           value: action,

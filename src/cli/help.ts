@@ -64,7 +64,11 @@ const HELP_ROOT = helpNode(
       helpNode('list', 'List tabs.', 'autobrowser tab list'),
       helpNode('new', 'Open a new tab.', 'autobrowser tab new [url]'),
       helpNode('select', 'Select a tab by handle.', 'autobrowser tab select <tN>'),
-      helpNode('close', 'Close the current tab, a specific tab, or all tabs.', 'autobrowser tab close [tN|--all]'),
+      helpNode(
+        'close',
+        'Close the current tab, a specific tab, or all tabs.',
+        'autobrowser tab close [tN|--all]',
+      ),
     ]),
     helpNode('open', 'Navigate to a URL.', 'autobrowser open <url>'),
     helpNode('goto', 'Navigate to a URL.', 'autobrowser goto <url>'),
@@ -123,16 +127,11 @@ const HELP_ROOT = helpNode(
       'Check element state.',
       'autobrowser is <visible|enabled|checked|disabled|focused> <selector>',
     ),
-    helpNode(
-      'get',
-      'Read page or element data.',
-      'autobrowser get <attribute> [selector]',
-      [
-        'title, url, and cdp-url read the current page and ignore selector',
-        'text, html, value, count, box, and styles read from the selector',
-        'other attribute names are passed through to the page element',
-      ],
-    ),
+    helpNode('get', 'Read page or element data.', 'autobrowser get <attribute> [selector]', [
+      'title, url, and cdp-url read the current page and ignore selector',
+      'text, html, value, count, box, and styles read from the selector',
+      'other attribute names are passed through to the page element',
+    ]),
     helpNode('dialog', 'Handle dialogs.', 'autobrowser dialog <accept|dismiss|status>', undefined, [
       helpNode('accept', 'Accept the active dialog.', 'autobrowser dialog accept [promptText]'),
       helpNode('dismiss', 'Dismiss the active dialog.', 'autobrowser dialog dismiss [promptText]'),

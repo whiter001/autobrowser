@@ -190,7 +190,9 @@ describe('cli helpers', () => {
     const getHelp = await runCli(['help', 'get'])
     expect(getHelp.exitCode).toBe(0)
     expect(getHelp.stdout).toContain('autobrowser get <attribute> [selector]')
-    expect(getHelp.stdout).toContain('title, url, and cdp-url read the current page and ignore selector')
+    expect(getHelp.stdout).toContain(
+      'title, url, and cdp-url read the current page and ignore selector',
+    )
     expect(getHelp.stdout).toContain('other attribute names are passed through to the page element')
   })
 
