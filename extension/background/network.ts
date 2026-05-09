@@ -101,6 +101,57 @@ function stringifyNetworkBody(body: unknown): { text: string; base64Encoded: boo
   return { text, base64Encoded: false }
 }
 
+const MAX_RECORDED_BODY_BYTES = 256 * 1024
+
+function estimateTextByteLength(text: string): number {
+  return new TextEncoder().encode(text).length
+}
+
+function truncateTextByBytes(text: string, maxBytes: number): string {
+  if (maxBytes <= 0 || !text) {
+    return ''
+  }
+
+  const encoder = new TextEncoder()
+  let totalBytes = 0
+  let endIndex = 0
+
+  for (const char of text) {
+    const charBytes = encoder.encode(char).length
+    if (totalBytes + charBytes > maxBytes) {
+      break
+    }
+
+    totalBytes += charBytes
+    endIndex += char.length
+  }
+
+  return text.slice(0, endIndex)
+}
+
+function summarizeStoredBody(
+  body: string,
+  base64Encoded: boolean,
+): { text: string; byteLength: number; truncated: boolean } {
+  const byteLength = base64Encoded
+    ? Math.max(0, Math.floor(body.length * 0.75))
+    : estimateTextByteLength(body)
+
+  if (byteLength <= MAX_RECORDED_BODY_BYTES) {
+    return { text: body, byteLength, truncated: false }
+  }
+
+  if (base64Encoded) {
+    return { text: '', byteLength, truncated: true }
+  }
+
+  return {
+    text: truncateTextByBytes(body, MAX_RECORDED_BODY_BYTES),
+    byteLength,
+    truncated: true,
+  }
+}
+
 function matchesNetworkRoute(pattern: string, url: string): boolean {
   const normalizedPattern = String(pattern || '').trim()
   if (!normalizedPattern) {
@@ -215,18 +266,45 @@ function summarizeNetworkRequest(record: NetworkRequestRecord): Record<string, u
     startedAt: record.startedAt ?? null,
     durationMs: record.durationMs ?? null,
     errorText: record.errorText ?? null,
+    requestBodyTruncated: Boolean(record.postDataTruncated),
+    requestBodyBytes: record.postDataBytes ?? null,
+    responseBodyTruncated: Boolean(record.responseBodyTruncated),
+    responseBodyBytes: record.responseBodyBytes ?? null,
   }
 }
 
 function buildHarEntry(record: NetworkRequestRecord): Record<string, unknown> {
   const requestHeaders = normalizeHeaderPairs(normalizeHeaders(record.requestHeaders))
   const responseHeaders = normalizeHeaderPairs(normalizeHeaders(record.responseHeaders))
+  const requestBody = typeof record.postData === 'string' ? record.postData : ''
+  const requestBodyTruncated = Boolean(record.postDataTruncated)
+  const requestBodyBytes =
+    typeof record.postDataBytes === 'number' ? record.postDataBytes : estimateTextByteLength(requestBody)
   const responseBody = typeof record.responseBody === 'string' ? record.responseBody : ''
   const responseBodyBase64 = Boolean(record.responseBodyBase64)
+  const responseBodyTruncated = Boolean(record.responseBodyTruncated)
+  const responseBodyBytes =
+    typeof record.responseBodyBytes === 'number'
+      ? record.responseBodyBytes
+      : responseBodyBase64
+        ? Math.max(0, Math.floor(responseBody.length * 0.75))
+        : estimateTextByteLength(responseBody)
   const responseMimeType = String(record.responseMimeType || 'application/octet-stream')
-  const bodySize = responseBodyBase64
-    ? Math.max(0, Math.floor(responseBody.length * 0.75))
-    : new TextEncoder().encode(responseBody).length
+  const responseContent: Record<string, unknown> = {
+    size: responseBodyBytes,
+    mimeType: responseMimeType,
+  }
+
+  if (responseBodyTruncated) {
+    responseContent.comment = `body truncated by autobrowser after ${MAX_RECORDED_BODY_BYTES} bytes`
+  }
+
+  if (responseBody) {
+    responseContent.text = responseBody
+    if (responseBodyBase64 && !responseBodyTruncated) {
+      responseContent.encoding = 'base64'
+    }
+  }
 
   return {
     startedDateTime: record.startedAt,
@@ -239,13 +317,17 @@ function buildHarEntry(record: NetworkRequestRecord): Record<string, unknown> {
       headers: requestHeaders,
       queryString: [],
       headersSize: -1,
-      bodySize:
-        typeof record.postData === 'string' ? new TextEncoder().encode(record.postData).length : 0,
+      bodySize: requestBodyBytes,
       postData:
         typeof record.postData === 'string'
           ? {
               mimeType: 'application/json',
-              text: record.postData,
+              text: requestBody,
+              ...(requestBodyTruncated
+                ? {
+                    comment: `body truncated by autobrowser after ${MAX_RECORDED_BODY_BYTES} bytes`,
+                  }
+                : {}),
             }
           : undefined,
     },
@@ -255,15 +337,10 @@ function buildHarEntry(record: NetworkRequestRecord): Record<string, unknown> {
       httpVersion: 'HTTP/1.1',
       cookies: [],
       headers: responseHeaders,
-      content: {
-        size: bodySize,
-        mimeType: responseMimeType,
-        text: responseBody,
-        encoding: responseBodyBase64 ? 'base64' : undefined,
-      },
+      content: responseContent,
       redirectURL: '',
       headersSize: -1,
-      bodySize,
+      bodySize: responseBodyBytes,
     },
     cache: {},
     timings: {
@@ -367,6 +444,8 @@ export function createNetworkDomain({
     try {
       const route = findMatchingNetworkRoute(state, String(request.url || ''))
       const key = createNetworkRequestKey(tabId, requestId)
+      const requestBodySummary =
+        typeof request.postData === 'string' ? summarizeStoredBody(request.postData, false) : null
       const record = upsertNetworkRequest(state, {
         id: key,
         requestId,
@@ -375,7 +454,9 @@ export function createNetworkDomain({
         method: String(request.method || 'GET'),
         resourceType: String(payload.resourceType || payload.requestStage || ''),
         requestHeaders: normalizeHeaders(request.headers),
-        postData: typeof request.postData === 'string' ? request.postData : undefined,
+        postData: requestBodySummary?.text,
+        postDataTruncated: requestBodySummary?.truncated,
+        postDataBytes: requestBodySummary?.byteLength,
         startedAt: new Date().toISOString(),
         requestWillBeSentAt: typeof payload.timestamp === 'number' ? payload.timestamp : null,
         routeId: route?.id || null,
@@ -398,6 +479,7 @@ export function createNetworkDomain({
 
       if (route && route.body !== undefined) {
         const body = stringifyNetworkBody(route.body)
+        const responseBodySummary = summarizeStoredBody(body.text, body.base64Encoded)
         try {
           await sendRawDebuggerCommand(tabId, 'Fetch.fulfillRequest', {
             requestId,
@@ -408,7 +490,9 @@ export function createNetworkDomain({
           })
           upsertNetworkRequest(state, {
             ...record,
-            responseBody: body.text,
+            responseBody: responseBodySummary.text,
+            responseBodyTruncated: responseBodySummary.truncated,
+            responseBodyBytes: responseBodySummary.byteLength,
             responseBodyBase64: false,
             responseMimeType: 'application/json; charset=utf-8',
             status: 200,
@@ -444,9 +528,12 @@ export function createNetworkDomain({
         { requestId },
       )
       const responseBody = String(result?.body || '')
+      const responseBodySummary = summarizeStoredBody(responseBody, Boolean(result?.base64Encoded))
       const bodyRecord = upsertNetworkRequest(state, {
         ...record,
-        responseBody,
+        responseBody: responseBodySummary.text,
+        responseBodyTruncated: responseBodySummary.truncated,
+        responseBodyBytes: responseBodySummary.byteLength,
         responseBodyBase64: Boolean(result?.base64Encoded),
       })
 
@@ -476,6 +563,11 @@ export function createNetworkDomain({
         return
       }
 
+      const requestBodySummary =
+        typeof payload.request?.postData === 'string'
+          ? summarizeStoredBody(payload.request.postData, false)
+          : null
+
       upsertNetworkRequest(state, {
         id: createNetworkRequestKey(tabId, requestId),
         requestId,
@@ -484,8 +576,9 @@ export function createNetworkDomain({
         method: String(payload.request?.method || 'GET'),
         resourceType: String(payload.type || ''),
         requestHeaders: normalizeHeaders(payload.request?.headers),
-        postData:
-          typeof payload.request?.postData === 'string' ? payload.request.postData : undefined,
+        postData: requestBodySummary?.text,
+        postDataTruncated: requestBodySummary?.truncated,
+        postDataBytes: requestBodySummary?.byteLength,
         startedAt: new Date().toISOString(),
         requestWillBeSentAt: typeof payload.timestamp === 'number' ? payload.timestamp : null,
         wallTime: typeof payload.wallTime === 'number' ? payload.wallTime : null,

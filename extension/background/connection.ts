@@ -44,11 +44,80 @@ export function createConnectionRuntime({
   detachDebugger,
   getDialogStatus,
 }: ConnectionRuntimeDependencies) {
+  const HEARTBEAT_INTERVAL_MS = 30_000
+  const HEARTBEAT_TIMEOUT_MS = 10_000
+
   function pushBounded<T>(list: T[], item: T, maxSize: number): void {
     list.push(item)
     if (list.length > maxSize) {
       list.splice(0, list.length - maxSize)
     }
+  }
+
+  function clearHeartbeatTimers(): void {
+    if (state.heartbeatTimer) {
+      clearInterval(state.heartbeatTimer)
+      state.heartbeatTimer = null
+    }
+
+    if (state.heartbeatTimeoutTimer) {
+      clearTimeout(state.heartbeatTimeoutTimer)
+      state.heartbeatTimeoutTimer = null
+    }
+  }
+
+  function startHeartbeat(socket: WebSocket): void {
+    clearHeartbeatTimers()
+
+    const sendHeartbeat = () => {
+      if (socket.readyState !== WebSocket.OPEN) {
+        return
+      }
+
+      const sentAt = new Date().toISOString()
+      state.lastHeartbeatSentAt = sentAt
+
+      try {
+        socket.send(
+          JSON.stringify({
+            type: 'heartbeat',
+            sentAt,
+          }),
+        )
+      } catch (error) {
+        console.warn('failed to send relay heartbeat', error)
+        setConnectionError('relay heartbeat send failed', 'HEARTBEAT_SEND_FAILED')
+        setConnectionStatus('disconnected')
+        state.suppressCloseError = true
+        try {
+          socket.close()
+        } catch (closeError) {
+          console.warn('failed to close relay socket after heartbeat send failure', closeError)
+        }
+        return
+      }
+
+      if (state.heartbeatTimeoutTimer) {
+        clearTimeout(state.heartbeatTimeoutTimer)
+      }
+
+      state.heartbeatTimeoutTimer = setTimeout(() => {
+        if (socket.readyState !== WebSocket.OPEN) {
+          return
+        }
+
+        setConnectionError('relay heartbeat timeout', 'HEARTBEAT_TIMEOUT')
+        setConnectionStatus('disconnected')
+        state.suppressCloseError = true
+        try {
+          socket.close()
+        } catch (closeError) {
+          console.warn('failed to close relay socket after heartbeat timeout', closeError)
+        }
+      }, HEARTBEAT_TIMEOUT_MS)
+    }
+
+    state.heartbeatTimer = setInterval(sendHeartbeat, HEARTBEAT_INTERVAL_MS)
   }
 
   function persistDiagnostics(): void {
@@ -59,6 +128,8 @@ export function createConnectionRuntime({
           connectionError: state.connectionError,
           lastSocketClose: state.lastSocketClose,
           lastCommandError: state.lastCommandError,
+          lastHeartbeatAt: state.lastHeartbeatAt,
+          lastHeartbeatSentAt: state.lastHeartbeatSentAt,
           updatedAt: new Date().toISOString(),
         } satisfies DiagnosticsState,
       })
@@ -85,6 +156,7 @@ export function createConnectionRuntime({
   }
 
   function recordSocketClose(close: { code: number; reason: string; wasClean: boolean }): void {
+    clearHeartbeatTimers()
     state.lastSocketClose = {
       code: close.code,
       reason: close.reason,
@@ -298,6 +370,7 @@ export function createConnectionRuntime({
   function requestReconnect(): void {
     if (state.socket && state.socket.readyState < WebSocket.CLOSING) {
       state.suppressCloseError = true
+      clearHeartbeatTimers()
       try {
         state.socket.close()
         return
@@ -337,6 +410,8 @@ export function createConnectionRuntime({
       state.socket = socket
 
       socket.addEventListener('open', () => {
+        state.lastHeartbeatAt = null
+        state.lastHeartbeatSentAt = null
         setConnectionStatus('connected')
         socket.send(
           JSON.stringify({
@@ -349,6 +424,8 @@ export function createConnectionRuntime({
         void publishState(socket).catch((error) => {
           console.error('failed to publish initial extension state', error)
         })
+
+        startHeartbeat(socket)
       })
 
       socket.addEventListener('message', async (event) => {
@@ -365,6 +442,18 @@ export function createConnectionRuntime({
               error: { message: 'invalid JSON from server' },
             }),
           )
+          return
+        }
+
+        if (message?.type === 'heartbeat') {
+          state.lastHeartbeatAt =
+            typeof message.receivedAt === 'string' ? message.receivedAt : new Date().toISOString()
+
+          if (state.heartbeatTimeoutTimer) {
+            clearTimeout(state.heartbeatTimeoutTimer)
+            state.heartbeatTimeoutTimer = null
+          }
+
           return
         }
 
@@ -420,6 +509,7 @@ export function createConnectionRuntime({
       })
 
       socket.addEventListener('close', (event) => {
+        clearHeartbeatTimers()
         state.socket = null
         state.connecting = false
         recordSocketClose({
@@ -433,6 +523,7 @@ export function createConnectionRuntime({
       })
 
       socket.addEventListener('error', () => {
+        clearHeartbeatTimers()
         state.connecting = false
         setConnectionError('relay websocket error')
         try {
@@ -495,6 +586,8 @@ export function createConnectionRuntime({
           connectionError: state.connectionError,
           lastSocketClose: state.lastSocketClose,
           lastCommandError: state.lastCommandError,
+          lastHeartbeatAt: state.lastHeartbeatAt,
+          lastHeartbeatSentAt: state.lastHeartbeatSentAt,
           dialog: getDialogStatus(),
           token: state.token || '',
           relayPort: state.relayPort,

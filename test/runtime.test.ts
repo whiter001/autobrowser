@@ -136,6 +136,46 @@ describe('runtime snapshot', () => {
     expect(result).toEqual({ dispatched: true })
   })
 
+  test('records heartbeat acknowledgements from the extension', async () => {
+    const homeDir = await mkdtemp(path.join(os.tmpdir(), 'autobrowser-runtime-test-'))
+    tempDirs.push(homeDir)
+
+    const runtime = await createRuntime({ homeDir })
+    const sentMessages: string[] = []
+
+    const socket = {
+      readyState: WebSocket.OPEN,
+      send(payload: string) {
+        sentMessages.push(payload)
+      },
+    } as unknown as Bun.ServerWebSocket<{ extensionId?: string | null; userAgent?: string | null }>
+
+    runtime.attachExtension(socket, {
+      extensionId: 'bfccnpkjkbhceghimfjgnkigilidldep',
+      userAgent: 'autobrowser-test',
+    })
+
+    runtime.handleExtensionMessage(
+      JSON.stringify({
+        type: 'heartbeat',
+        sentAt: '2026-05-09T12:00:00.000Z',
+      }),
+    )
+
+    expect(sentMessages).toHaveLength(1)
+
+    const heartbeatAck = JSON.parse(sentMessages[0]) as {
+      type?: string
+      sentAt?: string | null
+      receivedAt?: string
+    }
+
+    expect(heartbeatAck.type).toBe('heartbeat')
+    expect(heartbeatAck.sentAt).toBe('2026-05-09T12:00:00.000Z')
+    expect(typeof heartbeatAck.receivedAt).toBe('string')
+    expect(runtime.snapshot().snapshot.extension?.lastHeartbeatAt).not.toBeNull()
+  })
+
   test('redacts sensitive last command arguments before persisting state', async () => {
     const homeDir = await mkdtemp(path.join(os.tmpdir(), 'autobrowser-runtime-test-'))
     tempDirs.push(homeDir)

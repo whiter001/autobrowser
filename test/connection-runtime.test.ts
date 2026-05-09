@@ -52,11 +52,18 @@ class MockWebSocket {
     this.readyState = MockWebSocket.CLOSED
   }
 
-  dispatchOpen(): void {
-    this.readyState = MockWebSocket.OPEN
-    for (const listener of this.listeners.get('open') || []) {
-      listener({})
+  dispatch(type: string, event: unknown = {}): void {
+    if (type === 'open') {
+      this.readyState = MockWebSocket.OPEN
     }
+
+    for (const listener of this.listeners.get(type) || []) {
+      listener(event)
+    }
+  }
+
+  dispatchOpen(): void {
+    this.dispatch('open', {})
   }
 }
 
@@ -65,7 +72,10 @@ describe('connection runtime', () => {
     const originalGlobals = {
       chrome: globalThis.chrome,
       WebSocket: globalThis.WebSocket,
+      setInterval: globalThis.setInterval,
+      clearInterval: globalThis.clearInterval,
     }
+    const intervalCallbacks: Array<() => void> = []
 
     const tabs: TabSummary[] = [
       {
@@ -109,6 +119,11 @@ describe('connection runtime', () => {
 
     defineGlobalValue('chrome', mockChrome)
     defineGlobalValue('WebSocket', MockWebSocket)
+    defineGlobalValue('setInterval', (callback: () => void) => {
+      intervalCallbacks.push(callback)
+      return intervalCallbacks.length
+    })
+    defineGlobalValue('clearInterval', () => {})
     MockWebSocket.instances = []
 
     const mockStorageItems: Record<string, unknown> = {
@@ -189,9 +204,40 @@ describe('connection runtime', () => {
         activeTabId: 11,
         targetTabId: 22,
       })
+
+      expect(state.lastHeartbeatAt).toBeNull()
+      expect(state.lastHeartbeatSentAt).toBeNull()
+
+      intervalCallbacks[0]?.()
+      expect(socket.sentPayloads).toHaveLength(3)
+
+      const heartbeatMessage = JSON.parse(socket.sentPayloads[2]) as {
+        type?: string
+        sentAt?: string
+      }
+      expect(heartbeatMessage.type).toBe('heartbeat')
+      expect(typeof heartbeatMessage.sentAt).toBe('string')
+      const sentAt = heartbeatMessage.sentAt
+      if (!sentAt) {
+        throw new Error('missing heartbeat sentAt')
+      }
+
+      expect(state.lastHeartbeatSentAt).toBe(sentAt)
+
+      socket.dispatch('message', {
+        data: JSON.stringify({
+          type: 'heartbeat',
+          sentAt,
+          receivedAt: '2026-05-09T12:00:00.000Z',
+        }),
+      })
+
+      expect(state.lastHeartbeatAt).toBe('2026-05-09T12:00:00.000Z')
     } finally {
       defineGlobalValue('chrome', originalGlobals.chrome)
       defineGlobalValue('WebSocket', originalGlobals.WebSocket)
+      defineGlobalValue('setInterval', originalGlobals.setInterval)
+      defineGlobalValue('clearInterval', originalGlobals.clearInterval)
       MockWebSocket.instances = []
     }
   })

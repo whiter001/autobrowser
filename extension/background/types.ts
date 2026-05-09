@@ -57,8 +57,12 @@ export interface NetworkRequestRecord {
   responseHeaders?: Record<string, unknown>
   responseBody?: string
   responseBodyBase64?: boolean
+  responseBodyTruncated?: boolean
+  responseBodyBytes?: number
   responseMimeType?: string
   postData?: string | null
+  postDataTruncated?: boolean
+  postDataBytes?: number
   [key: string]: unknown
 }
 
@@ -87,6 +91,8 @@ export interface PageErrorRecord {
 export interface ExtensionState {
   socket: WebSocket | null
   reconnectTimer: number | ReturnType<typeof setTimeout> | null
+  heartbeatTimer: number | ReturnType<typeof setInterval> | null
+  heartbeatTimeoutTimer: number | ReturnType<typeof setTimeout> | null
   connecting: boolean
   suppressCloseError: boolean
   attachedTabs: Set<number>
@@ -107,6 +113,8 @@ export interface ExtensionState {
   connectionError: ConnectionErrorInfo | null
   lastSocketClose: SocketCloseInfo | null
   lastCommandError: CommandErrorInfo | null
+  lastHeartbeatAt: string | null
+  lastHeartbeatSentAt: string | null
 }
 
 export type TabInput = number | string | null | undefined

@@ -4,6 +4,8 @@ export function createExtensionState(defaultRelayPort: number): ExtensionState {
   return {
     socket: null,
     reconnectTimer: null,
+    heartbeatTimer: null,
+    heartbeatTimeoutTimer: null,
     connecting: false,
     suppressCloseError: false,
     attachedTabs: new Set<number>(),
@@ -30,5 +32,7 @@ export function createExtensionState(defaultRelayPort: number): ExtensionState {
     connectionError: null,
     lastSocketClose: null,
     lastCommandError: null,
+    lastHeartbeatAt: null,
+    lastHeartbeatSentAt: null,
   }
 }

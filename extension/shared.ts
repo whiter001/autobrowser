@@ -37,6 +37,8 @@ export interface DiagnosticsState {
   connectionError: ConnectionErrorInfo | null
   lastSocketClose: SocketCloseInfo | null
   lastCommandError: CommandErrorInfo | null
+  lastHeartbeatAt: string | null
+  lastHeartbeatSentAt: string | null
   updatedAt: string
 }
 
@@ -47,6 +49,8 @@ export interface StatusResponse {
   connectionError?: ConnectionErrorInfo | null
   lastSocketClose?: SocketCloseInfo | null
   lastCommandError?: CommandErrorInfo | null
+  lastHeartbeatAt?: string | null
+  lastHeartbeatSentAt?: string | null
   token?: string
   relayPort?: number
 }
@@ -89,6 +93,16 @@ export function formatDiagnostics(status: DiagnosticsState | StatusResponse | nu
     lines.push(
       `命令错误: ${lastCommandError.command} -> ${lastCommandError.message}${lastCommandError.code ? ` (${lastCommandError.code})` : ''} @ ${lastCommandError.at}`,
     )
+  }
+
+  const lastHeartbeatAt = status.lastHeartbeatAt
+  if (lastHeartbeatAt) {
+    lines.push(`最后心跳: ${lastHeartbeatAt}`)
+  }
+
+  const lastHeartbeatSentAt = status.lastHeartbeatSentAt
+  if (lastHeartbeatSentAt) {
+    lines.push(`最后心跳发送: ${lastHeartbeatSentAt}`)
   }
 
   if ('updatedAt' in status) {

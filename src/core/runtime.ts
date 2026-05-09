@@ -25,6 +25,7 @@ export interface ExtensionInfo {
   extensionId: string | null
   connectedAt: string
   userAgent: string | null
+  lastHeartbeatAt: string | null
 }
 
 export interface Snapshot {
@@ -342,6 +343,7 @@ export async function createRuntime(options: RuntimeOptions = {}): Promise<Runti
       extensionId: runtime.extensionId,
       connectedAt: new Date().toISOString(),
       userAgent: (meta.userAgent as string) || null,
+      lastHeartbeatAt: null,
     }
     resolveConnectionWaiters(socket)
     schedulePersist()
@@ -364,6 +366,7 @@ export async function createRuntime(options: RuntimeOptions = {}): Promise<Runti
     ok?: boolean
     error?: { message?: string; code?: string; details?: unknown }
     result?: unknown
+    sentAt?: string
   }
 
   function handleExtensionMessage(rawMessage: unknown): void {
@@ -390,6 +393,25 @@ export async function createRuntime(options: RuntimeOptions = {}): Promise<Runti
       }
 
       schedulePersist()
+
+      return
+    }
+
+    if (message?.type === 'heartbeat') {
+      if (snapshot.extension) {
+        snapshot.extension.lastHeartbeatAt = new Date().toISOString()
+        schedulePersist()
+      }
+
+      if (runtime.extensionSocket && runtime.extensionSocket.readyState === WebSocket.OPEN) {
+        runtime.extensionSocket.send(
+          JSON.stringify({
+            type: 'heartbeat',
+            sentAt: typeof message.sentAt === 'string' ? message.sentAt : null,
+            receivedAt: new Date().toISOString(),
+          }),
+        )
+      }
 
       return
     }
