@@ -236,7 +236,12 @@ const HELP_ROOT = helpNode(
           'autobrowser network har <start|stop>',
           undefined,
           [
-            helpNode('start', 'Start HAR capture.', 'autobrowser network har start'),
+            helpNode(
+              'start',
+              'Start HAR capture with configurable limits.',
+              'autobrowser network har start [--har-max-requests <n>] [--har-max-body-bytes <n>] [--har-unlimited]',
+              ['--har-max-requests <n>', '--har-max-body-bytes <n>', '--har-unlimited'],
+            ),
             helpNode(
               'stop',
               'Stop HAR capture and save it.',

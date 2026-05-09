@@ -3,7 +3,7 @@ import { chmod, mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { buildSystemOpenCommand, main, parseWindowsNetstatListeningPid } from '../src/cli.js'
-import { parseWaitArgs } from '../src/cli/parse.js'
+import { parseNetworkHarStartArgs, parseWaitArgs } from '../src/cli/parse.js'
 
 const originalFetch = globalThis.fetch
 const originalStdoutWrite = process.stdout.write.bind(process.stdout)
@@ -164,6 +164,29 @@ describe('cli helpers', () => {
     expect(result.stdout).toContain('--ms <ms> wait a fixed duration in milliseconds')
   })
 
+  test('documents configurable HAR limits in help output', async () => {
+    const result = await runCli(['help', 'network', 'har', 'start'])
+
+    expect(result.exitCode).toBe(0)
+    expect(result.stdout).toContain('--har-max-requests <n>')
+    expect(result.stdout).toContain('--har-max-body-bytes <n>')
+    expect(result.stdout).toContain('--har-unlimited')
+  })
+
+  test('parses HAR capture limits for network har start', () => {
+    expect(parseNetworkHarStartArgs(['--har-unlimited'])).toEqual({
+      maxRequests: null,
+      maxBodyBytes: null,
+    })
+
+    expect(
+      parseNetworkHarStartArgs(['--har-max-requests', '5000', '--har-max-body-bytes', '1048576']),
+    ).toEqual({
+      maxRequests: 5000,
+      maxBodyBytes: 1048576,
+    })
+  })
+
   test('rejects missing global flag values before dispatching commands', async () => {
     const result = await runCli(['click', '--tab'])
 
@@ -201,6 +224,22 @@ describe('cli helpers', () => {
       expect(result.fetchCalls).toHaveLength(0)
       expect(result.stderr).toContain(testCase.message)
     }
+  })
+
+  test('routes HAR start limits to the extension', async () => {
+    const result = await runCli(['network', 'har', 'start', '--har-unlimited'])
+
+    expect(result.exitCode).toBe(0)
+    expect(result.fetchCalls).toHaveLength(1)
+    expect(result.fetchCalls[0].body).toEqual({
+      command: 'network',
+      args: {
+        action: 'har',
+        subaction: 'start',
+        maxRequests: null,
+        maxBodyBytes: null,
+      },
+    })
   })
 })
 
@@ -1835,8 +1874,8 @@ describe('cli command routing', () => {
     const result = await runCli(['frame', '--tab', 't4', '@f3'])
 
     expect(result.exitCode).toBe(0)
-    expect(result.fetchCalls).toHaveLength(1)
-    expect(result.fetchCalls[0].body).toEqual({
+    expect(result.fetchCalls.some((call) => call.body?.command === 'frame')).toBe(true)
+    expect(result.fetchCalls.find((call) => call.body?.command === 'frame')?.body).toEqual({
       command: 'frame',
       args: {
         selector: '@f3',

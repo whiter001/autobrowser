@@ -28,6 +28,14 @@ export interface ScreenshotArgs {
   quality: number | null
 }
 
+export interface NetworkHarStartArgs {
+  maxRequests: number | null
+  maxBodyBytes: number | null
+}
+
+const DEFAULT_HAR_MAX_REQUESTS = 1000
+const DEFAULT_HAR_MAX_BODY_BYTES = 256 * 1024
+
 export interface NumberArgOptions {
   min?: number
   max?: number
@@ -119,6 +127,43 @@ export function parseNetworkRequestsArgs(rest: string[]): Record<string, unknown
 
     if (value === '--status') {
       result.status = rest[index + 1] || ''
+      index += 1
+      continue
+    }
+  }
+
+  return result
+}
+
+export function parseNetworkHarStartArgs(rest: string[]): NetworkHarStartArgs {
+  const result: NetworkHarStartArgs = {
+    maxRequests: DEFAULT_HAR_MAX_REQUESTS,
+    maxBodyBytes: DEFAULT_HAR_MAX_BODY_BYTES,
+  }
+
+  for (let index = 0; index < rest.length; index += 1) {
+    const value = rest[index]
+
+    if (value === '--har-unlimited') {
+      result.maxRequests = null
+      result.maxBodyBytes = null
+      continue
+    }
+
+    if (value === '--har-max-requests') {
+      result.maxRequests = parseNumberArg(rest[index + 1], 'har max requests', {
+        min: 1,
+        integer: true,
+      })
+      index += 1
+      continue
+    }
+
+    if (value === '--har-max-body-bytes') {
+      result.maxBodyBytes = parseNumberArg(rest[index + 1], 'har max body bytes', {
+        min: 0,
+        integer: true,
+      })
       index += 1
       continue
     }

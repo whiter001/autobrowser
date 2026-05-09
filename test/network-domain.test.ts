@@ -111,6 +111,64 @@ describe('network domain HAR export', () => {
     expect(state.network.harStartedAt).toBeNull()
   })
 
+  test('respects unlimited HAR limits during capture', async () => {
+    const state = createExtensionState(57978)
+    const bigText = 'x'.repeat(300_000)
+
+    const network = createNetworkDomain({
+      state,
+      getTargetTab: async () => ({ id: 1 }) as never,
+      sendRawDebuggerCommand: async <TResult = unknown>(): Promise<TResult> => ({}) as TResult,
+      sendDebuggerCommand: async <TResult = unknown>(): Promise<TResult> => ({}) as TResult,
+    })
+
+    await network.startHar(1, { maxRequests: null, maxBodyBytes: null })
+
+    await network.handleEvent({ tabId: 1 }, 'Network.requestWillBeSent', {
+      requestId: 'req-1',
+      request: {
+        url: 'https://example.com/big',
+        method: 'POST',
+        headers: { 'content-type': 'text/plain' },
+        postData: bigText,
+      },
+      type: 'Document',
+      timestamp: 100,
+      wallTime: 100,
+    })
+
+    await network.handleEvent({ tabId: 1 }, 'Network.responseReceived', {
+      requestId: 'req-1',
+      response: {
+        status: 200,
+        statusText: 'OK',
+        headers: { 'content-type': 'application/json' },
+        mimeType: 'application/json',
+      },
+      timestamp: 101,
+    })
+
+    await network.handleEvent({ tabId: 1 }, 'Network.loadingFinished', {
+      requestId: 'req-1',
+      timestamp: 102,
+      encodedDataLength: bigText.length,
+    })
+
+    const detail = network.getRequestDetail('1:req-1') as {
+      request: {
+        postData?: string
+        postDataTruncated?: boolean
+        responseBodyTruncated?: boolean
+      }
+    }
+
+    expect(state.network.harMaxRequests).toBeNull()
+    expect(state.network.harMaxBodyBytes).toBeNull()
+    expect(detail.request.postDataTruncated).toBeFalse()
+    expect(detail.request.responseBodyTruncated).toBeFalse()
+    expect(detail.request.postData).toBe(bigText)
+  })
+
   test('truncates large request and response bodies before storing them', async () => {
     const state = createExtensionState(57978)
     const bigText = 'x'.repeat(300_000)

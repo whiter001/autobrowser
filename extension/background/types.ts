@@ -72,6 +72,8 @@ export interface NetworkState {
   requestMap: Map<string, NetworkRequestRecord>
   harRecording: boolean
   harStartedAt: string | null
+  harMaxRequests: number | null
+  harMaxBodyBytes: number | null
 }
 
 export interface ConsoleMessageRecord {

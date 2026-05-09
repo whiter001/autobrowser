@@ -1,5 +1,6 @@
 import { isRecord } from '../client.js'
 import {
+  parseNetworkHarStartArgs,
   parseNetworkRequestsArgs,
   parseNetworkRouteArgs,
   parseOptionalNumberArg,
@@ -293,9 +294,14 @@ async function handleNetwork(rest: string[], context: CommandContext): Promise<n
     }
 
     if (subaction === 'start') {
+      if (helpRequested(rest[2], context, ['network', 'har', 'start'])) {
+        return 0
+      }
+
       await requestAndWrite(context, 'network', {
         action: 'har',
         subaction: 'start',
+        ...parseNetworkHarStartArgs(rest.slice(2)),
       })
       return 0
     }

@@ -210,7 +210,10 @@ interface NetworkDomain {
   unrouteRequest: (tabId: TabInput, url: string) => Promise<unknown>
   listRequests: (args: CommandArgs) => unknown
   getRequestDetail: (requestId: string) => unknown
-  startHar: (tabId: TabInput) => Promise<unknown>
+  startHar: (
+    tabId: TabInput,
+    options?: { maxRequests?: number | null; maxBodyBytes?: number | null },
+  ) => Promise<unknown>
   stopHar: () => unknown
 }
 
@@ -690,7 +693,16 @@ export function createCommandRouter({
         }
         if (action === 'har') {
           if (subaction === 'start') {
-            return await network.startHar(tabId)
+            return await network.startHar(tabId, {
+              maxRequests:
+                typeof args.maxRequests === 'number' || args.maxRequests === null
+                  ? (args.maxRequests as number | null)
+                  : undefined,
+              maxBodyBytes:
+                typeof args.maxBodyBytes === 'number' || args.maxBodyBytes === null
+                  ? (args.maxBodyBytes as number | null)
+                  : undefined,
+            })
           }
           if (subaction === 'stop') {
             return network.stopHar()

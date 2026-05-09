@@ -20,16 +20,16 @@ jobs:
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
         with:
-          version: 9
+          version: 11
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
       - name: Check formatting, lint, and types
-        run: pnpm run check
+        run: bun run check
 
       - name: Run tests
-        run: pnpm test
+        run: bun test
 
       - name: Build artifacts
-        run: pnpm run build
+        run: bun run build

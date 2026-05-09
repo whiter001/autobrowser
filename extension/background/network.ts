@@ -101,7 +101,8 @@ function stringifyNetworkBody(body: unknown): { text: string; base64Encoded: boo
   return { text, base64Encoded: false }
 }
 
-const MAX_RECORDED_BODY_BYTES = 256 * 1024
+const DEFAULT_HAR_MAX_REQUESTS = 1000
+const DEFAULT_HAR_MAX_BODY_BYTES = 256 * 1024
 
 function estimateTextByteLength(text: string): number {
   return new TextEncoder().encode(text).length
@@ -132,12 +133,13 @@ function truncateTextByBytes(text: string, maxBytes: number): string {
 function summarizeStoredBody(
   body: string,
   base64Encoded: boolean,
+  maxBytes: number | null,
 ): { text: string; byteLength: number; truncated: boolean } {
   const byteLength = base64Encoded
     ? Math.max(0, Math.floor(body.length * 0.75))
     : estimateTextByteLength(body)
 
-  if (byteLength <= MAX_RECORDED_BODY_BYTES) {
+  if (maxBytes === null || byteLength <= maxBytes) {
     return { text: body, byteLength, truncated: false }
   }
 
@@ -146,10 +148,22 @@ function summarizeStoredBody(
   }
 
   return {
-    text: truncateTextByBytes(body, MAX_RECORDED_BODY_BYTES),
+    text: truncateTextByBytes(body, maxBytes),
     byteLength,
     truncated: true,
   }
+}
+
+function getHarMaxRequests(state: ExtensionState): number | null {
+  return state.network.harMaxRequests === null
+    ? null
+    : (state.network.harMaxRequests ?? DEFAULT_HAR_MAX_REQUESTS)
+}
+
+function getHarMaxBodyBytes(state: ExtensionState): number | null {
+  return state.network.harMaxBodyBytes === null
+    ? null
+    : (state.network.harMaxBodyBytes ?? DEFAULT_HAR_MAX_BODY_BYTES)
 }
 
 function matchesNetworkRoute(pattern: string, url: string): boolean {
@@ -218,8 +232,9 @@ function upsertNetworkRequest(
     state.network.requests.push(merged)
   }
 
-  if (state.network.requests.length > 1000) {
-    const removed = state.network.requests.splice(0, state.network.requests.length - 1000)
+  const maxRequests = getHarMaxRequests(state)
+  if (maxRequests !== null && state.network.requests.length > maxRequests) {
+    const removed = state.network.requests.splice(0, state.network.requests.length - maxRequests)
     for (const item of removed) {
       if (item && typeof item.id === 'string') {
         state.network.requestMap.delete(item.id)
@@ -298,7 +313,7 @@ function buildHarEntry(record: NetworkRequestRecord): Record<string, unknown> {
   }
 
   if (responseBodyTruncated) {
-    responseContent.comment = `body truncated by autobrowser after ${MAX_RECORDED_BODY_BYTES} bytes`
+    responseContent.comment = 'body truncated by autobrowser'
   }
 
   if (responseBody) {
@@ -327,7 +342,7 @@ function buildHarEntry(record: NetworkRequestRecord): Record<string, unknown> {
               text: requestBody,
               ...(requestBodyTruncated
                 ? {
-                    comment: `body truncated by autobrowser after ${MAX_RECORDED_BODY_BYTES} bytes`,
+                    comment: 'body truncated by autobrowser',
                   }
                 : {}),
             }
@@ -447,7 +462,9 @@ export function createNetworkDomain({
       const route = findMatchingNetworkRoute(state, String(request.url || ''))
       const key = createNetworkRequestKey(tabId, requestId)
       const requestBodySummary =
-        typeof request.postData === 'string' ? summarizeStoredBody(request.postData, false) : null
+        typeof request.postData === 'string'
+          ? summarizeStoredBody(request.postData, false, getHarMaxBodyBytes(state))
+          : null
       const record = upsertNetworkRequest(state, {
         id: key,
         requestId,
@@ -481,7 +498,11 @@ export function createNetworkDomain({
 
       if (route && route.body !== undefined) {
         const body = stringifyNetworkBody(route.body)
-        const responseBodySummary = summarizeStoredBody(body.text, body.base64Encoded)
+        const responseBodySummary = summarizeStoredBody(
+          body.text,
+          body.base64Encoded,
+          getHarMaxBodyBytes(state),
+        )
         try {
           await sendRawDebuggerCommand(tabId, 'Fetch.fulfillRequest', {
             requestId,
@@ -530,7 +551,11 @@ export function createNetworkDomain({
         { requestId },
       )
       const responseBody = String(result?.body || '')
-      const responseBodySummary = summarizeStoredBody(responseBody, Boolean(result?.base64Encoded))
+      const responseBodySummary = summarizeStoredBody(
+        responseBody,
+        Boolean(result?.base64Encoded),
+        getHarMaxBodyBytes(state),
+      )
       const bodyRecord = upsertNetworkRequest(state, {
         ...record,
         responseBody: responseBodySummary.text,
@@ -567,7 +592,7 @@ export function createNetworkDomain({
 
       const requestBodySummary =
         typeof payload.request?.postData === 'string'
-          ? summarizeStoredBody(payload.request.postData, false)
+          ? summarizeStoredBody(payload.request.postData, false, getHarMaxBodyBytes(state))
           : null
 
       upsertNetworkRequest(state, {
@@ -736,14 +761,23 @@ export function createNetworkDomain({
     }
   }
 
-  async function startHar(tabId: TabInput): Promise<Record<string, unknown>> {
+  async function startHar(
+    tabId: TabInput,
+    options: { maxRequests?: number | null; maxBodyBytes?: number | null } = {},
+  ): Promise<Record<string, unknown>> {
     const tab = await getTargetTab(tabId)
     await sendDebuggerCommand(tab.id, 'Network.enable', {})
     state.network.harRecording = true
     state.network.harStartedAt = new Date().toISOString()
+    state.network.harMaxRequests =
+      options.maxRequests === undefined ? DEFAULT_HAR_MAX_REQUESTS : options.maxRequests
+    state.network.harMaxBodyBytes =
+      options.maxBodyBytes === undefined ? DEFAULT_HAR_MAX_BODY_BYTES : options.maxBodyBytes
     return {
       recording: true,
       startedAt: state.network.harStartedAt,
+      maxRequests: state.network.harMaxRequests,
+      maxBodyBytes: state.network.harMaxBodyBytes,
     }
   }
 
@@ -752,6 +786,8 @@ export function createNetworkDomain({
     const stoppedAt = new Date().toISOString()
     state.network.harRecording = false
     state.network.harStartedAt = null
+    state.network.harMaxRequests = DEFAULT_HAR_MAX_REQUESTS
+    state.network.harMaxBodyBytes = DEFAULT_HAR_MAX_BODY_BYTES
 
     const requests = state.network.requests.filter((record) => {
       if (!startedAt) {

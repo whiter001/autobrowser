@@ -22,6 +22,8 @@ export function createExtensionState(defaultRelayPort: number): ExtensionState {
       requestMap: new Map(),
       harRecording: false,
       harStartedAt: null,
+      harMaxRequests: 1000,
+      harMaxBodyBytes: 256 * 1024,
     },
     shouldReconnect: true,
     token: '',
