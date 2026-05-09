@@ -224,6 +224,8 @@ export async function startServers(options: ServerOptions = {}): Promise<StartSe
   const runtime = await createRuntime(options)
   let shuttingDown = false
   let requestShutdown = () => {}
+  let relayServer: Bun.Server<RelaySocketData> | null = null
+  let ipcServer: Bun.Server<undefined> | null = null
 
   function performShutdown(): void {
     if (shuttingDown) {
@@ -232,11 +234,13 @@ export async function startServers(options: ServerOptions = {}): Promise<StartSe
 
     shuttingDown = true
     runtime.detachExtension()
-    relayServer.stop()
-    ipcServer.stop()
+    relayServer?.stop()
+    ipcServer?.stop()
+    relayServer = null
+    ipcServer = null
   }
 
-  const relayServer = Bun.serve<RelaySocketData>({
+  relayServer = Bun.serve<RelaySocketData>({
     hostname: '127.0.0.1',
     port: runtime.runtime.relayPort,
     fetch(request, server) {
@@ -288,88 +292,93 @@ export async function startServers(options: ServerOptions = {}): Promise<StartSe
     },
   })
 
-  const ipcServer = Bun.serve({
-    hostname: '127.0.0.1',
-    port: runtime.runtime.ipcPort,
-    fetch(request) {
-      const url = new URL(request.url)
+  try {
+    ipcServer = Bun.serve({
+      hostname: '127.0.0.1',
+      port: runtime.runtime.ipcPort,
+      fetch(request) {
+        const url = new URL(request.url)
 
-      if (url.pathname === '/status' && request.method === 'GET') {
-        return jsonResponse(runtime.snapshot())
-      }
-
-      if (url.pathname === '/shutdown' && request.method === 'POST') {
-        return request
-          .json()
-          .then((body: unknown) => {
-            const data = body as { token?: unknown } | null
-            if (String(data?.token || '') !== runtime.runtime.token) {
-              return jsonResponse(
-                { ok: false, error: { message: 'unauthorized' } },
-                { status: 401 },
-              )
-            }
-
-            requestShutdown()
-            return jsonResponse({ ok: true, result: { stopping: true } })
-          })
-          .catch((error: Error) =>
-            jsonResponse({ ok: false, error: { message: error.message } }, { status: 400 }),
-          )
-      }
-
-      if (url.pathname === '/command' && request.method === 'POST') {
-        if (readBearerToken(request) !== runtime.runtime.token) {
-          return unauthorizedResponse()
+        if (url.pathname === '/status' && request.method === 'GET') {
+          return jsonResponse(runtime.snapshot())
         }
 
-        return request
-          .json()
-          .then(async (body: unknown) => {
-            const data = body as {
-              command?: string
-              args?: Record<string, unknown>
-            } | null
-            const command = String(data?.command || '').trim()
-            const args = data?.args && typeof data.args === 'object' ? data.args : {}
+        if (url.pathname === '/shutdown' && request.method === 'POST') {
+          return request
+            .json()
+            .then((body: unknown) => {
+              const data = body as { token?: unknown } | null
+              if (String(data?.token || '') !== runtime.runtime.token) {
+                return jsonResponse(
+                  { ok: false, error: { message: 'unauthorized' } },
+                  { status: 401 },
+                )
+              }
 
-            if (!command) {
-              return jsonResponse(
-                { ok: false, error: { message: 'missing command' } },
-                { status: 400 },
-              )
-            }
+              requestShutdown()
+              return jsonResponse({ ok: true, result: { stopping: true } })
+            })
+            .catch((error: Error) =>
+              jsonResponse({ ok: false, error: { message: error.message } }, { status: 400 }),
+            )
+        }
 
-            if (command === 'status') {
-              return jsonResponse({ ok: true, result: runtime.snapshot() })
-            }
+        if (url.pathname === '/command' && request.method === 'POST') {
+          if (readBearerToken(request) !== runtime.runtime.token) {
+            return unauthorizedResponse()
+          }
 
-            try {
-              const result = await runtime.dispatchCommand(command, args)
-              return jsonResponse({ ok: true, result })
-            } catch (error) {
-              const err = error as ErrorWithCode
-              runtime.setError(err.message)
-              return jsonResponse(
-                {
-                  ok: false,
-                  error: {
-                    message: err.message,
-                    code: err.code || 'COMMAND_FAILED',
+          return request
+            .json()
+            .then(async (body: unknown) => {
+              const data = body as {
+                command?: string
+                args?: Record<string, unknown>
+              } | null
+              const command = String(data?.command || '').trim()
+              const args = data?.args && typeof data.args === 'object' ? data.args : {}
+
+              if (!command) {
+                return jsonResponse(
+                  { ok: false, error: { message: 'missing command' } },
+                  { status: 400 },
+                )
+              }
+
+              if (command === 'status') {
+                return jsonResponse({ ok: true, result: runtime.snapshot() })
+              }
+
+              try {
+                const result = await runtime.dispatchCommand(command, args)
+                return jsonResponse({ ok: true, result })
+              } catch (error) {
+                const err = error as ErrorWithCode
+                runtime.setError(err.message)
+                return jsonResponse(
+                  {
+                    ok: false,
+                    error: {
+                      message: err.message,
+                      code: err.code || 'COMMAND_FAILED',
+                    },
                   },
-                },
-                { status: 500 },
-              )
-            }
-          })
-          .catch((error: Error) =>
-            jsonResponse({ ok: false, error: { message: error.message } }, { status: 400 }),
-          )
-      }
+                  { status: 500 },
+                )
+              }
+            })
+            .catch((error: Error) =>
+              jsonResponse({ ok: false, error: { message: error.message } }, { status: 400 }),
+            )
+        }
 
-      return textResponse('not found', { status: 404 })
-    },
-  })
+        return textResponse('not found', { status: 404 })
+      },
+    })
+  } catch (error) {
+    performShutdown()
+    throw error
+  }
 
   requestShutdown = () => {
     setTimeout(() => {

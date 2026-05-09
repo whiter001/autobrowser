@@ -217,7 +217,10 @@ describe('cli command routing', () => {
       command: 'get',
       args: { attr: 'title' },
     })
-    expect(result.stdout).toContain('Example title')
+    expect(JSON.parse(result.stdout)).toMatchObject({
+      ok: true,
+      result: 'Example title',
+    })
   })
 
   test('returns the local cdp websocket url without requiring a selector', async () => {
@@ -229,7 +232,19 @@ describe('cli command routing', () => {
     expect(result.exitCode).toBe(0)
     expect(result.fetchCalls).toHaveLength(1)
     expect(String(result.fetchCalls[0].url)).toBe('http://127.0.0.1:57979/status')
-    expect(result.stdout).toContain('ws://127.0.0.1:48001/ws?token=test-token')
+    expect(JSON.parse(result.stdout)).toBe('ws://127.0.0.1:48001/ws?token=test-token')
+  })
+
+  test('returns raw text when --raw is set', async () => {
+    const result = await runCli(['--raw', 'get', 'cdp-url'], {
+      token: 'test-token',
+      relayPort: 48001,
+    })
+
+    expect(result.exitCode).toBe(0)
+    expect(result.fetchCalls).toHaveLength(1)
+    expect(String(result.fetchCalls[0].url)).toBe('http://127.0.0.1:57979/status')
+    expect(result.stdout.trim()).toBe('ws://127.0.0.1:48001/ws?token=test-token')
   })
 
   test('returns a non-zero code when status lookup fails', async () => {
@@ -309,6 +324,9 @@ describe('cli command routing', () => {
       'http://127.0.0.1:57979/command',
     ])
     expect(result.fetchCalls[2].init.headers.authorization).toBe('Bearer fresh-token')
+    expect(JSON.parse(await readFile(path.join(stateDir, 'token'), 'utf8'))).toEqual({
+      token: 'fresh-token',
+    })
   })
 
   test('routes tab selection by stable handle to the extension', async () => {
@@ -508,6 +526,288 @@ describe('cli command routing', () => {
     expect(result.openCalls).toEqual([
       'chrome-extension://bfccnpkjkbhceghimfjgnkigilidldep/connect.html?token=live-token&relayPort=48011&ipcPort=48012',
     ])
+  })
+
+  test('auto-connect retries after an initial connect page launch failure', async () => {
+    let commandCallCount = 0
+    let openCallCount = 0
+
+    const result = await runCli(
+      ['--auto-connect', 'open', 'https://example.com'],
+      { ok: true, result: { navigated: true } },
+      {
+        openUrl: async () => {
+          openCallCount += 1
+          if (openCallCount === 1) {
+            throw new Error('failed to open connect page')
+          }
+        },
+        fetchImpl: async (url, init = {}) => {
+          const body = init.body ? JSON.parse(init.body) : null
+
+          if (String(url).endsWith('/status')) {
+            return {
+              ok: true,
+              async json() {
+                return {
+                  ok: true,
+                  token: 'live-token',
+                  relayPort: 48011,
+                  ipcPort: 48012,
+                  extensionConnected: false,
+                }
+              },
+            }
+          }
+
+          if (body?.command === 'goto') {
+            commandCallCount += 1
+            if (commandCallCount === 1) {
+              return {
+                ok: true,
+                async json() {
+                  return {
+                    ok: false,
+                    error: {
+                      message: 'no extension is connected',
+                      code: 'EXTENSION_DISCONNECTED',
+                    },
+                  }
+                },
+              }
+            }
+
+            return {
+              ok: true,
+              async json() {
+                return {
+                  ok: true,
+                  result: {
+                    navigated: true,
+                  },
+                }
+              },
+            }
+          }
+
+          throw new Error(`unexpected request: ${String(url)} ${JSON.stringify(body)}`)
+        },
+      },
+    )
+
+    expect(result.exitCode).toBe(0)
+    expect(result.openCalls).toHaveLength(2)
+    expect(result.fetchCalls).toHaveLength(4)
+    expect(result.fetchCalls.map((call) => String(call.url))).toEqual([
+      'http://127.0.0.1:57979/status',
+      'http://127.0.0.1:57979/command',
+      'http://127.0.0.1:57979/status',
+      'http://127.0.0.1:57979/command',
+    ])
+    expect(JSON.parse(result.stdout)).toMatchObject({
+      ok: true,
+      result: {
+        navigated: true,
+      },
+    })
+  })
+
+  test('batch runs commands in sequence from file input', async () => {
+    const homeDir = await mkdtemp(path.join(os.tmpdir(), 'autobrowser-batch-'))
+    const batchFile = path.join(homeDir, 'batch.json')
+    await writeFile(
+      batchFile,
+      JSON.stringify(
+        [
+          { command: 'snapshot' },
+          {
+            command: 'goto',
+            args: {
+              url: 'https://example.com',
+            },
+          },
+        ],
+        null,
+        2,
+      ),
+    )
+
+    const result = await runCli(['batch', '--file', batchFile], undefined, {
+      homeDir,
+      fetchImpl: async (url, init = {}) => {
+        const body = init.body ? JSON.parse(init.body) : null
+
+        if (body?.command === 'snapshot') {
+          return {
+            ok: true,
+            async json() {
+              return {
+                ok: true,
+                result: { snapshotId: 's1' },
+              }
+            },
+          }
+        }
+
+        if (body?.command === 'goto') {
+          return {
+            ok: true,
+            async json() {
+              return {
+                ok: true,
+                result: { navigated: true },
+              }
+            },
+          }
+        }
+
+        throw new Error(`unexpected request: ${String(url)} ${JSON.stringify(body)}`)
+      },
+    })
+
+    expect(result.exitCode).toBe(0)
+    expect(result.fetchCalls).toHaveLength(2)
+    expect(result.fetchCalls.map((call) => call.body.command)).toEqual(['snapshot', 'goto'])
+    expect(JSON.parse(result.stdout)).toMatchObject({
+      ok: true,
+      result: {
+        steps: [
+          {
+            index: 1,
+            command: 'snapshot',
+            args: {},
+            label: null,
+            response: {
+              ok: true,
+              result: { snapshotId: 's1' },
+            },
+          },
+          {
+            index: 2,
+            command: 'goto',
+            args: {
+              url: 'https://example.com',
+            },
+            label: null,
+            response: {
+              ok: true,
+              result: { navigated: true },
+            },
+          },
+        ],
+      },
+    })
+  })
+
+  test('batch rejects array args before sending requests', async () => {
+    const homeDir = await mkdtemp(path.join(os.tmpdir(), 'autobrowser-batch-args-'))
+    const batchFile = path.join(homeDir, 'batch.json')
+    await writeFile(
+      batchFile,
+      JSON.stringify([
+        {
+          command: 'goto',
+          args: [],
+        },
+      ]),
+    )
+
+    const result = await runCli(['batch', '--file', batchFile], undefined, {
+      homeDir,
+      fetchImpl: async () => {
+        throw new Error('batch should fail before making requests')
+      },
+    })
+
+    expect(result.exitCode).toBe(1)
+    expect(result.fetchCalls).toHaveLength(0)
+    expect(result.stderr).toContain('invalid batch step 1: args must be an object')
+  })
+
+  test('batch stops on the first failed step and returns structured failure', async () => {
+    const homeDir = await mkdtemp(path.join(os.tmpdir(), 'autobrowser-batch-fail-'))
+    const batchFile = path.join(homeDir, 'batch.json')
+    await writeFile(
+      batchFile,
+      JSON.stringify(
+        [
+          { command: 'snapshot' },
+          {
+            command: 'goto',
+            args: {
+              url: 'chrome://settings',
+            },
+          },
+        ],
+        null,
+        2,
+      ),
+    )
+
+    const result = await runCli(['batch', '--file', batchFile], undefined, {
+      homeDir,
+      fetchImpl: async (url, init = {}) => {
+        const body = init.body ? JSON.parse(init.body) : null
+
+        if (body?.command === 'snapshot') {
+          return {
+            ok: true,
+            async json() {
+              return {
+                ok: true,
+                result: { snapshotId: 's1' },
+              }
+            },
+          }
+        }
+
+        if (body?.command === 'goto') {
+          return {
+            ok: true,
+            async json() {
+              return {
+                ok: false,
+                error: {
+                  message: 'cannot access chrome:// and edge:// urls',
+                },
+              }
+            },
+          }
+        }
+
+        throw new Error(`unexpected request: ${String(url)} ${JSON.stringify(body)}`)
+      },
+    })
+
+    expect(result.exitCode).toBe(1)
+    expect(result.fetchCalls).toHaveLength(2)
+    expect(JSON.parse(result.stdout)).toMatchObject({
+      ok: false,
+      error: {
+        code: 'BATCH_STEP_FAILED',
+      },
+      result: {
+        steps: [
+          {
+            index: 1,
+            command: 'snapshot',
+            response: {
+              ok: true,
+            },
+          },
+          {
+            index: 2,
+            command: 'goto',
+            response: {
+              ok: false,
+              error: {
+                message: 'cannot access chrome:// and edge:// urls',
+              },
+            },
+          },
+        ],
+      },
+    })
   })
 
   test('connect opens the extension page when the server reports a token', async () => {
@@ -806,6 +1106,42 @@ describe('cli command routing', () => {
     expect(result.spawnCalls[0].args).toContain('--relay-port')
     expect(result.spawnCalls[0].args).toContain('--ipc-port')
     expect(result.stdout).toContain('background')
+  })
+
+  test('server serve refuses to start when the ipc port is already in use', async () => {
+    const result = await runCli(
+      ['server', '--serve'],
+      { ok: true, result: { ok: true } },
+      {
+        fetchImpl: async (url) => {
+          if (String(url) === 'http://127.0.0.1:57978/status') {
+            return {
+              ok: false,
+              async json() {
+                return { ok: false }
+              },
+            }
+          }
+
+          if (String(url) === 'http://127.0.0.1:57979/status') {
+            return {
+              ok: true,
+              async json() {
+                return { ok: true }
+              },
+            }
+          }
+
+          throw new Error(`unexpected request: ${String(url)}`)
+        },
+      },
+    )
+
+    expect(result.exitCode).toBe(1)
+    expect(result.fetchCalls).toHaveLength(2)
+    expect(result.spawnCalls).toHaveLength(0)
+    expect(result.stdout).not.toContain('autobrowser server started')
+    expect(result.stderr).toContain('Server already running on port 57979')
   })
 
   test('server ignores unrelated ipc responses before deciding it is already running', async () => {
@@ -1252,7 +1588,13 @@ describe('cli command routing', () => {
         quality: 80,
       },
     })
-    expect(result.stdout.trim()).toBe(outputPath)
+    expect(JSON.parse(result.stdout)).toMatchObject({
+      path: outputPath,
+      mimeType: 'image/jpeg',
+      format: 'jpeg',
+      full: true,
+      annotate: true,
+    })
     expect((await readFile(outputPath)).toString()).toBe('screenshot-bytes')
   })
 
@@ -1299,7 +1641,7 @@ describe('cli command routing', () => {
       },
     )
 
-    const savedPath = result.stdout.trim()
+    const savedPath = JSON.parse(result.stdout).path
     expect(result.exitCode).toBe(0)
     expect(result.fetchCalls).toHaveLength(1)
     expect(result.fetchCalls[0].body).toEqual({
@@ -1326,7 +1668,7 @@ describe('cli command routing', () => {
       },
     })
 
-    const savedPath = result.stdout.trim()
+    const savedPath = JSON.parse(result.stdout).path
     expect(result.exitCode).toBe(0)
     expect(result.fetchCalls).toHaveLength(1)
     expect(result.fetchCalls[0].body).toEqual({
@@ -1371,7 +1713,13 @@ describe('cli command routing', () => {
         selector: '#submit',
       },
     })
-    expect(result.stderr).toContain('click failed')
+    expect(JSON.parse(result.stdout)).toMatchObject({
+      ok: false,
+      error: {
+        message: 'click failed',
+      },
+    })
+    expect(result.stderr).toBe('')
   })
 
   test('routes type commands to the extension', async () => {
@@ -1673,7 +2021,7 @@ describe('cli command routing', () => {
     expect(result.exitCode).toBe(0)
     expect(result.fetchCalls).toHaveLength(1)
 
-    const outputPath = result.stdout.trim()
+    const outputPath = JSON.parse(result.stdout).result
     expect(outputPath.length).toBeGreaterThan(0)
 
     const harContent = await readFile(outputPath, 'utf8')

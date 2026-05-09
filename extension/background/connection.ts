@@ -478,10 +478,6 @@ export function createConnectionRuntime({
       })
     })
 
-    connect().catch((error) => {
-      console.error('failed to connect autobrowser extension', error)
-    })
-
     chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       if (message?.type === 'autobrowser.setToken') {
         saveToken(String(message.token || '')).then(

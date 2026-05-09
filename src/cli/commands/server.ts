@@ -130,8 +130,18 @@ async function ensureBackgroundServer(
 
 async function handleServer(rest: string[], context: CommandContext): Promise<number | void> {
   if (rest[0] === '--serve') {
-    if (await isPortInUse(context.flags.relayPort)) {
+    const [relayPortInUse, ipcPortInUse] = await Promise.all([
+      isPortInUse(context.flags.relayPort),
+      isPortInUse(context.flags.ipcPort),
+    ])
+
+    if (relayPortInUse) {
       process.stderr.write(`Server already running on port ${context.flags.relayPort}\n`)
+      return 1
+    }
+
+    if (ipcPortInUse) {
+      process.stderr.write(`Server already running on port ${context.flags.ipcPort}\n`)
       return 1
     }
 
