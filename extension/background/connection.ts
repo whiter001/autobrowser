@@ -488,6 +488,7 @@ export function createConnectionRuntime({
               error: {
                 message: err.message,
                 code: err.code || 'EXTENSION_COMMAND_ERROR',
+                    ...(typeof err.details !== 'undefined' ? { details: err.details } : {}),
                 ...(err.suggestedAction ? { suggestedAction: err.suggestedAction } : {}),
                 ...(err.ref ? { ref: err.ref } : {}),
                 ...(typeof err.expectedPageEpoch === 'number'

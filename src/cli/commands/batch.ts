@@ -1,3 +1,5 @@
+import { commandSupportsFrameTarget, commandSupportsTabTarget } from '../../core/command-spec.js'
+import { isRecord } from '../client.js'
 import { helpRequested, parseOrWriteError } from './shared.js'
 import type { CommandContext, CommandRegistry } from './types.js'
 
@@ -13,12 +15,21 @@ interface BatchStep {
   label: string | null
 }
 
-interface BatchStepResult {
-  index: number
-  command: string
-  args: Record<string, unknown>
-  label: string | null
-  response: unknown
+function normalizeBatchStepForDispatch(step: BatchStep, context: CommandContext): BatchStep {
+  const args: Record<string, unknown> = { ...step.args }
+
+  if (commandSupportsTabTarget(step.command) && args.tabId === undefined && context.flags.tab) {
+    args.tabId = context.flags.tab
+  }
+
+  if (commandSupportsFrameTarget(step.command) && args.frame === undefined && context.flags.frame) {
+    args.frame = context.flags.frame
+  }
+
+  return {
+    ...step,
+    args,
+  }
 }
 
 function normalizeBatchStep(value: unknown, index: number): BatchStep {
@@ -69,25 +80,20 @@ function parseBatchSteps(raw: string): BatchStep[] {
 }
 
 function buildBatchFailurePayload(
-  results: BatchStepResult[],
-  failedStep: BatchStepResult,
-  reason: string,
+  payload: { ok?: boolean; error?: { message?: string; code?: string; details?: unknown } },
 ) {
+  const details = isRecord(payload.error?.details) ? payload.error.details : null
+  const steps = Array.isArray(details?.steps) ? details.steps.filter(isRecord) : []
+
   return {
     ok: false,
     result: {
-      steps: results,
+      steps,
     },
     error: {
-      code: 'BATCH_STEP_FAILED',
-      message: reason,
-      details: {
-        stepIndex: failedStep.index,
-        command: failedStep.command,
-        label: failedStep.label,
-        args: failedStep.args,
-        response: failedStep.response,
-      },
+      code: payload.error?.code || 'BATCH_STEP_FAILED',
+      message: payload.error?.message || 'batch step failed',
+      ...(typeof payload.error?.details !== 'undefined' ? { details: payload.error.details } : {}),
     },
   }
 }
@@ -103,66 +109,17 @@ async function handleBatch(rest: string[], context: CommandContext): Promise<num
     return 1
   }
 
-  const results: BatchStepResult[] = []
-  for (const [index, step] of steps.entries()) {
-    let response: Awaited<ReturnType<CommandContext['requestCommand']>> | null = null
-    try {
-      response = await context.requestCommand(context.flags.server, step.command, step.args)
-    } catch (error) {
-      const stepResult: BatchStepResult = {
-        index: index + 1,
-        command: step.command,
-        args: step.args,
-        label: step.label,
-        response: {
-          ok: false,
-          error: {
-            message: error instanceof Error ? error.message : String(error),
-            code: 'BATCH_STEP_ERROR',
-          },
-        },
-      }
-      results.push(stepResult)
+  const dispatchSteps = steps.map((step) => normalizeBatchStepForDispatch(step, context))
+  const payload = await context.requestCommand(context.flags.server, 'batch', {
+    steps: dispatchSteps,
+  })
 
-      context.writeResult(
-        buildBatchFailurePayload(
-          results,
-          stepResult,
-          `batch step ${index + 1} errored: ${step.command}`,
-        ),
-      )
-    }
-
-    if (response === null) {
-      return 1
-    }
-
-    const stepResult: BatchStepResult = {
-      index: index + 1,
-      command: step.command,
-      args: step.args,
-      label: step.label,
-      response,
-    }
-    results.push(stepResult)
-
-    if (response.ok === false) {
-      context.writeResult(
-        buildBatchFailurePayload(
-          results,
-          stepResult,
-          `batch step ${index + 1} failed: ${step.command}`,
-        ),
-      )
-    }
+  if (payload.ok === false) {
+    context.writeResult(buildBatchFailurePayload(payload))
+    return 1
   }
 
-  context.writeResult({
-    ok: true,
-    result: {
-      steps: results,
-    },
-  })
+  context.writeResult(payload)
   return 0
 }
 

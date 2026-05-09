@@ -1,7 +1,7 @@
 export interface CommandResponse {
   ok: boolean
   result?: unknown
-  error?: { message: string; code?: string }
+  error?: { message: string; code?: string; details?: unknown }
 }
 
 export interface RequestCommandOptions {

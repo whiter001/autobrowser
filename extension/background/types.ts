@@ -14,6 +14,7 @@ export interface ScreenshotCaptureOptions {
 
 export interface ErrorWithCode extends Error {
   code?: string
+  details?: unknown
   suggestedAction?: string
   ref?: string
   expectedPageEpoch?: number

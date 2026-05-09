@@ -12,6 +12,7 @@ import type {
   CommandMessage,
   ExtensionState,
   FrameSelector,
+  ErrorWithCode,
   SavedStateData,
   ScreenshotCaptureOptions,
   TabInput,
@@ -508,8 +509,141 @@ export function createCommandRouter({
     }
   }
 
-  async function handleCommand(message: CommandMessage) {
-    const { command, args = {} } = message
+  interface BatchCommandStep {
+    command: string
+    args: CommandArgs
+    label: string | null
+  }
+
+  interface BatchCommandStepResult {
+    index: number
+    command: string
+    args: CommandArgs
+    label: string | null
+    response: { ok: true; result: unknown } | { ok: false; error: { message: string; code?: string; details?: unknown } }
+  }
+
+  function isRecord(value: unknown): value is Record<string, unknown> {
+    return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
+  }
+
+  function serializeCommandError(error: unknown): {
+    message: string
+    code?: string
+    details?: unknown
+  } {
+    const err = error as ErrorWithCode
+    return {
+      message: err.message || 'extension command failed',
+      code: err.code || 'EXTENSION_COMMAND_ERROR',
+      ...(typeof err.details !== 'undefined' ? { details: err.details } : {}),
+    }
+  }
+
+  function normalizeBatchCommandStep(value: unknown, index: number): BatchCommandStep {
+    if (typeof value === 'string') {
+      const command = value.trim()
+      if (!command) {
+        throw new Error(`invalid batch step ${index + 1}: empty command string`)
+      }
+
+      return {
+        command,
+        args: {},
+        label: null,
+      }
+    }
+
+    if (!isRecord(value)) {
+      throw new Error(`invalid batch step ${index + 1}: expected a command string or object`)
+    }
+
+    const command = typeof value.command === 'string' ? value.command.trim() : ''
+    if (!command) {
+      throw new Error(`invalid batch step ${index + 1}: missing command`) 
+    }
+
+    const args = value.args === undefined ? {} : value.args
+    if (!isRecord(args)) {
+      throw new Error(`invalid batch step ${index + 1}: args must be an object`)
+    }
+
+    return {
+      command,
+      args,
+      label: typeof value.label === 'string' && value.label.trim() ? value.label.trim() : null,
+    }
+  }
+
+  function readBatchCommandSteps(args: CommandArgs): BatchCommandStep[] {
+    const rawSteps = args.steps
+    if (!Array.isArray(rawSteps)) {
+      throw new Error('batch steps must be a JSON array')
+    }
+
+    return rawSteps.map((value, index) => normalizeBatchCommandStep(value, index))
+  }
+
+  function createBatchStepResponse(result: unknown): { ok: true; result: unknown } {
+    return {
+      ok: true,
+      result,
+    }
+  }
+
+  function createBatchStepFailureResponse(error: unknown): {
+    ok: false
+    error: { message: string; code?: string; details?: unknown }
+  } {
+    return {
+      ok: false,
+      error: serializeCommandError(error),
+    }
+  }
+
+  async function handleBatchCommand(args: CommandArgs): Promise<{ steps: BatchCommandStepResult[] }> {
+    const steps = readBatchCommandSteps(args)
+    const results: BatchCommandStepResult[] = []
+
+    for (const [index, step] of steps.entries()) {
+      try {
+        const result = await executeCommand(step.command, step.args)
+        results.push({
+          index: index + 1,
+          command: step.command,
+          args: step.args,
+          label: step.label,
+          response: createBatchStepResponse(result),
+        })
+      } catch (error) {
+        const failedResponse = createBatchStepFailureResponse(error)
+        const failedStep: BatchCommandStepResult = {
+          index: index + 1,
+          command: step.command,
+          args: step.args,
+          label: step.label,
+          response: failedResponse,
+        }
+        results.push(failedStep)
+
+        const batchError = new Error(`batch step ${index + 1} failed: ${step.command}`) as ErrorWithCode
+        batchError.code = 'BATCH_STEP_FAILED'
+        batchError.details = {
+          steps: results,
+          failedStep,
+        }
+        throw batchError
+      }
+    }
+
+    return { steps: results }
+  }
+
+  async function executeCommand(command: string, args: CommandArgs = {}) {
+    if (command === 'batch') {
+      return await handleBatchCommand(args)
+    }
+
     const tabId = readTabInputArg(args, 'tabId')
     const handle = readTabInputArg(args, 'handle')
     const frameSelector = readFrameSelectorArg(args, 'frame')
@@ -758,6 +892,10 @@ export function createCommandRouter({
       default:
         throw new Error(`unsupported command: ${command}`)
     }
+  }
+
+  async function handleCommand(message: CommandMessage) {
+    return await executeCommand(String(message.command || ''), message.args || {})
   }
 
   return {

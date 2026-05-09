@@ -676,25 +676,38 @@ describe('cli command routing', () => {
       fetchImpl: async (url, init = {}) => {
         const body = init.body ? JSON.parse(init.body) : null
 
-        if (body?.command === 'snapshot') {
+        if (body?.command === 'batch') {
           return {
             ok: true,
             async json() {
               return {
                 ok: true,
-                result: { snapshotId: 's1' },
-              }
-            },
-          }
-        }
-
-        if (body?.command === 'goto') {
-          return {
-            ok: true,
-            async json() {
-              return {
-                ok: true,
-                result: { navigated: true },
+                result: {
+                  steps: [
+                    {
+                      index: 1,
+                      command: 'snapshot',
+                      args: {},
+                      label: null,
+                      response: {
+                        ok: true,
+                        result: { snapshotId: 's1' },
+                      },
+                    },
+                    {
+                      index: 2,
+                      command: 'goto',
+                      args: {
+                        url: 'https://example.com',
+                      },
+                      label: null,
+                      response: {
+                        ok: true,
+                        result: { navigated: true },
+                      },
+                    },
+                  ],
+                },
               }
             },
           }
@@ -705,8 +718,18 @@ describe('cli command routing', () => {
     })
 
     expect(result.exitCode).toBe(0)
-    expect(result.fetchCalls).toHaveLength(2)
-    expect(result.fetchCalls.map((call) => call.body.command)).toEqual(['snapshot', 'goto'])
+    expect(result.fetchCalls).toHaveLength(1)
+    expect(result.fetchCalls[0].body.command).toBe('batch')
+    expect(result.fetchCalls[0].body.args.steps).toEqual([
+      { command: 'snapshot', args: {}, label: null },
+      {
+        command: 'goto',
+        args: {
+          url: 'https://example.com',
+        },
+        label: null,
+      },
+    ])
     expect(JSON.parse(result.stdout)).toMatchObject({
       ok: true,
       result: {
@@ -788,26 +811,59 @@ describe('cli command routing', () => {
       fetchImpl: async (url, init = {}) => {
         const body = init.body ? JSON.parse(init.body) : null
 
-        if (body?.command === 'snapshot') {
-          return {
-            ok: true,
-            async json() {
-              return {
-                ok: true,
-                result: { snapshotId: 's1' },
-              }
-            },
-          }
-        }
-
-        if (body?.command === 'goto') {
+        if (body?.command === 'batch') {
           return {
             ok: true,
             async json() {
               return {
                 ok: false,
                 error: {
-                  message: 'cannot access chrome:// and edge:// urls',
+                  message: 'batch step 2 failed: goto',
+                  code: 'BATCH_STEP_FAILED',
+                  details: {
+                    steps: [
+                      {
+                        index: 1,
+                        command: 'snapshot',
+                        args: {},
+                        label: null,
+                        response: {
+                          ok: true,
+                          result: { snapshotId: 's1' },
+                        },
+                      },
+                      {
+                        index: 2,
+                        command: 'goto',
+                        args: {
+                          url: 'chrome://settings',
+                        },
+                        label: null,
+                        response: {
+                          ok: false,
+                          error: {
+                            message: 'cannot access chrome:// and edge:// urls',
+                            code: 'EXTENSION_COMMAND_ERROR',
+                          },
+                        },
+                      },
+                    ],
+                    failedStep: {
+                      index: 2,
+                      command: 'goto',
+                      args: {
+                        url: 'chrome://settings',
+                      },
+                      label: null,
+                      response: {
+                        ok: false,
+                        error: {
+                          message: 'cannot access chrome:// and edge:// urls',
+                          code: 'EXTENSION_COMMAND_ERROR',
+                        },
+                      },
+                    },
+                  },
                 },
               }
             },
@@ -819,7 +875,8 @@ describe('cli command routing', () => {
     })
 
     expect(result.exitCode).toBe(1)
-    expect(result.fetchCalls).toHaveLength(2)
+    expect(result.fetchCalls).toHaveLength(1)
+    expect(result.fetchCalls[0].body.command).toBe('batch')
     expect(JSON.parse(result.stdout)).toMatchObject({
       ok: false,
       error: {
