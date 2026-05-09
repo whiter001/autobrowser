@@ -1,5 +1,6 @@
 import { AGENT_FRAME_REF_ATTRIBUTE, formatAgentFrameRef } from '../../src/core/agent-handles.js'
 import { AGENT_ELEMENT_REF_ATTRIBUTE } from '../../src/core/agent-selectors.js'
+import { buildDeepDomTraversalHelpersSource } from './deep-dom.js'
 import {
   collapseWhitespace,
   parsePageContextElementRefIndex,
@@ -30,8 +31,11 @@ const PAGE_CONTEXT_TEXT_HELPERS_SOURCE = [
   splitWhitespaceTokens.toString(),
 ].join('\n')
 
+const PAGE_CONTEXT_DEEP_DOM_HELPERS_SOURCE = buildDeepDomTraversalHelpersSource()
+
 const PAGE_CONTEXT_FIND_HELPERS_SOURCE = [
   PAGE_CONTEXT_TEXT_HELPERS_SOURCE,
+  PAGE_CONTEXT_DEEP_DOM_HELPERS_SOURCE,
   parsePageContextElementRefIndex.toString(),
 ].join('\n')
 
@@ -239,6 +243,8 @@ export function createPageObserveDomain({
           body.style.position = 'relative'
         }
 
+${PAGE_CONTEXT_DEEP_DOM_HELPERS_SOURCE}
+
         const overlay = document.createElement('div')
         overlay.id = ${JSON.stringify(SCREENSHOT_ANNOTATION_OVERLAY_ID)}
         overlay.style.position = 'absolute'
@@ -268,7 +274,7 @@ export function createPageObserveDomain({
         const seen = new Set()
         const candidates = []
         for (const selector of selectors) {
-          for (const element of document.querySelectorAll(selector)) {
+          for (const element of deepQuerySelectorAll(document, selector)) {
             if (seen.has(element)) {
               continue
             }
@@ -404,6 +410,15 @@ export function createPageObserveDomain({
         const pageEpoch = ${pageEpoch};
 
 ${PAGE_CONTEXT_TEXT_HELPERS_SOURCE}
+${PAGE_CONTEXT_DEEP_DOM_HELPERS_SOURCE}
+
+        const deepElements = deepCollectElements(document);
+        const deepLabels = deepElements.filter(
+          (element) =>
+            element instanceof HTMLElement &&
+            String(element.tagName || '').toLowerCase() === 'label' &&
+            element.getAttribute('for'),
+        );
 
         const readText = (node) => collapseWhitespace(node.innerText || node.textContent || '');
 
@@ -412,12 +427,8 @@ ${PAGE_CONTEXT_TEXT_HELPERS_SOURCE}
             return '';
           }
 
-          try {
-            const label = document.querySelector('label[for="' + CSS.escape(node.id) + '"]');
-            return label ? readText(label) : '';
-          } catch {
-            return '';
-          }
+          const label = deepLabels.find((candidate) => candidate.getAttribute('for') === node.id);
+          return label ? readText(label) : '';
         };
 
         const getAriaLabelledByText = (node) => {
@@ -427,7 +438,7 @@ ${PAGE_CONTEXT_TEXT_HELPERS_SOURCE}
           }
 
           return splitWhitespaceTokens(labelledBy)
-            .map((id) => document.getElementById(id))
+            .map((id) => deepGetElementById(document, id))
             .filter(Boolean)
             .map((element) => readText(element))
             .filter(Boolean)
@@ -483,11 +494,11 @@ ${PAGE_CONTEXT_TEXT_HELPERS_SOURCE}
             : null,
         });
 
-        for (const element of document.querySelectorAll('[' + refAttribute + ']')) {
+        for (const element of deepQuerySelectorAll(document, '[' + refAttribute + ']')) {
           element.removeAttribute(refAttribute);
         }
 
-        for (const frameElement of document.querySelectorAll('[' + frameAttribute + ']')) {
+        for (const frameElement of deepQuerySelectorAll(document, '[' + frameAttribute + ']')) {
           frameElement.removeAttribute(frameAttribute);
         }
 
@@ -505,7 +516,7 @@ ${PAGE_CONTEXT_TEXT_HELPERS_SOURCE}
         const seen = new Set();
         const candidates = [];
         for (const selector of selectors) {
-          for (const element of document.querySelectorAll(selector)) {
+          for (const element of deepQuerySelectorAll(document, selector)) {
             if (seen.has(element)) {
               continue;
             }
@@ -560,7 +571,7 @@ ${PAGE_CONTEXT_TEXT_HELPERS_SOURCE}
         }
 
         const frames = [];
-        for (const frameElement of document.querySelectorAll('iframe')) {
+        for (const frameElement of deepQuerySelectorAll(document, 'iframe')) {
           if (!(frameElement instanceof HTMLIFrameElement)) {
             continue;
           }
@@ -604,8 +615,8 @@ ${PAGE_CONTEXT_TEXT_HELPERS_SOURCE}
           text: (document.body?.innerText || "").slice(0, 5000),
           elements,
           frames,
-          headings: Array.from(document.querySelectorAll("h1,h2,h3")).slice(0, 20).map(toNodeSummary),
-          buttons: Array.from(document.querySelectorAll("button,[role='button'],input[type='button'],input[type='submit']")).slice(0, 20).map(toNodeSummary),
+          headings: deepQuerySelectorAll(document, "h1,h2,h3").slice(0, 20).map(toNodeSummary),
+          buttons: deepQuerySelectorAll(document, "button,[role='button'],input[type='button'],input[type='submit']").slice(0, 20).map(toNodeSummary),
         };
       })()`,
       withFrameSelectorOptions(frameSelector),
@@ -653,6 +664,8 @@ ${PAGE_CONTEXT_TEXT_HELPERS_SOURCE}
 
 ${PAGE_CONTEXT_FIND_HELPERS_SOURCE}
 
+        const deepElements = deepCollectElements(document);
+
         const normalizeText = (value) => collapseWhitespace(value);
 
         const matchesText = (candidate, needle) => {
@@ -695,13 +708,11 @@ ${PAGE_CONTEXT_FIND_HELPERS_SOURCE}
           }
 
           if (node.id) {
-            try {
-              const externalLabel = document.querySelector('label[for="' + CSS.escape(node.id) + '"]');
-              if (externalLabel) {
-                labels.push(readText(externalLabel));
-              }
-            } catch {
-              // Ignore invalid selectors.
+            const externalLabel = deepQuerySelectorAll(document, 'label[for]').find(
+              (label) => label.getAttribute('for') === node.id,
+            );
+            if (externalLabel) {
+              labels.push(readText(externalLabel));
             }
           }
 
@@ -716,7 +727,7 @@ ${PAGE_CONTEXT_FIND_HELPERS_SOURCE}
 
           return normalizeText(
             splitWhitespaceTokens(labelledBy)
-              .map((id) => document.getElementById(id))
+              .map((id) => deepGetElementById(document, id))
               .filter(Boolean)
               .map((element) => readText(element))
               .filter(Boolean)
@@ -767,7 +778,7 @@ ${PAGE_CONTEXT_FIND_HELPERS_SOURCE}
           const candidates = [];
 
           for (const selector of selectors) {
-            for (const node of document.querySelectorAll(selector)) {
+            for (const node of deepQuerySelectorAll(document, selector)) {
               if (!(node instanceof HTMLElement) || seen.has(node)) {
                 continue;
               }
@@ -793,7 +804,7 @@ ${PAGE_CONTEXT_FIND_HELPERS_SOURCE}
           '[tabindex]:not([tabindex="-1"])',
         ]);
 
-        const broadTextCandidates = Array.from(document.querySelectorAll('body *')).filter(
+        const broadTextCandidates = deepElements.filter(
           (node) => node instanceof HTMLElement && isVisible(node),
         );
 
@@ -812,7 +823,7 @@ ${PAGE_CONTEXT_FIND_HELPERS_SOURCE}
           }
 
           let maxIndex = 0;
-          for (const element of document.querySelectorAll('[' + refAttribute + ']')) {
+          for (const element of deepQuerySelectorAll(document, '[' + refAttribute + ']')) {
             const refValue = normalizeText(element.getAttribute(refAttribute));
             const refIndex = parsePageContextElementRefIndex(refValue);
             if (refIndex !== null) {
@@ -949,7 +960,7 @@ ${PAGE_CONTEXT_FIND_HELPERS_SOURCE}
         const { value } = await evaluateInTabContext(
           tab.id,
           `(() => {
-            const node = document.querySelector(${JSON.stringify(resolvedSelector)});
+            const node = deepQuerySelector(document, ${JSON.stringify(resolvedSelector)});
             const visible = Boolean(node) && (() => {
               const rect = node.getBoundingClientRect();
               const style = node.ownerDocument.defaultView.getComputedStyle(node);

@@ -2,8 +2,11 @@ name: Nightly Build
 
 on:
   push:
-    branches: ['**']
+    branches: [main]
   workflow_dispatch:
+
+permissions:
+  contents: write
 
 jobs:
   build:
@@ -28,6 +31,27 @@ jobs:
 
       - name: Package browser extension
         run: cd chrome && zip -r ../autobrowser-extension.zip .
+
+      - name: Prepare release metadata
+        id: meta
+        run: |
+          date=$(date -u +'%Y%m%d')
+          short_sha=${GITHUB_SHA::7}
+          echo "tag=nightly-${date}-${short_sha}-${GITHUB_RUN_ID}" >> "$GITHUB_OUTPUT"
+          echo "name=Nightly ${date} (${short_sha})" >> "$GITHUB_OUTPUT"
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.meta.outputs.tag }}
+          name: ${{ steps.meta.outputs.name }}
+          prerelease: true
+          body: |
+            Nightly build for commit `${{ github.sha }}`.
+            Workflow run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          files: |
+            dist/autobrowser.js
+            autobrowser-extension.zip
 
       - name: Upload autobrowser.js
         uses: actions/upload-artifact@v4

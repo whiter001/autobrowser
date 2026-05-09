@@ -1,4 +1,5 @@
 import { resolveAgentSelector } from '../../src/core/agent-selectors.js'
+import { buildDeepDomTraversalHelpersSource } from './deep-dom.js'
 import {
   clearSelectedFrame,
   getPageEpoch,
@@ -56,15 +57,29 @@ interface PageInputDependencies {
   ) => Promise<TResult>
 }
 
+const PAGE_CONTEXT_DEEP_DOM_HELPERS_SOURCE = buildDeepDomTraversalHelpersSource()
+
 export function createPageInputDomain({
   state,
   getTargetTab,
   resolveElementSelectorForTab,
   resolveFrameTarget,
   getFrameExecutionContext,
-  evaluateInTabContext,
+  evaluateInTabContext: evaluateInTabContextBase,
   sendDebuggerCommand,
 }: PageInputDependencies) {
+  const evaluateInTabContext = <TValue = unknown>(
+    tabId: TabInput,
+    expression: string,
+    options?: EvaluateInTabContextOptions,
+  ) => {
+    return evaluateInTabContextBase<TValue>(
+      tabId,
+      `${PAGE_CONTEXT_DEEP_DOM_HELPERS_SOURCE}\n${expression}`,
+      options,
+    )
+  }
+
   function parseKeyboardKey(key: string): { key: string; modifiers: number } {
     const modifiers = { shift: false, ctrl: false, alt: false, meta: false }
     let remaining = key
@@ -135,7 +150,7 @@ export function createPageInputDomain({
     const { value } = await evaluateInTabContext<ElementBox>(
       tab.id,
       `(() => {
-        const node = document.querySelector(${JSON.stringify(resolvedSelector)});
+        const node = deepQuerySelector(document, ${JSON.stringify(resolvedSelector)});
         if (!node) return null;
         const rect = node.getBoundingClientRect();
         return {
@@ -196,7 +211,7 @@ export function createPageInputDomain({
     const { value: result } = await evaluateInTabContext<ElementActionResult>(
       tab.id,
       `(() => {
-        const node = document.querySelector(${JSON.stringify(resolvedSelector)});
+        const node = deepQuerySelector(document, ${JSON.stringify(resolvedSelector)});
         if (!node) return { found: false };
         node.scrollIntoView({ block: 'center', inline: 'center' });
         node.click();
@@ -228,7 +243,7 @@ export function createPageInputDomain({
     const { value } = await evaluateInTabContext<boolean>(
       tab.id,
       `(() => {
-        const node = document.querySelector(${JSON.stringify(resolvedSelector)});
+        const node = deepQuerySelector(document, ${JSON.stringify(resolvedSelector)});
         if (!node) return false;
         const rect = node.getBoundingClientRect();
         const x = rect.left + rect.width / 2;
@@ -275,10 +290,10 @@ export function createPageInputDomain({
     const { value } = await evaluateInTabContext<ElementActionResult>(
       tab.id,
       `(() => {
-        const node = document.querySelector(${JSON.stringify(resolvedSelector)});
+        const node = deepQuerySelector(document, ${JSON.stringify(resolvedSelector)});
         if (!node) return { found: false };
         node.focus();
-        return { found: true, focused: document.activeElement === node };
+        return { found: true, focused: isDeepActiveElement(document, node) };
       })()`,
       withFrameSelectorOptions(frameSelector),
     )
@@ -300,7 +315,7 @@ export function createPageInputDomain({
     const { value: result } = await evaluateInTabContext<ElementActionResult>(
       tab.id,
       `(() => {
-        const node = document.querySelector(${JSON.stringify(resolvedSelector)});
+        const node = deepQuerySelector(document, ${JSON.stringify(resolvedSelector)});
         if (!node) return { found: false };
         node.focus();
         node.value = ${JSON.stringify(value)};
@@ -327,7 +342,7 @@ export function createPageInputDomain({
     const { value: result } = await evaluateInTabContext<ElementActionResult>(
       tab.id,
       `(() => {
-        const node = document.querySelector(${JSON.stringify(resolvedSelector)});
+        const node = deepQuerySelector(document, ${JSON.stringify(resolvedSelector)});
         if (!node) return { found: false };
         node.focus();
         node.checked = ${checked};
@@ -361,7 +376,7 @@ export function createPageInputDomain({
         ${
           selector
             ? `
-        const node = document.querySelector(${JSON.stringify(resolvedSelector)});
+        const node = deepQuerySelector(document, ${JSON.stringify(resolvedSelector)});
         if (!node) return { found: false };
         node.scrollIntoView({ block: 'center', inline: 'center' });
         `
@@ -450,7 +465,7 @@ export function createPageInputDomain({
       'Runtime.evaluate',
       {
         expression: `(() => {
-        const node = document.querySelector(${JSON.stringify(resolvedSelector)});
+        const node = deepQuerySelector(document, ${JSON.stringify(resolvedSelector)});
         return node && node.tagName === 'INPUT' && node.type === 'file' ? node : null;
       })()`,
         awaitPromise: true,
@@ -565,7 +580,7 @@ export function createPageInputDomain({
     const { tab, resolvedSelector } = await resolveElementSelectorForTab(tabId, selector)
     const checkJs = {
       visible: `(() => {
-        const node = document.querySelector(${JSON.stringify(resolvedSelector)});
+        const node = deepQuerySelector(document, ${JSON.stringify(resolvedSelector)});
         if (!node) return false;
         const rect = node.getBoundingClientRect();
         const style = node.ownerDocument.defaultView.getComputedStyle(node);
@@ -573,20 +588,20 @@ export function createPageInputDomain({
           style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0';
       })()`,
       enabled: `(() => {
-        const node = document.querySelector(${JSON.stringify(resolvedSelector)});
+        const node = deepQuerySelector(document, ${JSON.stringify(resolvedSelector)});
         return node && !node.disabled;
       })()`,
       checked: `(() => {
-        const node = document.querySelector(${JSON.stringify(resolvedSelector)});
+        const node = deepQuerySelector(document, ${JSON.stringify(resolvedSelector)});
         return node && node.checked === true;
       })()`,
       disabled: `(() => {
-        const node = document.querySelector(${JSON.stringify(resolvedSelector)});
+        const node = deepQuerySelector(document, ${JSON.stringify(resolvedSelector)});
         return node && node.disabled === true;
       })()`,
       focused: `(() => {
-        const node = document.querySelector(${JSON.stringify(resolvedSelector)});
-        return node && node === node.ownerDocument.activeElement;
+        const node = deepQuerySelector(document, ${JSON.stringify(resolvedSelector)});
+        return node && isDeepActiveElement(document, node);
       })()`,
     }
 
@@ -635,7 +650,7 @@ export function createPageInputDomain({
       const { value } = await evaluateInTabContext(
         resolvedTabId,
         `(() => {
-          const node = document.querySelector(${JSON.stringify(resolvedSelector)});
+          const node = deepQuerySelector(document, ${JSON.stringify(resolvedSelector)});
           return node ? node.textContent : null;
         })()`,
         withFrameSelectorOptions(frameSelector),
@@ -647,7 +662,7 @@ export function createPageInputDomain({
       const { value } = await evaluateInTabContext(
         resolvedTabId,
         `(() => {
-          const node = document.querySelector(${JSON.stringify(resolvedSelector)});
+          const node = deepQuerySelector(document, ${JSON.stringify(resolvedSelector)});
           return node ? node.innerHTML : null;
         })()`,
         withFrameSelectorOptions(frameSelector),
@@ -659,7 +674,7 @@ export function createPageInputDomain({
       const { value } = await evaluateInTabContext(
         resolvedTabId,
         `(() => {
-          const node = document.querySelector(${JSON.stringify(resolvedSelector)});
+          const node = deepQuerySelector(document, ${JSON.stringify(resolvedSelector)});
           return node ? node.value : null;
         })()`,
         withFrameSelectorOptions(frameSelector),
@@ -689,7 +704,7 @@ export function createPageInputDomain({
       const { value } = await evaluateInTabContext(
         resolvedTabId,
         `(() => {
-          return document.querySelectorAll(${JSON.stringify(resolvedSelector)}).length;
+          return deepQuerySelectorAll(document, ${JSON.stringify(resolvedSelector)}).length;
         })()`,
         withFrameSelectorOptions(frameSelector),
       )
@@ -700,7 +715,7 @@ export function createPageInputDomain({
       const { value } = await evaluateInTabContext(
         resolvedTabId,
         `(() => {
-          const node = document.querySelector(${JSON.stringify(resolvedSelector)});
+          const node = deepQuerySelector(document, ${JSON.stringify(resolvedSelector)});
           if (!node) return null;
           const rect = node.getBoundingClientRect();
           return { x: rect.x, y: rect.y, width: rect.width, height: rect.height };
@@ -714,7 +729,7 @@ export function createPageInputDomain({
       const { value } = await evaluateInTabContext(
         resolvedTabId,
         `(() => {
-          const node = document.querySelector(${JSON.stringify(resolvedSelector)});
+          const node = deepQuerySelector(document, ${JSON.stringify(resolvedSelector)});
           if (!node) return null;
           const styles = window.getComputedStyle(node);
           return Object.fromEntries(Array.from(styles).map((name) => [name, styles.getPropertyValue(name)]));
@@ -727,7 +742,7 @@ export function createPageInputDomain({
     const { value } = await evaluateInTabContext(
       resolvedTabId,
       `(() => {
-        const node = document.querySelector(${JSON.stringify(resolvedSelector)});
+        const node = deepQuerySelector(document, ${JSON.stringify(resolvedSelector)});
         return node ? node.getAttribute(${JSON.stringify(attrName)}) : null;
       })()`,
       withFrameSelectorOptions(frameSelector),
@@ -745,7 +760,7 @@ export function createPageInputDomain({
     const { value: result } = await evaluateInTabContext<ElementActionResult>(
       tab.id,
       `(() => {
-        const node = document.querySelector(${JSON.stringify(resolvedSelector)});
+        const node = deepQuerySelector(document, ${JSON.stringify(resolvedSelector)});
         if (!node) {
           return { found: false };
         }
@@ -823,7 +838,7 @@ export function createPageInputDomain({
       tab.id,
       `(() => {
         try {
-          const node = document.querySelector(${JSON.stringify(resolvedSelector)});
+          const node = deepQuerySelector(document, ${JSON.stringify(resolvedSelector)});
           if (!node) return { found: false, reason: 'element not found' };
           node.scrollIntoView({ block: 'center', inline: 'center' });
           return { found: true, selector: ${JSON.stringify(selector)} };

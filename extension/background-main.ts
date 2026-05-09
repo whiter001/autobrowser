@@ -41,10 +41,12 @@ import {
   resolveAgentFrameSelector,
 } from '../src/core/agent-handles.js'
 import { resolveAgentSelector } from '../src/core/agent-selectors.js'
+import { buildDeepDomTraversalHelpersSource } from './background/deep-dom.js'
 import { clearRemovedTabId, pickLastNonActiveTab } from '../src/core/tab-selection.js'
 
 const DEFAULT_SERVER_PORT = DEFAULT_RELAY_PORT
 const FRAME_WORLD_NAME = 'autobrowser-frame'
+const PAGE_CONTEXT_DEEP_DOM_HELPERS_SOURCE = buildDeepDomTraversalHelpersSource()
 
 interface FrameTargetEvaluation {
   refValue: string | null
@@ -260,9 +262,11 @@ async function resolveFrameTarget(tabId: TabInput, selector: string): Promise<Re
   const { tab, pageEpoch, resolvedSelector } = await resolveFrameSelectorForTab(tabId, selector)
   const evaluation = await sendDebuggerCommand<{ result: unknown }>(tab.id, 'Runtime.evaluate', {
     expression: `(() => {
-      const root = document.querySelector(${JSON.stringify(resolvedSelector)});
+      ${PAGE_CONTEXT_DEEP_DOM_HELPERS_SOURCE}
+
+      const root = deepQuerySelector(document, ${JSON.stringify(resolvedSelector)});
       if (!root) return null;
-      const frame = root.tagName === 'IFRAME' ? root : root.querySelector('iframe');
+      const frame = root.tagName === 'IFRAME' ? root : deepQuerySelector(root, 'iframe');
       if (!frame) return null;
       const rect = frame.getBoundingClientRect();
       const refValue = frame.getAttribute(${JSON.stringify(AGENT_FRAME_REF_ATTRIBUTE)});
