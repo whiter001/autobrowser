@@ -279,7 +279,9 @@ function buildHarEntry(record: NetworkRequestRecord): Record<string, unknown> {
   const requestBody = typeof record.postData === 'string' ? record.postData : ''
   const requestBodyTruncated = Boolean(record.postDataTruncated)
   const requestBodyBytes =
-    typeof record.postDataBytes === 'number' ? record.postDataBytes : estimateTextByteLength(requestBody)
+    typeof record.postDataBytes === 'number'
+      ? record.postDataBytes
+      : estimateTextByteLength(requestBody)
   const responseBody = typeof record.responseBody === 'string' ? record.responseBody : ''
   const responseBodyBase64 = Boolean(record.responseBodyBase64)
   const responseBodyTruncated = Boolean(record.responseBodyTruncated)

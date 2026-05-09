@@ -118,7 +118,7 @@ describe('network domain HAR export', () => {
 
     const network = createNetworkDomain({
       state,
-      getTargetTab: async () => ({ id: 1 } as never),
+      getTargetTab: async () => ({ id: 1 }) as never,
       sendRawDebuggerCommand: async <TResult = unknown>(
         tabId: number,
         method: string,
@@ -135,47 +135,35 @@ describe('network domain HAR export', () => {
       sendDebuggerCommand: async <TResult = unknown>(): Promise<TResult> => ({}) as TResult,
     })
 
-    await network.handleEvent(
-      { tabId: 1 },
-      'Network.requestWillBeSent',
-      {
-        requestId: 'req-1',
-        request: {
-          url: 'https://example.com/big',
-          method: 'POST',
-          headers: { 'content-type': 'text/plain' },
-          postData: bigText,
-        },
-        type: 'Document',
-        timestamp: 100,
-        wallTime: 100,
+    await network.handleEvent({ tabId: 1 }, 'Network.requestWillBeSent', {
+      requestId: 'req-1',
+      request: {
+        url: 'https://example.com/big',
+        method: 'POST',
+        headers: { 'content-type': 'text/plain' },
+        postData: bigText,
       },
-    )
+      type: 'Document',
+      timestamp: 100,
+      wallTime: 100,
+    })
 
-    await network.handleEvent(
-      { tabId: 1 },
-      'Network.responseReceived',
-      {
-        requestId: 'req-1',
-        response: {
-          status: 200,
-          statusText: 'OK',
-          headers: { 'content-type': 'application/json' },
-          mimeType: 'application/json',
-        },
-        timestamp: 101,
+    await network.handleEvent({ tabId: 1 }, 'Network.responseReceived', {
+      requestId: 'req-1',
+      response: {
+        status: 200,
+        statusText: 'OK',
+        headers: { 'content-type': 'application/json' },
+        mimeType: 'application/json',
       },
-    )
+      timestamp: 101,
+    })
 
-    await network.handleEvent(
-      { tabId: 1 },
-      'Network.loadingFinished',
-      {
-        requestId: 'req-1',
-        timestamp: 102,
-        encodedDataLength: bigText.length,
-      },
-    )
+    await network.handleEvent({ tabId: 1 }, 'Network.loadingFinished', {
+      requestId: 'req-1',
+      timestamp: 102,
+      encodedDataLength: bigText.length,
+    })
 
     await new Promise((resolve) => setTimeout(resolve, 0))
 
@@ -200,7 +188,9 @@ describe('network domain HAR export', () => {
     expect(detail.request.postDataTruncated).toBeTrue()
     expect(detail.request.responseBodyTruncated).toBeTrue()
     expect(detail.request.postDataBytes).toBeGreaterThan(detail.request.postData?.length || 0)
-    expect(detail.request.responseBodyBytes).toBeGreaterThan(detail.request.responseBody?.length || 0)
+    expect(detail.request.responseBodyBytes).toBeGreaterThan(
+      detail.request.responseBody?.length || 0,
+    )
     expect(detail.summary.requestBodyTruncated).toBeTrue()
     expect(detail.summary.responseBodyTruncated).toBeTrue()
     expect(detail.harEntry.request.postData?.comment).toContain('truncated by autobrowser')
