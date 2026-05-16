@@ -186,11 +186,8 @@ export function createPageObserveDomain({
       }
     }
 
-    try {
-      return new RegExp(normalizedPattern).test(currentUrl)
-    } catch {
-      return false
-    }
+    // 不将用户输入当作 RegExp 执行，避免 ReDoS 和意外语义；子串匹配已覆盖绝大多数 URL 等待场景。
+    return false
   }
 
   async function clearScreenshotAnnotations(tabId: TabInput, frameSelector: FrameSelector) {

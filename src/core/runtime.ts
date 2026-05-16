@@ -254,7 +254,9 @@ export async function createRuntime(options: RuntimeOptions = {}): Promise<Runti
   let persistChain: Promise<void> = Promise.resolve()
 
   function schedulePersist(): void {
-    persistChain = persistChain.then(() => persist()).catch(() => {})
+    persistChain = persistChain.then(() => persist()).catch((err) => {
+      console.error('[autobrowser] state persist failed:', err)
+    })
   }
 
   function resolveConnectionWaiters(socket: Bun.ServerWebSocket<ExtensionMetadata>): void {

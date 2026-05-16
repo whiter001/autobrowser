@@ -326,12 +326,28 @@ export function createCommandRouter({
     return { windowId: window?.id ?? null, tabId: window?.tabs?.[0]?.id ?? null }
   }
 
+  const VALID_FIND_ACTIONS = [
+    'locate',
+    'click',
+    'fill',
+    'type',
+    'hover',
+    'focus',
+    'check',
+    'uncheck',
+    'text',
+  ] as const
+
   async function handleFindCommand(
     tabId: TabInput,
     args: CommandArgs,
     frameSelector: FrameSelector,
   ) {
     const action = readStringArg(args, 'action', 'locate').trim()
+    // 提前校验 action，避免执行耗时的语义搜索后才发现参数非法。
+    if (!VALID_FIND_ACTIONS.includes(action as (typeof VALID_FIND_ACTIONS)[number])) {
+      throw new Error(`unsupported find action: ${action}`)
+    }
     const actionValue = readStringArg(args, 'value')
     const findOptions: FindSemanticTargetOptions = {
       strategy: readStringArg(args, 'strategy').trim(),

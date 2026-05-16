@@ -300,27 +300,18 @@ export async function startServers(options: ServerOptions = {}): Promise<StartSe
         const url = new URL(request.url)
 
         if (url.pathname === '/status' && request.method === 'GET') {
-          return jsonResponse(runtime.snapshot())
+          // token 不出现在公开端点，只在已鉴权的 /command status 中返回
+          const { token: _token, ...publicStatus } = runtime.snapshot()
+          return jsonResponse(publicStatus)
         }
 
         if (url.pathname === '/shutdown' && request.method === 'POST') {
-          return request
-            .json()
-            .then((body: unknown) => {
-              const data = body as { token?: unknown } | null
-              if (String(data?.token || '') !== runtime.runtime.token) {
-                return jsonResponse(
-                  { ok: false, error: { message: 'unauthorized' } },
-                  { status: 401 },
-                )
-              }
+          if (readBearerToken(request) !== runtime.runtime.token) {
+            return unauthorizedResponse()
+          }
 
-              requestShutdown()
-              return jsonResponse({ ok: true, result: { stopping: true } })
-            })
-            .catch((error: Error) =>
-              jsonResponse({ ok: false, error: { message: error.message } }, { status: 400 }),
-            )
+          requestShutdown()
+          return jsonResponse({ ok: true, result: { stopping: true } })
         }
 
         if (url.pathname === '/command' && request.method === 'POST') {

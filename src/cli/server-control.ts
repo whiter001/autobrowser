@@ -19,7 +19,7 @@ export interface DetachedProcessHandle {
 }
 
 export interface ServerSnapshotStatus {
-  token: string
+  token?: string
   relayPort: number
   ipcPort: number
   startedAt?: string
@@ -41,8 +41,6 @@ export function isServerSnapshotStatus(value: unknown): value is ServerSnapshotS
   const relayPort = record.relayPort
   const ipcPort = record.ipcPort
   return (
-    typeof record.token === 'string' &&
-    record.token.length > 0 &&
     typeof relayPort === 'number' &&
     Number.isInteger(relayPort) &&
     relayPort >= 1 &&
@@ -276,9 +274,8 @@ export async function stopBackgroundServer(
   const response = await fetch(`http://127.0.0.1:${ipcPort}/shutdown`, {
     method: 'POST',
     headers: {
-      'content-type': 'application/json',
+      authorization: `Bearer ${token}`,
     },
-    body: JSON.stringify({ token }),
   })
 
   const bodyText = await response.text().catch(() => '')

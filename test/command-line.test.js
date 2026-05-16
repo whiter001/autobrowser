@@ -1360,7 +1360,7 @@ describe('cli command routing', () => {
         fetchImpl: async (url, init = {}) => {
           expect(String(url)).toBe('http://127.0.0.1:49012/shutdown')
           expect(init.method).toBe('POST')
-          expect(JSON.parse(init.body)).toEqual({ token: 'stop-token' })
+          expect(init.headers?.authorization).toBe('Bearer stop-token')
           return {
             ok: true,
             async text() {
@@ -1401,7 +1401,7 @@ describe('cli command routing', () => {
         fetchImpl: async (url, init = {}) => {
           expect(String(url)).toBe('http://127.0.0.1:49012/shutdown')
           expect(init.method).toBe('POST')
-          expect(JSON.parse(init.body)).toEqual({ token: 'stop-token' })
+          expect(init.headers?.authorization).toBe('Bearer stop-token')
           return {
             ok: true,
             async text() {
@@ -1449,7 +1449,7 @@ describe('cli command routing', () => {
         fetchImpl: async (url, init = {}) => {
           if (String(url).endsWith('/shutdown')) {
             expect(init.method).toBe('POST')
-            expect(JSON.parse(init.body)).toEqual({ token: 'stop-token' })
+            expect(init.headers?.authorization).toBe('Bearer stop-token')
           } else if (String(url).endsWith('/status')) {
             expect(init.method).toBeUndefined()
           } else {

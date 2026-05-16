@@ -97,7 +97,8 @@ function encodeBase64(value: string): string {
 }
 
 function stringifyNetworkBody(body: unknown): { text: string; base64Encoded: boolean } {
-  const text = `${JSON.stringify(body, null, 2)}\n`
+  // 若 body 已经是字符串则直接使用，避免 JSON.stringify 产生双重引号。
+  const text = typeof body === 'string' ? body : `${JSON.stringify(body, null, 2)}\n`
   return { text, base64Encoded: false }
 }
 
