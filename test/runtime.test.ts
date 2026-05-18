@@ -69,20 +69,36 @@ describe('runtime snapshot', () => {
         ],
         activeTabId: 11,
         targetTabId: 22,
+        pageEpochs: {
+          11: 4,
+          22: 2,
+        },
       }),
     )
 
     const snapshot = runtime.snapshot()
     expect(snapshot.snapshot.activeTabId).toBe(11)
     expect(snapshot.snapshot.targetTabId).toBe(22)
+    expect(snapshot.snapshot.pageEpochs).toEqual({
+      11: 4,
+      22: 2,
+    })
 
     const stateFilePath = path.join(homeDir, '.autobrowser', 'state.json')
     const persistedState = await waitForStateFile<{
-      snapshot: { activeTabId: number | null; targetTabId: number | null }
+      snapshot: {
+        activeTabId: number | null
+        targetTabId: number | null
+        pageEpochs: Record<number, number>
+      }
     }>(stateFilePath, (state) => state.snapshot?.targetTabId === 22)
 
     expect(persistedState.snapshot.activeTabId).toBe(11)
     expect(persistedState.snapshot.targetTabId).toBe(22)
+    expect(persistedState.snapshot.pageEpochs).toEqual({
+      11: 4,
+      22: 2,
+    })
   })
 
   test('waits for the extension to reconnect before dispatching commands', async () => {

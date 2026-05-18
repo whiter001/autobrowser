@@ -7,6 +7,7 @@ import {
   type DiagnosticsState,
 } from '../shared.js'
 import type { CommandMessage, ErrorWithCode, ExtensionState, TabSummary } from './types.js'
+import { getPageEpoch } from './targeting.js'
 
 interface NetworkDomain {
   handleRequestPaused: (tabId: number, params: unknown) => Promise<void>
@@ -214,6 +215,9 @@ export function createConnectionRuntime({
     }
 
     const tabs = await listTabs()
+    const pageEpochs = Object.fromEntries(
+      tabs.map((tab) => [tab.id, typeof tab.id === 'number' ? getPageEpoch(state, tab.id) : 0]),
+    )
 
     if (socket.readyState !== WebSocket.OPEN) {
       return
@@ -225,6 +229,7 @@ export function createConnectionRuntime({
         tabs,
         activeTabId: tabs.find((tab) => tab.active)?.id || null,
         targetTabId: state.targetTabId,
+        pageEpochs,
       }),
     )
   }

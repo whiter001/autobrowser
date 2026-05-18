@@ -184,7 +184,28 @@ describe('extension background connection', () => {
         handleRequestPaused: async () => {},
         handleEvent: async () => {},
       },
-      listTabs: async () => [],
+      listTabs: async () => [
+        {
+          id: 11,
+          handle: 't1',
+          title: 'active',
+          url: 'https://example.com/active',
+          active: true,
+          pinned: false,
+          status: 'complete',
+          windowId: 1,
+        },
+        {
+          id: 22,
+          handle: 't2',
+          title: 'target',
+          url: 'https://example.com/target',
+          active: false,
+          pinned: false,
+          status: 'complete',
+          windowId: 1,
+        },
+      ],
       handleCommand: async () => ({ ok: true }),
       sendDebuggerCommand: async <TResult = unknown>(
         _tabId: number,
@@ -220,6 +241,8 @@ describe('extension background connection', () => {
       await flushMicrotasks()
       expect(MockWebSocket.instances).toHaveLength(1)
 
+      state.pageEpochs.set(11, 4)
+
       const socket = MockWebSocket.instances[0]
       expect(socket.url).toContain('ws://127.0.0.1:49002/ws')
       expect(socket.url).toContain('token=saved-token')
@@ -233,11 +256,16 @@ describe('extension background connection', () => {
       const stateMessage = JSON.parse(socket.sentMessages[1]) as {
         type?: string
         activeTabId?: unknown
+        pageEpochs?: Record<string, unknown>
       }
 
       expect(helloMessage.type).toBe('extension.hello')
       expect(helloMessage.version).toBe('1.2.3')
       expect(stateMessage.type).toBe('state')
+      expect(stateMessage.pageEpochs).toEqual({
+        11: 4,
+        22: 1,
+      })
     } finally {
       defineGlobalValue('chrome', originalGlobals.chrome)
       defineGlobalValue('WebSocket', originalGlobals.WebSocket)

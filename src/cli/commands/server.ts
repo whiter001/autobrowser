@@ -1,5 +1,6 @@
 import { resolveExtensionId } from '../../core/config.js'
 import { isPortInUse } from '../../core/protocol.js'
+import { isRecord } from '../client.js'
 import { isHelpToken } from '../help.js'
 import {
   buildServerLaunchArgs,
@@ -14,6 +15,81 @@ import {
 } from '../server-control.js'
 import { startServers } from '../../server.js'
 import type { CommandContext, CommandRegistry } from './types.js'
+
+export function formatStatusSummary(status: Record<string, unknown>): string {
+  const lines: string[] = ['autobrowser status']
+  const relayPort = typeof status.relayPort === 'number' ? status.relayPort : null
+  const ipcPort = typeof status.ipcPort === 'number' ? status.ipcPort : null
+  const startedAt = typeof status.startedAt === 'string' ? status.startedAt : null
+  const extensionConnected = Boolean(status.extensionConnected)
+  const snapshot = isRecord(status.snapshot) ? status.snapshot : null
+  const tabs = Array.isArray(snapshot?.tabs) ? snapshot.tabs.filter(isRecord) : []
+  const pageEpochs = isRecord(snapshot?.pageEpochs) ? snapshot.pageEpochs : {}
+  const activeTabId =
+    isRecord(snapshot) && typeof snapshot.activeTabId === 'number' ? snapshot.activeTabId : null
+  const targetTabId =
+    isRecord(snapshot) && typeof snapshot.targetTabId === 'number' ? snapshot.targetTabId : null
+
+  if (relayPort !== null) {
+    lines.push(`relay: http://127.0.0.1:${relayPort}`)
+  }
+
+  if (ipcPort !== null) {
+    lines.push(`ipc: http://127.0.0.1:${ipcPort}`)
+  }
+
+  lines.push(`extension: ${extensionConnected ? 'connected' : 'waiting for extension'}`)
+
+  if (startedAt) {
+    lines.push(`started: ${startedAt}`)
+  }
+
+  if (tabs.length > 0) {
+    lines.push(`tabs: ${tabs.length}`)
+  }
+
+  const tabById = new Map<number, Record<string, unknown>>()
+  for (const tab of tabs) {
+    const tabId = typeof tab.id === 'number' ? tab.id : null
+    if (tabId !== null) {
+      tabById.set(tabId, tab)
+    }
+  }
+
+  if (activeTabId !== null) {
+    const activeTab = tabById.get(activeTabId)
+    const activeHandle = typeof activeTab?.handle === 'string' ? activeTab.handle : `tab ${activeTabId}`
+    const activeTitle = typeof activeTab?.title === 'string' && activeTab.title.trim()
+      ? activeTab.title.trim()
+      : ''
+    lines.push(`active: ${activeHandle}${activeTitle ? ` - ${activeTitle}` : ''}`)
+  }
+
+  if (targetTabId !== null) {
+    const targetTab = tabById.get(targetTabId)
+    const targetHandle = typeof targetTab?.handle === 'string' ? targetTab.handle : `tab ${targetTabId}`
+    const targetTitle = typeof targetTab?.title === 'string' && targetTab.title.trim()
+      ? targetTab.title.trim()
+      : ''
+    lines.push(`target: ${targetHandle}${targetTitle ? ` - ${targetTitle}` : ''}`)
+  }
+
+  const pageEpochEntries = Object.entries(pageEpochs)
+    .map(([tabId, epoch]) => [Number(tabId), epoch] as const)
+    .filter(([tabId, epoch]) => Number.isInteger(tabId) && tabId > 0 && typeof epoch === 'number')
+    .sort((left, right) => left[0] - right[0])
+
+  if (pageEpochEntries.length > 0) {
+    lines.push('page epochs:')
+    for (const [tabId, epoch] of pageEpochEntries) {
+      const tab = tabById.get(tabId)
+      const handle = typeof tab?.handle === 'string' ? tab.handle : `tab ${tabId}`
+      lines.push(`  ${handle} (${tabId}): ${Math.floor(epoch)}`)
+    }
+  }
+
+  return `${lines.join('\n')}\n`
+}
 
 async function handleHelp(rest: string[], context: CommandContext): Promise<number | void> {
   return context.writeHelp(rest)
@@ -240,6 +316,11 @@ async function handleStatus(rest: string[], context: CommandContext): Promise<nu
   }
 
   const status = await context.getStatus(context.flags.server)
+  if (!context.flags.json) {
+    process.stdout.write(formatStatusSummary(status))
+    return 0
+  }
+
   context.writeResult(status)
   return 0
 }

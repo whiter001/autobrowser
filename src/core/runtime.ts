@@ -34,6 +34,7 @@ export interface Snapshot {
   tabs: TabInfo[]
   activeTabId: number | null
   targetTabId: number | null
+  pageEpochs: Record<number, number>
   lastCommand: { command: string; args: unknown; at: string } | null
   lastError: { message: string; at: string } | null
 }
@@ -91,6 +92,7 @@ function createDefaultSnapshot(): Snapshot {
     tabs: [],
     activeTabId: null,
     targetTabId: null,
+    pageEpochs: {},
     lastCommand: null,
     lastError: null,
   }
@@ -168,6 +170,28 @@ function normalizeLastCommand(value: unknown): Snapshot['lastCommand'] {
   }
 }
 
+function normalizePageEpochs(value: unknown): Record<number, number> {
+  if (!isRecord(value)) {
+    return {}
+  }
+
+  const normalized: Record<number, number> = {}
+  for (const [key, epoch] of Object.entries(value)) {
+    const tabId = Number(key)
+    if (!Number.isInteger(tabId) || tabId <= 0) {
+      continue
+    }
+
+    if (typeof epoch !== 'number' || !Number.isFinite(epoch) || epoch <= 0) {
+      continue
+    }
+
+    normalized[tabId] = Math.floor(epoch)
+  }
+
+  return normalized
+}
+
 interface RuntimeState {
   homeDir: string
   relayPort: number
@@ -238,6 +262,7 @@ export async function createRuntime(options: RuntimeOptions = {}): Promise<Runti
   if (persistedState?.snapshot && typeof persistedState.snapshot === 'object') {
     snapshot.lastCommand = normalizeLastCommand(persistedState.snapshot.lastCommand)
     snapshot.lastError = persistedState.snapshot.lastError ?? null
+    snapshot.pageEpochs = normalizePageEpochs(persistedState.snapshot.pageEpochs)
   }
 
   async function persist(): Promise<void> {
@@ -365,6 +390,7 @@ export async function createRuntime(options: RuntimeOptions = {}): Promise<Runti
     tabs?: TabInfo[]
     activeTabId?: number
     targetTabId?: number | null
+    pageEpochs?: Record<string, unknown>
     id?: string
     ok?: boolean
     error?: { message?: string; code?: string; details?: unknown }
@@ -393,6 +419,10 @@ export async function createRuntime(options: RuntimeOptions = {}): Promise<Runti
 
       if (message.targetTabId !== undefined) {
         snapshot.targetTabId = message.targetTabId ?? null
+      }
+
+      if (message.pageEpochs !== undefined) {
+        snapshot.pageEpochs = normalizePageEpochs(message.pageEpochs)
       }
 
       schedulePersist()
