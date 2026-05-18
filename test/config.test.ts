@@ -8,6 +8,10 @@ import { getConfigPath } from '../src/core/protocol.js'
 const DEFAULT_EXTENSION_ID = 'bfccnpkjkbhceghimfjgnkigilidldep'
 const tempDirs: string[] = []
 const originalAutobrowserExtensionId = process.env.AUTOBROWSER_EXTENSION_ID
+const originalAutobrowserBrowserCommand = process.env.AUTOBROWSER_BROWSER_COMMAND
+const originalAutobrowserBrowserArgs = process.env.AUTOBROWSER_BROWSER_ARGS
+const originalAutobrowserBrowserProxy = process.env.AUTOBROWSER_BROWSER_PROXY
+const originalAutobrowserBrowserUserAgent = process.env.AUTOBROWSER_BROWSER_USER_AGENT
 
 async function writeConfig(homeDir: string, value: unknown): Promise<void> {
   const configPath = getConfigPath(homeDir)
@@ -28,6 +32,30 @@ afterEach(async () => {
     delete process.env.AUTOBROWSER_EXTENSION_ID
   } else {
     process.env.AUTOBROWSER_EXTENSION_ID = originalAutobrowserExtensionId
+  }
+
+  if (originalAutobrowserBrowserCommand === undefined) {
+    delete process.env.AUTOBROWSER_BROWSER_COMMAND
+  } else {
+    process.env.AUTOBROWSER_BROWSER_COMMAND = originalAutobrowserBrowserCommand
+  }
+
+  if (originalAutobrowserBrowserArgs === undefined) {
+    delete process.env.AUTOBROWSER_BROWSER_ARGS
+  } else {
+    process.env.AUTOBROWSER_BROWSER_ARGS = originalAutobrowserBrowserArgs
+  }
+
+  if (originalAutobrowserBrowserProxy === undefined) {
+    delete process.env.AUTOBROWSER_BROWSER_PROXY
+  } else {
+    process.env.AUTOBROWSER_BROWSER_PROXY = originalAutobrowserBrowserProxy
+  }
+
+  if (originalAutobrowserBrowserUserAgent === undefined) {
+    delete process.env.AUTOBROWSER_BROWSER_USER_AGENT
+  } else {
+    process.env.AUTOBROWSER_BROWSER_USER_AGENT = originalAutobrowserBrowserUserAgent
   }
 
   await Promise.all(
@@ -111,6 +139,41 @@ describe('connect launch config', () => {
       extensionId: DEFAULT_EXTENSION_ID,
       browserCommand: 'msedge',
       browserArgs: ['--profile-directory=Profile 1'],
+    })
+  })
+
+  test('uses environment browser launch settings when no config file exists', async () => {
+    const homeDir = await mkdtemp(path.join(os.tmpdir(), 'autobrowser-config-'))
+    tempDirs.push(homeDir)
+
+    process.env.AUTOBROWSER_BROWSER_COMMAND = '/Applications/Google Chrome'
+    process.env.AUTOBROWSER_BROWSER_ARGS = '["--profile-directory=Profile 1","--new-window"]'
+    process.env.AUTOBROWSER_BROWSER_PROXY = 'http://127.0.0.1:8888'
+    process.env.AUTOBROWSER_BROWSER_USER_AGENT = 'Autobrowser Test Agent/1.0'
+
+    const result = await resolveConnectLaunchConfig(homeDir)
+
+    expect(result).toEqual({
+      extensionId: DEFAULT_EXTENSION_ID,
+      browserConfig: {
+        command: '/Applications/Google Chrome',
+        args: [
+          '--profile-directory=Profile 1',
+          '--new-window',
+          '--proxy-server=http://127.0.0.1:8888',
+          '--user-agent=Autobrowser Test Agent/1.0',
+        ],
+      },
+    })
+    expect(await readConfig(homeDir)).toEqual({
+      extensionId: DEFAULT_EXTENSION_ID,
+      browserCommand: '/Applications/Google Chrome',
+      browserArgs: [
+        '--profile-directory=Profile 1',
+        '--new-window',
+        '--proxy-server=http://127.0.0.1:8888',
+        '--user-agent=Autobrowser Test Agent/1.0',
+      ],
     })
   })
 })

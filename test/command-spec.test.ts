@@ -96,6 +96,24 @@ describe('command specs', () => {
     ).toThrow(
       'invalid command arguments for batch: step 1: invalid command arguments for goto: url must be a string',
     )
+    expect(() =>
+      validateCommandArgs('batch', {
+        steps: [{ command: 'goto', args: { url: 'https://example.com' } }],
+        continueOnError: 'yes',
+      }),
+    ).toThrow('invalid command arguments for batch: continueOnError must be a boolean')
+    expect(() =>
+      validateCommandArgs('batch', {
+        steps: [{ command: 'goto', args: { url: 'https://example.com' } }],
+        retries: -1,
+      }),
+    ).toThrow('invalid command arguments for batch: retries must be a non-negative integer')
+    expect(() =>
+      validateCommandArgs('batch', {
+        steps: [{ command: 'goto', args: { url: 'https://example.com' } }],
+        retryDelayMs: -1,
+      }),
+    ).toThrow('invalid command arguments for batch: retryDelayMs must be a non-negative number')
     expect(() => validateCommandArgs('goto', { url: 'https://example.com' })).not.toThrow()
   })
 

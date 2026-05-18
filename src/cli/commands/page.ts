@@ -1,5 +1,10 @@
-import { writeFile } from 'node:fs/promises'
+import { mkdtemp, writeFile } from 'node:fs/promises'
+import os from 'node:os'
+import path from 'node:path'
+import { isRecord } from '../client.js'
 import { parseScreenshotArgs, parseWaitArgs } from '../parse.js'
+import { buildSnapshotJsonl } from '../snapshot-export.js'
+import { buildSnapshotFieldJsonl, type SnapshotFieldSelection } from '../snapshot-structure.js'
 import {
   createActionCommand,
   createNoArgRequestCommand,
@@ -18,6 +23,53 @@ function commandNeedsSelector(attr: string): boolean {
   return !['title', 'url', 'cdp-url'].includes(attr)
 }
 
+async function resolveSnapshotExportPath(outputPath: string | null): Promise<string> {
+  if (outputPath) {
+    return outputPath
+  }
+
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), 'autobrowser-snapshot-'))
+  return path.join(tempDir, `snapshot-${Date.now()}.jsonl`)
+}
+
+function parseSnapshotFieldSelectors(rest: string[]): { outputPath: string | null; selection: SnapshotFieldSelection } {
+  const selection: SnapshotFieldSelection = { fields: [] }
+  let outputPath: string | null = null
+
+  for (let index = 0; index < rest.length; index += 1) {
+    const value = rest[index]
+
+    if (value === '--field') {
+      const rawField = rest[index + 1]
+      if (rawField === undefined) {
+        throw new Error('missing field value')
+      }
+
+      selection.fields.push(
+        ...rawField
+          .split(',')
+          .map((field) => field.trim())
+          .filter(Boolean),
+      )
+      index += 1
+      continue
+    }
+
+    if (value.startsWith('--')) {
+      throw new Error(`unsupported snapshot extract option: ${value}`)
+    }
+
+    if (!outputPath) {
+      outputPath = value
+      continue
+    }
+
+    throw new Error(`unexpected extra argument for snapshot extract: ${value}`)
+  }
+
+  return { outputPath, selection }
+}
+
 async function handleEval(rest: string[], context: CommandContext): Promise<number | void> {
   if (helpRequested(rest[0], context, ['eval'])) {
     return 0
@@ -29,10 +81,98 @@ async function handleEval(rest: string[], context: CommandContext): Promise<numb
   return 0
 }
 
-const handleSnapshot = createNoArgRequestCommand({
-  helpPath: ['snapshot'],
-  command: 'snapshot',
-})
+async function handleSnapshot(rest: string[], context: CommandContext): Promise<number | void> {
+  if (helpRequested(rest[0], context, ['snapshot'])) {
+    return 0
+  }
+
+  if (rest[0] === 'export') {
+    if (helpRequested(rest[1], context, ['snapshot', 'export'])) {
+      return 0
+    }
+
+    const outputPath = await resolveSnapshotExportPath(rest[1] || null)
+    const payload = await context.requestCommand(context.flags.server, 'snapshot', {})
+
+    if (payload.ok === false) {
+      context.writeResult(payload)
+      return 1
+    }
+
+    const snapshot = isRecord(payload.result) ? (payload.result as Record<string, unknown>) : null
+    if (!snapshot) {
+      process.stderr.write('snapshot export requires a structured snapshot result\n')
+      return 1
+    }
+
+    const { content, recordCount } = buildSnapshotJsonl(snapshot)
+    await writeFile(outputPath, content, 'utf8')
+
+    if (context.flags.json) {
+      context.writeResult({
+        ok: true,
+        result: {
+          path: outputPath,
+          format: 'jsonl',
+          recordCount,
+        },
+      })
+      return 0
+    }
+
+    process.stdout.write(`${outputPath}\n`)
+    return 0
+  }
+
+  if (rest[0] === 'extract') {
+    if (helpRequested(rest[1], context, ['snapshot', 'extract'])) {
+      return 0
+    }
+
+    const parsedExtractArgs = parseOrWriteError(() =>
+      parseSnapshotFieldSelectors(rest.slice(1)),
+    )
+    if (!parsedExtractArgs) {
+      return 1
+    }
+
+    const resolvedOutputPath = await resolveSnapshotExportPath(parsedExtractArgs.outputPath)
+    const payload = await context.requestCommand(context.flags.server, 'snapshot', {})
+
+    if (payload.ok === false) {
+      context.writeResult(payload)
+      return 1
+    }
+
+    const snapshot = isRecord(payload.result) ? (payload.result as Record<string, unknown>) : null
+    if (!snapshot) {
+      process.stderr.write('snapshot extract requires a structured snapshot result\n')
+      return 1
+    }
+
+    const { content, recordCount } = buildSnapshotFieldJsonl(snapshot, parsedExtractArgs.selection)
+    await writeFile(resolvedOutputPath, content, 'utf8')
+
+    if (context.flags.json) {
+      context.writeResult({
+        ok: true,
+        result: {
+          path: resolvedOutputPath,
+          format: 'jsonl',
+          recordCount,
+        },
+      })
+      return 0
+    }
+
+    process.stdout.write(`${resolvedOutputPath}\n`)
+    return 0
+  }
+
+  const payload = await context.requestCommand(context.flags.server, 'snapshot', {})
+  context.writeResult(payload)
+  return 0
+}
 
 async function handleScreenshot(rest: string[], context: CommandContext): Promise<number | void> {
   if (helpRequested(rest[0], context, ['screenshot'])) {

@@ -9,10 +9,28 @@ interface BatchStepObject {
   label?: unknown
 }
 
+interface BatchInputObject {
+  steps?: unknown
+  continueOnError?: unknown
+  retries?: unknown
+  retryDelayMs?: unknown
+}
+
 interface BatchStep {
   command: string
   args: Record<string, unknown>
   label: string | null
+}
+
+interface BatchOptions {
+  continueOnError: boolean
+  retries: number
+  retryDelayMs: number
+}
+
+interface BatchInput {
+  steps: BatchStep[]
+  options: BatchOptions
 }
 
 function normalizeBatchStepForDispatch(step: BatchStep, context: CommandContext): BatchStep {
@@ -70,13 +88,81 @@ function normalizeBatchStep(value: unknown, index: number): BatchStep {
   }
 }
 
-function parseBatchSteps(raw: string): BatchStep[] {
-  const parsed = JSON.parse(raw) as unknown
-  if (!Array.isArray(parsed)) {
-    throw new Error('batch input must be a JSON array')
+function readBatchOptions(value: BatchInputObject): BatchOptions {
+  if (value.continueOnError !== undefined && typeof value.continueOnError !== 'boolean') {
+    throw new Error('batch input continueOnError must be a boolean')
   }
 
-  return parsed.map((value, index) => normalizeBatchStep(value, index))
+  if (value.retries !== undefined) {
+    if (
+      typeof value.retries !== 'number' ||
+      !Number.isFinite(value.retries) ||
+      !Number.isInteger(value.retries) ||
+      value.retries < 0
+    ) {
+      throw new Error('batch input retries must be a non-negative integer')
+    }
+  }
+
+  if (value.retryDelayMs !== undefined) {
+    if (typeof value.retryDelayMs !== 'number' || !Number.isFinite(value.retryDelayMs) || value.retryDelayMs < 0) {
+      throw new Error('batch input retryDelayMs must be a non-negative number')
+    }
+  }
+
+  return {
+    continueOnError: value.continueOnError === true,
+    retries: value.retries === undefined ? 0 : Math.floor(value.retries),
+    retryDelayMs: value.retryDelayMs === undefined ? 0 : Math.floor(value.retryDelayMs),
+  }
+}
+
+function parseBatchInput(raw: string): BatchInput {
+  const parsed = JSON.parse(raw) as unknown
+  if (Array.isArray(parsed)) {
+    return {
+      steps: parsed.map((value, index) => normalizeBatchStep(value, index)),
+      options: {
+        continueOnError: false,
+        retries: 0,
+        retryDelayMs: 0,
+      },
+    }
+  }
+
+  if (!isRecord(parsed)) {
+    throw new Error('batch input must be a JSON array or object')
+  }
+
+  const stepsValue = parsed.steps
+  if (!Array.isArray(stepsValue)) {
+    throw new Error('batch input.steps must be a JSON array')
+  }
+
+  return {
+    steps: stepsValue.map((value, index) => normalizeBatchStep(value, index)),
+    options: readBatchOptions(parsed),
+  }
+}
+
+function buildBatchRequestArgs(input: BatchInput): Record<string, unknown> {
+  const args: Record<string, unknown> = {
+    steps: input.steps,
+  }
+
+  if (input.options.continueOnError) {
+    args.continueOnError = true
+  }
+
+  if (input.options.retries > 0) {
+    args.retries = input.options.retries
+  }
+
+  if (input.options.retryDelayMs > 0) {
+    args.retryDelayMs = input.options.retryDelayMs
+  }
+
+  return args
 }
 
 function buildBatchFailurePayload(payload: {
@@ -105,15 +191,18 @@ async function handleBatch(rest: string[], context: CommandContext): Promise<num
   }
 
   const rawInput = await context.resolveEvalScript(rest)
-  const steps = parseOrWriteError(() => parseBatchSteps(rawInput))
-  if (!steps) {
+  const input = parseOrWriteError(() => parseBatchInput(rawInput))
+  if (!input) {
     return 1
   }
 
-  const dispatchSteps = steps.map((step) => normalizeBatchStepForDispatch(step, context))
-  const payload = await context.requestCommand(context.flags.server, 'batch', {
-    steps: dispatchSteps,
-  })
+  const dispatchSteps = input.steps.map((step) => normalizeBatchStepForDispatch(step, context))
+  const payload = await context.requestCommand(context.flags.server, 'batch',
+    buildBatchRequestArgs({
+      steps: dispatchSteps,
+      options: input.options,
+    }),
+  )
 
   if (payload.ok === false) {
     if (payload.error?.code === 'INVALID_COMMAND_ARGS') {

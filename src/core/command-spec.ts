@@ -189,6 +189,44 @@ function readNumberField(
   return value
 }
 
+function readOptionalNonNegativeIntegerField(
+  args: Record<string, unknown>,
+  key: string,
+  command: string,
+): number | undefined {
+  return readOptionalNonNegativeField(args, key, command, { integer: true })
+}
+
+function readOptionalNonNegativeNumberField(
+  args: Record<string, unknown>,
+  key: string,
+  command: string,
+): number | undefined {
+  return readOptionalNonNegativeField(args, key, command)
+}
+
+function readOptionalNonNegativeField(
+  args: Record<string, unknown>,
+  key: string,
+  command: string,
+  { integer = false }: { integer?: boolean } = {},
+): number | undefined {
+  const value = readNumberField(args, key, command, { required: false })
+  if (value === undefined) {
+    return undefined
+  }
+
+  const label = integer ? 'non-negative integer' : 'non-negative number'
+  if ((integer && !Number.isInteger(value)) || value < 0) {
+    throw createCommandArgsValidationError(command, `${key} must be a ${label}`, {
+      field: key,
+      value,
+    })
+  }
+
+  return value
+}
+
 function readBooleanField(
   args: Record<string, unknown>,
   key: string,
@@ -356,6 +394,10 @@ export function validateCommandArgs(command: string, args: unknown): void {
       }
 
       steps.forEach((step, index) => validateBatchStep(step, index))
+
+      readBooleanField(normalizedArgs, 'continueOnError', command)
+      readOptionalNonNegativeIntegerField(normalizedArgs, 'retries', command)
+      readOptionalNonNegativeNumberField(normalizedArgs, 'retryDelayMs', command)
       return
     }
     case 'goto':

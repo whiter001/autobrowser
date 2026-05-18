@@ -1,5 +1,5 @@
 import { resolveExtensionId } from '../../core/config.js'
-import { isPortInUse } from '../../core/protocol.js'
+import { getConfigPath, getStatePath, getTokenPath, isPortInUse, readJsonFile } from '../../core/protocol.js'
 import { isRecord } from '../client.js'
 import { isHelpToken } from '../help.js'
 import {
@@ -82,6 +82,10 @@ export function formatStatusSummary(status: Record<string, unknown>): string {
   if (pageEpochEntries.length > 0) {
     lines.push('page epochs:')
     for (const [tabId, epoch] of pageEpochEntries) {
+      if (typeof epoch !== 'number') {
+        continue
+      }
+
       const tab = tabById.get(tabId)
       const handle = typeof tab?.handle === 'string' ? tab.handle : `tab ${tabId}`
       lines.push(`  ${handle} (${tabId}): ${Math.floor(epoch)}`)
@@ -89,6 +93,36 @@ export function formatStatusSummary(status: Record<string, unknown>): string {
   }
 
   return `${lines.join('\n')}\n`
+}
+
+export function getRecordedCommandFromStatus(
+  status: Record<string, unknown>,
+): { command: string; args: Record<string, unknown> } | null {
+  const snapshot = isRecord(status.snapshot) ? status.snapshot : null
+  const lastCommand = isRecord(snapshot?.lastCommand) ? snapshot.lastCommand : null
+  const command = typeof lastCommand?.command === 'string' ? lastCommand.command.trim() : ''
+
+  if (!command) {
+    return null
+  }
+
+  return {
+    command,
+    args: lastCommand && isRecord(lastCommand.args) ? (lastCommand.args as Record<string, unknown>) : {},
+  }
+}
+
+export async function buildCliConfigStatus(homeDir: string): Promise<Record<string, unknown>> {
+  const config = await readJsonFile<Record<string, unknown> | null>(getConfigPath(homeDir), null)
+  return {
+    homeDir,
+    paths: {
+      config: getConfigPath(homeDir),
+      state: getStatePath(homeDir),
+      token: getTokenPath(homeDir),
+    },
+    config: config || {},
+  }
 }
 
 async function handleHelp(rest: string[], context: CommandContext): Promise<number | void> {
@@ -325,6 +359,34 @@ async function handleStatus(rest: string[], context: CommandContext): Promise<nu
   return 0
 }
 
+async function handleReplay(rest: string[], context: CommandContext): Promise<number | void> {
+  if (isHelpToken(rest[0])) {
+    return context.writeHelp(['replay'])
+  }
+
+  const status = await context.getStatus(context.flags.server)
+  const lastCommand = getRecordedCommandFromStatus(status)
+
+  if (!lastCommand) {
+    process.stderr.write('No recorded command available to replay.\n')
+    return 1
+  }
+
+  const payload = await context.requestCommand(context.flags.server, lastCommand.command, lastCommand.args)
+  context.writeResult(payload)
+  return 0
+}
+
+async function handleConfig(rest: string[], context: CommandContext): Promise<number | void> {
+  if (isHelpToken(rest[0])) {
+    return context.writeHelp(['config'])
+  }
+
+  const configStatus = await buildCliConfigStatus(context.homeDir)
+  context.writeResult({ ok: true, result: configStatus })
+  return 0
+}
+
 export const serverCommandRegistry: CommandRegistry = {
   help: handleHelp,
   '--help': handleHelp,
@@ -332,4 +394,6 @@ export const serverCommandRegistry: CommandRegistry = {
   server: handleServer,
   connect: handleConnect,
   status: handleStatus,
+  replay: handleReplay,
+  config: handleConfig,
 }

@@ -282,10 +282,15 @@ function summarizeNetworkRequest(record: NetworkRequestRecord): Record<string, u
     startedAt: record.startedAt ?? null,
     durationMs: record.durationMs ?? null,
     errorText: record.errorText ?? null,
+    requestHeaders: record.requestHeaders ?? null,
+    responseHeaders: record.responseHeaders ?? null,
+    requestBody: typeof record.postData === 'string' ? record.postData : null,
     requestBodyTruncated: Boolean(record.postDataTruncated),
     requestBodyBytes: record.postDataBytes ?? null,
+    responseBody: typeof record.responseBody === 'string' ? record.responseBody : null,
     responseBodyTruncated: Boolean(record.responseBodyTruncated),
     responseBodyBytes: record.responseBodyBytes ?? null,
+    responseMimeType: record.responseMimeType ?? null,
   }
 }
 

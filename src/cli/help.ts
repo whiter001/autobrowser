@@ -44,8 +44,8 @@ const HELP_ROOT = helpNode(
     helpNode('help', 'Show help for a command path.', 'autobrowser help [command ...]'),
     helpNode(
       'batch',
-      'Execute a JSON array of commands in sequence.',
-      'autobrowser batch [--stdin|--file <path>|--base64] <json-array>',
+      'Execute commands in sequence with optional retries and continue-on-error.',
+      'autobrowser batch [--stdin|--file <path>|--base64] <json-array|json-object>',
     ),
     helpNode(
       'server',
@@ -55,6 +55,8 @@ const HELP_ROOT = helpNode(
       [helpNode('stop', 'Stop the background servers.', 'autobrowser server stop')],
     ),
     helpNode('status', 'Show server status.', 'autobrowser status'),
+    helpNode('replay', 'Replay the last recorded command.', 'autobrowser replay'),
+    helpNode('config', 'Show persisted CLI connection settings.', 'autobrowser config'),
     helpNode(
       'connect',
       'Open the extension connect page, starting the local server when needed.',
@@ -219,7 +221,7 @@ const HELP_ROOT = helpNode(
     helpNode(
       'network',
       'Inspect and control network activity.',
-      'autobrowser network <route|unroute|requests|request|har>',
+      'autobrowser network <route|unroute|requests|export|request|har>',
       undefined,
       [
         helpNode(
@@ -233,6 +235,12 @@ const HELP_ROOT = helpNode(
           'requests',
           'List captured requests.',
           'autobrowser network requests [--filter <text>] [--type <xhr,fetch>] [--method <POST>] [--status <2xx>]',
+          ['--filter <text>', '--type <xhr,fetch>', '--method <POST>', '--status <2xx>'],
+        ),
+        helpNode(
+          'export',
+          'Export captured request summaries as JSONL.',
+          'autobrowser network export [output.jsonl] [--filter <text>] [--type <xhr,fetch>] [--method <POST>] [--status <2xx>]',
           ['--filter <text>', '--type <xhr,fetch>', '--method <POST>', '--status <2xx>'],
         ),
         helpNode('request', 'Inspect a single request.', 'autobrowser network request <requestId>'),
@@ -269,7 +277,14 @@ const HELP_ROOT = helpNode(
         '--screenshot-quality <n>',
       ],
     ),
-    helpNode('snapshot', 'Capture a page snapshot.', 'autobrowser snapshot'),
+    helpNode('snapshot', 'Capture or export a page snapshot.', 'autobrowser snapshot', undefined, [
+      helpNode('export', 'Export the page snapshot as JSONL.', 'autobrowser snapshot export [output.jsonl]'),
+      helpNode(
+        'extract',
+        'Extract field-oriented records from the snapshot as JSONL.',
+        'autobrowser snapshot extract [output.jsonl] [--field <fieldPath>]...',
+      ),
+    ]),
   ],
 )
 

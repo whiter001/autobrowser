@@ -5,6 +5,7 @@ import {
   parseNetworkRouteArgs,
   parseOptionalNumberArg,
 } from '../parse.js'
+import { buildNetworkRequestsJsonl } from '../network-export.js'
 import {
   createActionCommand,
   helpRequested,
@@ -14,6 +15,9 @@ import {
   writeCommandError,
 } from './shared.js'
 import type { CommandContext, CommandRegistry } from './types.js'
+import { mkdtemp, writeFile } from 'node:fs/promises'
+import os from 'node:os'
+import path from 'node:path'
 
 interface NetworkHarStopResult {
   har?: unknown
@@ -28,7 +32,7 @@ const STORAGE_ACTIONS = ['get', 'set', 'clear'] as const
 const SET_ACTIONS = ['viewport', 'offline', 'headers', 'geo', 'media'] as const
 const CLIPBOARD_ACTIONS = ['read', 'write'] as const
 const STATE_ACTIONS = ['save', 'load'] as const
-const NETWORK_ACTIONS = ['route', 'unroute', 'requests', 'request', 'har'] as const
+const NETWORK_ACTIONS = ['route', 'unroute', 'requests', 'export', 'request', 'har'] as const
 const NETWORK_HAR_ACTIONS = ['start', 'stop'] as const
 
 const handleCookies = createActionCommand({
@@ -267,6 +271,51 @@ async function handleNetwork(rest: string[], context: CommandContext): Promise<n
       action: 'requests',
       ...parseNetworkRequestsArgs(rest.slice(1)),
     })
+    return 0
+  }
+
+  if (action === 'export') {
+    if (helpRequested(rest[1], context, ['network', 'export'])) {
+      return 0
+    }
+
+    const outputPath = rest[1] && !rest[1].startsWith('--') ? rest[1] : null
+    const filterArgs = outputPath ? rest.slice(2) : rest.slice(1)
+    const filters = parseNetworkRequestsArgs(filterArgs)
+    const payload = await context.requestCommand(context.flags.server, 'network', {
+      action: 'requests',
+      ...filters,
+    })
+
+    if (payload.ok === false) {
+      context.writeResult(payload)
+      return 1
+    }
+
+    const result = isRecord(payload.result) ? (payload.result as Record<string, unknown>) : null
+    if (!result) {
+      process.stderr.write('network export requires a structured request list\n')
+      return 1
+    }
+
+    const { content, recordCount } = buildNetworkRequestsJsonl(result, filters)
+    const tempDir = outputPath ? null : await mkdtemp(path.join(os.tmpdir(), 'autobrowser-network-'))
+    const finalPath = outputPath || path.join(tempDir || '', `network-${Date.now()}.jsonl`)
+    await writeFile(finalPath, content, 'utf8')
+
+    if (context.flags.json) {
+      context.writeResult({
+        ok: true,
+        result: {
+          path: finalPath,
+          format: 'jsonl',
+          recordCount,
+        },
+      })
+      return 0
+    }
+
+    process.stdout.write(`${finalPath}\n`)
     return 0
   }
 

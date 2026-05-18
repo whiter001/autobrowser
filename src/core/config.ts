@@ -55,6 +55,81 @@ function normalizeBrowserLaunchConfig(command: unknown, args: unknown): BrowserL
   }
 }
 
+function normalizeBrowserLaunchConfigFromEnv(
+  command: unknown,
+  args: unknown,
+): BrowserLaunchConfig | null {
+  const normalizedCommand = normalizeString(command)
+  if (!normalizedCommand) {
+    return null
+  }
+
+  if (typeof args === 'string' && args.trim()) {
+    try {
+      const parsedArgs = JSON.parse(args) as unknown
+      return {
+        command: normalizedCommand,
+        args: normalizeStringArray(parsedArgs),
+      }
+    } catch {
+      return null
+    }
+  }
+
+  return {
+    command: normalizedCommand,
+    args: [],
+  }
+}
+
+function buildBrowserLaunchEnvironmentArgs(): string[] {
+  const envArgs: string[] = []
+  const proxy = normalizeString(process.env.AUTOBROWSER_BROWSER_PROXY)
+  const userAgent = normalizeString(process.env.AUTOBROWSER_BROWSER_USER_AGENT)
+
+  if (proxy) {
+    envArgs.push(`--proxy-server=${proxy}`)
+  }
+
+  if (userAgent) {
+    envArgs.push(`--user-agent=${userAgent}`)
+  }
+
+  return envArgs
+}
+
+function mergeBrowserLaunchConfigEnvironmentArgs(
+  browserConfig: BrowserLaunchConfig | null,
+): BrowserLaunchConfig | null {
+  if (!browserConfig) {
+    return null
+  }
+
+  const envArgs = buildBrowserLaunchEnvironmentArgs()
+  if (envArgs.length === 0) {
+    return browserConfig
+  }
+
+  const mergedArgs = [...browserConfig.args]
+  for (const envArg of envArgs) {
+    const prefix = envArg.split('=')[0]
+    if (mergedArgs.some((arg) => arg.startsWith(prefix))) {
+      continue
+    }
+
+    mergedArgs.push(envArg)
+  }
+
+  if (mergedArgs.length === browserConfig.args.length) {
+    return browserConfig
+  }
+
+  return {
+    command: browserConfig.command,
+    args: mergedArgs,
+  }
+}
+
 function normalizeCliConfig(value: unknown): CliConfig {
   if (!value || typeof value !== 'object') {
     return {}
@@ -203,13 +278,19 @@ export async function resolveConnectLaunchConfig(
         command: explicitBrowserCommand,
         args: normalizeStringArray(options.browserArgs),
       }
-    : normalizeBrowserLaunchConfig(config.browserCommand, config.browserArgs)
+    : normalizeBrowserLaunchConfig(config.browserCommand, config.browserArgs) ||
+      normalizeBrowserLaunchConfigFromEnv(
+        process.env.AUTOBROWSER_BROWSER_COMMAND,
+        process.env.AUTOBROWSER_BROWSER_ARGS,
+      )
 
-  if (browserConfig) {
+  const browserConfigWithEnvironment = mergeBrowserLaunchConfigEnvironmentArgs(browserConfig)
+
+  if (browserConfigWithEnvironment) {
     shouldWrite =
       applyCliConfigUpdates(nextConfig, {
-        browserCommand: browserConfig.command,
-        browserArgs: browserConfig.args,
+        browserCommand: browserConfigWithEnvironment.command,
+        browserArgs: browserConfigWithEnvironment.args,
       }) || shouldWrite
   }
 
@@ -220,7 +301,7 @@ export async function resolveConnectLaunchConfig(
 
   return {
     extensionId,
-    browserConfig,
+    browserConfig: browserConfigWithEnvironment,
   }
 }
 
@@ -270,5 +351,11 @@ export async function resolveBrowserLaunchConfig(
   }
 
   const browserConfig = normalizeBrowserLaunchConfig(config.browserCommand, config.browserArgs)
-  return browserConfig
+  return mergeBrowserLaunchConfigEnvironmentArgs(
+    browserConfig ||
+    normalizeBrowserLaunchConfigFromEnv(
+      process.env.AUTOBROWSER_BROWSER_COMMAND,
+      process.env.AUTOBROWSER_BROWSER_ARGS,
+    )
+  )
 }

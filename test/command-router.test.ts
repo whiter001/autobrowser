@@ -135,6 +135,16 @@ describe('command router batch handling', () => {
           },
         },
       ],
+      summary: {
+        total: 2,
+        completed: 2,
+        succeeded: 2,
+        failed: 0,
+        retried: 0,
+        continueOnError: false,
+        retries: 0,
+        retryDelayMs: 0,
+      },
     })
   })
 
@@ -183,10 +193,77 @@ describe('command router batch handling', () => {
             },
           },
         },
+        summary: {
+          total: 2,
+          completed: 2,
+          succeeded: 1,
+          failed: 1,
+          retried: 0,
+          continueOnError: false,
+          retries: 0,
+          retryDelayMs: 0,
+        },
       },
     })
 
     expect(snapshotCalls).toHaveLength(1)
     expect(navigateCalls).toHaveLength(1)
+  })
+
+  test('continues batch execution when requested and retries failed steps', async () => {
+    const { router, snapshotCalls, navigateCalls } = createMinimalRouter()
+
+    const result = await router.handleCommand({
+      command: 'batch',
+      args: {
+        continueOnError: true,
+        retries: 1,
+        steps: [
+          { command: 'goto', args: { url: 'chrome://settings' } },
+          { command: 'snapshot' },
+        ],
+      },
+    })
+
+    expect(result).toEqual({
+      steps: [
+        {
+          index: 1,
+          command: 'goto',
+          args: { url: 'chrome://settings' },
+          label: null,
+          response: {
+            ok: false,
+            error: {
+              message: 'cannot access chrome:// and edge:// urls',
+              code: 'EXTENSION_COMMAND_ERROR',
+            },
+          },
+        },
+        {
+          index: 2,
+          command: 'snapshot',
+          args: {},
+          label: null,
+          response: {
+            ok: true,
+            result: { snapshotId: 'snapshot-1' },
+          },
+        },
+      ],
+      summary: {
+        total: 2,
+        completed: 2,
+        succeeded: 1,
+        failed: 1,
+        retried: 1,
+        continueOnError: true,
+        retries: 1,
+        retryDelayMs: 0,
+      },
+    })
+
+    expect(snapshotCalls).toHaveLength(1)
+    expect(navigateCalls).toHaveLength(2)
   })
 })

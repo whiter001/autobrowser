@@ -542,6 +542,23 @@ export function createCommandRouter({
       | { ok: false; error: { message: string; code?: string; details?: unknown } }
   }
 
+  interface BatchCommandOptions {
+    continueOnError: boolean
+    retries: number
+    retryDelayMs: number
+  }
+
+  interface BatchCommandSummary {
+    total: number
+    completed: number
+    succeeded: number
+    failed: number
+    retried: number
+    continueOnError: boolean
+    retries: number
+    retryDelayMs: number
+  }
+
   function isRecord(value: unknown): value is Record<string, unknown> {
     return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
   }
@@ -603,6 +620,22 @@ export function createCommandRouter({
     return rawSteps.map((value, index) => normalizeBatchCommandStep(value, index))
   }
 
+  function readBatchCommandOptions(args: CommandArgs): BatchCommandOptions {
+    return {
+      continueOnError: readBooleanArg(args, 'continueOnError', false),
+      retries: Math.max(0, Math.floor(readNumberArg(args, 'retries', 0))),
+      retryDelayMs: Math.max(0, Math.floor(readNumberArg(args, 'retryDelayMs', 0))),
+    }
+  }
+
+  async function waitForRetryDelay(ms: number): Promise<void> {
+    if (ms <= 0) {
+      return
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, ms))
+  }
+
   function createBatchStepResponse(result: unknown): { ok: true; result: unknown } {
     return {
       ok: true,
@@ -620,46 +653,139 @@ export function createCommandRouter({
     }
   }
 
-  async function handleBatchCommand(
-    args: CommandArgs,
-  ): Promise<{ steps: BatchCommandStepResult[] }> {
-    const steps = readBatchCommandSteps(args)
-    const results: BatchCommandStepResult[] = []
+  function createBatchSummary(
+    total: number,
+    completed: number,
+    succeeded: number,
+    failed: number,
+    retried: number,
+    options: BatchCommandOptions,
+  ): BatchCommandSummary {
+    return {
+      total,
+      completed,
+      succeeded,
+      failed,
+      retried,
+      continueOnError: options.continueOnError,
+      retries: options.retries,
+      retryDelayMs: options.retryDelayMs,
+    }
+  }
 
-    for (const [index, step] of steps.entries()) {
+  async function executeBatchStep(
+    step: BatchCommandStep,
+    index: number,
+    options: BatchCommandOptions,
+  ): Promise<{
+    result: BatchCommandStepResult
+    failed: boolean
+    retryCount: number
+  }> {
+    let attempt = 0
+    let lastError: unknown = null
+    let retryCount = 0
+    // 防御性截断：确保 retries 是有限非负整数，避免 Infinity/NaN 导致无限循环
+    const maxRetries = Number.isFinite(options.retries) ? Math.max(0, Math.floor(options.retries)) : 0
+
+    while (attempt <= maxRetries) {
       try {
         const result = await executeCommand(step.command, step.args)
-        results.push({
-          index: index + 1,
-          command: step.command,
-          args: step.args,
-          label: step.label,
-          response: createBatchStepResponse(result),
-        })
+        return {
+          result: {
+            index: index + 1,
+            command: step.command,
+            args: step.args,
+            label: step.label,
+            response: createBatchStepResponse(result),
+          },
+          failed: false,
+          retryCount,
+        }
       } catch (error) {
-        const failedResponse = createBatchStepFailureResponse(error)
-        const failedStep: BatchCommandStepResult = {
-          index: index + 1,
-          command: step.command,
-          args: step.args,
-          label: step.label,
-          response: failedResponse,
+        lastError = error
+        if (attempt >= maxRetries) {
+          break
         }
-        results.push(failedStep)
 
-        const batchError = new Error(
-          `batch step ${index + 1} failed: ${step.command}`,
-        ) as ErrorWithCode
-        batchError.code = 'BATCH_STEP_FAILED'
-        batchError.details = {
-          steps: results,
-          failedStep,
-        }
-        throw batchError
+        retryCount += 1
+        await waitForRetryDelay(options.retryDelayMs)
       }
+
+      attempt += 1
     }
 
-    return { steps: results }
+    return {
+      result: {
+        index: index + 1,
+        command: step.command,
+        args: step.args,
+        label: step.label,
+        response: createBatchStepFailureResponse(lastError),
+      },
+      failed: true,
+      retryCount,
+    }
+  }
+
+  async function handleBatchCommand(
+    args: CommandArgs,
+  ): Promise<{ steps: BatchCommandStepResult[]; summary: BatchCommandSummary }> {
+    const steps = readBatchCommandSteps(args)
+    const options = readBatchCommandOptions(args)
+    const results: BatchCommandStepResult[] = []
+    let succeeded = 0
+    let failed = 0
+    let retried = 0
+
+    for (const [index, step] of steps.entries()) {
+      const stepExecution = await executeBatchStep(step, index, options)
+      results.push(stepExecution.result)
+
+      if (stepExecution.failed) {
+        failed += 1
+        retried += stepExecution.retryCount
+
+        const summary = createBatchSummary(
+          steps.length,
+          results.length,
+          succeeded,
+          failed,
+          retried,
+          options,
+        )
+        const failedStep = {
+          index: stepExecution.result.index,
+          command: stepExecution.result.command,
+          args: stepExecution.result.args,
+          label: stepExecution.result.label,
+          response: stepExecution.result.response,
+        }
+
+        if (!options.continueOnError) {
+          const batchError = new Error(
+            `batch step ${index + 1} failed: ${step.command}`,
+          ) as ErrorWithCode
+          batchError.code = 'BATCH_STEP_FAILED'
+          batchError.details = {
+            steps: results,
+            failedStep,
+            summary,
+          }
+          throw batchError
+        }
+
+        continue
+      }
+
+      succeeded += 1
+      retried += stepExecution.retryCount
+    }
+
+    return {
+      steps: results,
+      summary: createBatchSummary(steps.length, results.length, succeeded, failed, retried, options),
+    }
   }
 
   async function executeCommand(command: string, args: CommandArgs = {}) {
