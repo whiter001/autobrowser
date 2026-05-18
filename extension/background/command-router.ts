@@ -686,7 +686,9 @@ export function createCommandRouter({
     let lastError: unknown = null
     let retryCount = 0
     // 防御性截断：确保 retries 是有限非负整数，避免 Infinity/NaN 导致无限循环
-    const maxRetries = Number.isFinite(options.retries) ? Math.max(0, Math.floor(options.retries)) : 0
+    const maxRetries = Number.isFinite(options.retries)
+      ? Math.max(0, Math.floor(options.retries))
+      : 0
 
     while (attempt <= maxRetries) {
       try {
@@ -784,7 +786,14 @@ export function createCommandRouter({
 
     return {
       steps: results,
-      summary: createBatchSummary(steps.length, results.length, succeeded, failed, retried, options),
+      summary: createBatchSummary(
+        steps.length,
+        results.length,
+        succeeded,
+        failed,
+        retried,
+        options,
+      ),
     }
   }
 

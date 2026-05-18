@@ -299,7 +299,9 @@ async function handleNetwork(rest: string[], context: CommandContext): Promise<n
     }
 
     const { content, recordCount } = buildNetworkRequestsJsonl(result, filters)
-    const tempDir = outputPath ? null : await mkdtemp(path.join(os.tmpdir(), 'autobrowser-network-'))
+    const tempDir = outputPath
+      ? null
+      : await mkdtemp(path.join(os.tmpdir(), 'autobrowser-network-'))
     const finalPath = outputPath || path.join(tempDir || '', `network-${Date.now()}.jsonl`)
     await writeFile(finalPath, content, 'utf8')
 

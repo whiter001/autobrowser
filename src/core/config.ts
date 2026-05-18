@@ -353,9 +353,9 @@ export async function resolveBrowserLaunchConfig(
   const browserConfig = normalizeBrowserLaunchConfig(config.browserCommand, config.browserArgs)
   return mergeBrowserLaunchConfigEnvironmentArgs(
     browserConfig ||
-    normalizeBrowserLaunchConfigFromEnv(
-      process.env.AUTOBROWSER_BROWSER_COMMAND,
-      process.env.AUTOBROWSER_BROWSER_ARGS,
-    )
+      normalizeBrowserLaunchConfigFromEnv(
+        process.env.AUTOBROWSER_BROWSER_COMMAND,
+        process.env.AUTOBROWSER_BROWSER_ARGS,
+      ),
   )
 }

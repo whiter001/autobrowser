@@ -15,9 +15,7 @@ interface FieldSource {
 }
 
 function normalizePageEpoch(value: unknown): number | null {
-  return typeof value === 'number' && Number.isFinite(value) && value > 0
-    ? Math.floor(value)
-    : null
+  return typeof value === 'number' && Number.isFinite(value) && value > 0 ? Math.floor(value) : null
 }
 
 function toRecord(value: unknown): Record<string, unknown> | null {
@@ -33,7 +31,11 @@ function appendFieldRecord(
   matchStrategy: string,
   selection: SnapshotFieldSelection | null,
 ): void {
-  if (selection && selection.fields.length > 0 && !matchesFieldSelection(fieldPath, selection.fields)) {
+  if (
+    selection &&
+    selection.fields.length > 0 &&
+    !matchesFieldSelection(fieldPath, selection.fields)
+  ) {
     return
   }
 
@@ -123,7 +125,15 @@ function appendElementFields(
         typeof record.role === 'string' ? 'role+text' : 'text',
         selection,
       )
-      appendFieldRecord(records, pageEpoch, `${kind}[${index}].href`, record.href, source, 'href', selection)
+      appendFieldRecord(
+        records,
+        pageEpoch,
+        `${kind}[${index}].href`,
+        record.href,
+        source,
+        'href',
+        selection,
+      )
       appendFieldRecord(
         records,
         pageEpoch,
@@ -133,7 +143,15 @@ function appendElementFields(
         'placeholder',
         selection,
       )
-      appendFieldRecord(records, pageEpoch, `${kind}[${index}].type`, record.type, source, 'type', selection)
+      appendFieldRecord(
+        records,
+        pageEpoch,
+        `${kind}[${index}].type`,
+        record.type,
+        source,
+        'type',
+        selection,
+      )
       appendFieldRecord(
         records,
         pageEpoch,
@@ -196,9 +214,33 @@ function appendElementFields(
     }
 
     if (kind === 'frames') {
-      appendFieldRecord(records, pageEpoch, `${kind}[${index}].name`, record.name, source, 'frame-name', selection)
-      appendFieldRecord(records, pageEpoch, `${kind}[${index}].title`, record.title, source, 'frame-title', selection)
-      appendFieldRecord(records, pageEpoch, `${kind}[${index}].src`, record.src, source, 'frame-src', selection)
+      appendFieldRecord(
+        records,
+        pageEpoch,
+        `${kind}[${index}].name`,
+        record.name,
+        source,
+        'frame-name',
+        selection,
+      )
+      appendFieldRecord(
+        records,
+        pageEpoch,
+        `${kind}[${index}].title`,
+        record.title,
+        source,
+        'frame-title',
+        selection,
+      )
+      appendFieldRecord(
+        records,
+        pageEpoch,
+        `${kind}[${index}].src`,
+        record.src,
+        source,
+        'frame-src',
+        selection,
+      )
     }
   }
 }
@@ -214,8 +256,24 @@ export function buildSnapshotFieldJsonl(
     ref: null,
   }
 
-  appendFieldRecord(records, pageEpoch, 'page.title', snapshot.title, pageSource, 'page-metadata', selection)
-  appendFieldRecord(records, pageEpoch, 'page.url', snapshot.url, pageSource, 'page-metadata', selection)
+  appendFieldRecord(
+    records,
+    pageEpoch,
+    'page.title',
+    snapshot.title,
+    pageSource,
+    'page-metadata',
+    selection,
+  )
+  appendFieldRecord(
+    records,
+    pageEpoch,
+    'page.url',
+    snapshot.url,
+    pageSource,
+    'page-metadata',
+    selection,
+  )
   appendFieldRecord(
     records,
     pageEpoch,
@@ -225,7 +283,15 @@ export function buildSnapshotFieldJsonl(
     'page-metadata',
     selection,
   )
-  appendFieldRecord(records, pageEpoch, 'page.text', snapshot.text, pageSource, 'page-text', selection)
+  appendFieldRecord(
+    records,
+    pageEpoch,
+    'page.text',
+    snapshot.text,
+    pageSource,
+    'page-text',
+    selection,
+  )
 
   appendElementFields(records, pageEpoch, snapshot.elements, 'elements', selection)
   appendElementFields(records, pageEpoch, snapshot.frames, 'frames', selection)

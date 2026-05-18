@@ -32,7 +32,10 @@ async function resolveSnapshotExportPath(outputPath: string | null): Promise<str
   return path.join(tempDir, `snapshot-${Date.now()}.jsonl`)
 }
 
-function parseSnapshotFieldSelectors(rest: string[]): { outputPath: string | null; selection: SnapshotFieldSelection } {
+function parseSnapshotFieldSelectors(rest: string[]): {
+  outputPath: string | null
+  selection: SnapshotFieldSelection
+} {
   const selection: SnapshotFieldSelection = { fields: [] }
   let outputPath: string | null = null
 
@@ -129,9 +132,7 @@ async function handleSnapshot(rest: string[], context: CommandContext): Promise<
       return 0
     }
 
-    const parsedExtractArgs = parseOrWriteError(() =>
-      parseSnapshotFieldSelectors(rest.slice(1)),
-    )
+    const parsedExtractArgs = parseOrWriteError(() => parseSnapshotFieldSelectors(rest.slice(1)))
     if (!parsedExtractArgs) {
       return 1
     }

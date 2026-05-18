@@ -278,7 +278,11 @@ const HELP_ROOT = helpNode(
       ],
     ),
     helpNode('snapshot', 'Capture or export a page snapshot.', 'autobrowser snapshot', undefined, [
-      helpNode('export', 'Export the page snapshot as JSONL.', 'autobrowser snapshot export [output.jsonl]'),
+      helpNode(
+        'export',
+        'Export the page snapshot as JSONL.',
+        'autobrowser snapshot export [output.jsonl]',
+      ),
       helpNode(
         'extract',
         'Extract field-oriented records from the snapshot as JSONL.',

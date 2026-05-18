@@ -218,10 +218,7 @@ describe('command router batch handling', () => {
       args: {
         continueOnError: true,
         retries: 1,
-        steps: [
-          { command: 'goto', args: { url: 'chrome://settings' } },
-          { command: 'snapshot' },
-        ],
+        steps: [{ command: 'goto', args: { url: 'chrome://settings' } }, { command: 'snapshot' }],
       },
     })
 

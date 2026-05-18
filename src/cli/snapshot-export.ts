@@ -42,9 +42,7 @@ function inferMatchStrategy(record: Record<string, unknown>, kind: string): stri
 }
 
 function normalizePageEpoch(value: unknown): number | null {
-  return typeof value === 'number' && Number.isFinite(value) && value > 0
-    ? Math.floor(value)
-    : null
+  return typeof value === 'number' && Number.isFinite(value) && value > 0 ? Math.floor(value) : null
 }
 
 function toRecord(value: unknown): Record<string, unknown> | null {

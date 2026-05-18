@@ -40,7 +40,10 @@ describe('network jsonl export', () => {
       },
     )
 
-    const lines = result.content.trim().split('\n').map((line) => JSON.parse(line) as Record<string, unknown>)
+    const lines = result.content
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line) as Record<string, unknown>)
 
     expect(result.recordCount).toBe(3)
     expect(lines[0]).toMatchObject({

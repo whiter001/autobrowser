@@ -95,9 +95,7 @@ function normalizeBodyPreview(value: unknown): string | null {
 }
 
 function normalizePageEpoch(value: unknown): number | null {
-  return typeof value === 'number' && Number.isFinite(value) && value > 0
-    ? Math.floor(value)
-    : null
+  return typeof value === 'number' && Number.isFinite(value) && value > 0 ? Math.floor(value) : null
 }
 
 function toRecord(value: unknown): Record<string, unknown> | null {
@@ -109,9 +107,10 @@ export function buildNetworkRequestsJsonl(
   filters: Record<string, unknown> = {},
 ): NetworkRequestsJsonlExportResult {
   const requests = Array.isArray(result.requests) ? result.requests : []
-  const total = typeof result.total === 'number' && Number.isFinite(result.total)
-    ? Math.floor(result.total)
-    : requests.length
+  const total =
+    typeof result.total === 'number' && Number.isFinite(result.total)
+      ? Math.floor(result.total)
+      : requests.length
   const pageEpoch = normalizePageEpoch(result.pageEpoch)
   const records: Array<Record<string, unknown>> = [
     {
@@ -128,7 +127,8 @@ export function buildNetworkRequestsJsonl(
       continue
     }
 
-    const pagination = normalizeUrlPagination(record.url) || normalizeHeaderPagination(record.responseHeaders)
+    const pagination =
+      normalizeUrlPagination(record.url) || normalizeHeaderPagination(record.responseHeaders)
 
     records.push({
       kind: 'request',

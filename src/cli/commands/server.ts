@@ -1,5 +1,11 @@
 import { resolveExtensionId } from '../../core/config.js'
-import { getConfigPath, getStatePath, getTokenPath, isPortInUse, readJsonFile } from '../../core/protocol.js'
+import {
+  getConfigPath,
+  getStatePath,
+  getTokenPath,
+  isPortInUse,
+  readJsonFile,
+} from '../../core/protocol.js'
 import { isRecord } from '../client.js'
 import { isHelpToken } from '../help.js'
 import {
@@ -58,19 +64,19 @@ export function formatStatusSummary(status: Record<string, unknown>): string {
 
   if (activeTabId !== null) {
     const activeTab = tabById.get(activeTabId)
-    const activeHandle = typeof activeTab?.handle === 'string' ? activeTab.handle : `tab ${activeTabId}`
-    const activeTitle = typeof activeTab?.title === 'string' && activeTab.title.trim()
-      ? activeTab.title.trim()
-      : ''
+    const activeHandle =
+      typeof activeTab?.handle === 'string' ? activeTab.handle : `tab ${activeTabId}`
+    const activeTitle =
+      typeof activeTab?.title === 'string' && activeTab.title.trim() ? activeTab.title.trim() : ''
     lines.push(`active: ${activeHandle}${activeTitle ? ` - ${activeTitle}` : ''}`)
   }
 
   if (targetTabId !== null) {
     const targetTab = tabById.get(targetTabId)
-    const targetHandle = typeof targetTab?.handle === 'string' ? targetTab.handle : `tab ${targetTabId}`
-    const targetTitle = typeof targetTab?.title === 'string' && targetTab.title.trim()
-      ? targetTab.title.trim()
-      : ''
+    const targetHandle =
+      typeof targetTab?.handle === 'string' ? targetTab.handle : `tab ${targetTabId}`
+    const targetTitle =
+      typeof targetTab?.title === 'string' && targetTab.title.trim() ? targetTab.title.trim() : ''
     lines.push(`target: ${targetHandle}${targetTitle ? ` - ${targetTitle}` : ''}`)
   }
 
@@ -108,7 +114,10 @@ export function getRecordedCommandFromStatus(
 
   return {
     command,
-    args: lastCommand && isRecord(lastCommand.args) ? (lastCommand.args as Record<string, unknown>) : {},
+    args:
+      lastCommand && isRecord(lastCommand.args)
+        ? (lastCommand.args as Record<string, unknown>)
+        : {},
   }
 }
 
@@ -372,7 +381,11 @@ async function handleReplay(rest: string[], context: CommandContext): Promise<nu
     return 1
   }
 
-  const payload = await context.requestCommand(context.flags.server, lastCommand.command, lastCommand.args)
+  const payload = await context.requestCommand(
+    context.flags.server,
+    lastCommand.command,
+    lastCommand.args,
+  )
   context.writeResult(payload)
   return 0
 }

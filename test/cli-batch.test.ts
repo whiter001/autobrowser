@@ -3,7 +3,8 @@ import { batchCommandRegistry } from '../src/cli/commands/batch.js'
 
 describe('cli batch command', () => {
   test('forwards structured batch options and ambient targets', async () => {
-    const requestCalls: Array<{ baseUrl: string; command: string; args: Record<string, unknown> }> = []
+    const requestCalls: Array<{ baseUrl: string; command: string; args: Record<string, unknown> }> =
+      []
 
     const result = await batchCommandRegistry.batch([], {
       flags: {
@@ -25,7 +26,11 @@ describe('cli batch command', () => {
       dependencies: {},
       writeHelp: () => 0,
       writeResult: () => undefined,
-      requestCommand: async (baseUrl: string, command: string, args: Record<string, unknown> = {}) => {
+      requestCommand: async (
+        baseUrl: string,
+        command: string,
+        args: Record<string, unknown> = {},
+      ) => {
         requestCalls.push({ baseUrl, command, args })
         return { ok: true, result: { ok: true } }
       },
@@ -33,7 +38,10 @@ describe('cli batch command', () => {
       getStatus: async () => ({}),
       resolveEvalScript: async () =>
         JSON.stringify({
-          steps: [{ command: 'snapshot' }, { command: 'goto', args: { url: 'https://example.com' } }],
+          steps: [
+            { command: 'snapshot' },
+            { command: 'goto', args: { url: 'https://example.com' } },
+          ],
           continueOnError: true,
           retries: 2,
           retryDelayMs: 25,

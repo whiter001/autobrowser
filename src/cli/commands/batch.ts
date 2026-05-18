@@ -105,7 +105,11 @@ function readBatchOptions(value: BatchInputObject): BatchOptions {
   }
 
   if (value.retryDelayMs !== undefined) {
-    if (typeof value.retryDelayMs !== 'number' || !Number.isFinite(value.retryDelayMs) || value.retryDelayMs < 0) {
+    if (
+      typeof value.retryDelayMs !== 'number' ||
+      !Number.isFinite(value.retryDelayMs) ||
+      value.retryDelayMs < 0
+    ) {
       throw new Error('batch input retryDelayMs must be a non-negative number')
     }
   }
@@ -197,7 +201,9 @@ async function handleBatch(rest: string[], context: CommandContext): Promise<num
   }
 
   const dispatchSteps = input.steps.map((step) => normalizeBatchStepForDispatch(step, context))
-  const payload = await context.requestCommand(context.flags.server, 'batch',
+  const payload = await context.requestCommand(
+    context.flags.server,
+    'batch',
     buildBatchRequestArgs({
       steps: dispatchSteps,
       options: input.options,
