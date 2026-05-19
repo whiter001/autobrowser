@@ -1,17 +1,17 @@
-# autobrowser docs
+# autobrowser 文档
 
-This folder holds the longer-lived usage guidance for autobrowser.
+这里存放的是 `autobrowser` 更长生命周期的使用指南。
 
-## Keep it maintainable
+## 保持可维护性
 
-- Treat the command tree in `src/cli.ts` as the source of truth for command names, flags, and syntax.
-- Update the page that owns a workflow instead of repeating the same example across multiple files.
-- Keep `README.md` high-level and point detailed usage questions here.
+- 把 `src/cli.ts` 里的命令树当作命令名、标志位和语法的权威来源。
+- 一段工作流只在它所属的页面里更新，不要在多个文件里重复相同示例。
+- `README.md` 只保留高层概览，把详细使用问题导向这里。
 
-## Pages
+## 页面
 
-- [`overview.md`](overview.md) — the core workflow, common commands, and the feature map.
-- [`install.md`](install.md) — unpacked extension install, saved connection settings, and the fallback path.
-- [`windows-demo.md`](windows-demo.md) — a Windows-focused launcher demo that uses the minimal `autobrowser.cmd` forwarder.
-- [`bun-link.md`](bun-link.md) — Bun wrapper behavior and link-script details.
-- [`agent-design.md`](agent-design.md) — the agent-first roadmap, contract gaps, and recommended next adjustments.
+- [`overview.md`](overview.md) — 核心流程、常用命令和功能地图。
+- [`install.md`](install.md) — 未打包扩展的安装、已保存连接配置以及兜底路径。
+- [`windows-demo.md`](windows-demo.md) — 面向 Windows 的启动示例，使用最小化的 `autobrowser.cmd` 转发器。
+- [`bun-link.md`](bun-link.md) — Bun 包装器行为和 link 脚本细节。
+- [`agent-design.md`](agent-design.md) — 面向 agent 的路线图、协议缺口和下一步建议调整。

@@ -1,45 +1,45 @@
 # autobrowser
 
-autobrowser is a Bun-based browser automation tool inspired by v-browser.
+`autobrowser` 是一个受 `v-browser` 启发、基于 Bun 的浏览器自动化工具。
 
-Detailed usage docs live in [`docs/README.md`](docs/README.md).
+更详细的使用文档请见 [`docs/README.md`](docs/README.md)。
 
-## Current status
+## 当前状态
 
-This repository now contains a Bun implementation with the main automation flows in place:
+这个仓库目前已经具备 Bun 实现的主要自动化流程：
 
-- local relay server on port `57978`
-- CLI API server on port `57979`
-- browser extension scaffold with a token-based connection flow
-- core commands for server and connection management, navigation, tab and window control, element interaction, dialogs, wait and state checks, cookies, storage, clipboard, browser state, network inspection and interception, snapshot, snapshot export/extract, screenshot, and utility flows such as `batch`, `status`, `config`, and `replay`
+- 本地中继服务，端口 `57978`
+- CLI API 服务，端口 `57979`
+- 带有基于 token 的连接流程的浏览器扩展骨架
+- 覆盖服务与连接管理、导航、标签页和窗口控制、元素交互、对话框、等待与状态检查、cookie、存储、剪贴板、浏览器状态、网络检查与拦截、snapshot、snapshot 导出/提取、截图，以及 `batch`、`status`、`config`、`replay` 这类实用命令的核心能力
 
-Run `bun run src/cli.ts help` to see the full command tree. That help output is the source of truth and also documents root flags such as `--tab`, `--frame`, and `--auto-connect`.
+运行 `bun run src/cli.ts help` 可以查看完整命令树。`src/cli.ts` 里的 help 输出是权威来源，也会说明根级标志位，例如 `--tab`、`--frame` 和 `--auto-connect`。
 
-For a Windows-specific launcher demo that uses the minimal `autobrowser.cmd` forwarder, see [`docs/windows-demo.md`](docs/windows-demo.md).
+如果你想看一个使用最小 `autobrowser.cmd` 转发器的 Windows 启动示例，请参见 [`docs/windows-demo.md`](docs/windows-demo.md)。
 
-## Run
+## 运行
 
 ```bash
 bun run src/cli.ts server
 ```
 
-This starts the relay and IPC servers in the background. To stop them later:
+这会在后台启动中继服务和 IPC 服务。之后如果要停止它们：
 
 ```bash
 bun run src/cli.ts server stop
 ```
 
-Then open the connect page from another terminal:
+然后在另一个终端打开连接页：
 
 ```bash
 bun run src/cli.ts connect
 ```
 
-`connect` will start the local background server automatically if it is not already running.
+如果本地后台服务尚未运行，`connect` 会自动先启动它。
 
-## Check State
+## 状态检查
 
-Use `is` to inspect element state:
+使用 `is` 查看元素状态：
 
 ```bash
 bun run src/cli.ts is visible <sel>
@@ -47,11 +47,11 @@ bun run src/cli.ts is enabled <sel>
 bun run src/cli.ts is checked <sel>
 ```
 
-The command also supports `disabled` and `focused`.
+该命令还支持 `disabled` 和 `focused`。
 
-## Dialogs
+## 对话框
 
-Dialog commands support accept, dismiss, and status:
+对话框命令支持接受、关闭和状态查询：
 
 ```bash
 bun run src/cli.ts dialog accept [text]
@@ -59,11 +59,11 @@ bun run src/cli.ts dialog dismiss
 bun run src/cli.ts dialog status
 ```
 
-Alert and beforeunload dialogs are accepted automatically so they do not block automation. Confirm and prompt dialogs still require explicit handling.
+`alert` 和 `beforeunload` 对话框会自动接受，因此不会阻塞自动化流程。`confirm` 和 `prompt` 仍然需要显式处理。
 
-## Wait
+## 等待
 
-Wait for element state, text, URL, load state, JS condition, or time:
+等待元素状态、文本、URL、加载状态、JS 条件或固定时间：
 
 ```bash
 bun run src/cli.ts wait <selector>
@@ -75,19 +75,19 @@ bun run src/cli.ts wait --fn "window.ready === true"
 bun run src/cli.ts wait "#spinner" --state hidden
 ```
 
-## Extension
+## 扩展
 
-Build the unpacked extension first:
+先构建未打包的扩展：
 
 ```bash
 pnpm run build:chrome
 ```
 
-Then load the `chrome/` folder as an unpacked extension in Chromium-based browsers. Run `autobrowser connect` to open the extension connect page if the CLI binary is installed globally; it will save the token and relay port automatically, and any `--extension-id`, `--browser-command`, or `--browser-arg` values you pass will be persisted in `~/.autobrowser/config.json` for later runs. If you are running the repository directly, use `bun run src/cli.ts connect` instead. The options page still works as a manual fallback and shows diagnostics.
+然后在基于 Chromium 的浏览器中将 `chrome/` 文件夹作为未打包扩展加载。如果 CLI 二进制已经全局安装，运行 `autobrowser connect` 可以打开扩展连接页；它会自动保存 token 和中继端口，而你传入的 `--extension-id`、`--browser-command` 或 `--browser-arg` 也会保存在 `~/.autobrowser/config.json` 中供后续复用。如果你是直接在仓库里运行，请改用 `bun run src/cli.ts connect`。`options` 页面仍然可以作为手动兜底，并显示诊断信息。
 
-## Network
+## 网络
 
-The CLI also exposes network inspection and interception commands:
+CLI 也提供了网络检查与拦截命令：
 
 ```bash
 bun run src/cli.ts network route <url> [--abort] [--body <json>]
@@ -98,9 +98,9 @@ bun run src/cli.ts network har start
 bun run src/cli.ts network har stop [output.har]
 ```
 
-## Screenshot
+## 截图
 
-Take a screenshot and save it to a file. If no path is provided, the CLI writes into a temporary directory and prints the file path.
+截取屏幕并保存为文件。如果没有提供路径，CLI 会写入临时目录并打印文件路径。
 
 ```bash
 bun run src/cli.ts screenshot
@@ -109,11 +109,11 @@ bun run src/cli.ts screenshot --annotate
 bun run src/cli.ts screenshot --screenshot-dir ./shots --screenshot-format jpeg --screenshot-quality 80
 ```
 
-`--full` captures the full page, `--annotate` adds numbered element labels, and `--screenshot-format` / `--screenshot-quality` control the encoded image output.
+`--full` 会截取整页，`--annotate` 会给元素添加编号标签，而 `--screenshot-format` / `--screenshot-quality` 用于控制编码后的图片输出。
 
-## Agent-friendly refs
+## 面向 Agent 的引用
 
-`snapshot` now emits an `elements` list with stable refs such as `@e1`, `@e2`, and `@e3`, plus a `frames` list with refs like `@f1` for the current page view. Selector-based commands accept element refs anywhere a selector is expected, and `frame` accepts frame refs directly, so an agent can snapshot first and then act on handles instead of guessing CSS selectors.
+`snapshot` 现在会输出一个 `elements` 列表，里面包含诸如 `@e1`、`@e2`、`@e3` 这样的稳定引用；同时还会输出一个 `frames` 列表，包含当前页面视图中的 `@f1` 之类的 frame 引用。基于选择器的命令在需要选择器的地方也可以直接接受元素引用，而 `frame` 可以直接接受 frame 引用，因此 agent 可以先 snapshot，再基于这些句柄执行操作，而不是去猜 CSS 选择器。
 
 ```bash
 bun run src/cli.ts snapshot
@@ -124,7 +124,7 @@ bun run src/cli.ts wait @e7 --state hidden
 bun run src/cli.ts frame @f1
 ```
 
-Semantic find commands are also available for role, text, and label based lookup:
+还可以使用语义化的 `find` 命令按 role、text 和 label 查找：
 
 ```bash
 bun run src/cli.ts find role button click --name "Submit"
@@ -132,7 +132,7 @@ bun run src/cli.ts find text "Sign in" text --exact
 bun run src/cli.ts find label "Email" fill "test@example.com"
 ```
 
-Tabs now expose stable handles in `tab list`, and the CLI can switch or close them without relying on raw numeric ids:
+标签页现在会在 `tab list` 中暴露稳定句柄，CLI 也可以在不依赖原始数字 id 的情况下切换或关闭它们：
 
 ```bash
 bun run src/cli.ts tab list
@@ -140,8 +140,8 @@ bun run src/cli.ts tab select t2
 bun run src/cli.ts tab close t3
 ```
 
-If the page rerenders heavily or navigates, run `snapshot` again to refresh the refs before continuing.
+如果页面发生了大规模重渲染或导航，请先重新运行 `snapshot` 刷新引用，再继续操作。
 
-## Tests
+## 测试
 
-Run `bun test`.
+运行 `bun test`。

@@ -1,133 +1,133 @@
-# Agent-First Design
+# 面向 Agent 的设计
 
-Status: draft
+状态：草稿
 
-Date: 2026-04-25
+日期：2026-04-25
 
-## Why this doc exists
+## 为什么会有这份文档
 
-autobrowser has crossed the point where it is no longer just a local browser relay plus extension bridge. It already exposes agent-friendly primitives:
+`autobrowser` 已经不再只是一个本地浏览器中继加扩展桥接器了。它现在已经暴露出一些对 agent 友好的基础原语：
 
-- stable element refs from `snapshot` such as `@e1`
-- stable frame refs from `snapshot` such as `@f1`
-- stable tab handles such as `t1`
-- semantic lookup through `find role`, `find text`, and `find label`
+- 来自 `snapshot` 的稳定元素引用，例如 `@e1`
+- 来自 `snapshot` 的稳定 frame 引用，例如 `@f1`
+- 稳定的标签页句柄，例如 `t1`
+- 通过 `find role`、`find text` 和 `find label` 进行语义化查找
 
-That is a good base, but it is still a thin command surface rather than a full agent runtime contract. This document describes the adjustments needed to keep pushing the project in an agent-first direction without losing the current lightweight local-first model.
+这已经是个不错的基础，但它仍然只是一个相对薄的命令面，而不是完整的 agent 运行时协议。本文描述的是：如何在不丢掉当前轻量、本地优先模型的前提下，继续把项目往 agent-first 的方向推进。
 
-## Current baseline
+## 当前基线
 
-The current codebase already supports the following agent-oriented behavior:
+当前代码库已经支持以下面向 agent 的行为：
 
-- `snapshot` emits interactive element refs and visible frame refs.
-- selector-based commands accept element refs directly.
-- `frame` accepts frame refs directly.
-- `tab list` exposes stable handles and `tab select` / `tab close` can act on them.
-- `find role`, `find text`, and `find label` can locate a target and optionally act on it.
+- `snapshot` 会输出交互式元素引用和可见 frame 引用。
+- 基于选择器的命令可以直接接受元素引用。
+- `frame` 可以直接接受 frame 引用。
+- `tab list` 会暴露稳定句柄，而 `tab select` / `tab close` 可以直接操作它们。
+- `find role`、`find text` 和 `find label` 可以定位目标，并在需要时直接执行动作。
 
-The current command surface also includes a few practical agent utilities that were missing when this draft was first written:
+当前命令面也已经补上了几项当初写草稿时还没有的实用能力：
 
-- root `--tab` and `--frame` flags for compatible commands
-- `batch` for JSON-encoded multi-step sequences with optional retries and continue-on-error
-- `status`, `config`, and `replay` for runtime diagnostics and command recovery
-- `snapshot export` / `snapshot extract` and `network export` for JSONL-friendly downstream processing
+- 根级 `--tab` 和 `--frame` 标志，可用于兼容的命令
+- `batch`，用于 JSON 编码的多步序列，支持重试和 continue-on-error
+- `status`、`config` 和 `replay`，用于运行时诊断与命令恢复
+- `snapshot export` / `snapshot extract` 以及 `network export`，用于更适合下游处理的 JSONL 输出
 
-The current architecture is still extension-first:
+当前架构仍然是扩展优先：
 
-- CLI parses commands and forwards them to the local IPC server.
-- the local runtime forwards commands to the browser extension over the relay socket.
-- the extension owns active tab selection, frame selection, DOM lookup, network interception, and snapshot generation.
+- CLI 解析命令并转发到本地 IPC 服务。
+- 本地运行时再通过中继 socket 把命令转发给浏览器扩展。
+- 扩展负责当前标签页选择、frame 选择、DOM 查找、网络拦截和 snapshot 生成。
 
-This is workable, but several agent-facing contracts are still incomplete.
+这已经能用，但面向 agent 的若干协议仍然不完整。
 
-## Design goals
+## 设计目标
 
-- Keep the tool deterministic and low-friction for coding agents.
-- Prefer stable handles over brittle CSS selectors.
-- Make command responses compact, structured, and consistent.
-- Reduce the number of turns an agent needs to complete common workflows.
-- Detect stale state explicitly instead of silently doing the wrong thing.
-- Preserve the current local-first deployment model.
+- 让工具对编码 agent 来说尽可能确定、低摩擦。
+- 优先使用稳定句柄，而不是脆弱的 CSS 选择器。
+- 让命令响应保持紧凑、结构化且一致。
+- 减少 agent 完成常见流程所需的轮次。
+- 显式检测过期状态，而不是悄悄做错。
+- 保持当前本地优先的部署模型。
 
-## Non-goals
+## 非目标
 
-- This design does not assume a built-in natural language planner or chat agent inside autobrowser.
-- This design does not require moving away from the current extension-based execution model immediately.
-- This design does not try to match every agent-browser feature before the core contract is stable.
+- 这份设计不假设 `autobrowser` 内置自然语言规划器或聊天 agent。
+- 这份设计也不要求立刻脱离当前基于扩展的执行模型。
+- 在核心协议稳定之前，它不会试图把所有 agent-browser 功能一口气补齐。
 
-## Main gaps
+## 主要缺口
 
-### 1. Targeting is not uniform enough
+### 1. 目标定位还不够统一
 
-Stable tab handles exist, and the root `--tab` / `--frame` flags now cover a useful subset of the surface, but most commands still act on the implicit current target rather than a fully uniform explicit target contract.
+稳定标签页句柄已经存在，根级 `--tab` / `--frame` 标志也已经覆盖了命令面的一个有用子集，但大多数命令仍然只是作用于隐式的当前目标，而不是一套统一的显式目标协议。
 
-Current impact:
+当前影响：
 
-- an agent can select a tab with `tab select t2`, but many commands cannot say `run this against t2` directly
-- frame selection is still mostly a mutable ambient state
-- responses do not consistently echo the effective tab handle and frame ref they used
+- agent 可以用 `tab select t2` 选择标签页，但很多命令还不能直接说“对 t2 执行这个操作”
+- frame 选择大多仍然是可变的环境状态
+- 响应也没有稳定地回显它们实际使用的标签页句柄和 frame 引用
 
-### 2. Locator semantics are still first-match only
+### 2. 定位语义仍然只是“第一个匹配”
 
-`find` is useful, but it still behaves like a single-match shortcut rather than a full semantic selection layer.
+`find` 很有用，但它仍然更像一个单匹配快捷方式，而不是完整的语义选择层。
 
-Current impact:
+当前影响：
 
-- no candidate ranking or top-N results
-- no `first`, `last`, `nth`, or score-based selection
-- no strategies for placeholder, alt text, title, test id, or exact accessible name beyond the current subset
+- 没有候选排序或 top-N 结果
+- 没有 `first`、`last`、`nth` 或基于 score 的选择
+- 除了当前已有子集之外，还没有针对 placeholder、alt text、title、test id 或精确 accessible name 的策略
 
-### 3. Refs have no explicit staleness model
+### 3. 引用没有显式的过期模型
 
-Element refs and frame refs are derived from the current DOM, but the runtime does not expose a page epoch or snapshot epoch that lets an agent know whether a ref is stale.
+元素引用和 frame 引用都来自当前 DOM，但运行时没有暴露 page epoch 或 snapshot epoch，因此 agent 无法明确判断引用是否过期。
 
-Current impact:
+当前影响：
 
-- agents have to guess when to refresh `snapshot`
-- commands can fail late instead of reporting a structured stale-ref error
-- there is no machine-readable invalidation contract after navigation or heavy re-render
+- agent 只能猜什么时候该刷新 `snapshot`
+- 命令可能晚一点才失败，而不是返回结构化的 stale-ref 错误
+- 在导航或大规模重渲染之后，没有机器可读的失效协议
 
-### 4. Agent I/O is still too ad hoc
+### 4. agent I/O 仍然过于零散
 
-The current response payloads are reasonable for humans, but not yet a clean agent contract.
+当前的响应 payload 对人类来说还可以，但还不是一套干净的 agent 协议。
 
-Current impact:
+当前影响：
 
-- different commands return different shapes for similar outcomes
-- success payloads do not always include the target handle, frame ref, or page metadata
-- error payloads are not normalized around explicit error codes and remediation hints
+- 不同命令对相似结果返回的结构并不一致
+- 成功 payload 不一定会包含 target handle、frame ref 或页面元数据
+- 错误 payload 没有围绕明确的错误码和处理建议做统一
 
-### 5. Too many agent workflows still require multiple turns
+### 5. 太多 agent 流程仍然需要多轮交互
 
-`batch` now exists, but the current command model is still mostly one command at a time.
+当前命令模型还是“一次只做一个命令”。
 
-Current impact:
+当前影响：
 
-- `snapshot -> choose ref -> click -> wait -> read text` requires many round trips
-- simple deterministic sequences still benefit from a richer reusable macro or script layer
-- structured results are useful, but there is still room for a higher-level workflow contract
+- `snapshot -> 选择引用 -> click -> wait -> read text` 需要很多次往返
+- agent 还不能原子化地提交一个小而确定的命令批次
+- 还没有可复用的宏或脚本层，并带有结构化结果
 
-### 6. Observability is weaker than the command surface
+### 6. 可观测性弱于命令面
 
-The repo has strong unit coverage for routing and helper behavior, but it still lacks agent-oriented validation loops.
+这个仓库虽然已经对路由和 helper 行为有比较强的单元测试，但仍然缺少面向 agent 的验证闭环。
 
-Current impact:
+当前影响：
 
-- no real-browser smoke suite for core agent workflows
-- no eval corpus for semantic matching quality
-- no regression suite for stale refs, multi-tab flows, or nested frames
+- 核心 agent 工作流还没有真实浏览器 smoke 测试
+- 语义匹配质量还没有 eval 语料
+- 对 stale refs、多标签页流程或嵌套 frame 的回归测试还不够
 
-## Proposed adjustments
+## 建议调整
 
-## A. Define a uniform target contract
+## A. 定义统一的目标协议
 
-Every agent-relevant command should accept the same target dimensions:
+每个面向 agent 的命令都应该接受同样的目标维度：
 
-- `tab`: optional stable tab handle such as `t2`
-- `frame`: optional stable frame ref such as `@f1`
-- `snapshotId`: optional snapshot or page epoch identifier when acting on refs
+- `tab`：可选的稳定标签页句柄，例如 `t2`
+- `frame`：可选的稳定 frame 引用，例如 `@f1`
+- `snapshotId`：在基于引用执行操作时可选的 snapshot 或 page epoch 标识
 
-Recommended CLI shape:
+推荐的 CLI 形式：
 
 ```bash
 autobrowser click @e3 --tab t2 --frame @f1
@@ -135,24 +135,24 @@ autobrowser get text @e9 --tab t3
 autobrowser find role button click --name "Submit" --tab t2
 ```
 
-Recommended runtime rule:
+推荐的运行时规则：
 
-- explicit target overrides ambient state
-- ambient state is still allowed for interactive human usage
-- every response echoes `tabHandle`, `frameRef`, and `pageEpoch` when relevant
+- 显式目标优先于环境状态
+- 环境状态仍然允许用于交互式人工使用
+- 每个响应在相关时都应回显 `tabHandle`、`frameRef` 和 `pageEpoch`
 
-## B. Expand `find` into a real semantic locator layer
+## B. 把 `find` 扩展成真正的语义定位层
 
-`find` should become the main semantic targeting interface rather than a thin shortcut.
+`find` 应该成为主力语义定位接口，而不是一个薄薄的快捷方式。
 
-Recommended additions:
+建议补充：
 
-- strategies: `placeholder`, `alt`, `title`, `testid`
-- selectors: `first`, `last`, `nth`, `all`
-- result modes: `locate`, `list`, `count`
-- metadata: accessible name, role, text snippet, score, match reason
+- 策略：`placeholder`、`alt`、`title`、`testid`
+- 选择器：`first`、`last`、`nth`、`all`
+- 结果模式：`locate`、`list`、`count`
+- 元数据：accessible name、role、文本片段、score、匹配原因
 
-Recommended response shape:
+推荐的响应形状：
 
 ```json
 {
@@ -172,29 +172,29 @@ Recommended response shape:
 }
 ```
 
-This lets an agent inspect candidates before acting when ambiguity matters.
+这样在存在歧义时，agent 可以先查看候选项，再决定是否执行操作。
 
-## C. Introduce page epochs and stale-ref detection
+## C. 引入页面 epoch 和过期引用检测
 
-The runtime should version page state explicitly.
+运行时应该显式给页面状态编号。
 
-Recommended fields:
+建议字段：
 
-- `pageEpoch`: increments after navigation, reload, or DOM reset events that invalidate refs
-- `snapshotId`: unique id returned by each `snapshot`
-- `refEpoch`: optional epoch attached to refs in snapshot output
+- `pageEpoch`：在导航、刷新或会使引用失效的 DOM 重置事件之后递增
+- `snapshotId`：每次 `snapshot` 返回的唯一 id
+- `refEpoch`：附加到 snapshot 输出里的引用上的可选 epoch
 
-Recommended behavior:
+建议行为：
 
-- a command that receives `@e4` can validate whether the current page epoch still matches
-- stale refs return a structured error like `STALE_ELEMENT_REF`
-- the error should tell the agent to refresh `snapshot`
+- 当命令接收到 `@e4` 时，可以验证当前 page epoch 是否仍然匹配
+- 过期引用应返回结构化错误，例如 `STALE_ELEMENT_REF`
+- 错误中要告诉 agent 重新运行 `snapshot`
 
-## D. Normalize command response envelopes
+## D. 统一命令响应包络
 
-Agent-facing commands should converge on a small number of response shapes.
+面向 agent 的命令应收敛到少量响应形状。
 
-Recommended envelope:
+建议的成功包络：
 
 ```json
 {
@@ -208,7 +208,7 @@ Recommended envelope:
 }
 ```
 
-Recommended error envelope:
+建议的错误包络：
 
 ```json
 {
@@ -221,19 +221,19 @@ Recommended error envelope:
 }
 ```
 
-This is more valuable to agents than adding many more commands with inconsistent payloads.
+对 agent 来说，这比继续增加很多但 payload 各不相同的命令更有价值。
 
-## E. Add batch execution for deterministic multi-step work
+## E. 为确定性的多步工作增加 batch 执行
 
-The next high-leverage runtime capability is a small batch layer.
+接下来最值得做的运行时能力，是一个小型 batch 层。
 
-Recommended scope:
+建议范围：
 
-- execute a list of existing commands in order
-- optionally stop on first failure
-- return per-step results and the final target context
+- 按顺序执行一组已有命令
+- 可选地在第一次失败时停止
+- 返回每一步的结果以及最终目标上下文
 
-Example:
+示例：
 
 ```bash
 autobrowser batch \
@@ -242,89 +242,89 @@ autobrowser batch \
   'wait --text Welcome'
 ```
 
-This keeps autobrowser simple while cutting agent round trips substantially.
+这样可以在保持 `autobrowser` 简洁的同时，大幅减少 agent 的往返次数。
 
-## F. Improve waits around agent primitives
+## F. 围绕 agent 原语改进等待能力
 
-Waits should be able to speak the same handle language as other commands.
+等待命令也应该使用和其他命令一致的句柄语言。
 
-Recommended additions:
+建议补充：
 
 - `wait @e7 --state hidden`
 - `wait --tab t2 --url "**/dashboard"`
 - `wait --frame @f1 --text "Loaded"`
 - `wait --event navigation`
 
-The important part is not more syntax. The important part is that waits understand tab handles, frame refs, and page epochs consistently.
+重点不是再加更多语法，而是让等待命令能一致地理解标签页句柄、frame 引用和 page epoch。
 
-## G. Strengthen testing around agent workflows
+## G. 加强围绕 agent 工作流的测试
 
-The project now needs tests for behavior, not only routing.
+这个项目现在需要的是行为测试，而不仅仅是路由测试。
 
-Recommended additions:
+建议新增：
 
-- real-browser smoke tests for `snapshot`, `find`, `tab select`, and `frame @fN`
-- semantic locator fixtures for role, text, and label matching quality
-- stale-ref tests after navigation or DOM replacement
-- multi-tab and nested-frame regression cases
-- a lightweight eval corpus for ambiguous matches and dynamic UIs
+- `snapshot`、`find`、`tab select` 和 `frame @fN` 的真实浏览器 smoke 测试
+- 面向 role、text 和 label 匹配质量的语义定位 fixture
+- 导航或 DOM 替换后的 stale-ref 测试
+- 多标签页和嵌套 frame 的回归用例
+- 一个轻量的 eval 语料库，用于测试歧义匹配和动态 UI
 
-## H. Publish an explicit agent contract page
+## H. 发布一份显式的 agent 协议页
 
-Agent users need one canonical contract page, not just examples scattered across README sections.
+agent 用户需要的是一份统一的协议页面，而不是散落在 README 各处的零碎示例。
 
-Recommended contents:
+建议内容：
 
-- stable handle model: `tN`, `@eN`, `@fN`
-- when refs are valid and when they become stale
-- how `find` ranking works
-- response envelope conventions
-- best-practice workflow examples
+- 稳定句柄模型：`tN`、`@eN`、`@fN`
+- 引用何时有效、何时过期
+- `find` 的排序方式
+- 响应包络约定
+- 最佳实践工作流示例
 
-This document can evolve into that page, but the contract should eventually be shorter and more normative than this design note.
+这份文档可以逐步演进成那样的页面，但最终的协议页应该比这份设计说明更短、更规范。
 
-## Recommended rollout
+## 推荐推进节奏
 
-### Phase 1: contract hardening
+### 第 1 阶段：协议加固
 
-- add explicit target overrides for tab handle and frame ref across all relevant commands
-- normalize response envelopes and error codes
-- add page epoch and stale-ref detection
+- 在所有相关命令上增加显式的标签页句柄和 frame 引用覆盖
+- 统一响应包络和错误码
+- 增加 page epoch 和 stale-ref 检测
 
-### Phase 2: semantic selection depth
+### 第 2 阶段：语义选择深度
 
-- extend `find` with candidate listing, ranking, and more strategies
-- add `first`, `last`, `nth`, and `all`
-- add better ambiguity reporting
+- 扩展 `find`，让它支持候选列表、排序和更多策略
+- 增加 `first`、`last`、`nth` 和 `all`
+- 增强歧义报告
 
-### Phase 3: agent throughput
+### 第 3 阶段：agent 吞吐量
 
-- expand `batch` coverage and add reusable macros or scripts only if batch proves insufficient
-- add targeted waits that understand the same handle model
+- 扩展 `batch` 覆盖范围；如果 `batch` 还不够，再考虑复用宏或脚本
+- 增加理解同一套句柄模型的定向等待
 
-### Phase 4: validation and productization
+### 第 4 阶段：验证与产品化
 
-- add smoke tests and evals
-- publish the agent contract page
-- decide whether the extension-first runtime remains sufficient or whether a native sidecar path is needed later
+- 增加 smoke 测试和 eval
+- 发布 agent 协议页
+- 决定是否继续保持扩展优先，还是以后再准备一个本地 sidecar 路径
 
-## Recommended next milestone
+## 推荐的下一个里程碑
 
-If only one milestone is funded next, it should be this:
+如果接下来只支持一个里程碑，那应该是：
 
-- unify `--tab` and `--frame` targeting across commands
-- add page epoch plus stale-ref detection
-- expand `find` from first-match to candidate-aware matching
+- 统一所有命令上的 `--tab` 和 `--frame` 目标能力
+- 加上 page epoch 和 stale-ref 检测
+- 把 `find` 从“第一个匹配”扩展为“可感知候选项”的匹配
 
-That combination improves correctness more than adding many new surface commands.
+这一组合对正确性的提升，比分散地增加很多新命令更大。
 
-## Open questions
+## 待决问题
 
-- Should tab labels be user-assigned next, or are stable generated handles enough for now?
-- Should `snapshot` eventually expose a compact and a verbose mode?
-- Should the project stay fully extension-first, or prepare a future native-CDP execution path for sites where extension behavior is constrained?
-- Should `batch` be line-oriented CLI syntax, JSON input, or both?
+- 下一步是否要让 tab label 由用户自定义，还是稳定生成的句柄就足够了？
+- `snapshot` 是否应该同时提供 compact 和 verbose 两种模式？
+- 这个项目是否应该继续完全保持扩展优先，还是为以后可能受扩展限制的网站准备本地 CDP 执行路径？
+- `batch` 应该采用按行的 CLI 语法、JSON 输入，还是两者都支持？
 
-## Summary
+## 总结
 
-autobrowser already has the right first agent primitives. The next step is not a large expansion of commands. The next step is to turn refs, handles, semantic lookup, and state invalidation into a consistent runtime contract that agents can trust.
+`autobrowser` 已经具备了正确的第一批 agent 原语。下一步不是大规模扩张命令数量，而是把引用、句柄、语义查找和状态失效机制，整理成一套 agent 可以信任的一致运行时协议。
