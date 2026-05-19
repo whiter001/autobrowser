@@ -86,6 +86,19 @@ const HELP_ROOT = helpNode(
       'autobrowser eval [--stdin|--file path|--base64] <script>',
       ['--stdin', '--file <path>', '--base64'],
     ),
+    helpNode(
+      'feed',
+      'Collect structured cards from a virtual list or article feed.',
+      'autobrowser feed [selector] [--selector <css>] [--limit <n>] [--dedupe url|text|none] [--max-scrolls <n>] [--pause-ms <n>] [--stall-rounds <n>]',
+      [
+        '--selector <css>',
+        '--limit <n>',
+        '--dedupe <url|text|none>',
+        '--max-scrolls <n>',
+        '--pause-ms <n>',
+        '--stall-rounds <n>',
+      ],
+    ),
     helpNode('click', 'Click a selector.', 'autobrowser click <selector>'),
     helpNode('dblclick', 'Double-click a selector.', 'autobrowser dblclick <selector>'),
     helpNode('fill', 'Fill a selector with text.', 'autobrowser fill <selector> <value>'),
@@ -141,10 +154,10 @@ const HELP_ROOT = helpNode(
     ]),
     helpNode(
       'wait',
-      'Wait for a selector, text, URL, load state, function, or a fixed duration in milliseconds.',
-      'autobrowser wait [selector|time <ms>|ms <ms>|--text <text>|--url <pattern>|--load [networkidle]|--fn <expression>] [--state visible|hidden] [--timeout <ms>]',
+      'Wait for a selector state, text, URL, load state, function, or a fixed duration in milliseconds.',
+      'autobrowser wait [selector|time <ms>|ms <ms>|--text <text>|--url <pattern>|--load [networkidle]|--fn <expression>] [--state visible|hidden|stable|new] [--timeout <ms>]',
       [
-        '--state <visible|hidden>',
+        '--state <visible|hidden|stable|new>',
         '--timeout <ms> total timeout in milliseconds',
         '--text <text>',
         '--url <pattern>',

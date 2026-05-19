@@ -21,6 +21,7 @@ import type {
   TabWithId,
 } from './types.js'
 import type { FindSemanticTargetOptions, SemanticTargetResult } from './page-observe.js'
+import type { CollectFeedOptions, FeedCollectionResult } from './page-observe.js'
 
 interface PageInputDomain {
   navigateTo: (tabId: TabInput, url: string) => Promise<unknown>
@@ -122,6 +123,11 @@ interface PageInputDomain {
 
 interface PageObserveDomain {
   snapshotTab: (tabId: TabInput, frameSelector: FrameSelector) => Promise<unknown>
+  collectFeed: (
+    tabId: TabInput,
+    options: CollectFeedOptions,
+    frameSelector: FrameSelector,
+  ) => Promise<FeedCollectionResult>
   captureScreenshot: (
     tabId: TabInput,
     options: ScreenshotCaptureOptions,
@@ -838,6 +844,12 @@ export function createCommandRouter({
     const storageValue = readStringArg(args, 'value')
     const savedStateData = readSavedStateArg(args, 'data')
     const screenshotOptions = readScreenshotOptions(args)
+    const feedSelector = readOptionalStringArg(args, 'selector')
+    const feedLimit = readNumberArg(args, 'limit', 30)
+    const feedDedupe = readStringArg(args, 'dedupe', 'url')
+    const feedMaxScrolls = readNumberArg(args, 'maxScrolls', 20)
+    const feedPauseMs = readNumberArg(args, 'pauseMs', 900)
+    const feedStallRounds = readNumberArg(args, 'stallRounds', 3)
     const tabTarget = handle || tabId
 
     switch (command) {
@@ -870,6 +882,19 @@ export function createCommandRouter({
         return await pageInput.evaluateScript(tabId, script, frameSelector)
       case 'snapshot':
         return await pageObserve.snapshotTab(tabId, frameSelector)
+      case 'feed':
+        return await pageObserve.collectFeed(
+          tabId,
+          {
+            selector: feedSelector?.trim() || 'article',
+            limit: feedLimit,
+            dedupe: feedDedupe as CollectFeedOptions['dedupe'],
+            maxScrolls: feedMaxScrolls,
+            pauseMs: feedPauseMs,
+            stallRounds: feedStallRounds,
+          },
+          frameSelector,
+        )
       case 'screenshot':
         return await pageObserve.captureScreenshot(tabId, screenshotOptions, frameSelector)
       case 'click':

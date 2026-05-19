@@ -18,9 +18,140 @@ import type { CommandContext, CommandRegistry } from './types.js'
 
 const WINDOW_ACTIONS = ['new'] as const
 const DIALOG_ACTIONS = ['accept', 'dismiss', 'status'] as const
+const FEED_DEDUPE_OPTIONS = ['url', 'text', 'none'] as const
 
 function commandNeedsSelector(attr: string): boolean {
   return !['title', 'url', 'cdp-url'].includes(attr)
+}
+
+function parseFeedArgs(rest: string[]): {
+  selector: string
+  limit: number
+  dedupe: (typeof FEED_DEDUPE_OPTIONS)[number]
+  maxScrolls: number
+  pauseMs: number
+  stallRounds: number
+} {
+  let selector = 'article'
+  let limit = 30
+  let dedupe: (typeof FEED_DEDUPE_OPTIONS)[number] = 'url'
+  let maxScrolls = 20
+  let pauseMs = 900
+  let stallRounds = 3
+
+  for (let index = 0; index < rest.length; index += 1) {
+    const value = rest[index]
+
+    if (value === '--selector') {
+      const rawSelector = rest[index + 1]
+      if (rawSelector === undefined) {
+        throw new Error('missing selector value')
+      }
+
+      selector = rawSelector.trim() || 'article'
+      index += 1
+      continue
+    }
+
+    if (value === '--limit') {
+      const rawLimit = rest[index + 1]
+      if (rawLimit === undefined) {
+        throw new Error('missing limit value')
+      }
+
+      const parsedLimit = Number(rawLimit)
+      if (!Number.isInteger(parsedLimit) || parsedLimit < 0) {
+        throw new Error('limit must be a non-negative integer')
+      }
+
+      limit = parsedLimit
+      index += 1
+      continue
+    }
+
+    if (value === '--dedupe') {
+      const rawDedupe = rest[index + 1]
+      if (rawDedupe === undefined) {
+        throw new Error('missing dedupe value')
+      }
+
+      if (!FEED_DEDUPE_OPTIONS.includes(rawDedupe as (typeof FEED_DEDUPE_OPTIONS)[number])) {
+        throw new Error('dedupe must be url, text, or none')
+      }
+
+      dedupe = rawDedupe as (typeof FEED_DEDUPE_OPTIONS)[number]
+      index += 1
+      continue
+    }
+
+    if (value === '--max-scrolls') {
+      const rawMaxScrolls = rest[index + 1]
+      if (rawMaxScrolls === undefined) {
+        throw new Error('missing max-scrolls value')
+      }
+
+      const parsedMaxScrolls = Number(rawMaxScrolls)
+      if (!Number.isInteger(parsedMaxScrolls) || parsedMaxScrolls < 0) {
+        throw new Error('max-scrolls must be a non-negative integer')
+      }
+
+      maxScrolls = parsedMaxScrolls
+      index += 1
+      continue
+    }
+
+    if (value === '--pause-ms') {
+      const rawPauseMs = rest[index + 1]
+      if (rawPauseMs === undefined) {
+        throw new Error('missing pause-ms value')
+      }
+
+      const parsedPauseMs = Number(rawPauseMs)
+      if (!Number.isInteger(parsedPauseMs) || parsedPauseMs < 0) {
+        throw new Error('pause-ms must be a non-negative integer')
+      }
+
+      pauseMs = parsedPauseMs
+      index += 1
+      continue
+    }
+
+    if (value === '--stall-rounds') {
+      const rawStallRounds = rest[index + 1]
+      if (rawStallRounds === undefined) {
+        throw new Error('missing stall-rounds value')
+      }
+
+      const parsedStallRounds = Number(rawStallRounds)
+      if (!Number.isInteger(parsedStallRounds) || parsedStallRounds < 0) {
+        throw new Error('stall-rounds must be a non-negative integer')
+      }
+
+      stallRounds = parsedStallRounds
+      index += 1
+      continue
+    }
+
+    if (value.startsWith('--')) {
+      throw new Error(`unsupported feed option: ${value}`)
+    }
+
+    if (selector === 'article') {
+      selector = value
+      continue
+    }
+
+    throw new Error(`unexpected extra argument for feed: ${value}`)
+  }
+
+  return {
+    selector,
+    limit,
+    dedupe,
+    maxScrolls,
+    pauseMs,
+    stallRounds,
+  }
 }
 
 async function resolveSnapshotExportPath(outputPath: string | null): Promise<string> {
@@ -171,6 +302,21 @@ async function handleSnapshot(rest: string[], context: CommandContext): Promise<
   }
 
   const payload = await context.requestCommand(context.flags.server, 'snapshot', {})
+  context.writeResult(payload)
+  return 0
+}
+
+async function handleFeed(rest: string[], context: CommandContext): Promise<number | void> {
+  if (helpRequested(rest[0], context, ['feed'])) {
+    return 0
+  }
+
+  const feedArgs = parseOrWriteError(() => parseFeedArgs(rest))
+  if (!feedArgs) {
+    return 1
+  }
+
+  const payload = await context.requestCommand(context.flags.server, 'feed', feedArgs)
   context.writeResult(payload)
   return 0
 }
@@ -349,6 +495,7 @@ const handlePdf = createNoArgRequestCommand({ helpPath: ['pdf'], command: 'pdf' 
 export const pageCommandRegistry: CommandRegistry = {
   eval: handleEval,
   snapshot: handleSnapshot,
+  feed: handleFeed,
   screenshot: handleScreenshot,
   back: handleBack,
   forward: handleForward,

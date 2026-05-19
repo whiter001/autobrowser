@@ -53,6 +53,8 @@ describe('command specs', () => {
     expect(commandSupportsFrameTarget('click')).toBe(true)
     expect(commandSupportsTabTarget('frame')).toBe(true)
     expect(commandSupportsFrameTarget('frame')).toBe(false)
+    expect(commandSupportsTabTarget('feed')).toBe(true)
+    expect(commandSupportsFrameTarget('feed')).toBe(true)
   })
 
   test('does not apply ambient page targets to tab management commands', () => {
@@ -90,6 +92,15 @@ describe('command specs', () => {
   test('validates common command argument shapes', () => {
     expect(() => validateCommandArgs('goto', { url: 123 })).toThrow(
       'invalid command arguments for goto: url must be a string',
+    )
+    expect(() => validateCommandArgs('feed', { selector: 123 })).toThrow(
+      'invalid command arguments for feed: selector must be a string',
+    )
+    expect(() => validateCommandArgs('feed', { limit: -1 })).toThrow(
+      'invalid command arguments for feed: limit must be a non-negative integer',
+    )
+    expect(() => validateCommandArgs('feed', { dedupe: 'time' })).toThrow(
+      'invalid command arguments for feed: dedupe must be url, text, or none',
     )
     expect(() =>
       validateCommandArgs('batch', { steps: [{ command: 'goto', args: { url: 123 } }] }),

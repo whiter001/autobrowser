@@ -23,6 +23,7 @@ const TAB_TARGET_COMMANDS = [
   'errors',
   'eval',
   'fill',
+  'feed',
   'find',
   'focus',
   'forward',
@@ -58,6 +59,7 @@ const FRAME_TARGET_COMMANDS = [
   'drag',
   'eval',
   'fill',
+  'feed',
   'find',
   'focus',
   'get',
@@ -444,6 +446,23 @@ export function validateCommandArgs(command: string, args: unknown): void {
     case 'eval':
       readStringField(normalizedArgs, 'script', command)
       return
+    case 'feed': {
+      readStringField(normalizedArgs, 'selector', command, { required: false })
+      readOptionalNonNegativeIntegerField(normalizedArgs, 'limit', command)
+      readOptionalNonNegativeIntegerField(normalizedArgs, 'maxScrolls', command)
+      readOptionalNonNegativeIntegerField(normalizedArgs, 'pauseMs', command)
+      readOptionalNonNegativeIntegerField(normalizedArgs, 'stallRounds', command)
+
+      const dedupe = readStringField(normalizedArgs, 'dedupe', command, { required: false })
+      if (dedupe !== undefined && !['url', 'text', 'none'].includes(dedupe)) {
+        throw createCommandArgsValidationError(command, 'dedupe must be url, text, or none', {
+          field: 'dedupe',
+          value: dedupe,
+        })
+      }
+
+      return
+    }
     case 'is':
       readStringField(normalizedArgs, 'selector', command)
       readStringField(normalizedArgs, 'state', command)

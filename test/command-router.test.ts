@@ -3,6 +3,11 @@ import { createCommandRouter } from '../extension/background/command-router.js'
 
 function createMinimalRouter() {
   const snapshotCalls: Array<{ tabId: unknown; frameSelector: unknown }> = []
+  const feedCalls: Array<{
+    tabId: unknown
+    options: unknown
+    frameSelector: unknown
+  }> = []
   const navigateCalls: Array<{ tabId: unknown; url: string }> = []
 
   const router = createCommandRouter({
@@ -53,10 +58,31 @@ function createMinimalRouter() {
         snapshotCalls.push({ tabId, frameSelector })
         return { snapshotId: `snapshot-${snapshotCalls.length}` }
       },
+      collectFeed: async (tabId: unknown, options: unknown, frameSelector: unknown) => {
+        feedCalls.push({ tabId, options, frameSelector })
+        return {
+          pageEpoch: 1,
+          selector: 'article',
+          limit: 30,
+          dedupe: 'url',
+          maxScrolls: 20,
+          pauseMs: 900,
+          stallRounds: 3,
+          scrolls: 0,
+          stopReason: 'stalled',
+          count: 0,
+          items: [],
+        }
+      },
       captureScreenshot: async () => undefined,
       findSemanticTarget: async () => ({ match: null, reason: 'not used in test' }),
       waitWithTimeout: async () => undefined,
-      waitForSelectorState: async () => undefined,
+      waitForSelectorState: async (_tabId: unknown, selector: unknown, state: unknown) => ({
+        waited: true,
+        condition: 'selector-stable',
+        selector,
+        state,
+      }),
       waitForUrl: async () => undefined,
       waitForText: async () => undefined,
       waitForLoadEvent: async () => undefined,
@@ -96,7 +122,7 @@ function createMinimalRouter() {
     getTargetTab: async () => ({ id: 1 }) as never,
   } as never)
 
-  return { router, snapshotCalls, navigateCalls }
+  return { router, snapshotCalls, feedCalls, navigateCalls }
 }
 
 describe('command router batch handling', () => {
@@ -145,6 +171,62 @@ describe('command router batch handling', () => {
         retries: 0,
         retryDelayMs: 0,
       },
+    })
+  })
+
+  test('routes feed collection through the page observer', async () => {
+    const { router, feedCalls } = createMinimalRouter()
+
+    const result = await router.handleCommand({
+      command: 'feed',
+      args: { tabId: 1 },
+    })
+
+    expect(feedCalls).toHaveLength(1)
+    expect(feedCalls[0]).toMatchObject({
+      tabId: 1,
+      options: {
+        selector: 'article',
+        limit: 30,
+        dedupe: 'url',
+        maxScrolls: 20,
+        pauseMs: 900,
+        stallRounds: 3,
+      },
+      frameSelector: null,
+    })
+    expect(result).toEqual({
+      pageEpoch: 1,
+      selector: 'article',
+      limit: 30,
+      dedupe: 'url',
+      maxScrolls: 20,
+      pauseMs: 900,
+      stallRounds: 3,
+      scrolls: 0,
+      stopReason: 'stalled',
+      count: 0,
+      items: [],
+    })
+  })
+
+  test('routes stable selector waits through the page observer', async () => {
+    const { router } = createMinimalRouter()
+
+    const result = await router.handleCommand({
+      command: 'wait',
+      args: {
+        selector: 'article',
+        state: 'stable',
+        timeout: 1000,
+      },
+    })
+
+    expect(result).toEqual({
+      waited: true,
+      condition: 'selector-stable',
+      selector: 'article',
+      state: 'stable',
     })
   })
 

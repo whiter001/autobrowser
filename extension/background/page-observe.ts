@@ -25,6 +25,8 @@ import type {
 const SCREENSHOT_ANNOTATION_OVERLAY_ID = 'autobrowser-screenshot-annotations'
 const SCREENSHOT_ANNOTATION_MAX_ELEMENTS = 200
 const AGENT_SNAPSHOT_MAX_ELEMENTS = 200
+const FEED_MAX_ITEMS = 200
+const FEED_MAX_SCROLLS = 40
 
 const PAGE_CONTEXT_TEXT_HELPERS_SOURCE = [
   collapseWhitespace.toString(),
@@ -68,6 +70,43 @@ export interface FindSemanticTargetOptions {
   query: string
   name: string
   exact: boolean
+}
+
+export type FeedDedupeStrategy = 'url' | 'text' | 'none'
+
+export interface FeedCollectionItem extends Record<string, unknown> {
+  index: number
+  pageEpoch: number
+  selector: string
+  author: string | null
+  handle: string | null
+  time: string | null
+  text: string
+  url: string | null
+  mediaUrls: string[]
+}
+
+export interface FeedCollectionResult extends Record<string, unknown> {
+  pageEpoch: number
+  selector: string
+  limit: number
+  dedupe: FeedDedupeStrategy
+  maxScrolls: number
+  pauseMs: number
+  stallRounds: number
+  scrolls: number
+  stopReason: 'limit' | 'maxScrolls' | 'stalled'
+  count: number
+  items: FeedCollectionItem[]
+}
+
+export interface CollectFeedOptions {
+  selector: string
+  limit: number
+  dedupe: FeedDedupeStrategy
+  maxScrolls: number
+  pauseMs: number
+  stallRounds: number
 }
 
 interface PageObserveDependencies {
@@ -907,6 +946,224 @@ ${PAGE_CONTEXT_FIND_HELPERS_SOURCE}
     return value
   }
 
+  async function collectFeed(
+    tabId: TabInput,
+    options: CollectFeedOptions,
+    frameSelector: FrameSelector,
+  ): Promise<FeedCollectionResult> {
+    const tab = await getTargetTab(tabId)
+    const pageEpoch = getPageEpoch(state, tab.id)
+    const selector = String(options.selector || '').trim() || 'article'
+    const limit = Math.max(0, Math.min(FEED_MAX_ITEMS, Math.floor(options.limit)))
+    const maxScrolls = Math.max(0, Math.min(FEED_MAX_SCROLLS, Math.floor(options.maxScrolls)))
+    const pauseMs = Math.max(0, Math.floor(options.pauseMs))
+    const stallRounds = Math.max(0, Math.floor(options.stallRounds))
+    const dedupe = options.dedupe
+
+    const { value } = await evaluateInTabContext<FeedCollectionResult>(
+      tab.id,
+      `(() => {
+        const selector = ${JSON.stringify(selector)};
+        const limit = ${limit};
+        const maxScrolls = ${maxScrolls};
+        const pauseMs = ${pauseMs};
+        const stallRounds = ${stallRounds};
+        const dedupe = ${JSON.stringify(dedupe)};
+        const pageEpoch = ${pageEpoch};
+
+${PAGE_CONTEXT_TEXT_HELPERS_SOURCE}
+${PAGE_CONTEXT_DEEP_DOM_HELPERS_SOURCE}
+
+        const normalize = (value) => collapseWhitespace(value || '').trim();
+
+        const isVisible = (node) => {
+          if (!(node instanceof HTMLElement)) {
+            return false;
+          }
+
+          const rect = node.getBoundingClientRect();
+          if (rect.width <= 0 || rect.height <= 0) {
+            return false;
+          }
+
+          const style = node.ownerDocument.defaultView.getComputedStyle(node);
+          return style.display !== 'none' && style.visibility !== 'hidden' && Number(style.opacity || '1') !== 0;
+        };
+
+        const readText = (node) => normalize(node.querySelector("[data-testid='tweetText']")?.innerText || node.innerText || node.textContent || '');
+
+        const parseAuthorHandle = (value) => {
+          const raw = normalize(value);
+          if (!raw) {
+            return { author: null, handle: null };
+          }
+
+          const handleMatch = raw.match(/@[A-Za-z0-9_]+/);
+          if (!handleMatch) {
+            return { author: raw, handle: null };
+          }
+
+          const author = normalize(raw.slice(0, handleMatch.index).replace(/[·•|\-–—]+$/, ''));
+          return {
+            author: author || null,
+            handle: handleMatch[0],
+          };
+        };
+
+        const readTime = (node) => {
+          const timeNode = node.querySelector('time');
+          return normalize(timeNode?.dateTime || timeNode?.getAttribute('datetime') || '') || null;
+        };
+
+        const readUrl = (node) => {
+          const link = node.querySelector("a[href*='/status/']");
+          return link && typeof link.href === 'string' ? link.href : null;
+        };
+
+        const readMediaUrls = (node) => {
+          const sources = [
+            ...Array.from(node.querySelectorAll('img[src]')).map((img) => img.currentSrc || img.src || img.getAttribute('src')),
+            ...Array.from(node.querySelectorAll('video[src]')).map((video) => video.currentSrc || video.src || video.getAttribute('src')),
+            ...Array.from(node.querySelectorAll('video source[src]')).map((source) => source.currentSrc || source.src || source.getAttribute('src')),
+          ];
+
+          return Array.from(new Set(sources.map((source) => normalize(source)).filter(Boolean)));
+        };
+
+        const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+        const items = [];
+        const seen = new Set();
+        let stopReason = 'limit';
+
+        const collectVisibleItems = () => {
+          let added = 0;
+
+          for (const node of deepQuerySelectorAll(document, selector)) {
+            if (items.length >= limit) {
+              break;
+            }
+
+            if (!(node instanceof HTMLElement) || !isVisible(node)) {
+              continue;
+            }
+
+            const text = readText(node);
+            const url = readUrl(node);
+            const authorInfo = parseAuthorHandle(node.querySelector("[data-testid='User-Name']")?.innerText || '');
+            const mediaUrls = readMediaUrls(node);
+            const dedupeKey = dedupe === 'none'
+              ? null
+              : dedupe === 'url'
+                ? normalize(url || '')
+                : normalize([authorInfo.author || '', authorInfo.handle || '', text].join('|'));
+
+            if (dedupeKey) {
+              if (seen.has(dedupeKey)) {
+                continue;
+              }
+
+              seen.add(dedupeKey);
+            }
+
+            items.push({
+              index: items.length + 1,
+              pageEpoch,
+              selector,
+              author: authorInfo.author,
+              handle: authorInfo.handle,
+              time: readTime(node),
+              text: text.slice(0, 2400),
+              url,
+              mediaUrls,
+            });
+            added += 1;
+          }
+
+          return added;
+        };
+
+        const scrollAndWait = async () => {
+          const beforeScrollY = window.scrollY || 0;
+          window.scrollBy(0, Math.max(200, Math.floor((window.innerHeight || 0) * 0.9)));
+          await sleep(pauseMs);
+          return (window.scrollY || 0) !== beforeScrollY;
+        };
+
+        let scrolls = 0;
+        let stalledRounds = 0;
+
+        while (items.length < limit && scrolls < maxScrolls) {
+          const added = collectVisibleItems();
+          if (items.length >= limit) {
+            stopReason = 'limit';
+            break;
+          }
+
+          if (added === 0) {
+            stalledRounds += 1;
+          } else {
+            stalledRounds = 0;
+          }
+
+          if (stalledRounds > stallRounds) {
+            stopReason = 'stalled';
+            break;
+          }
+
+          const moved = await scrollAndWait();
+          scrolls += 1;
+
+          // 仅在本轮 added > 0 时才追加：避免与上面 added===0 分支双重计数
+          if (!moved && added > 0) {
+            stalledRounds += 1;
+            if (stalledRounds > stallRounds) {
+              stopReason = 'stalled';
+              break;
+            }
+          }
+        }
+
+        if (items.length < limit && scrolls >= maxScrolls && stopReason === 'limit') {
+          stopReason = 'maxScrolls';
+        }
+
+        collectVisibleItems();
+
+        return {
+          pageEpoch,
+          selector,
+          limit,
+          dedupe,
+          maxScrolls,
+          pauseMs,
+          stallRounds,
+          scrolls,
+          stopReason,
+          count: items.length,
+          items,
+        };
+      })()`,
+      withFrameSelectorOptions(frameSelector),
+    )
+
+    return (
+      value || {
+        pageEpoch,
+        selector,
+        limit,
+        dedupe,
+        maxScrolls,
+        pauseMs,
+        stallRounds,
+        scrolls: 0,
+        stopReason: 'stalled',
+        count: 0,
+        items: [],
+      }
+    ) as FeedCollectionResult
+  }
+
   async function waitForLoadEvent(tabId: TabInput, timeout = 30000) {
     const tab = await getTargetTab(tabId)
     return await waitForDebuggerEvent(
@@ -950,6 +1207,101 @@ ${PAGE_CONTEXT_FIND_HELPERS_SOURCE}
   ) {
     const { tab, resolvedSelector } = await resolveElementSelectorForTab(tabId, selector)
     const hidden = state === 'hidden'
+
+    const getVisibleSignature = async () => {
+      const { value } = await evaluateInTabContext<{ signature: string } | null>(
+        tab.id,
+        `(() => {
+          const visibleNodes = Array.from(deepQuerySelectorAll(document, ${JSON.stringify(resolvedSelector)})).filter((node) => {
+            if (!(node instanceof HTMLElement)) {
+              return false;
+            }
+
+            const rect = node.getBoundingClientRect();
+            if (rect.width <= 0 || rect.height <= 0) {
+              return false;
+            }
+
+            const style = node.ownerDocument.defaultView.getComputedStyle(node);
+            return style.display !== 'none' && style.visibility !== 'hidden' && Number(style.opacity || '1') !== 0;
+          });
+
+          if (visibleNodes.length === 0) {
+            return null;
+          }
+
+          const fingerprint = visibleNodes
+            .slice(0, 5)
+            .map((node) => {
+              const text = collapseWhitespace(node.innerText || node.textContent || '').slice(0, 80);
+              const rect = node.getBoundingClientRect();
+              const href = typeof node.href === 'string' ? node.href : node.getAttribute('href') || '';
+              return [text, href, Math.round(rect.top), Math.round(rect.left), Math.round(rect.width), Math.round(rect.height)].join('~');
+            })
+            .join('|');
+
+          return { signature: String(visibleNodes.length) + ':' + fingerprint };
+        })()`,
+        withFrameSelectorOptions(frameSelector),
+      )
+
+      return value?.signature || null
+    }
+
+    if (state === 'stable') {
+      let previousSignature: string | null = null
+      let stableRounds = 0
+
+      return await pollUntil(
+        timeout,
+        async () => {
+          const signature = await getVisibleSignature()
+
+          if (!signature) {
+            previousSignature = null
+            stableRounds = 0
+            return null
+          }
+
+          if (signature === previousSignature) {
+            stableRounds += 1
+          } else {
+            previousSignature = signature
+            stableRounds = 0
+          }
+
+          return stableRounds >= 1
+            ? { waited: true, condition: 'selector-stable', selector, state }
+            : null
+        },
+        `wait stable timeout: ${selector}`,
+      )
+    }
+
+    if (state === 'new') {
+      let baselineSignature: string | null = null
+
+      return await pollUntil(
+        timeout,
+        async () => {
+          const signature = await getVisibleSignature()
+
+          if (!signature) {
+            return null
+          }
+
+          if (baselineSignature === null) {
+            baselineSignature = signature
+            return null
+          }
+
+          return signature !== baselineSignature
+            ? { waited: true, condition: 'selector-new', selector, state }
+            : null
+        },
+        `wait new timeout: ${selector}`,
+      )
+    }
 
     return await pollUntil(
       timeout,
@@ -1039,13 +1391,13 @@ ${PAGE_CONTEXT_FIND_HELPERS_SOURCE}
       async () => {
         const { value } = await evaluateInTabContext(
           tabId,
-          `(() => {
+          `((async () => {
             try {
-              return Boolean(Function('return (' + ${JSON.stringify(expression)} + ')')());
+              return Boolean(await Promise.resolve(Function('return (' + ${JSON.stringify(expression)} + ')')()));
             } catch (error) {
               return false;
             }
-          })()`,
+          })())`,
           withFrameSelectorOptions(frameSelector),
         )
 
@@ -1061,6 +1413,7 @@ ${PAGE_CONTEXT_FIND_HELPERS_SOURCE}
   }
 
   return {
+    collectFeed,
     captureScreenshot,
     findSemanticTarget,
     snapshotTab,
