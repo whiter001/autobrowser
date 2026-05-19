@@ -7,9 +7,9 @@ autobrowser is a Bun-based browser automation tool that drives Chrome/Edge throu
 - local relay server on port `57978`
 - CLI API server on port `57979`
 - browser extension scaffold with a token-based connection flow
-- core commands for server and connection management, navigation, tab and window control, element interaction, dialogs, wait and state checks, cookies, storage, clipboard, browser state, network inspection and interception, snapshot, and screenshot
+- core commands for server and connection management, navigation, tab and window control, element interaction, dialogs, wait and state checks, cookies, storage, clipboard, browser state, network inspection and interception, snapshot, snapshot export/extract, screenshot, and utility commands such as `batch`, `status`, `config`, `replay`, and `network export`
 
-Run `bun run src/cli.ts help` to see the full command tree.
+Run `bun run src/cli.ts help` to see the full command tree. The command tree in `src/cli.ts` is the canonical reference for flags and syntax.
 
 ## Documentation map
 
@@ -29,6 +29,8 @@ bun run src/cli.ts open https://example.com
 - `server` starts the local relay and IPC servers.
 - `connect` opens the extension connect page and starts the local server first when needed.
 - `open` navigates the current tab to a URL.
+
+If you are working against a specific target, the root `--tab` and `--frame` flags can pin compatible commands to a tab handle or frame ref. For short deterministic sequences, use `batch` with a JSON array or object body instead of issuing several round trips.
 
 ## Agent-friendly workflow
 
@@ -51,6 +53,8 @@ bun run src/cli.ts find role button click --name "Continue"
 bun run src/cli.ts find text "Pricing" click
 bun run src/cli.ts find label "Email" fill "agent@example.com"
 ```
+
+When you need to export snapshot data for downstream processing, use `snapshot export` for the full JSONL stream or `snapshot extract` with `--field` selectors for narrower records. For network traces, `network export` writes JSONL summaries and is usually easier to diff than a full HAR.
 
 For multi-tab flows, prefer stable tab handles from `tab list`:
 

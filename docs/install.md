@@ -12,17 +12,21 @@ Then load `chrome/` as an unpacked extension in Chromium-based browsers.
 
 Use `autobrowser connect` to open the extension connect page and save the relay settings automatically. The CLI persists both the extension id and the browser launcher into `~/.autobrowser/config.json`, so after the first successful run it can reconnect without re-specifying them.
 
+You can inspect the saved paths and connection settings with `autobrowser config`.
+
 Example config:
 
 ```json
 {
   "extensionId": "bfccnpkjkbhceghimfjgnkigilidldep",
   "browserCommand": "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
-  // windows
-  // "browserCommand": "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe"
 }
 ```
 
+On Windows, `browserCommand` is usually something like `C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe`.
+
 If you need to set it from the CLI, pass `--extension-id`, `--browser-command`, and optional `--browser-arg` values to `autobrowser connect`; the values will be written back to the config file and reused next time. The `server` command only manages the local relay and IPC servers. If you are running the repository directly, use `bun run src/cli.ts connect` instead.
+
+If the local control server is missing, `connect` will start it automatically when you are targeting the local IPC endpoint. You can also add `--auto-connect` when you want the CLI to proactively open the extension connect page whenever the extension is disconnected.
 
 The options page is a manual fallback and shows connection diagnostics.

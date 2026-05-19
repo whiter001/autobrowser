@@ -11,9 +11,9 @@ This repository now contains a Bun implementation with the main automation flows
 - local relay server on port `57978`
 - CLI API server on port `57979`
 - browser extension scaffold with a token-based connection flow
-- core commands for server and connection management, navigation, tab and window control, element interaction, dialogs, wait and state checks, cookies, storage, clipboard, browser state, network inspection and interception, snapshot, and screenshot
+- core commands for server and connection management, navigation, tab and window control, element interaction, dialogs, wait and state checks, cookies, storage, clipboard, browser state, network inspection and interception, snapshot, snapshot export/extract, screenshot, and utility flows such as `batch`, `status`, `config`, and `replay`
 
-Run `bun run src/cli.ts help` to see the full command tree.
+Run `bun run src/cli.ts help` to see the full command tree. That help output is the source of truth and also documents root flags such as `--tab`, `--frame`, and `--auto-connect`.
 
 For a Windows-specific launcher demo that uses the minimal `autobrowser.cmd` forwarder, see [`docs/windows-demo.md`](docs/windows-demo.md).
 

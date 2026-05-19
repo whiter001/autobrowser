@@ -25,6 +25,13 @@ The current codebase already supports the following agent-oriented behavior:
 - `tab list` exposes stable handles and `tab select` / `tab close` can act on them.
 - `find role`, `find text`, and `find label` can locate a target and optionally act on it.
 
+The current command surface also includes a few practical agent utilities that were missing when this draft was first written:
+
+- root `--tab` and `--frame` flags for compatible commands
+- `batch` for JSON-encoded multi-step sequences with optional retries and continue-on-error
+- `status`, `config`, and `replay` for runtime diagnostics and command recovery
+- `snapshot export` / `snapshot extract` and `network export` for JSONL-friendly downstream processing
+
 The current architecture is still extension-first:
 
 - CLI parses commands and forwards them to the local IPC server.
@@ -52,7 +59,7 @@ This is workable, but several agent-facing contracts are still incomplete.
 
 ### 1. Targeting is not uniform enough
 
-Stable tab handles exist, but most commands still act on the implicit current target rather than a uniform explicit target contract.
+Stable tab handles exist, and the root `--tab` / `--frame` flags now cover a useful subset of the surface, but most commands still act on the implicit current target rather than a fully uniform explicit target contract.
 
 Current impact:
 
@@ -92,13 +99,13 @@ Current impact:
 
 ### 5. Too many agent workflows still require multiple turns
 
-The current command model is one command at a time.
+`batch` now exists, but the current command model is still mostly one command at a time.
 
 Current impact:
 
 - `snapshot -> choose ref -> click -> wait -> read text` requires many round trips
-- an agent cannot submit a small deterministic command batch atomically
-- there is no reusable macro or script layer with structured results
+- simple deterministic sequences still benefit from a richer reusable macro or script layer
+- structured results are useful, but there is still room for a higher-level workflow contract
 
 ### 6. Observability is weaker than the command surface
 
@@ -292,8 +299,7 @@ This document can evolve into that page, but the contract should eventually be s
 
 ### Phase 3: agent throughput
 
-- add `batch`
-- add reusable macros or scripts only if batch proves insufficient
+- expand `batch` coverage and add reusable macros or scripts only if batch proves insufficient
 - add targeted waits that understand the same handle model
 
 ### Phase 4: validation and productization
