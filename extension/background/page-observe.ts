@@ -962,7 +962,7 @@ ${PAGE_CONTEXT_FIND_HELPERS_SOURCE}
 
     const { value } = await evaluateInTabContext<FeedCollectionResult>(
       tab.id,
-      `(() => {
+      `(async () => {
         const selector = ${JSON.stringify(selector)};
         const limit = ${limit};
         const maxScrolls = ${maxScrolls};

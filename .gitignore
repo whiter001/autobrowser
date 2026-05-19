@@ -12,3 +12,4 @@ node_modules/
 *.har
 .chrome-profile/
 .mini-agent/
+tmp/
