@@ -47,6 +47,9 @@ export function createConnectionRuntime({
 }: ConnectionRuntimeDependencies) {
   const HEARTBEAT_INTERVAL_MS = 30_000
   const HEARTBEAT_TIMEOUT_MS = 10_000
+  const RECONNECT_BASE_DELAY_MS = 1_000
+  const RECONNECT_MAX_DELAY_MS = 60_000
+  const RECONNECT_MAX_EXPONENT = 6
 
   function pushBounded<T>(list: T[], item: T, maxSize: number): void {
     list.push(item)
@@ -56,14 +59,14 @@ export function createConnectionRuntime({
   }
 
   function clearHeartbeatTimers(): void {
-    if (state.heartbeatTimer) {
-      clearInterval(state.heartbeatTimer)
-      state.heartbeatTimer = null
+    if (state.connection.heartbeatTimer) {
+      clearInterval(state.connection.heartbeatTimer)
+      state.connection.heartbeatTimer = null
     }
 
-    if (state.heartbeatTimeoutTimer) {
-      clearTimeout(state.heartbeatTimeoutTimer)
-      state.heartbeatTimeoutTimer = null
+    if (state.connection.heartbeatTimeoutTimer) {
+      clearTimeout(state.connection.heartbeatTimeoutTimer)
+      state.connection.heartbeatTimeoutTimer = null
     }
   }
 
@@ -76,7 +79,7 @@ export function createConnectionRuntime({
       }
 
       const sentAt = new Date().toISOString()
-      state.lastHeartbeatSentAt = sentAt
+      state.connection.lastHeartbeatSentAt = sentAt
 
       try {
         socket.send(
@@ -89,7 +92,7 @@ export function createConnectionRuntime({
         console.warn('failed to send relay heartbeat', error)
         setConnectionError('relay heartbeat send failed', 'HEARTBEAT_SEND_FAILED')
         setConnectionStatus('disconnected')
-        state.suppressCloseError = true
+        state.connection.suppressCloseError = true
         try {
           socket.close()
         } catch (closeError) {
@@ -98,18 +101,18 @@ export function createConnectionRuntime({
         return
       }
 
-      if (state.heartbeatTimeoutTimer) {
-        clearTimeout(state.heartbeatTimeoutTimer)
+      if (state.connection.heartbeatTimeoutTimer) {
+        clearTimeout(state.connection.heartbeatTimeoutTimer)
       }
 
-      state.heartbeatTimeoutTimer = setTimeout(() => {
+      state.connection.heartbeatTimeoutTimer = setTimeout(() => {
         if (socket.readyState !== WebSocket.OPEN) {
           return
         }
 
         setConnectionError('relay heartbeat timeout', 'HEARTBEAT_TIMEOUT')
         setConnectionStatus('disconnected')
-        state.suppressCloseError = true
+        state.connection.suppressCloseError = true
         try {
           socket.close()
         } catch (closeError) {
@@ -118,19 +121,19 @@ export function createConnectionRuntime({
       }, HEARTBEAT_TIMEOUT_MS)
     }
 
-    state.heartbeatTimer = setInterval(sendHeartbeat, HEARTBEAT_INTERVAL_MS)
+    state.connection.heartbeatTimer = setInterval(sendHeartbeat, HEARTBEAT_INTERVAL_MS)
   }
 
   function persistDiagnostics(): void {
     chrome.storage.local
       .set({
         [CONNECTION_DIAGNOSTICS_STORAGE_KEY]: {
-          status: state.connectionStatus,
-          connectionError: state.connectionError,
-          lastSocketClose: state.lastSocketClose,
-          lastCommandError: state.lastCommandError,
-          lastHeartbeatAt: state.lastHeartbeatAt,
-          lastHeartbeatSentAt: state.lastHeartbeatSentAt,
+          status: state.connection.status,
+          connectionError: state.connection.error,
+          lastSocketClose: state.connection.lastSocketClose,
+          lastCommandError: state.connection.lastCommandError,
+          lastHeartbeatAt: state.connection.lastHeartbeatAt,
+          lastHeartbeatSentAt: state.connection.lastHeartbeatSentAt,
           updatedAt: new Date().toISOString(),
         } satisfies DiagnosticsState,
       })
@@ -140,7 +143,7 @@ export function createConnectionRuntime({
   }
 
   function setConnectionError(message: string, code?: string): void {
-    state.connectionError = {
+    state.connection.error = {
       message,
       at: new Date().toISOString(),
       ...(code ? { code } : {}),
@@ -149,23 +152,23 @@ export function createConnectionRuntime({
   }
 
   function setConnectionStatus(status: ConnectionStatus): void {
-    state.connectionStatus = status
+    state.connection.status = status
     if (status === 'connected') {
-      state.connectionError = null
+      state.connection.error = null
     }
     persistDiagnostics()
   }
 
   function recordSocketClose(close: { code: number; reason: string; wasClean: boolean }): void {
     clearHeartbeatTimers()
-    state.lastSocketClose = {
+    state.connection.lastSocketClose = {
       code: close.code,
       reason: close.reason,
       wasClean: close.wasClean,
       at: new Date().toISOString(),
     }
 
-    if (!state.suppressCloseError && close.code !== 1000) {
+    if (!state.connection.suppressCloseError && close.code !== 1000) {
       setConnectionError(
         `relay socket closed: ${close.code}${close.reason ? ` ${close.reason}` : ''}`.trim(),
         'SOCKET_CLOSED',
@@ -173,7 +176,7 @@ export function createConnectionRuntime({
       setConnectionStatus('disconnected')
     }
 
-    state.suppressCloseError = false
+    state.connection.suppressCloseError = false
     persistDiagnostics()
   }
 
@@ -228,7 +231,7 @@ export function createConnectionRuntime({
         type: 'state',
         tabs,
         activeTabId: tabs.find((tab) => tab.active)?.id || null,
-        targetTabId: state.targetTabId,
+        targetTabId: state.targeting.targetTabId,
         pageEpochs,
       }),
     )
@@ -245,8 +248,11 @@ export function createConnectionRuntime({
         ((method === 'Page.frameNavigated' && !navigationParams.frame?.parentId) ||
           method === 'Page.navigatedWithinDocument')
       ) {
-        state.pageEpochs.set(source.tabId, (state.pageEpochs.get(source.tabId) || 1) + 1)
-        state.selectedFrames.delete(source.tabId)
+        state.targeting.pageEpochs.set(
+          source.tabId,
+          (state.targeting.pageEpochs.get(source.tabId) || 1) + 1,
+        )
+        state.targeting.selectedFrames.delete(source.tabId)
       }
 
       if (method === 'Runtime.consoleAPICalled') {
@@ -256,7 +262,7 @@ export function createConnectionRuntime({
         }
 
         pushBounded(
-          state.consoleMessages,
+          state.session.consoleMessages,
           {
             type: String(consoleParams.type || ''),
             text: Array.isArray(consoleParams.args)
@@ -280,7 +286,7 @@ export function createConnectionRuntime({
         }
 
         pushBounded(
-          state.pageErrors,
+          state.session.pageErrors,
           {
             error:
               exceptionParams.exceptionDetails?.exception?.description ||
@@ -303,7 +309,7 @@ export function createConnectionRuntime({
           url?: string
         }
 
-        state.dialog = {
+        state.session.dialog = {
           open: true,
           type: String(dialogParams.type || ''),
           message: String(dialogParams.message || ''),
@@ -313,23 +319,25 @@ export function createConnectionRuntime({
         }
 
         if (
-          ['alert', 'beforeunload'].includes(state.dialog.type) &&
+          ['alert', 'beforeunload'].includes(state.session.dialog.type) &&
           typeof source?.tabId === 'number'
         ) {
           void sendDebuggerCommand(source.tabId, 'Page.handleJavaScriptDialog', {
             accept: true,
           })
             .then(() => {
-              state.dialog = null
+              state.session.dialog = null
             })
             .catch((error) => {
+              // auto-accept 失败时同样清理 dialog，避免状态残留影响后续命令诊断
+              state.session.dialog = null
               console.error('failed to auto accept dialog', error)
             })
         }
       }
 
       if (method === 'Page.javascriptDialogClosed') {
-        state.dialog = null
+        state.session.dialog = null
       }
 
       if (method === 'Fetch.requestPaused') {
@@ -368,16 +376,16 @@ export function createConnectionRuntime({
     await storageLocalSet({
       [STORAGE_KEY]: token.trim(),
     })
-    state.token = token.trim()
+    state.connection.token = token.trim()
     requestReconnect()
   }
 
   function requestReconnect(): void {
-    if (state.socket && state.socket.readyState < WebSocket.CLOSING) {
-      state.suppressCloseError = true
+    if (state.connection.socket && state.connection.socket.readyState < WebSocket.CLOSING) {
+      state.connection.suppressCloseError = true
       clearHeartbeatTimers()
       try {
-        state.socket.close()
+        state.connection.socket.close()
         return
       } catch (error) {
         console.warn('failed to close relay socket before reconnect', error)
@@ -389,34 +397,40 @@ export function createConnectionRuntime({
 
   async function connect() {
     if (
-      state.connecting ||
-      (state.socket &&
-        state.socket.readyState !== WebSocket.CLOSED &&
-        state.socket.readyState !== WebSocket.CLOSING)
+      state.connection.connecting ||
+      (state.connection.socket &&
+        state.connection.socket.readyState !== WebSocket.CLOSED &&
+        state.connection.socket.readyState !== WebSocket.CLOSING)
     ) {
       return
     }
 
-    state.connecting = true
+    state.connection.connecting = true
     setConnectionStatus('connecting')
 
     try {
-      state.token = state.token || (await getToken())
-      if (!state.token) {
+      state.connection.token = state.connection.token || (await getToken())
+      if (!state.connection.token) {
         setConnectionStatus('missing-token')
         setConnectionError('missing token; save it in the options page')
         return
       }
 
       const socket = new WebSocket(
-        `ws://127.0.0.1:${state.relayPort}/ws?token=${encodeURIComponent(state.token)}&extensionId=${encodeURIComponent(chrome.runtime.id)}`,
+        `ws://127.0.0.1:${state.connection.relayPort}/ws?token=${encodeURIComponent(state.connection.token)}&extensionId=${encodeURIComponent(chrome.runtime.id)}`,
       )
 
-      state.socket = socket
+      state.connection.socket = socket
 
       socket.addEventListener('open', () => {
-        state.lastHeartbeatAt = null
-        state.lastHeartbeatSentAt = null
+        state.connection.lastHeartbeatAt = null
+        state.connection.lastHeartbeatSentAt = null
+        // 连接成功，重置重试计数
+        state.connection.reconnectAttempts = 0
+        if (state.connection.reconnectTimer) {
+          clearTimeout(state.connection.reconnectTimer)
+          state.connection.reconnectTimer = null
+        }
         setConnectionStatus('connected')
         socket.send(
           JSON.stringify({
@@ -451,12 +465,12 @@ export function createConnectionRuntime({
         }
 
         if (message?.type === 'heartbeat') {
-          state.lastHeartbeatAt =
+          state.connection.lastHeartbeatAt =
             typeof message.receivedAt === 'string' ? message.receivedAt : new Date().toISOString()
 
-          if (state.heartbeatTimeoutTimer) {
-            clearTimeout(state.heartbeatTimeoutTimer)
-            state.heartbeatTimeoutTimer = null
+          if (state.connection.heartbeatTimeoutTimer) {
+            clearTimeout(state.connection.heartbeatTimeoutTimer)
+            state.connection.heartbeatTimeoutTimer = null
           }
 
           return
@@ -478,7 +492,7 @@ export function createConnectionRuntime({
           )
         } catch (error) {
           const err = error as ErrorWithCode
-          state.lastCommandError = {
+          state.connection.lastCommandError = {
             command: String(message.command || ''),
             message: err.message,
             code: err.code || 'EXTENSION_COMMAND_ERROR',
@@ -516,21 +530,21 @@ export function createConnectionRuntime({
 
       socket.addEventListener('close', (event) => {
         clearHeartbeatTimers()
-        state.socket = null
-        state.connecting = false
+        state.connection.socket = null
+        state.connection.connecting = false
         recordSocketClose({
           code: event.code,
           reason: event.reason,
           wasClean: event.wasClean,
         })
-        if (state.shouldReconnect) {
+        if (state.connection.shouldReconnect) {
           reconnect()
         }
       })
 
       socket.addEventListener('error', () => {
         clearHeartbeatTimers()
-        state.connecting = false
+        state.connection.connecting = false
         setConnectionError('relay websocket error')
         try {
           socket.close()
@@ -544,24 +558,36 @@ export function createConnectionRuntime({
       setConnectionError(err.message, err.code)
       throw error
     } finally {
-      state.connecting = false
+      state.connection.connecting = false
     }
   }
 
   async function reconnect() {
-    if (!state.shouldReconnect) {
+    if (!state.connection.shouldReconnect) {
       return
     }
 
-    if (state.reconnectTimer) {
-      clearTimeout(state.reconnectTimer)
+    if (state.connection.reconnectTimer) {
+      clearTimeout(state.connection.reconnectTimer)
+      state.connection.reconnectTimer = null
     }
 
-    state.reconnectTimer = setTimeout(async () => {
-      if (!state.socket || state.socket.readyState === WebSocket.CLOSED) {
-        await connect()
+    const attempts = Math.min(state.connection.reconnectAttempts, RECONNECT_MAX_EXPONENT)
+    const delayMs = Math.min(
+      RECONNECT_BASE_DELAY_MS * Math.pow(2, attempts),
+      RECONNECT_MAX_DELAY_MS,
+    )
+    state.connection.reconnectAttempts = Math.min(attempts + 1, RECONNECT_MAX_EXPONENT)
+
+    // 指数退避只影响重试间隔，不会把连接逻辑永久关掉；达到上限后保持最大间隔继续重试。
+    state.connection.reconnectTimer = setTimeout(async () => {
+      state.connection.reconnectTimer = null
+      if (!state.connection.socket || state.connection.socket.readyState === WebSocket.CLOSED) {
+        await connect().catch((error) => {
+          console.error('failed to reconnect autobrowser extension', error)
+        })
       }
-    }, 1000)
+    }, delayMs)
   }
 
   function registerChromeListeners(): void {
@@ -587,16 +613,18 @@ export function createConnectionRuntime({
       if (message?.type === 'autobrowser.getStatus') {
         sendResponse({
           ok: true,
-          connected: Boolean(state.socket && state.socket.readyState === WebSocket.OPEN),
-          connectionStatus: state.connectionStatus,
-          connectionError: state.connectionError,
-          lastSocketClose: state.lastSocketClose,
-          lastCommandError: state.lastCommandError,
-          lastHeartbeatAt: state.lastHeartbeatAt,
-          lastHeartbeatSentAt: state.lastHeartbeatSentAt,
+          connected: Boolean(
+            state.connection.socket && state.connection.socket.readyState === WebSocket.OPEN,
+          ),
+          connectionStatus: state.connection.status,
+          connectionError: state.connection.error,
+          lastSocketClose: state.connection.lastSocketClose,
+          lastCommandError: state.connection.lastCommandError,
+          lastHeartbeatAt: state.connection.lastHeartbeatAt,
+          lastHeartbeatSentAt: state.connection.lastHeartbeatSentAt,
           dialog: getDialogStatus(),
-          token: state.token || '',
-          relayPort: state.relayPort,
+          token: state.connection.token || '',
+          relayPort: state.connection.relayPort,
         })
         return false
       }
@@ -617,12 +645,12 @@ export function createConnectionRuntime({
       let needsReconnect = false
 
       if (changes[STORAGE_KEY]) {
-        state.token = String(changes[STORAGE_KEY].newValue || '')
+        state.connection.token = String(changes[STORAGE_KEY].newValue || '')
         needsReconnect = true
       }
 
       if (changes[RELAY_PORT_STORAGE_KEY]) {
-        state.relayPort = normalizeRelayPort(changes[RELAY_PORT_STORAGE_KEY].newValue)
+        state.connection.relayPort = normalizeRelayPort(changes[RELAY_PORT_STORAGE_KEY].newValue)
         needsReconnect = true
       }
 
@@ -635,8 +663,8 @@ export function createConnectionRuntime({
   function initialize(): void {
     Promise.all([getToken(), getRelayPort()])
       .then(([token, relayPort]) => {
-        state.token = token
-        state.relayPort = relayPort
+        state.connection.token = token
+        state.connection.relayPort = relayPort
         setupDebuggerEventListeners()
         return connect()
       })

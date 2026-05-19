@@ -1,5 +1,7 @@
 import { describe, expect, test } from 'bun:test'
 import { createConnectionRuntime } from '../extension/background/connection.js'
+import { createExtensionState } from '../extension/background/state.js'
+import { RELAY_PORT_STORAGE_KEY, STORAGE_KEY } from '../extension/shared.js'
 
 class MockWebSocket {
   static CONNECTING = 0
@@ -113,7 +115,7 @@ describe('extension background connection', () => {
           get: async (keys: string | string[] | null) => {
             if (Array.isArray(keys)) {
               return Object.fromEntries(
-                keys.map((key) => [key, storageValues[key as keyof typeof storageValues]]),
+                keys.map((key) => [key, key === STORAGE_KEY ? 'test-token' : 57978]),
               )
             }
 
@@ -147,39 +149,10 @@ describe('extension background connection', () => {
 
     defineGlobalValue('WebSocket', MockWebSocket)
 
-    const state = {
-      socket: null,
-      reconnectTimer: null,
-      connecting: false,
-      suppressCloseError: false,
-      attachedTabs: new Set<number>(),
-      selectedFrames: new Map<number, string>(),
-      targetTabId: null,
-      tabHandles: new Map<number, string>(),
-      tabIdsByHandle: new Map<string, number>(),
-      pageEpochs: new Map<number, number>(),
-      nextTabHandleIndex: 1,
-      dialog: null,
-      network: {
-        routes: [],
-        requests: [],
-        requestMap: new Map(),
-        harRecording: false,
-        harStartedAt: null,
-      },
-      shouldReconnect: true,
-      token: '',
-      relayPort: 57978,
-      consoleMessages: [],
-      pageErrors: [],
-      connectionStatus: 'idle',
-      connectionError: null,
-      lastSocketClose: null,
-      lastCommandError: null,
-    } as const
+    const state = createExtensionState(57978)
 
     const runtime = createConnectionRuntime({
-      state: state as never,
+      state,
       network: {
         handleRequestPaused: async () => {},
         handleEvent: async () => {},
@@ -217,7 +190,7 @@ describe('extension background connection', () => {
       ): Promise<T> => {
         if (Array.isArray(keys)) {
           return Object.fromEntries(
-            keys.map((key) => [key, storageValues[key as keyof typeof storageValues]]),
+            keys.map((key) => [key, key === STORAGE_KEY ? 'test-token' : 57978]),
           ) as unknown as T
         }
 
@@ -241,7 +214,7 @@ describe('extension background connection', () => {
       await flushMicrotasks()
       expect(MockWebSocket.instances).toHaveLength(1)
 
-      state.pageEpochs.set(11, 4)
+      state.targeting.pageEpochs.set(11, 4)
 
       const socket = MockWebSocket.instances[0]
       expect(socket.url).toContain('ws://127.0.0.1:49002/ws')
@@ -266,6 +239,141 @@ describe('extension background connection', () => {
         11: 4,
         22: 1,
       })
+    } finally {
+      defineGlobalValue('chrome', originalGlobals.chrome)
+      defineGlobalValue('WebSocket', originalGlobals.WebSocket)
+      MockWebSocket.instances = []
+    }
+  })
+
+  test('keeps retrying with capped exponential backoff instead of stopping permanently', async () => {
+    const originalGlobals = {
+      chrome: globalThis.chrome,
+      WebSocket: globalThis.WebSocket,
+    }
+
+    defineGlobalValue('chrome', {
+      runtime: {
+        id: 'test-extension-id',
+        getManifest: () => ({ version: '1.2.3' }),
+        onInstalled: {
+          addListener: () => {},
+        },
+        onStartup: {
+          addListener: () => {},
+        },
+        onMessage: {
+          addListener: () => {},
+        },
+        openOptionsPage: async () => {},
+      },
+      debugger: {
+        onEvent: {
+          addListener: () => {},
+        },
+      },
+      storage: {
+        local: {
+          set: async () => {},
+          get: async (keys: string | string[] | null) => {
+            if (Array.isArray(keys)) {
+              return Object.fromEntries(
+                keys.map((key) => [key, key === STORAGE_KEY ? 'test-token' : 57978]),
+              )
+            }
+
+            if (typeof keys === 'string') {
+              return { [keys]: keys === STORAGE_KEY ? 'test-token' : 57978 }
+            }
+
+            return {
+              [STORAGE_KEY]: 'test-token',
+              [RELAY_PORT_STORAGE_KEY]: 57978,
+            }
+          },
+        },
+        onChanged: {
+          addListener: () => {},
+        },
+      },
+      tabs: {
+        onRemoved: {
+          addListener: () => {},
+        },
+      },
+    })
+    defineGlobalValue('WebSocket', MockWebSocket)
+    MockWebSocket.instances = []
+
+    const state = createExtensionState(57978)
+    state.connection.reconnectAttempts = 6
+
+    const runtime = createConnectionRuntime({
+      state,
+      network: {
+        handleRequestPaused: async () => {},
+        handleEvent: async () => {},
+      },
+      listTabs: async () => [
+        {
+          id: 11,
+          handle: 't1',
+          title: 'active',
+          url: 'https://example.com/active',
+          active: true,
+          pinned: false,
+          status: 'complete',
+          windowId: 1,
+        },
+      ],
+      handleCommand: async () => ({ ok: true }),
+      sendDebuggerCommand: async <TResult = unknown>(
+        _tabId: number,
+        _method: string,
+        _params: Record<string, unknown> = {},
+      ): Promise<TResult> => ({}) as TResult,
+      storageLocalGet: async <T extends Record<string, unknown> = Record<string, unknown>>(
+        keys: string | string[] | null,
+      ): Promise<T> => {
+        if (Array.isArray(keys)) {
+          return Object.fromEntries(
+            keys.map((key) => [key, key === STORAGE_KEY ? 'test-token' : 57978]),
+          ) as unknown as T
+        }
+
+        if (typeof keys === 'string') {
+          return { [keys]: keys === STORAGE_KEY ? 'test-token' : 57978 } as unknown as T
+        }
+
+        return {
+          [STORAGE_KEY]: 'test-token',
+          [RELAY_PORT_STORAGE_KEY]: 57978,
+        } as unknown as T
+      },
+      storageLocalSet: async () => {},
+      clearTabRuntimeState: () => {},
+      detachDebugger: async () => {},
+      getDialogStatus: () => ({}),
+    })
+
+    try {
+      runtime.registerChromeListeners()
+      runtime.initialize()
+      await flushMicrotasks()
+      await flushMicrotasks()
+
+      expect(MockWebSocket.instances).toHaveLength(1)
+
+      const socket = MockWebSocket.instances[0]
+      socket.dispatch('open')
+      await flushMicrotasks()
+
+      socket.dispatch('close', { code: 1006, reason: 'relay closed', wasClean: false })
+
+      expect(state.connection.shouldReconnect).toBe(true)
+      expect(state.connection.reconnectTimer).not.toBeNull()
+
+      expect(MockWebSocket.instances).toHaveLength(1)
     } finally {
       defineGlobalValue('chrome', originalGlobals.chrome)
       defineGlobalValue('WebSocket', originalGlobals.WebSocket)

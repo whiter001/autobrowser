@@ -91,13 +91,29 @@ export interface PageErrorRecord {
   timestamp: number
 }
 
-export interface ExtensionState {
+/** WebSocket 连接生命周期与诊断信息 */
+export interface ConnectionState {
   socket: WebSocket | null
   reconnectTimer: number | ReturnType<typeof setTimeout> | null
+  /** 当前已重试次数，用于计算指数退避延迟 */
+  reconnectAttempts: number
   heartbeatTimer: number | ReturnType<typeof setInterval> | null
   heartbeatTimeoutTimer: number | ReturnType<typeof setTimeout> | null
   connecting: boolean
   suppressCloseError: boolean
+  shouldReconnect: boolean
+  token: string
+  relayPort: number
+  status: ConnectionStatus
+  error: ConnectionErrorInfo | null
+  lastSocketClose: SocketCloseInfo | null
+  lastCommandError: CommandErrorInfo | null
+  lastHeartbeatAt: string | null
+  lastHeartbeatSentAt: string | null
+}
+
+/** Tab/Frame 路由与调试器附加状态 */
+export interface TargetingState {
   attachedTabs: Set<number>
   selectedFrames: Map<number, string>
   targetTabId: number | null
@@ -105,19 +121,20 @@ export interface ExtensionState {
   tabIdsByHandle: Map<string, number>
   pageEpochs: Map<number, number>
   nextTabHandleIndex: number
+}
+
+/** 页面会话级别的可观测状态 */
+export interface SessionState {
   dialog: DialogState | null
-  network: NetworkState
-  shouldReconnect: boolean
-  token: string
-  relayPort: number
   consoleMessages: ConsoleMessageRecord[]
   pageErrors: PageErrorRecord[]
-  connectionStatus: ConnectionStatus
-  connectionError: ConnectionErrorInfo | null
-  lastSocketClose: SocketCloseInfo | null
-  lastCommandError: CommandErrorInfo | null
-  lastHeartbeatAt: string | null
-  lastHeartbeatSentAt: string | null
+}
+
+export interface ExtensionState {
+  connection: ConnectionState
+  targeting: TargetingState
+  session: SessionState
+  network: NetworkState
 }
 
 export type TabInput = number | string | null | undefined

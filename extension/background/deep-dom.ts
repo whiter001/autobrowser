@@ -20,13 +20,23 @@ function normalizeMaxDepth(maxDepth: number | null | undefined): number {
   return Math.max(0, Math.floor(maxDepth))
 }
 
+function normalizeMaxNodes(maxNodes: number | null | undefined): number {
+  if (typeof maxNodes !== 'number' || !Number.isFinite(maxNodes)) {
+    return 50_000
+  }
+
+  return Math.max(0, Math.floor(maxNodes))
+}
+
 export function deepCollectElements(
   root: DeepDomRootLike | null | undefined,
   maxDepth: number = 25,
+  maxNodes: number = 50_000,
 ): DeepDomNodeLike[] {
   const results: DeepDomNodeLike[] = []
   const seen = new Set<DeepDomNodeLike>()
   const depthLimit = normalizeMaxDepth(maxDepth)
+  const nodeLimit = normalizeMaxNodes(maxNodes)
 
   const visitRoot = (currentRoot: DeepDomRootLike | null | undefined, depth: number) => {
     if (!currentRoot || typeof currentRoot.querySelectorAll !== 'function') {
@@ -36,6 +46,10 @@ export function deepCollectElements(
     const nodes = toArray(currentRoot.querySelectorAll('*'))
 
     for (const node of nodes) {
+      if (results.length >= nodeLimit) {
+        return
+      }
+
       if (!node || seen.has(node)) {
         continue
       }
@@ -58,10 +72,12 @@ export function deepQuerySelectorAll(
   root: DeepDomRootLike | null | undefined,
   selector: string,
   maxDepth: number = 25,
+  maxNodes: number = 50_000,
 ): DeepDomNodeLike[] {
   const results: DeepDomNodeLike[] = []
   const seen = new Set<DeepDomNodeLike>()
   const depthLimit = normalizeMaxDepth(maxDepth)
+  const nodeLimit = normalizeMaxNodes(maxNodes)
 
   const visitRoot = (currentRoot: DeepDomRootLike | null | undefined, depth: number) => {
     if (!currentRoot || typeof currentRoot.querySelectorAll !== 'function') {
@@ -69,6 +85,10 @@ export function deepQuerySelectorAll(
     }
 
     for (const node of toArray(currentRoot.querySelectorAll(selector))) {
+      if (results.length >= nodeLimit) {
+        return
+      }
+
       if (!node || seen.has(node)) {
         continue
       }

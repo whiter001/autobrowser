@@ -27,7 +27,7 @@ interface TabSummarySource {
 }
 
 export function rememberTargetTab(state: ExtensionState, tabId: number | null | undefined): void {
-  state.targetTabId = typeof tabId === 'number' ? tabId : null
+  state.targeting.targetTabId = typeof tabId === 'number' ? tabId : null
 }
 
 export function getOrCreateTabHandle(
@@ -38,26 +38,26 @@ export function getOrCreateTabHandle(
     return null
   }
 
-  const existingHandle = state.tabHandles.get(tabId)
+  const existingHandle = state.targeting.tabHandles.get(tabId)
   if (existingHandle) {
     return existingHandle
   }
 
-  const handle = formatAgentTabHandle(state.nextTabHandleIndex)
-  state.nextTabHandleIndex += 1
-  state.tabHandles.set(tabId, handle)
-  state.tabIdsByHandle.set(handle, tabId)
+  const handle = formatAgentTabHandle(state.targeting.nextTabHandleIndex)
+  state.targeting.nextTabHandleIndex += 1
+  state.targeting.tabHandles.set(tabId, handle)
+  state.targeting.tabIdsByHandle.set(handle, tabId)
   return handle
 }
 
 export function clearRemovedTabHandle(state: ExtensionState, tabId: number): void {
-  const handle = state.tabHandles.get(tabId)
+  const handle = state.targeting.tabHandles.get(tabId)
   if (!handle) {
     return
   }
 
-  state.tabHandles.delete(tabId)
-  state.tabIdsByHandle.delete(handle)
+  state.targeting.tabHandles.delete(tabId)
+  state.targeting.tabIdsByHandle.delete(handle)
 }
 
 export function resolveTabHandle(
@@ -69,7 +69,7 @@ export function resolveTabHandle(
     return null
   }
 
-  const tabId = state.tabIdsByHandle.get(normalizedHandle)
+  const tabId = state.targeting.tabIdsByHandle.get(normalizedHandle)
   return typeof tabId === 'number' ? tabId : null
 }
 
@@ -107,22 +107,22 @@ export function toTabSummary(state: ExtensionState, tab: TabSummarySource): TabS
 }
 
 export function clearSelectedFrame(state: ExtensionState, tabId: number): void {
-  state.selectedFrames.delete(tabId)
+  state.targeting.selectedFrames.delete(tabId)
 }
 
 export function getPageEpoch(state: ExtensionState, tabId: number): number {
-  const currentEpoch = state.pageEpochs.get(tabId)
+  const currentEpoch = state.targeting.pageEpochs.get(tabId)
   if (typeof currentEpoch === 'number' && currentEpoch > 0) {
     return currentEpoch
   }
 
-  state.pageEpochs.set(tabId, 1)
+  state.targeting.pageEpochs.set(tabId, 1)
   return 1
 }
 
 export function bumpPageEpoch(state: ExtensionState, tabId: number): number {
   const nextEpoch = getPageEpoch(state, tabId) + 1
-  state.pageEpochs.set(tabId, nextEpoch)
+  state.targeting.pageEpochs.set(tabId, nextEpoch)
   return nextEpoch
 }
 
@@ -132,7 +132,7 @@ export function invalidatePageRefs(state: ExtensionState, tabId: number): number
 }
 
 export function clearRemovedPageEpoch(state: ExtensionState, tabId: number): void {
-  state.pageEpochs.delete(tabId)
+  state.targeting.pageEpochs.delete(tabId)
 }
 
 export function createStaleRefError(
@@ -205,7 +205,7 @@ export function resolveEffectiveFrameSelector(
     typeof frameSelector === 'string' && frameSelector.trim()
       ? frameSelector.trim()
       : typeof tab.id === 'number'
-        ? state.selectedFrames.get(tab.id) || null
+        ? state.targeting.selectedFrames.get(tab.id) || null
         : null
 
   if (!selector) {

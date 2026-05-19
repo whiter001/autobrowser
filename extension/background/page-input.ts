@@ -559,7 +559,7 @@ export function createPageInputDomain({
     }
 
     const frame = await resolveFrameTarget(tab.id, selector)
-    state.selectedFrames.set(tab.id, selector)
+    state.targeting.selectedFrames.set(tab.id, selector)
     return {
       found: true,
       pageEpoch: frame.pageEpoch,
@@ -630,13 +630,13 @@ export function createPageInputDomain({
     frameSelector: FrameSelector,
   ) {
     if (attrName === 'cdp-url') {
-      if (!state.token) {
+      if (!state.connection.token) {
         throw new Error('missing token')
       }
 
       return {
         found: true,
-        value: `ws://127.0.0.1:${state.relayPort}/ws?token=${encodeURIComponent(state.token)}`,
+        value: `ws://127.0.0.1:${state.connection.relayPort}/ws?token=${encodeURIComponent(state.connection.token)}`,
       }
     }
 

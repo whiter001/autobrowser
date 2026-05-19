@@ -150,7 +150,7 @@ describe('connection runtime', () => {
 
     try {
       const state = createExtensionState(DEFAULT_RELAY_PORT)
-      state.targetTabId = 22
+      state.targeting.targetTabId = 22
 
       const connection = createConnectionRuntime({
         state,
@@ -188,6 +188,7 @@ describe('connection runtime', () => {
         tabs?: TabSummary[]
         activeTabId?: number | null
         targetTabId?: number | null
+        pageEpochs?: Record<string, number>
         extensionId?: string
         version?: string
       }>
@@ -203,10 +204,11 @@ describe('connection runtime', () => {
         tabs,
         activeTabId: 11,
         targetTabId: 22,
+        pageEpochs: { 11: 1, 22: 1 },
       })
 
-      expect(state.lastHeartbeatAt).toBeNull()
-      expect(state.lastHeartbeatSentAt).toBeNull()
+      expect(state.connection.lastHeartbeatAt).toBeNull()
+      expect(state.connection.lastHeartbeatSentAt).toBeNull()
 
       intervalCallbacks[0]?.()
       expect(socket.sentPayloads).toHaveLength(3)
@@ -222,7 +224,7 @@ describe('connection runtime', () => {
         throw new Error('missing heartbeat sentAt')
       }
 
-      expect(state.lastHeartbeatSentAt).toBe(sentAt)
+      expect(state.connection.lastHeartbeatSentAt).toBe(sentAt)
 
       socket.dispatch('message', {
         data: JSON.stringify({
@@ -232,7 +234,7 @@ describe('connection runtime', () => {
         }),
       })
 
-      expect(state.lastHeartbeatAt).toBe('2026-05-09T12:00:00.000Z')
+      expect(state.connection.lastHeartbeatAt).toBe('2026-05-09T12:00:00.000Z')
     } finally {
       defineGlobalValue('chrome', originalGlobals.chrome)
       defineGlobalValue('WebSocket', originalGlobals.WebSocket)

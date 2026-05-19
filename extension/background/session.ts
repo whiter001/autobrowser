@@ -326,7 +326,7 @@ export function createSessionDomain({
         accept,
         promptText: accept ? promptText || '' : undefined,
       })
-      state.dialog = null
+      state.session.dialog = null
       return { handled: true, accepted: accept }
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error)
@@ -339,7 +339,7 @@ export function createSessionDomain({
   }
 
   function getDialogStatus(): Record<string, unknown> {
-    if (!state.dialog) {
+    if (!state.session.dialog) {
       return {
         open: false,
         type: null,
@@ -351,7 +351,7 @@ export function createSessionDomain({
     }
 
     return {
-      ...state.dialog,
+      ...state.session.dialog,
     }
   }
 

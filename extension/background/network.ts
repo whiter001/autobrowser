@@ -104,6 +104,8 @@ function stringifyNetworkBody(body: unknown): { text: string; base64Encoded: boo
 
 const DEFAULT_HAR_MAX_REQUESTS = 1000
 const DEFAULT_HAR_MAX_BODY_BYTES = 256 * 1024
+/** 全局请求列表的绝对上限，与 HAR 配置无关，防止长时间运行时内存无界增长 */
+const GLOBAL_REQUEST_HARD_CAP = 10_000
 
 function estimateTextByteLength(text: string): number {
   return new TextEncoder().encode(text).length
@@ -233,9 +235,12 @@ function upsertNetworkRequest(
     state.network.requests.push(merged)
   }
 
-  const maxRequests = getHarMaxRequests(state)
-  if (maxRequests !== null && state.network.requests.length > maxRequests) {
-    const removed = state.network.requests.splice(0, state.network.requests.length - maxRequests)
+  // 先应用 HAR 配置的 maxRequests 限制，再应用全局硬上限，两者取较严格的一方
+  const harLimit = getHarMaxRequests(state)
+  const effectiveLimit =
+    harLimit === null ? GLOBAL_REQUEST_HARD_CAP : Math.min(harLimit, GLOBAL_REQUEST_HARD_CAP)
+  if (state.network.requests.length > effectiveLimit) {
+    const removed = state.network.requests.splice(0, state.network.requests.length - effectiveLimit)
     for (const item of removed) {
       if (item && typeof item.id === 'string') {
         state.network.requestMap.delete(item.id)
@@ -442,7 +447,7 @@ export function createNetworkDomain({
 }: NetworkDomainDependencies) {
   async function refreshInterceptors(): Promise<void> {
     await Promise.allSettled(
-      Array.from(state.attachedTabs).map(async (tabId) => {
+      Array.from(state.targeting.attachedTabs).map(async (tabId) => {
         if (state.network.routes.length === 0) {
           await sendRawDebuggerCommand(tabId, 'Fetch.disable', {})
           return

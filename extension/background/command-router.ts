@@ -965,9 +965,9 @@ export function createCommandRouter({
         }
         throw new Error(`unsupported storage action: ${action}`)
       case 'console':
-        return { messages: state.consoleMessages }
+        return { messages: state.session.consoleMessages }
       case 'errors':
-        return { errors: state.pageErrors }
+        return { errors: state.session.pageErrors }
       case 'batch':
         return await handleBatchCommand(args)
       case 'network':

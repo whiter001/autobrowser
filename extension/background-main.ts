@@ -130,9 +130,9 @@ async function loadTargetTab(tabId: TabInput): Promise<TabWithId | null> {
     throw new Error(`tab not found: ${tabId}`)
   }
 
-  if (typeof state.targetTabId === 'number') {
+  if (typeof state.targeting.targetTabId === 'number') {
     try {
-      return await tabsGet(state.targetTabId)
+      return await tabsGet(state.targeting.targetTabId)
     } catch {
       rememberTargetTab(state, null)
     }
@@ -160,7 +160,7 @@ async function loadTargetTab(tabId: TabInput): Promise<TabWithId | null> {
 }
 
 async function ensureDebuggerAttached(tabId: number): Promise<void> {
-  if (state.attachedTabs.has(tabId)) {
+  if (state.targeting.attachedTabs.has(tabId)) {
     return
   }
 
@@ -173,13 +173,13 @@ async function ensureDebuggerAttached(tabId: number): Promise<void> {
     }
   }
 
-  state.attachedTabs.add(tabId)
+  state.targeting.attachedTabs.add(tabId)
   await enableDebuggerDomains(tabId)
   await network.refreshInterceptors()
 }
 
 async function detachDebugger(tabId: number): Promise<void> {
-  if (!state.attachedTabs.has(tabId)) {
+  if (!state.targeting.attachedTabs.has(tabId)) {
     return
   }
 
@@ -189,7 +189,7 @@ async function detachDebugger(tabId: number): Promise<void> {
     console.warn('failed to detach debugger from tab', tabId, error)
   }
 
-  state.attachedTabs.delete(tabId)
+  state.targeting.attachedTabs.delete(tabId)
 }
 
 async function sendRawDebuggerCommand<TResult = unknown>(
@@ -327,7 +327,7 @@ async function getFrameExecutionContext(
   const selector =
     typeof frameSelector === 'string' && frameSelector.trim()
       ? frameSelector.trim()
-      : state.selectedFrames.get(tab.id)
+      : state.targeting.selectedFrames.get(tab.id)
   if (!selector) {
     return { tab, executionContextId: null }
   }
@@ -393,7 +393,7 @@ function unwrapEvaluationResult<TValue = unknown>(result: unknown): TValue | nul
 
 function clearTabRuntimeState(tabId: number): void {
   clearSelectedFrame(state, tabId)
-  state.targetTabId = clearRemovedTabId(state.targetTabId, tabId)
+  state.targeting.targetTabId = clearRemovedTabId(state.targeting.targetTabId, tabId)
   clearRemovedTabHandle(state, tabId)
   clearRemovedPageEpoch(state, tabId)
 }
