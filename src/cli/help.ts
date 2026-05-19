@@ -311,9 +311,14 @@ const ROOT_HELP_FLAGS = [
   '--server URL  target server base URL, default http://127.0.0.1:57979',
   '--relay-port <port> relay server port',
   '--ipc-port <port> control server port',
+  '--tab <tN|id>  target a specific tab',
+  '--frame <@fN|selector> target a specific frame',
   '--stdin       read command body from stdin',
   '--file PATH   read command body from file',
   '--base64      decode command body from base64',
+  '--extension-id <id> browser extension id',
+  '--browser-command <command> browser launch command',
+  '--browser-arg <arg> browser launch argument',
   '--auto-connect proactively open the extension connect page when disconnected',
 ]
 

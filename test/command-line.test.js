@@ -171,6 +171,11 @@ describe('cli helpers', () => {
     expect(result.fetchCalls).toHaveLength(0)
     expect(result.stdout).toContain('--relay-port <port>')
     expect(result.stdout).toContain('--ipc-port <port>')
+    expect(result.stdout).toContain('--tab <tN|id>')
+    expect(result.stdout).toContain('--frame <@fN|selector>')
+    expect(result.stdout).toContain('--extension-id <id>')
+    expect(result.stdout).toContain('--browser-command <command>')
+    expect(result.stdout).toContain('--browser-arg <arg>')
   })
 
   test('documents tab, find, and get help output', async () => {
