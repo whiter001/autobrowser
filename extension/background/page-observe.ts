@@ -1147,21 +1147,19 @@ ${PAGE_CONTEXT_DEEP_DOM_HELPERS_SOURCE}
       withFrameSelectorOptions(frameSelector),
     )
 
-    return (
-      value || {
-        pageEpoch,
-        selector,
-        limit,
-        dedupe,
-        maxScrolls,
-        pauseMs,
-        stallRounds,
-        scrolls: 0,
-        stopReason: 'stalled',
-        count: 0,
-        items: [],
-      }
-    ) as FeedCollectionResult
+    return (value || {
+      pageEpoch,
+      selector,
+      limit,
+      dedupe,
+      maxScrolls,
+      pauseMs,
+      stallRounds,
+      scrolls: 0,
+      stopReason: 'stalled',
+      count: 0,
+      items: [],
+    }) as FeedCollectionResult
   }
 
   async function waitForLoadEvent(tabId: TabInput, timeout = 30000) {
