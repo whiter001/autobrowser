@@ -1,9 +1,10 @@
 import { describe, expect, test } from 'bun:test'
 import { chmod, mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises'
+import { createServer } from 'node:net'
 import os from 'node:os'
 import path from 'node:path'
 import { buildSystemOpenCommand, main, parseWindowsNetstatListeningPid } from '../src/cli.js'
-import { parseNetworkHarStartArgs, parseWaitArgs } from '../src/cli/parse.js'
+import { parseNetworkHarStartArgs, parseNetworkRequestsArgs, parseWaitArgs } from '../src/cli/parse.js'
 
 const originalFetch = globalThis.fetch
 const originalStdoutWrite = process.stdout.write.bind(process.stdout)
@@ -224,6 +225,13 @@ describe('cli helpers', () => {
     })
   })
 
+  test('rejects unsupported network request filter flags', () => {
+    // '--filtter' 是故意拼错的 flag，用于验证未知选项会被拒绝
+    expect(() => parseNetworkRequestsArgs(['--filtter', 'api'])).toThrow(
+      'unsupported network option: --filtter',
+    )
+  })
+
   test('rejects missing global flag values before dispatching commands', async () => {
     const result = await runCli(['click', '--tab'])
 
@@ -261,6 +269,14 @@ describe('cli helpers', () => {
       expect(result.fetchCalls).toHaveLength(0)
       expect(result.stderr).toContain(testCase.message)
     }
+  })
+
+  test('rejects unsupported network request flags before dispatching commands', async () => {
+    const result = await runCli(['network', 'requests', '--filtter', 'api'])
+
+    expect(result.exitCode).toBe(1)
+    expect(result.fetchCalls).toHaveLength(0)
+    expect(result.stderr).toContain('unsupported network option: --filtter')
   })
 
   test('routes HAR start limits to the extension', async () => {
@@ -1268,39 +1284,69 @@ describe('cli command routing', () => {
   })
 
   test('server serve refuses to start when the ipc port is already in use', async () => {
-    const result = await runCli(
-      ['server', '--serve'],
-      { ok: true, result: { ok: true } },
-      {
-        fetchImpl: async (url) => {
-          if (String(url) === 'http://127.0.0.1:57978/status') {
-            return {
-              ok: false,
-              async json() {
-                return { ok: false }
-              },
-            }
+    const busyServer = createServer()
+    await new Promise((resolve, reject) => {
+      busyServer.once('error', reject)
+      busyServer.listen(0, '127.0.0.1', resolve)
+    })
+
+    const busyAddress = busyServer.address()
+    if (!busyAddress || typeof busyAddress === 'string') {
+      throw new Error('failed to allocate busy ipc port')
+    }
+
+    const relayPortServer = createServer()
+    await new Promise((resolve, reject) => {
+      relayPortServer.once('error', reject)
+      relayPortServer.listen(0, '127.0.0.1', resolve)
+    })
+
+    const relayAddress = relayPortServer.address()
+    if (!relayAddress || typeof relayAddress === 'string') {
+      throw new Error('failed to allocate relay port')
+    }
+
+    await new Promise((resolve, reject) => {
+      relayPortServer.close((error) => {
+        if (error) {
+          reject(error)
+          return
+        }
+
+        resolve(undefined)
+      })
+    })
+
+    try {
+      const result = await runCli(
+        [
+          'server',
+          '--serve',
+          '--relay-port',
+          String(relayAddress.port),
+          '--ipc-port',
+          String(busyAddress.port),
+        ],
+        { ok: true, result: { ok: true } },
+      )
+
+      expect(result.exitCode).toBe(1)
+      expect(result.fetchCalls).toHaveLength(0)
+      expect(result.spawnCalls).toHaveLength(0)
+      expect(result.stdout).not.toContain('autobrowser server started')
+      expect(result.stderr).toContain(`Server already running on port ${busyAddress.port}`)
+    } finally {
+      await new Promise((resolve, reject) => {
+        busyServer.close((error) => {
+          if (error) {
+            reject(error)
+            return
           }
 
-          if (String(url) === 'http://127.0.0.1:57979/status') {
-            return {
-              ok: true,
-              async json() {
-                return { ok: true }
-              },
-            }
-          }
-
-          throw new Error(`unexpected request: ${String(url)}`)
-        },
-      },
-    )
-
-    expect(result.exitCode).toBe(1)
-    expect(result.fetchCalls).toHaveLength(2)
-    expect(result.spawnCalls).toHaveLength(0)
-    expect(result.stdout).not.toContain('autobrowser server started')
-    expect(result.stderr).toContain('Server already running on port 57979')
+          resolve(undefined)
+        })
+      })
+    }
   })
 
   test('server ignores unrelated ipc responses before deciding it is already running', async () => {
@@ -1474,7 +1520,7 @@ describe('cli command routing', () => {
     )
 
     expect(result.exitCode).toBeUndefined()
-    expect(result.fetchCalls).toHaveLength(2)
+    expect(result.fetchCalls).toHaveLength(1)
     expect(killCalls).toEqual([{ pid: 12345, signal: 'SIGTERM' }])
     expect(result.stdout).toContain('stopped')
   })

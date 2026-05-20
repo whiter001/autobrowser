@@ -1,4 +1,5 @@
 import { chmod, mkdir, readFile, writeFile } from 'node:fs/promises'
+import { createConnection } from 'node:net'
 import os from 'node:os'
 import path from 'node:path'
 
@@ -63,6 +64,11 @@ export async function readJsonFile<T>(
     if (error && (error as NodeJS.ErrnoException).code === 'ENOENT') {
       return fallback
     }
+
+    if (error instanceof SyntaxError) {
+      return fallback
+    }
+
     throw error
   }
 }
@@ -133,10 +139,28 @@ export function failure(
 }
 
 export async function isPortInUse(port: number): Promise<boolean> {
-  try {
-    const response = await fetch(`http://127.0.0.1:${port}/status`)
-    return response.ok
-  } catch {
+  if (!isValidPort(port)) {
     return false
   }
+
+  return await new Promise((resolve) => {
+    const socket = createConnection({ host: '127.0.0.1', port })
+    let settled = false
+
+    const finish = (result: boolean): void => {
+      if (settled) {
+        return
+      }
+
+      settled = true
+      socket.removeAllListeners()
+      socket.destroy()
+      resolve(result)
+    }
+
+    socket.setTimeout(250)
+    socket.once('connect', () => finish(true))
+    socket.once('timeout', () => finish(false))
+    socket.once('error', () => finish(false))
+  })
 }

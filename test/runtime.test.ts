@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from 'bun:test'
-import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { createRuntime } from '../src/core/runtime.js'
@@ -236,6 +236,27 @@ describe('runtime snapshot', () => {
 
     expect(persistedState.snapshot.lastCommand?.args).toEqual({
       script: '[redacted]',
+    })
+  })
+
+  test('falls back when persisted state JSON is corrupted', async () => {
+    const homeDir = await mkdtemp(path.join(os.tmpdir(), 'autobrowser-runtime-test-'))
+    tempDirs.push(homeDir)
+
+    const stateDir = path.join(homeDir, '.autobrowser')
+    await writeFile(path.join(stateDir, 'state.json'), '{bad json', 'utf8').catch(async () => {
+      await Bun.write(path.join(stateDir, 'state.json'), '{bad json')
+    })
+
+    const runtime = await createRuntime({ homeDir })
+
+    expect(runtime.snapshot().snapshot).toMatchObject({
+      tabs: [],
+      activeTabId: null,
+      targetTabId: null,
+      pageEpochs: {},
+      lastCommand: null,
+      lastError: null,
     })
   })
 })

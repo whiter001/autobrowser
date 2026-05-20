@@ -108,28 +108,54 @@ export function parseNetworkRequestsArgs(rest: string[]): Record<string, unknown
   for (let index = 0; index < rest.length; index += 1) {
     const value = rest[index]
     if (value === '--filter') {
-      result.filter = rest[index + 1] || ''
+      const filterValue = rest[index + 1]
+      if (filterValue === undefined) {
+        throw new Error('missing value for --filter')
+      }
+
+      result.filter = filterValue
       index += 1
       continue
     }
 
     if (value === '--type') {
-      result.type = rest[index + 1] || ''
+      const typeValue = rest[index + 1]
+      if (typeValue === undefined) {
+        throw new Error('missing value for --type')
+      }
+
+      result.type = typeValue
       index += 1
       continue
     }
 
     if (value === '--method') {
-      result.method = rest[index + 1] || ''
+      const methodValue = rest[index + 1]
+      if (methodValue === undefined) {
+        throw new Error('missing method value')
+      }
+
+      result.method = methodValue
       index += 1
       continue
     }
 
     if (value === '--status') {
-      result.status = rest[index + 1] || ''
+      const statusValue = rest[index + 1]
+      if (statusValue === undefined) {
+        throw new Error('missing status value')
+      }
+
+      result.status = statusValue
       index += 1
       continue
     }
+
+    if (value.startsWith('--')) {
+      throw new Error(`unsupported network option: ${value}`)
+    }
+
+    throw new Error(`unexpected extra network argument: ${value}`)
   }
 
   return result
