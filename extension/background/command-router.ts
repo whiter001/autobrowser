@@ -352,7 +352,10 @@ export function createCommandRouter({
     const action = readStringArg(args, 'action', 'locate').trim()
     // 提前校验 action，避免执行耗时的语义搜索后才发现参数非法。
     if (!VALID_FIND_ACTIONS.includes(action as (typeof VALID_FIND_ACTIONS)[number])) {
-      throw new Error(`unsupported find action: ${action}`)
+      const err = new Error(`unsupported find action: ${action}`) as any
+      err.code = 'INVALID_ACTION'
+      err.suggestedAction = `Supported actions are: ${VALID_FIND_ACTIONS.join(', ')}.`
+      throw err
     }
     const actionValue = readStringArg(args, 'value')
     const findOptions: FindSemanticTargetOptions = {
@@ -365,7 +368,13 @@ export function createCommandRouter({
     const result = await pageObserve.findSemanticTarget(tabId, findOptions, frameSelector)
     const ref = result.match?.ref
     if (!ref) {
-      throw new Error(result.reason || 'semantic target ref missing')
+      const err = new Error(result.reason || 'semantic target ref missing') as any
+      err.code = 'NOT_FOUND'
+      err.suggestedAction = 'Check if the target element exists in the current viewport. Re-run `snapshot` to analyze the page state.'
+      if (result.candidates && Array.isArray(result.candidates) && result.candidates.length > 0) {
+        err.suggestedAction += ` Additionally, found other potential candidates:\n${JSON.stringify(result.candidates, null, 2)}`
+      }
+      throw err
     }
 
     if (action === 'locate') {

@@ -79,6 +79,12 @@ autobrowser 是一个面向 Chrome/Edge 的浏览器自动化 CLI，通过本地
 - 如果页面看起来空白或不对，先确认是不是登录页、验证码页，或者虚拟滚动列表。
 - 对于类似 x.com 的 SPA 列表页，优先从 `article` 等可见节点读取内容，不要直接相信 `get text body`。
 
+## AI 专属原则 (AI-Agent Exclusives)
+
+- ❗ **当 autobrowser 命令失败（如超时、找不到元素、被弹窗拦截、引用过期）时，明确禁止去尝试编写 Python/Selenium/Puppeteer 等其他框架脚本作为替代方案。**
+- 失败通常意味着当前持有的页面状态已陈旧、网络缓慢或存在未处理的各类弹窗。应该仔细阅读报错和执行建议。
+- 遇到错误时，必须通过 `snapshot` 或 `status` 重新获取最新上下文，调整目标后继续使用 autobrowser。
+
 ## 更新约定
 
 - 这个技能文件应当与当前 CLI 帮助和实现保持一致。
