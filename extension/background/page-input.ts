@@ -226,7 +226,10 @@ export function createPageInputDomain({
 
     const box = await getElementBox(tab.id, selector, frameSelector)
     if (!box) {
-      throw Object.assign(new Error(`element not found: ${selector}`), { code: `STALE_REFERENCE`, suggestedAction: `The target element was not found. If this was from a previous snapshot reference like @eX, the page may have updated. Ensure you run \'snapshot\' to get fresh element references.` })
+      throw Object.assign(new Error(`element not found: ${selector}`), {
+        code: `STALE_REFERENCE`,
+        suggestedAction: `The target element was not found. If this was from a previous snapshot reference like @eX, the page may have updated. Ensure you run \'snapshot\' to get fresh element references.`,
+      })
     }
 
     await dispatchMouseClick(tab.id, box, 1)
@@ -237,7 +240,10 @@ export function createPageInputDomain({
     const { tab, resolvedSelector } = await resolveElementSelectorForTab(tabId, selector)
     const box = await getElementBox(tab.id, selector, frameSelector)
     if (!box) {
-      throw Object.assign(new Error(`element not found: ${selector}`), { code: `STALE_REFERENCE`, suggestedAction: `The target element was not found. If this was from a previous snapshot reference like @eX, the page may have updated. Ensure you run \'snapshot\' to get fresh element references.` })
+      throw Object.assign(new Error(`element not found: ${selector}`), {
+        code: `STALE_REFERENCE`,
+        suggestedAction: `The target element was not found. If this was from a previous snapshot reference like @eX, the page may have updated. Ensure you run \'snapshot\' to get fresh element references.`,
+      })
     }
 
     const { value } = await evaluateInTabContext<boolean>(
@@ -302,7 +308,10 @@ export function createPageInputDomain({
       return value
     }
 
-    throw Object.assign(new Error(`element not found: ${selector}`), { code: `STALE_REFERENCE`, suggestedAction: `The target element was not found. If this was from a previous snapshot reference like @eX, the page may have updated. Ensure you run \'snapshot\' to get fresh element references.` })
+    throw Object.assign(new Error(`element not found: ${selector}`), {
+      code: `STALE_REFERENCE`,
+      suggestedAction: `The target element was not found. If this was from a previous snapshot reference like @eX, the page may have updated. Ensure you run \'snapshot\' to get fresh element references.`,
+    })
   }
 
   async function selectOption(
@@ -329,7 +338,10 @@ export function createPageInputDomain({
     if (result?.found) {
       return result
     }
-    throw Object.assign(new Error(`element not found: ${selector}`), { code: `STALE_REFERENCE`, suggestedAction: `The target element was not found. If this was from a previous snapshot reference like @eX, the page may have updated. Ensure you run \'snapshot\' to get fresh element references.` })
+    throw Object.assign(new Error(`element not found: ${selector}`), {
+      code: `STALE_REFERENCE`,
+      suggestedAction: `The target element was not found. If this was from a previous snapshot reference like @eX, the page may have updated. Ensure you run \'snapshot\' to get fresh element references.`,
+    })
   }
 
   async function checkElement(
@@ -356,7 +368,10 @@ export function createPageInputDomain({
     if (result?.found) {
       return result
     }
-    throw Object.assign(new Error(`element not found: ${selector}`), { code: `STALE_REFERENCE`, suggestedAction: `The target element was not found. If this was from a previous snapshot reference like @eX, the page may have updated. Ensure you run \'snapshot\' to get fresh element references.` })
+    throw Object.assign(new Error(`element not found: ${selector}`), {
+      code: `STALE_REFERENCE`,
+      suggestedAction: `The target element was not found. If this was from a previous snapshot reference like @eX, the page may have updated. Ensure you run \'snapshot\' to get fresh element references.`,
+    })
   }
 
   async function scrollElement(
@@ -819,7 +834,10 @@ export function createPageInputDomain({
   ) {
     const box = await getElementBox(tabId, selector, frameSelector)
     if (!box) {
-      throw Object.assign(new Error(`element not found: ${selector}`), { code: `STALE_REFERENCE`, suggestedAction: `The target element was not found. If this was from a previous snapshot reference like @eX, the page may have updated. Ensure you run \'snapshot\' to get fresh element references.` })
+      throw Object.assign(new Error(`element not found: ${selector}`), {
+        code: `STALE_REFERENCE`,
+        suggestedAction: `The target element was not found. If this was from a previous snapshot reference like @eX, the page may have updated. Ensure you run \'snapshot\' to get fresh element references.`,
+      })
     }
 
     const tab = await getTargetTab(tabId)

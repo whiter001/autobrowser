@@ -370,7 +370,8 @@ export function createCommandRouter({
     if (!ref) {
       const err = new Error(result.reason || 'semantic target ref missing') as any
       err.code = 'NOT_FOUND'
-      err.suggestedAction = 'Check if the target element exists in the current viewport. Re-run `snapshot` to analyze the page state.'
+      err.suggestedAction =
+        'Check if the target element exists in the current viewport. Re-run `snapshot` to analyze the page state.'
       if (result.candidates && Array.isArray(result.candidates) && result.candidates.length > 0) {
         err.suggestedAction += ` Additionally, found other potential candidates:\n${JSON.stringify(result.candidates, null, 2)}`
       }

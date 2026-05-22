@@ -30,7 +30,10 @@ export function writeResult(
   if (options.json) {
     process.stdout.write(`${JSON.stringify(payload, null, 2)}\n`)
     if (isFailedCommandResponse(payload)) {
-      throw new CommandResultError(payload.error?.message || 'command failed', payload.error?.suggestion)
+      throw new CommandResultError(
+        payload.error?.message || 'command failed',
+        payload.error?.suggestion,
+      )
     }
     return
   }
