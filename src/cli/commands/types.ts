@@ -24,6 +24,7 @@ export interface CommandContext {
     allowRelayFallback: boolean,
   ): Promise<boolean>
   getStatus(baseUrl: string): Promise<Record<string, unknown>>
+  getCommandStatus(baseUrl: string): Promise<Record<string, unknown>>
   resolveEvalScript(rest: string[]): Promise<string>
   getCdpUrl(baseUrl: string): Promise<string>
   extractScreenshotData(result: Record<string, unknown> | undefined): {

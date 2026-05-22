@@ -73,6 +73,7 @@ async function handleOpenOrGoto(
   }
 
   const payload = await context.requestCommand(context.flags.server, 'goto', { url })
+
   if (shouldOpenInNewTab(payload)) {
     const fallbackPayload = await context.requestCommand(context.flags.server, 'tab.new', { url })
     context.writeResult(fallbackPayload)

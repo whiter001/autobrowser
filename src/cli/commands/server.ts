@@ -358,7 +358,7 @@ async function handleStatus(rest: string[], context: CommandContext): Promise<nu
     return context.writeHelp(['status'])
   }
 
-  const status = await context.getStatus(context.flags.server)
+  const status = await context.getCommandStatus(context.flags.server)
   if (!context.flags.json) {
     process.stdout.write(formatStatusSummary(status))
     return 0
@@ -373,7 +373,7 @@ async function handleReplay(rest: string[], context: CommandContext): Promise<nu
     return context.writeHelp(['replay'])
   }
 
-  const status = await context.getStatus(context.flags.server)
+  const status = await context.getCommandStatus(context.flags.server)
   const lastCommand = getRecordedCommandFromStatus(status)
 
   if (!lastCommand) {

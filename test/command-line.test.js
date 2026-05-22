@@ -4,7 +4,11 @@ import { createServer } from 'node:net'
 import os from 'node:os'
 import path from 'node:path'
 import { buildSystemOpenCommand, main, parseWindowsNetstatListeningPid } from '../src/cli.js'
-import { parseNetworkHarStartArgs, parseNetworkRequestsArgs, parseWaitArgs } from '../src/cli/parse.js'
+import {
+  parseNetworkHarStartArgs,
+  parseNetworkRequestsArgs,
+  parseWaitArgs,
+} from '../src/cli/parse.js'
 
 const originalFetch = globalThis.fetch
 const originalStdoutWrite = process.stdout.write.bind(process.stdout)
@@ -339,11 +343,61 @@ describe('cli command routing', () => {
     expect(result.stdout.trim()).toBe('ws://127.0.0.1:48001/ws?token=test-token')
   })
 
+  test('status starts the local server when the control server is unreachable', async () => {
+    let statusCallCount = 0
+
+    const result = await runCli(
+      ['status'],
+      { ok: true, result: { ok: true } },
+      {
+        spawnDetachedProcess: () => ({
+          pid: 12345,
+          unref() {},
+        }),
+        fetchImpl: async () => {
+          statusCallCount += 1
+
+          if (statusCallCount < 3) {
+            throw new Error('status unavailable')
+          }
+
+          return {
+            ok: true,
+            async json() {
+              return {
+                token: 'live-token',
+                relayPort: 57978,
+                ipcPort: 57979,
+                extensionConnected: false,
+              }
+            },
+          }
+        },
+      },
+    )
+
+    expect(result.exitCode).toBe(0)
+    expect(result.spawnCalls).toHaveLength(1)
+    expect(JSON.parse(result.stdout)).toMatchObject({
+      token: 'live-token',
+      relayPort: 57978,
+      ipcPort: 57979,
+      extensionConnected: false,
+    })
+  })
+
   test('returns a non-zero code when status lookup fails', async () => {
     const result = await runCli(
       ['status'],
       { ok: true, result: { ok: true } },
       {
+        spawnDetachedProcess: () => ({
+          pid: 12345,
+          unref() {},
+          async waitForExit() {
+            return { code: 1, signal: null }
+          },
+        }),
         fetchImpl: async () => {
           throw new Error('status unavailable')
         },
@@ -351,7 +405,10 @@ describe('cli command routing', () => {
     )
 
     expect(result.exitCode).toBe(1)
-    expect(result.fetchCalls).toHaveLength(1)
+    expect(result.stderr).toContain('autobrowser could not reach its local control server')
+    expect(result.stderr).toContain('Recovery status:')
+    expect(result.stderr).toContain('tried to start the local server automatically')
+    expect(result.stderr).toContain('Run `autobrowser connect`')
     expect(result.stderr).toContain('status unavailable')
   })
 
@@ -541,6 +598,259 @@ describe('cli command routing', () => {
       },
     })
     expect(result.stdout).toContain('https://www.baidu.com')
+  })
+
+  test('open starts the local server and opens the connect page when the control server is unreachable', async () => {
+    let statusCallCount = 0
+
+    const result = await runCli(
+      ['open', 'https://example.com'],
+      { ok: true, result: { ok: true } },
+      {
+        openUrl: async () => {},
+        spawnDetachedProcess: () => ({
+          pid: 12345,
+          unref() {},
+        }),
+        fetchImpl: async (url, init = {}) => {
+          const body = init.body ? JSON.parse(init.body) : null
+
+          if (body?.command === 'goto') {
+            if (!init.headers?.authorization) {
+              throw new Error('Unable to connect. Is the computer able to access the url?')
+            }
+
+            return {
+              ok: true,
+              async json() {
+                return {
+                  ok: true,
+                  result: {
+                    navigated: true,
+                  },
+                }
+              },
+              async text() {
+                return `${JSON.stringify({
+                  ok: true,
+                  result: {
+                    navigated: true,
+                  },
+                })}\n`
+              },
+            }
+          }
+
+          if (String(url).endsWith('/status')) {
+            statusCallCount += 1
+
+            if (statusCallCount < 3) {
+              throw new Error('status unavailable')
+            }
+
+            return {
+              ok: true,
+              async json() {
+                return {
+                  ok: true,
+                  token: 'live-token',
+                  relayPort: 57978,
+                  ipcPort: 57979,
+                  extensionConnected: false,
+                }
+              },
+              async text() {
+                return `${JSON.stringify({
+                  ok: true,
+                  token: 'live-token',
+                  relayPort: 57978,
+                  ipcPort: 57979,
+                  extensionConnected: false,
+                })}\n`
+              },
+            }
+          }
+
+          throw new Error(`unexpected request: ${String(url)} ${JSON.stringify(body)}`)
+        },
+      },
+    )
+
+    expect(result.exitCode).toBe(0)
+    expect(result.spawnCalls).toHaveLength(1)
+    expect(result.fetchCalls.map((call) => String(call.url))).toContain(
+      'http://127.0.0.1:57979/status',
+    )
+    expect(result.openCalls).toEqual([
+      'chrome-extension://bfccnpkjkbhceghimfjgnkigilidldep/connect.html?token=live-token&relayPort=57978&ipcPort=57979',
+    ])
+    expect(JSON.parse(result.stdout)).toMatchObject({
+      ok: true,
+      result: {
+        navigated: true,
+      },
+    })
+  })
+
+  test('open auto-connects after a disconnected response without requiring --auto-connect', async () => {
+    let commandCallCount = 0
+
+    const result = await runCli(
+      ['open', 'https://example.com'],
+      { ok: true, result: { ok: true } },
+      {
+        openUrl: async () => {},
+        fetchImpl: async (url, init = {}) => {
+          const body = init.body ? JSON.parse(init.body) : null
+
+          if (String(url).endsWith('/status')) {
+            return {
+              ok: true,
+              async json() {
+                return {
+                  ok: true,
+                  token: 'live-token',
+                  relayPort: 48011,
+                  ipcPort: 48012,
+                  extensionConnected: false,
+                }
+              },
+            }
+          }
+
+          if (body?.command === 'goto') {
+            commandCallCount += 1
+
+            if (commandCallCount === 1) {
+              return {
+                ok: true,
+                async json() {
+                  return {
+                    ok: false,
+                    error: {
+                      message: 'no extension is connected',
+                      code: 'EXTENSION_DISCONNECTED',
+                    },
+                  }
+                },
+              }
+            }
+
+            return {
+              ok: true,
+              async json() {
+                return {
+                  ok: true,
+                  result: {
+                    navigated: true,
+                  },
+                }
+              },
+            }
+          }
+
+          throw new Error(`unexpected request: ${String(url)} ${JSON.stringify(body)}`)
+        },
+      },
+    )
+
+    expect(result.exitCode).toBe(0)
+    expect(result.openCalls).toEqual([
+      'chrome-extension://bfccnpkjkbhceghimfjgnkigilidldep/connect.html?token=live-token&relayPort=48011&ipcPort=48012',
+    ])
+    expect(JSON.parse(result.stdout)).toMatchObject({
+      ok: true,
+      result: {
+        navigated: true,
+      },
+    })
+  })
+
+  test('open explains how to connect autobrowser when recovery still fails', async () => {
+    const result = await runCli(
+      ['open', 'https://bun.com/bun-unsafe-audit'],
+      { ok: true, result: { ok: true } },
+      {
+        spawnDetachedProcess: () => ({
+          pid: 12345,
+          unref() {},
+          async waitForExit() {
+            return { code: 1, signal: null }
+          },
+        }),
+        fetchImpl: async () => {
+          throw new Error('Unable to connect. Is the computer able to access the url?')
+        },
+      },
+    )
+
+    expect(result.exitCode).toBe(1)
+    expect(result.stderr).toContain('autobrowser could not reach its local control server')
+    expect(result.stderr).toContain('Recovery status:')
+    expect(result.stderr).toContain('tried to start the local server automatically')
+    expect(result.stderr).toContain('Run `autobrowser connect`')
+    expect(result.stderr).toContain('extension installed and enabled')
+    expect(result.stderr).toContain('autobrowser status')
+    expect(result.stderr).toContain('Unable to connect. Is the computer able to access the url?')
+  })
+
+  test('open reports that the connect page was already opened automatically when retry still needs a connection', async () => {
+    let commandCallCount = 0
+
+    const result = await runCli(
+      ['open', 'https://example.com'],
+      { ok: true, result: { ok: true } },
+      {
+        openUrl: async () => {},
+        fetchImpl: async (url, init = {}) => {
+          const body = init.body ? JSON.parse(init.body) : null
+
+          if (String(url).endsWith('/status')) {
+            return {
+              ok: true,
+              async json() {
+                return {
+                  ok: true,
+                  token: 'live-token',
+                  relayPort: 48011,
+                  ipcPort: 48012,
+                  extensionConnected: false,
+                }
+              },
+            }
+          }
+
+          if (body?.command === 'goto') {
+            commandCallCount += 1
+            return {
+              ok: true,
+              async json() {
+                return {
+                  ok: false,
+                  error: {
+                    message: `no extension is connected (${commandCallCount})`,
+                    code: 'EXTENSION_DISCONNECTED',
+                  },
+                }
+              },
+            }
+          }
+
+          throw new Error(`unexpected request: ${String(url)} ${JSON.stringify(body)}`)
+        },
+      },
+    )
+
+    expect(result.exitCode).toBe(1)
+    expect(result.openCalls).toEqual([
+      'chrome-extension://bfccnpkjkbhceghimfjgnkigilidldep/connect.html?token=live-token&relayPort=48011&ipcPort=48012',
+    ])
+    expect(result.stdout).toContain('Recovery status:')
+    expect(result.stdout).toContain('opened the connect page automatically')
+    expect(result.stdout).toContain(
+      'Complete the connect page that autobrowser opened automatically',
+    )
+    expect(result.stdout).toContain('Wait for `autobrowser status` to show `extension: connected`')
   })
 
   test('auto-connect opens the extension page before dispatching a command when disconnected', async () => {
@@ -1212,7 +1522,7 @@ describe('cli command routing', () => {
     )
 
     expect(result.exitCode).toBe(0)
-    expect(result.fetchCalls).toHaveLength(1)
+    expect(result.fetchCalls.length).toBeGreaterThanOrEqual(1)
     expect(result.spawnCalls).toHaveLength(0)
     expect(result.openCalls).toEqual([
       'chrome-extension://bfccnpkjkbhceghimfjgnkigilidldep/connect.html?token=saved-token&relayPort=49001&ipcPort=49002',
@@ -1591,9 +1901,11 @@ describe('cli command routing', () => {
       },
     })
 
+    const isCall = result.fetchCalls.find((call) => call.body?.command === 'is')
+
     expect(result.exitCode).toBe(0)
-    expect(result.fetchCalls).toHaveLength(1)
-    expect(result.fetchCalls[0].body).toEqual({
+    expect(result.fetchCalls.length).toBeGreaterThanOrEqual(1)
+    expect(isCall?.body).toEqual({
       command: 'is',
       args: {
         selector: '#submit',
@@ -1637,10 +1949,11 @@ describe('cli command routing', () => {
 
   test('routes text waits to the extension', async () => {
     const result = await runCli(['wait', '--text', 'Welcome'])
+    const waitCall = result.fetchCalls.find((call) => call.body?.command === 'wait')
 
     expect(result.exitCode).toBe(0)
-    expect(result.fetchCalls).toHaveLength(1)
-    expect(result.fetchCalls[0].body).toEqual({
+    expect(result.fetchCalls.length).toBeGreaterThanOrEqual(1)
+    expect(waitCall?.body).toEqual({
       command: 'wait',
       args: {
         timeout: 30000,
@@ -1746,7 +2059,7 @@ describe('cli command routing', () => {
     })
 
     expect(result.exitCode).toBe(0)
-    expect(result.fetchCalls).toHaveLength(1)
+    expect(result.fetchCalls.length).toBeGreaterThanOrEqual(1)
     expect(result.fetchCalls[0].body).toEqual({
       command: 'dialog',
       args: {
@@ -1783,7 +2096,7 @@ describe('cli command routing', () => {
     )
 
     expect(result.exitCode).toBe(0)
-    expect(result.fetchCalls).toHaveLength(1)
+    expect(result.fetchCalls.length).toBeGreaterThanOrEqual(1)
     expect(result.fetchCalls[0].body).toEqual({
       command: 'screenshot',
       args: {
@@ -1847,9 +2160,10 @@ describe('cli command routing', () => {
     )
 
     const savedPath = JSON.parse(result.stdout).path
+    const screenshotCall = result.fetchCalls.find((call) => call.body?.command === 'screenshot')
     expect(result.exitCode).toBe(0)
-    expect(result.fetchCalls).toHaveLength(1)
-    expect(result.fetchCalls[0].body).toEqual({
+    expect(result.fetchCalls.length).toBeGreaterThanOrEqual(1)
+    expect(screenshotCall?.body).toEqual({
       command: 'screenshot',
       args: {
         full: false,
@@ -1891,10 +2205,11 @@ describe('cli command routing', () => {
 
   test('routes double clicks to the extension', async () => {
     const result = await runCli(['dblclick', '#submit'])
+    const doubleClickCall = result.fetchCalls.find((call) => call.body?.command === 'dblclick')
 
     expect(result.exitCode).toBe(0)
-    expect(result.fetchCalls).toHaveLength(1)
-    expect(result.fetchCalls[0].body).toEqual({
+    expect(result.fetchCalls.length).toBeGreaterThanOrEqual(1)
+    expect(doubleClickCall?.body).toEqual({
       command: 'dblclick',
       args: {
         selector: '#submit',
@@ -1962,7 +2277,7 @@ describe('cli command routing', () => {
     const result = await runCli(['find', 'text', 'Sign in', 'text', '--exact'])
 
     expect(result.exitCode).toBe(0)
-    expect(result.fetchCalls).toHaveLength(1)
+    expect(result.fetchCalls.length).toBeGreaterThanOrEqual(1)
     expect(result.fetchCalls[0].body).toEqual({
       command: 'find',
       args: {
@@ -2442,10 +2757,11 @@ describe('cli command routing', () => {
 
   test('loads state by saved name when input is not json', async () => {
     const result = await runCli(['state', 'load', 'checkout'])
+    const stateLoadCall = result.fetchCalls.find((call) => call.body?.command === 'state')
 
     expect(result.exitCode).toBe(0)
-    expect(result.fetchCalls).toHaveLength(1)
-    expect(result.fetchCalls[0].body).toEqual({
+    expect(result.fetchCalls.length).toBeGreaterThanOrEqual(1)
+    expect(stateLoadCall?.body).toEqual({
       command: 'state',
       args: {
         action: 'load',

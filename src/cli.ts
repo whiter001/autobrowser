@@ -10,7 +10,11 @@ import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import os from 'node:os'
 import path from 'node:path'
-import { resolveConnectLaunchConfig, type BrowserLaunchConfig } from './core/config.js'
+import {
+  resolveConnectLaunchConfig,
+  resolveExtensionId,
+  type BrowserLaunchConfig,
+} from './core/config.js'
 import { getExtensionUrl } from './core/extension.js'
 import { buildHarPayload, compareHarRecords } from './core/har.js'
 import { validateCommandArgs } from './core/command-spec.js'
@@ -34,10 +38,16 @@ import {
 } from './cli/client.js'
 import { CommandResultError, writeResult as baseWriteResult } from './cli/output.js'
 import {
+  buildServerLaunchArgs,
+  isServerSnapshotOnPorts,
+  type ServerSnapshotStatus,
   isServerSnapshotStatus,
+  killDetachedProcess,
   normalizeSavedPort,
   parseWindowsNetstatListeningPid,
   readPersistedConnectionInfo,
+  spawnDetachedProcess,
+  waitForServerStatus,
 } from './cli/server-control.js'
 import { COMMAND_REGISTRY } from './cli/commands/index.js'
 import { type CommandContext } from './cli/commands/types.js'
@@ -400,6 +410,133 @@ async function openUrl(url: string, browserConfig: BrowserLaunchConfig | null): 
   await execFileAsync(systemOpenCommand.command, systemOpenCommand.args)
 }
 
+function getLocalControlBaseUrl(ipcPort: number): string {
+  return `http://127.0.0.1:${ipcPort}`
+}
+
+function isLoopbackHostname(hostname: string): boolean {
+  return hostname === '127.0.0.1' || hostname === 'localhost' || hostname === '::1'
+}
+
+function targetsLocalControlServer(baseUrl: string, ipcPort: number): boolean {
+  try {
+    const url = new URL(baseUrl)
+    const port = Number(url.port || (url.protocol === 'https:' ? '443' : '80'))
+
+    return url.protocol === 'http:' && isLoopbackHostname(url.hostname) && port === ipcPort
+  } catch {
+    return false
+  }
+}
+
+function isServerConnectionError(error: unknown): boolean {
+  const message = String(error instanceof Error ? error.message : error).toLowerCase()
+
+  return (
+    message.includes('unable to connect') ||
+    message.includes('status unavailable') ||
+    message.includes('failed to fetch') ||
+    message.includes('fetch failed') ||
+    message.includes('network error') ||
+    message.includes('econnrefused') ||
+    message.includes('connection refused') ||
+    message.includes('econnreset')
+  )
+}
+
+interface ConnectionRecoveryHints {
+  localTarget: boolean
+  serverStartAttempted: boolean
+  serverStarted: boolean
+  connectPageAttempted: boolean
+  connectPageOpened: boolean
+}
+
+function createConnectionRecoveryHints(localTarget: boolean): ConnectionRecoveryHints {
+  return {
+    localTarget,
+    serverStartAttempted: false,
+    serverStarted: false,
+    connectPageAttempted: false,
+    connectPageOpened: false,
+  }
+}
+
+function formatConnectionRecoveryMessage(
+  baseUrl: string,
+  originalMessage: string,
+  options: {
+    problem: 'server-unreachable' | 'extension-disconnected'
+    recoveryHints: ConnectionRecoveryHints
+  },
+): string {
+  const lines: string[] = []
+  const { recoveryHints } = options
+
+  if (options.problem === 'server-unreachable') {
+    lines.push(
+      recoveryHints.localTarget
+        ? `autobrowser could not reach its local control server at ${baseUrl}.`
+        : `autobrowser could not reach its configured control server at ${baseUrl}.`,
+    )
+  } else {
+    lines.push('autobrowser is not connected to a browser yet.')
+  }
+
+  lines.push('Recovery status:')
+
+  if (recoveryHints.localTarget) {
+    if (recoveryHints.serverStartAttempted) {
+      lines.push(
+        recoveryHints.serverStarted
+          ? '- The local autobrowser server was started automatically.'
+          : '- autobrowser tried to start the local server automatically, but it did not become ready.',
+      )
+    } else if (options.problem === 'server-unreachable') {
+      lines.push('- The local autobrowser server did not respond.')
+    }
+  } else if (options.problem === 'server-unreachable') {
+    lines.push('- The configured remote autobrowser server was not auto-started.')
+  }
+
+  if (recoveryHints.connectPageAttempted || recoveryHints.connectPageOpened) {
+    lines.push(
+      recoveryHints.connectPageOpened
+        ? '- autobrowser opened the connect page automatically.'
+        : '- autobrowser tried to open the connect page automatically, but that failed.',
+    )
+  }
+
+  lines.push('Next steps:')
+
+  let step = 1
+
+  if (!recoveryHints.localTarget) {
+    lines.push(`${step}. Make sure the autobrowser server at ${baseUrl} is reachable.`)
+    step += 1
+  }
+
+  if (recoveryHints.connectPageOpened) {
+    lines.push(`${step}. Complete the connect page that autobrowser opened automatically.`)
+  } else {
+    lines.push(`${step}. Run \`autobrowser connect\` if the connect page is not already open.`)
+  }
+  step += 1
+
+  lines.push(
+    `${step}. Keep Chrome or Edge running with the autobrowser extension installed and enabled.`,
+  )
+  step += 1
+
+  lines.push(`${step}. Wait for \`autobrowser status\` to show \`extension: connected\`.`)
+  step += 1
+
+  lines.push(`${step}. Retry the original command.`)
+  lines.push(`Original error: ${originalMessage}`)
+
+  return lines.join('\n')
+}
+
 interface ConnectionTarget {
   token: string
   relayPort: number
@@ -583,7 +720,7 @@ async function runMain(
   }
 
   async function resolveConnectionTarget(
-    status: Record<string, unknown> | null,
+    status: Record<string, unknown> | ServerSnapshotStatus | null,
   ): Promise<ConnectionTarget> {
     const serverStatus = isServerSnapshotStatus(status) ? status : null
     const persistedConnectionInfo = await readPersistedConnectionInfo(
@@ -638,8 +775,9 @@ async function runMain(
   }
 
   async function openConnectFlow(
-    status: Record<string, unknown> | null,
+    status: Record<string, unknown> | ServerSnapshotStatus | null,
     allowRelayFallback: boolean,
+    recoveryHints: ConnectionRecoveryHints | null = null,
   ): Promise<boolean> {
     const target = await resolveConnectionTarget(status)
 
@@ -648,25 +786,153 @@ async function runMain(
         return false
       }
 
+      if (recoveryHints) {
+        recoveryHints.connectPageAttempted = true
+      }
       await openRelayConnectPage(target.relayPort)
+      if (recoveryHints) {
+        recoveryHints.connectPageOpened = true
+      }
       return true
     }
 
     try {
+      if (recoveryHints) {
+        recoveryHints.connectPageAttempted = true
+      }
       await openExtensionConnectPage(target)
+      if (recoveryHints) {
+        recoveryHints.connectPageOpened = true
+      }
       return true
     } catch (error) {
       if (!allowRelayFallback) {
         throw error
       }
 
+      if (recoveryHints) {
+        recoveryHints.connectPageAttempted = true
+      }
       await openRelayConnectPage(target.relayPort)
+      if (recoveryHints) {
+        recoveryHints.connectPageOpened = true
+      }
       return true
     }
   }
 
-  async function triggerAutoConnect(baseUrl: string): Promise<boolean> {
-    if (!flags.autoConnect || connectPageOpened) {
+  async function ensureBackgroundServerStatus(
+    recoveryHints: ConnectionRecoveryHints | null = null,
+  ): Promise<{
+    status: ServerSnapshotStatus
+    started: boolean
+  } | null> {
+    const controlBaseUrl = getLocalControlBaseUrl(flags.ipcPort)
+    const existingStatus = await getStatus(controlBaseUrl).catch(() => null)
+
+    if (isServerSnapshotOnPorts(existingStatus, flags.relayPort, flags.ipcPort)) {
+      return {
+        status: existingStatus,
+        started: false,
+      }
+    }
+
+    if (recoveryHints) {
+      recoveryHints.serverStartAttempted = true
+    }
+
+    const extensionId = await resolveExtensionId(homeDir, flags.extensionId)
+    const spawnCommand = dependencies.spawnDetachedProcess ?? spawnDetachedProcess
+    let backgroundProcess
+
+    try {
+      backgroundProcess = await spawnCommand(
+        'bun',
+        buildServerLaunchArgs(
+          {
+            relayPort: flags.relayPort,
+            ipcPort: flags.ipcPort,
+          },
+          extensionId,
+        ),
+      )
+    } catch {
+      return null
+    }
+
+    const readyResult = backgroundProcess.waitForExit
+      ? await Promise.race([
+          waitForServerStatus(controlBaseUrl, flags.relayPort, flags.ipcPort).then((status) => ({
+            kind: 'ready' as const,
+            status,
+          })),
+          backgroundProcess.waitForExit().then((exitInfo) => ({
+            kind: 'exit' as const,
+            exitInfo,
+          })),
+        ])
+      : {
+          kind: 'ready' as const,
+          status: await waitForServerStatus(controlBaseUrl, flags.relayPort, flags.ipcPort),
+        }
+
+    if (readyResult.kind === 'exit') {
+      return null
+    }
+
+    if (!readyResult.status) {
+      killDetachedProcess(backgroundProcess)
+      return null
+    }
+
+    if (recoveryHints) {
+      recoveryHints.serverStarted = true
+    }
+
+    return {
+      status: readyResult.status,
+      started: true,
+    }
+  }
+
+  async function assistCommandConnection(
+    baseUrl: string,
+    recoveryHints: ConnectionRecoveryHints,
+  ): Promise<boolean> {
+    let status: Record<string, unknown> | ServerSnapshotStatus | null = await getStatus(
+      baseUrl,
+    ).catch(() => null)
+
+    if (!isServerSnapshotStatus(status) && targetsLocalControlServer(baseUrl, flags.ipcPort)) {
+      const serverState = await ensureBackgroundServerStatus(recoveryHints)
+      status = serverState?.status || null
+    }
+
+    if (!isServerSnapshotStatus(status)) {
+      return false
+    }
+
+    if (status.extensionConnected === false) {
+      try {
+        const opened = await openConnectFlow(status, true, recoveryHints)
+        if (opened) {
+          connectPageOpened = true
+        }
+        return opened
+      } catch {
+        return false
+      }
+    }
+
+    return true
+  }
+
+  async function triggerAutoConnect(
+    baseUrl: string,
+    force: boolean = false,
+    recoveryHints: ConnectionRecoveryHints | null = null,
+  ): Promise<boolean> {
+    if ((!flags.autoConnect && !force) || connectPageOpened) {
       return false
     }
 
@@ -681,13 +947,97 @@ async function runMain(
     }
 
     try {
+      if (recoveryHints) {
+        recoveryHints.connectPageAttempted = true
+      }
       await openExtensionConnectPage(target)
       connectPageOpened = true
+      if (recoveryHints) {
+        recoveryHints.connectPageOpened = true
+      }
       return true
     } catch (error) {
       console.warn('failed to proactively open extension connect page', error)
       return false
     }
+  }
+
+  const createConnectionErrorBuilder =
+    (baseUrl: string, recoveryHints: ConnectionRecoveryHints) =>
+    (problem: 'server-unreachable' | 'extension-disconnected', message: string): string =>
+      formatConnectionRecoveryMessage(baseUrl, message, {
+        problem,
+        recoveryHints: {
+          ...recoveryHints,
+          connectPageOpened: recoveryHints.connectPageOpened || connectPageOpened,
+        },
+      })
+
+  async function getCommandStatus(
+    baseUrl: string,
+    recoveryHints: ConnectionRecoveryHints = createConnectionRecoveryHints(
+      targetsLocalControlServer(baseUrl, flags.ipcPort),
+    ),
+  ): Promise<Record<string, unknown>> {
+    const buildConnectionError = createConnectionErrorBuilder(baseUrl, recoveryHints)
+
+    try {
+      return await getStatus(baseUrl)
+    } catch (error) {
+      if (!isServerConnectionError(error)) {
+        throw error
+      }
+
+      if (!recoveryHints.localTarget) {
+        throw new Error(
+          buildConnectionError(
+            'server-unreachable',
+            error instanceof Error ? error.message : String(error),
+          ),
+        )
+      }
+
+      const serverState = await ensureBackgroundServerStatus(recoveryHints)
+      if (!serverState) {
+        throw new Error(
+          buildConnectionError(
+            'server-unreachable',
+            error instanceof Error ? error.message : String(error),
+          ),
+        )
+      }
+
+      try {
+        return await getStatus(baseUrl)
+      } catch (retryError) {
+        if (!isServerConnectionError(retryError)) {
+          throw retryError
+        }
+
+        throw new Error(
+          buildConnectionError(
+            'server-unreachable',
+            retryError instanceof Error ? retryError.message : String(retryError),
+          ),
+        )
+      }
+    }
+  }
+
+  async function getCdpUrlForCommand(baseUrl: string): Promise<string> {
+    const recoveryHints = createConnectionRecoveryHints(
+      targetsLocalControlServer(baseUrl, flags.ipcPort),
+    )
+    const status = await getCommandStatus(baseUrl, recoveryHints)
+    const relayPort = Number(status.relayPort || DEFAULT_RELAY_PORT)
+    const token = typeof status.token === 'string' ? status.token : ''
+
+    if (!token) {
+      const buildConnectionError = createConnectionErrorBuilder(baseUrl, recoveryHints)
+      throw new Error(buildConnectionError('extension-disconnected', 'missing token'))
+    }
+
+    return `ws://127.0.0.1:${relayPort}/ws?token=${encodeURIComponent(token)}`
   }
 
   async function resolveCommandToken(): Promise<string | null> {
@@ -753,12 +1103,86 @@ async function runMain(
       await triggerAutoConnect(baseUrl)
     }
 
-    const payload = await requestCommandWithToken(baseUrl, command, requestArgs)
-    if (flags.autoConnect && !connectPageOpened && shouldTriggerAutoConnect(payload)) {
-      const opened = await triggerAutoConnect(baseUrl)
-      if (opened) {
-        return await requestCommandWithToken(baseUrl, command, requestArgs)
+    const recoveryHints = createConnectionRecoveryHints(
+      targetsLocalControlServer(baseUrl, flags.ipcPort),
+    )
+    const buildConnectionError = createConnectionErrorBuilder(baseUrl, recoveryHints)
+
+    const withConnectionHelp = (payload: CommandResponse): CommandResponse => {
+      if (payload.ok !== false) {
+        return payload
       }
+
+      return {
+        ...payload,
+        error: {
+          ...payload.error,
+          message: buildConnectionError(
+            'extension-disconnected',
+            payload.error?.message || 'no extension is connected',
+          ),
+        },
+      }
+    }
+
+    let payload: CommandResponse
+
+    try {
+      payload = await requestCommandWithToken(baseUrl, command, requestArgs)
+    } catch (error) {
+      if (!isServerConnectionError(error)) {
+        throw error
+      }
+
+      const recovered = await assistCommandConnection(baseUrl, recoveryHints)
+      if (!recovered) {
+        throw new Error(
+          buildConnectionError(
+            'server-unreachable',
+            error instanceof Error ? error.message : String(error),
+          ),
+        )
+      }
+
+      try {
+        payload = await requestCommandWithToken(baseUrl, command, requestArgs)
+      } catch (retryError) {
+        if (!isServerConnectionError(retryError)) {
+          throw retryError
+        }
+
+        throw new Error(
+          buildConnectionError(
+            'server-unreachable',
+            retryError instanceof Error ? retryError.message : String(retryError),
+          ),
+        )
+      }
+    }
+
+    if (shouldTriggerAutoConnect(payload)) {
+      const opened = await triggerAutoConnect(baseUrl, true, recoveryHints)
+      if (opened) {
+        try {
+          const retriedPayload = await requestCommandWithToken(baseUrl, command, requestArgs)
+          return shouldTriggerAutoConnect(retriedPayload)
+            ? withConnectionHelp(retriedPayload)
+            : retriedPayload
+        } catch (error) {
+          if (!isServerConnectionError(error)) {
+            throw error
+          }
+
+          throw new Error(
+            buildConnectionError(
+              'server-unreachable',
+              error instanceof Error ? error.message : String(error),
+            ),
+          )
+        }
+      }
+
+      return withConnectionHelp(payload)
     }
 
     return payload
@@ -787,8 +1211,9 @@ async function runMain(
     requestCommand,
     openConnectFlow,
     getStatus,
+    getCommandStatus,
     resolveEvalScript: async (evalRest) => await resolveEvalScript(flags, evalRest),
-    getCdpUrl,
+    getCdpUrl: getCdpUrlForCommand,
     extractScreenshotData,
     resolveScreenshotOutputPath,
     collectHarFromNetwork: async (baseUrl, startedAt) =>
