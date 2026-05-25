@@ -375,6 +375,14 @@ export function createConnectionRuntime({
         })
       }
     })
+
+    chrome.debugger.onDetach?.addListener((source) => {
+      if (typeof source?.tabId !== 'number') {
+        return
+      }
+
+      state.targeting.attachedTabs.delete(source.tabId)
+    })
   }
 
   async function getToken(): Promise<string> {

@@ -228,7 +228,7 @@ export function createPageInputDomain({
     if (!box) {
       throw Object.assign(new Error(`element not found: ${selector}`), {
         code: `STALE_REFERENCE`,
-        suggestedAction: `The target element was not found. If this was from a previous snapshot reference like @eX, the page may have updated. Ensure you run \'snapshot\' to get fresh element references.`,
+        suggestedAction: `The target element was not found. If this was from a previous snapshot reference like @eX, the page may have updated. Ensure you run 'snapshot' to get fresh element references.`,
       })
     }
 
@@ -242,7 +242,7 @@ export function createPageInputDomain({
     if (!box) {
       throw Object.assign(new Error(`element not found: ${selector}`), {
         code: `STALE_REFERENCE`,
-        suggestedAction: `The target element was not found. If this was from a previous snapshot reference like @eX, the page may have updated. Ensure you run \'snapshot\' to get fresh element references.`,
+        suggestedAction: `The target element was not found. If this was from a previous snapshot reference like @eX, the page may have updated. Ensure you run 'snapshot' to get fresh element references.`,
       })
     }
 
@@ -310,7 +310,7 @@ export function createPageInputDomain({
 
     throw Object.assign(new Error(`element not found: ${selector}`), {
       code: `STALE_REFERENCE`,
-      suggestedAction: `The target element was not found. If this was from a previous snapshot reference like @eX, the page may have updated. Ensure you run \'snapshot\' to get fresh element references.`,
+      suggestedAction: `The target element was not found. If this was from a previous snapshot reference like @eX, the page may have updated. Ensure you run 'snapshot' to get fresh element references.`,
     })
   }
 
@@ -340,7 +340,7 @@ export function createPageInputDomain({
     }
     throw Object.assign(new Error(`element not found: ${selector}`), {
       code: `STALE_REFERENCE`,
-      suggestedAction: `The target element was not found. If this was from a previous snapshot reference like @eX, the page may have updated. Ensure you run \'snapshot\' to get fresh element references.`,
+      suggestedAction: `The target element was not found. If this was from a previous snapshot reference like @eX, the page may have updated. Ensure you run 'snapshot' to get fresh element references.`,
     })
   }
 
@@ -370,7 +370,7 @@ export function createPageInputDomain({
     }
     throw Object.assign(new Error(`element not found: ${selector}`), {
       code: `STALE_REFERENCE`,
-      suggestedAction: `The target element was not found. If this was from a previous snapshot reference like @eX, the page may have updated. Ensure you run \'snapshot\' to get fresh element references.`,
+      suggestedAction: `The target element was not found. If this was from a previous snapshot reference like @eX, the page may have updated. Ensure you run 'snapshot' to get fresh element references.`,
     })
   }
 
@@ -836,7 +836,7 @@ export function createPageInputDomain({
     if (!box) {
       throw Object.assign(new Error(`element not found: ${selector}`), {
         code: `STALE_REFERENCE`,
-        suggestedAction: `The target element was not found. If this was from a previous snapshot reference like @eX, the page may have updated. Ensure you run \'snapshot\' to get fresh element references.`,
+        suggestedAction: `The target element was not found. If this was from a previous snapshot reference like @eX, the page may have updated. Ensure you run 'snapshot' to get fresh element references.`,
       })
     }
 

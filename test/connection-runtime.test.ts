@@ -243,4 +243,105 @@ describe('connection runtime', () => {
       MockWebSocket.instances = []
     }
   })
+
+  test('drops cached attached tabs when chrome reports a debugger detach', async () => {
+    const originalGlobals = {
+      chrome: globalThis.chrome,
+      WebSocket: globalThis.WebSocket,
+      setInterval: globalThis.setInterval,
+      clearInterval: globalThis.clearInterval,
+    }
+
+    let detachListener: ((source: { tabId?: number }) => void) | null = null
+
+    const mockChrome = {
+      debugger: {
+        onEvent: {
+          addListener: () => {},
+        },
+        onDetach: {
+          addListener: (listener: (source: { tabId?: number }) => void) => {
+            detachListener = listener
+          },
+        },
+      },
+      runtime: {
+        id: 'test-extension-id',
+        getManifest: () => ({ version: '1.2.3' }),
+      },
+      storage: {
+        local: {
+          set: async () => {},
+        },
+      },
+    }
+
+    defineGlobalValue('chrome', mockChrome)
+    defineGlobalValue('WebSocket', MockWebSocket)
+    defineGlobalValue('setInterval', () => 1)
+    defineGlobalValue('clearInterval', () => {})
+    MockWebSocket.instances = []
+
+    const mockStorageItems: Record<string, unknown> = {
+      [STORAGE_KEY]: 'test-token',
+      [RELAY_PORT_STORAGE_KEY]: DEFAULT_RELAY_PORT,
+    }
+
+    const storageLocalGet = async <T extends Record<string, unknown> = Record<string, unknown>>(
+      keys: string | string[] | null,
+    ): Promise<T> => {
+      if (typeof keys === 'string') {
+        return { [keys]: mockStorageItems[keys] } as T
+      }
+
+      if (Array.isArray(keys)) {
+        return Object.fromEntries(keys.map((key) => [key, mockStorageItems[key]])) as T
+      }
+
+      return { ...mockStorageItems } as T
+    }
+
+    try {
+      const state = createExtensionState(DEFAULT_RELAY_PORT)
+      state.targeting.attachedTabs.add(22)
+
+      const connection = createConnectionRuntime({
+        state,
+        network: {
+          handleRequestPaused: async () => {},
+          handleEvent: async () => {},
+        },
+        listTabs: async () => [],
+        handleCommand: async () => ({ ok: true }),
+        sendDebuggerCommand: async <TResult = unknown>() => undefined as TResult,
+        storageLocalGet,
+        storageLocalSet: async () => {},
+        clearTabRuntimeState: () => {},
+        detachDebugger: async () => {},
+        getDialogStatus: () => ({}),
+      })
+
+      connection.initialize()
+      await flushMicrotasks()
+      await flushMicrotasks()
+
+      expect(state.targeting.attachedTabs.has(22)).toBe(true)
+      expect(detachListener).not.toBeNull()
+
+      if (!detachListener) {
+        throw new Error('missing debugger detach listener')
+      }
+
+      const triggerDetach = detachListener as (source: { tabId?: number }) => void
+      triggerDetach({ tabId: 22 })
+
+      expect(state.targeting.attachedTabs.has(22)).toBe(false)
+    } finally {
+      defineGlobalValue('chrome', originalGlobals.chrome)
+      defineGlobalValue('WebSocket', originalGlobals.WebSocket)
+      defineGlobalValue('setInterval', originalGlobals.setInterval)
+      defineGlobalValue('clearInterval', originalGlobals.clearInterval)
+      MockWebSocket.instances = []
+    }
+  })
 })

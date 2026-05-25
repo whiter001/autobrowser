@@ -333,18 +333,6 @@ async function resolveScreenshotOutputPath(screenshotArgs: ScreenshotArgs): Prom
   return path.join(outputDir, `screenshot-${timestamp}.${extension}`)
 }
 
-async function getCdpUrl(baseUrl: string): Promise<string> {
-  const status = await getStatus(baseUrl)
-  const relayPort = Number(status.relayPort || DEFAULT_RELAY_PORT)
-  const token = typeof status.token === 'string' ? status.token : ''
-
-  if (!token) {
-    throw new Error('missing token')
-  }
-
-  return `ws://127.0.0.1:${relayPort}/ws?token=${encodeURIComponent(token)}`
-}
-
 function writeHelp(pathParts: string[] = []): 0 {
   const normalized = printHelp(pathParts).replace(/\r\n?/g, '\n')
   for (const line of normalized.split('\n')) {
