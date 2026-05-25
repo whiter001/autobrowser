@@ -261,13 +261,28 @@ export function createConnectionRuntime({
           args?: unknown[]
         }
 
+        // Skip log spam from requestAnimationFrame / internal noise if it exceeds safe bounds
+        // or just throttle?
+        // Wait, is there a simple fix? Let's just limit the string calculation if it's very large array
+
+        const messageText = Array.isArray(consoleParams.args)
+          ? consoleParams.args
+              .map((item: unknown) => {
+                try {
+                  const text = stringifyRemoteValue(item)
+                  return text.length > 500 ? text.slice(0, 500) + '...' : text
+                } catch {
+                  return ''
+                }
+              })
+              .join(' ')
+          : ''
+
         pushBounded(
           state.session.consoleMessages,
           {
             type: String(consoleParams.type || ''),
-            text: Array.isArray(consoleParams.args)
-              ? consoleParams.args.map((item: unknown) => stringifyRemoteValue(item)).join(' ')
-              : '',
+            text: messageText,
             timestamp: Date.now(),
           },
           500,

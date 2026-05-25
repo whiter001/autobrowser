@@ -89,9 +89,10 @@ function normalizeHeaderPairs(
 
 function encodeBase64(value: string): string {
   const bytes = new TextEncoder().encode(value)
+  const chunk = 8192
   let binary = ''
-  for (const byte of bytes) {
-    binary += String.fromCharCode(byte)
+  for (let i = 0; i < bytes.length; i += chunk) {
+    binary += String.fromCharCode.apply(null, Array.from(bytes.subarray(i, i + chunk)))
   }
   return btoa(binary)
 }
@@ -117,20 +118,17 @@ function truncateTextByBytes(text: string, maxBytes: number): string {
   }
 
   const encoder = new TextEncoder()
-  let totalBytes = 0
-  let endIndex = 0
+  const bytes = encoder.encode(text)
 
-  for (const char of text) {
-    const charBytes = encoder.encode(char).length
-    if (totalBytes + charBytes > maxBytes) {
-      break
-    }
-
-    totalBytes += charBytes
-    endIndex += char.length
+  if (bytes.length <= maxBytes) {
+    return text
   }
 
-  return text.slice(0, endIndex)
+  const decoder = new TextDecoder('utf-8', { fatal: false })
+  // Use maxBytes as array length to decode back to string safely
+  // The decoder deals with boundary multi-byte characters and might output a replacement character
+  // but it avoids O(N) single-character loops.
+  return decoder.decode(bytes.subarray(0, maxBytes)).replace(/\uFFFD$/, '')
 }
 
 function summarizeStoredBody(

@@ -97,11 +97,14 @@ export function deepQuerySelectorAll(
       results.push(node)
     }
 
-    if (depth >= depthLimit) {
+    if (depth >= depthLimit || results.length >= nodeLimit) {
       return
     }
 
     for (const node of toArray(currentRoot.querySelectorAll('*'))) {
+      if (results.length >= nodeLimit) {
+        return
+      }
       if (node?.shadowRoot) {
         visitRoot(node.shadowRoot, depth + 1)
       }
@@ -117,7 +120,7 @@ export function deepQuerySelector(
   selector: string,
   maxDepth: number = 25,
 ): DeepDomNodeLike | null {
-  return deepQuerySelectorAll(root, selector, maxDepth)[0] || null
+  return deepQuerySelectorAll(root, selector, maxDepth, 1)[0] || null
 }
 
 export function deepGetElementById(
