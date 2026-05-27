@@ -1,6 +1,6 @@
 ---
 name: autobrowser
-description: 'Use when automating browser tasks with autobrowser: start the server, connect the extension, navigate pages, click/fill/type, inspect tabs and windows, manage state/cookies/storage, capture screenshots and PDFs, route network requests, and export HAR files.'
+description: '替代WebFetch获取网站数据,需要登录,受限等情况使用、点击/填写/输入、检查标签页和窗口、管理 state/cookies/storage、截图与导出 PDF、拦截网络请求以及导出 HAR。'
 ---
 
 # autobrowser Skill
