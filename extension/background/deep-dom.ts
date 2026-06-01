@@ -28,6 +28,12 @@ function normalizeMaxNodes(maxNodes: number | null | undefined): number {
   return Math.max(0, Math.floor(maxNodes))
 }
 
+/**
+ * 递归遍历 DOM 和所有嵌套的 Shadow DOM，收集所有符合条件的元素。
+ * @param root 遍历的根节点
+ * @param maxDepth 最大递归深度，默认 25
+ * @param maxNodes 最大收集节点数，默认 50,000
+ */
 export function deepCollectElements(
   root: DeepDomRootLike | null | undefined,
   maxDepth: number = 25,
@@ -68,6 +74,14 @@ export function deepCollectElements(
   return results
 }
 
+/**
+ * 跨越 Shadow DOM 边界执行 querySelectorAll。
+ * 它会遍历所有嵌套的 Shadow Root 并应用选择器。
+ * @param root 遍历的根节点
+ * @param selector CSS 选择器
+ * @param maxDepth 最大递归深度
+ * @param maxNodes 最大结果集大小
+ */
 export function deepQuerySelectorAll(
   root: DeepDomRootLike | null | undefined,
   selector: string,

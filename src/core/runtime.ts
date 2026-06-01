@@ -203,20 +203,34 @@ interface RuntimeState {
   extensionId: string | null
 }
 
+/**
+ * 核心运行时接口，负责管理浏览器扩展连接、状态持久化和命令分发。
+ */
 export interface Runtime {
+  /** 当前运行时的配置和状态信息 */
   runtime: RuntimeState
+  /** 将当前运行时状态持久化到磁盘 */
   persist: () => Promise<void>
+  /** 导出当前快照数据 */
   exportSnapshot: () => Promise<unknown>
+  /** 设置运行时的错误状态 */
   setError: (message: string) => void
+  /** 记录最后执行的命令（会进行脱敏处理） */
   setLastCommand: (command: string, args: unknown) => void
+  /** 更新当前打开的标签页列表 */
   setTabs: (tabs?: TabInfo[]) => void
+  /** 关联一个新的浏览器扩展 WebSocket 连接 */
   attachExtension: (
     socket: Bun.ServerWebSocket<ExtensionMetadata>,
     meta?: ExtensionMetadata,
   ) => void
+  /** 断开当前浏览器扩展的连接并清理状态 */
   detachExtension: () => void
+  /** 处理来自扩展的原始消息（RPC 响应、事件、心跳） */
   handleExtensionMessage: (rawMessage: unknown) => void
+  /** 向扩展分发命令并等待响应 */
   dispatchCommand: (command: string, args?: Record<string, unknown>) => Promise<unknown>
+  /** 获取当前运行时的状态摘要 */
   snapshot: () => {
     token: string
     relayPort: number
@@ -227,6 +241,11 @@ export interface Runtime {
   }
 }
 
+/**
+ * 创建并初始化 autobrowser 运行时。
+ * 它会尝试从 state.json 恢复之前的状态（包括 token、最后一条命令、页面 Epoch 等）。
+ * @param options 运行配置选项
+ */
 export async function createRuntime(options: RuntimeOptions = {}): Promise<Runtime> {
   const homeDir = options.homeDir || getHomeDir()
   const relayPort = options.relayPort || DEFAULT_RELAY_PORT

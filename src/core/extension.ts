@@ -23,16 +23,29 @@ function pickExtensionId(...candidates: Array<string | null | undefined>): strin
   return candidates.map(normalizeExtensionIdCandidate).find(isValidExtensionId) || null
 }
 
+/**
+ * 根据公钥生成标准的 Chrome 扩展 ID。
+ * 默认使用项目预设的测试密钥公钥。
+ */
 export function getExtensionId(publicKey: string = EXTENSION_PUBLIC_KEY): string {
   const keyBytes = Buffer.from(publicKey, 'base64')
   const hash = createHash('sha256').update(keyBytes).digest('hex')
   return mapHexToExtensionId(hash)
 }
 
+/**
+ * 解析实际使用的扩展 ID，优先级：手动传入 > 环境变量 > 默认公钥生成。
+ */
 export function resolveExtensionId(extensionId?: string | null): string {
   return pickExtensionId(extensionId, process.env.AUTOBROWSER_EXTENSION_ID) || getExtensionId()
 }
 
+/**
+ * 构建指向扩展程序内部页面的 chrome-extension:// URL。
+ * @param pathname 扩展内的文件路径（如 /connect.html）
+ * @param searchParams 要附带的查询参数
+ * @param extensionId 可选的扩展 ID 覆盖
+ */
 export function getExtensionUrl(
   pathname: string,
   searchParams: Record<string, string | number | boolean | null | undefined> = {},

@@ -1003,7 +1003,7 @@ ${PAGE_CONTEXT_DEEP_DOM_HELPERS_SOURCE}
             return { author: raw, handle: null };
           }
 
-          const author = normalize(raw.slice(0, handleMatch.index).replace(/[·•|\-–—]+$/, ''));
+          const author = normalize(raw.slice(0, handleMatch.index).replace(/[·•|-–—]+$/, ''));
           return {
             author: author || null,
             handle: handleMatch[0],
