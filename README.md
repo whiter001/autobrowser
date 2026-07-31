@@ -11,7 +11,7 @@
 - 本地中继服务，端口 `57978`
 - CLI API 服务，端口 `57979`
 - 带有基于 token 的连接流程的浏览器扩展骨架
-- 覆盖服务与连接管理、导航、标签页和窗口控制、元素交互、对话框、等待与状态检查、cookie、存储、剪贴板、浏览器状态、网络检查与拦截、snapshot、snapshot 导出/提取、截图，以及 `batch`、`status`、`config`、`replay` 这类实用命令的核心能力
+- 覆盖服务与连接管理、导航、标签页和窗口控制、元素交互、对话框、等待与状态检查、cookie、存储、剪贴板、浏览器状态、网络检查与拦截、snapshot、snapshot 导出/提取、截图、初始化脚本注入，以及 `batch`、`status`、`config`、`replay` 这类实用命令的核心能力
 
 运行 `bun run src/cli.ts help` 可以查看完整命令树。`src/cli.ts` 里的 help 输出是权威来源，也会说明根级标志位，例如 `--tab`、`--frame` 和 `--auto-connect`。
 
@@ -69,11 +69,14 @@ bun run src/cli.ts dialog status
 bun run src/cli.ts wait <selector>
 bun run src/cli.ts wait <ms>
 bun run src/cli.ts wait --text "Welcome"
+bun run src/cli.ts wait --text "Loading" --gone
 bun run src/cli.ts wait --url "**/dash"
 bun run src/cli.ts wait --load networkidle
 bun run src/cli.ts wait --fn "window.ready === true"
 bun run src/cli.ts wait "#spinner" --state hidden
 ```
+
+`--gone` 与 `--text` 搭配，等待文本从页面消失。
 
 ## 扩展
 
@@ -90,13 +93,16 @@ pnpm run build:chrome
 CLI 也提供了网络检查与拦截命令：
 
 ```bash
-bun run src/cli.ts network route <url> [--abort] [--body <json>]
+bun run src/cli.ts network route <url> [--abort] [--body <json>] [--status <n>] [--content-type <mime>] [--header "Name: Value"] [--remove-headers <a,b>]
+bun run src/cli.ts network route list
 bun run src/cli.ts network unroute [url]
 bun run src/cli.ts network requests [--filter api] [--type xhr,fetch] [--method POST] [--status 2xx]
 bun run src/cli.ts network request <requestId>
 bun run src/cli.ts network har start
 bun run src/cli.ts network har stop [output.har]
 ```
+
+`route` 既可以 `--abort` 拦截请求，也可以用 `--body` mock 响应（默认 200 + `application/json`，可用 `--status`、`--content-type`、`--header` 调整），还可以用 `--remove-headers` 在放行前删除请求头。不带 url 的 `unroute` 会清空所有路由。
 
 ## 截图
 
@@ -105,11 +111,26 @@ bun run src/cli.ts network har stop [output.har]
 ```bash
 bun run src/cli.ts screenshot
 bun run src/cli.ts screenshot ./shots/page.png --full
+bun run src/cli.ts screenshot --element @e2
 bun run src/cli.ts screenshot --annotate
 bun run src/cli.ts screenshot --screenshot-dir ./shots --screenshot-format jpeg --screenshot-quality 80
 ```
 
-`--full` 会截取整页，`--annotate` 会给元素添加编号标签，而 `--screenshot-format` / `--screenshot-quality` 用于控制编码后的图片输出。
+`--full` 会截取整页，`--element` 只截取某个元素（接受选择器或 `@eN` 引用，与 `--full` 互斥），`--annotate` 会给元素添加编号标签，而 `--screenshot-format` / `--screenshot-quality` 用于控制编码后的图片输出。
+
+## 初始化脚本
+
+`script` 命令管理在每次导航后、页面自身脚本执行前注入的初始化脚本（对应 CDP `Page.addScriptToEvaluateOnNewDocument`，与 Playwright 的 `--init-script` 对齐）：
+
+```bash
+bun run src/cli.ts script add 'Object.defineProperty(navigator, "webdriver", { get: () => undefined })'
+bun run src/cli.ts script add --file ./init.js
+bun run src/cli.ts script list
+bun run src/cli.ts script remove <id>
+bun run src/cli.ts script remove --all
+```
+
+脚本对所有标签页全局生效：新打开或新 attach 的标签页会自动补注册，无需重复 add。源码输入方式与 `eval` 一致，支持位置参数、`--file`、`--stdin` 和 `--base64`。
 
 ## 面向 Agent 的引用
 
@@ -123,6 +144,8 @@ bun run src/cli.ts get text @e3
 bun run src/cli.ts wait @e7 --state hidden
 bun run src/cli.ts frame @f1
 ```
+
+`snapshot` 也接受一个可选的选择器或 `@eN` 引用（`snapshot @e4` 或 `snapshot --target @e4`），只输出该元素子树的结构。
 
 还可以使用语义化的 `find` 命令按 role、text 和 label 查找：
 

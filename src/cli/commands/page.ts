@@ -2,7 +2,7 @@ import { mkdtemp, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { isRecord } from '../client.js'
-import { parseScreenshotArgs, parseWaitArgs } from '../parse.js'
+import { parseConsoleArgs, parseScreenshotArgs, parseWaitArgs } from '../parse.js'
 import { buildSnapshotJsonl } from '../snapshot-export.js'
 import { buildSnapshotFieldJsonl, type SnapshotFieldSelection } from '../snapshot-structure.js'
 import {
@@ -11,14 +11,16 @@ import {
   createSingleArgRequestCommand,
   helpRequested,
   parseOrWriteError,
+  readAllowedArg,
   requestAndWrite,
   writeCommandError,
 } from './shared.js'
-import type { CommandContext, CommandRegistry } from './types.js'
+import type { CommandContext, CommandHandler, CommandRegistry } from './types.js'
 
 const WINDOW_ACTIONS = ['new'] as const
 const DIALOG_ACTIONS = ['accept', 'dismiss', 'status'] as const
 const FEED_DEDUPE_OPTIONS = ['url', 'text', 'none'] as const
+const SCRIPT_ACTIONS = ['add', 'list', 'remove'] as const
 
 function commandNeedsSelector(attr: string): boolean {
   return !['title', 'url', 'cdp-url'].includes(attr)
@@ -204,6 +206,42 @@ function parseSnapshotFieldSelectors(rest: string[]): {
   return { outputPath, selection }
 }
 
+function parseSnapshotTargetArgs(rest: string[]): { target: string | null } {
+  let target: string | null = null
+
+  for (let index = 0; index < rest.length; index += 1) {
+    const value = rest[index]
+
+    if (value === '--target') {
+      const rawTarget = rest[index + 1]
+      if (rawTarget === undefined) {
+        throw new Error('missing target value')
+      }
+
+      if (target) {
+        throw new Error('target specified more than once')
+      }
+
+      target = rawTarget
+      index += 1
+      continue
+    }
+
+    if (value.startsWith('--')) {
+      throw new Error(`unsupported snapshot option: ${value}`)
+    }
+
+    if (!target) {
+      target = value
+      continue
+    }
+
+    throw new Error(`unexpected extra argument for snapshot: ${value}`)
+  }
+
+  return { target }
+}
+
 async function handleEval(rest: string[], context: CommandContext): Promise<number | void> {
   if (helpRequested(rest[0], context, ['eval'])) {
     return 0
@@ -212,6 +250,52 @@ async function handleEval(rest: string[], context: CommandContext): Promise<numb
   const script = await context.resolveEvalScript(rest)
   const payload = await context.requestCommand(context.flags.server, 'eval', { script })
   context.writeResult(payload)
+  return 0
+}
+
+async function handleScript(rest: string[], context: CommandContext): Promise<number | void> {
+  const action = readAllowedArg(rest[0], context, ['script'], SCRIPT_ACTIONS)
+  if (!action) {
+    return 0
+  }
+
+  if (action === 'add') {
+    const scriptArgs = rest.slice(1)
+    if (helpRequested(scriptArgs[0], context, ['script', 'add'])) {
+      return 0
+    }
+
+    // 源码输入与 eval 完全同一条管线：位置参数、--file、--stdin、--base64
+    const source = (await context.resolveEvalScript(scriptArgs)).trim()
+    if (!source) {
+      process.stderr.write('missing script source\n')
+      return 1
+    }
+
+    await requestAndWrite(context, 'script', { action: 'add', source })
+    return 0
+  }
+
+  if (action === 'list') {
+    await requestAndWrite(context, 'script', { action: 'list' })
+    return 0
+  }
+
+  const target = rest[1]
+  if (helpRequested(target, context, ['script', 'remove'])) {
+    return 0
+  }
+
+  if (target === '--all' || target === 'all') {
+    await requestAndWrite(context, 'script', { action: 'remove', all: true })
+    return 0
+  }
+
+  if (!target) {
+    return context.writeHelp(['script', 'remove'])
+  }
+
+  await requestAndWrite(context, 'script', { action: 'remove', id: target })
   return 0
 }
 
@@ -301,7 +385,16 @@ async function handleSnapshot(rest: string[], context: CommandContext): Promise<
     return 0
   }
 
-  const payload = await context.requestCommand(context.flags.server, 'snapshot', {})
+  const snapshotTarget = parseOrWriteError(() => parseSnapshotTargetArgs(rest))
+  if (!snapshotTarget) {
+    return 1
+  }
+
+  const payload = await context.requestCommand(
+    context.flags.server,
+    'snapshot',
+    snapshotTarget.target ? { selector: snapshotTarget.target } : {},
+  )
   context.writeResult(payload)
   return 0
 }
@@ -335,6 +428,7 @@ async function handleScreenshot(rest: string[], context: CommandContext): Promis
     full: screenshotArgs.full,
     annotate: screenshotArgs.annotate,
     format: screenshotArgs.format,
+    ...(screenshotArgs.element ? { element: screenshotArgs.element } : {}),
     ...(screenshotArgs.quality !== null ? { quality: screenshotArgs.quality } : {}),
   })
 
@@ -486,7 +580,53 @@ async function handleWait(rest: string[], context: CommandContext): Promise<numb
   return 0
 }
 
-const handleConsole = createNoArgRequestCommand({ helpPath: ['console'], command: 'console' })
+const CONSOLE_LEVEL_ORDER = ['error', 'warning', 'info', 'debug'] as const
+
+function consoleTypeRank(type: string): number {
+  // CDP consoleAPICalled 的 type 细分很多（log/dir/table/...），除 error/warning/debug 外
+  // 一律归入 info，与 Playwright 的 level 语义对齐
+  if (type === 'error') {
+    return 0
+  }
+  if (type === 'warning') {
+    return 1
+  }
+  if (type === 'debug') {
+    return 3
+  }
+  return 2
+}
+
+const handleConsole: CommandHandler = async (rest, context) => {
+  if (helpRequested(rest[0], context, ['console'])) {
+    return 0
+  }
+
+  const consoleArgs = parseOrWriteError(() => parseConsoleArgs(rest))
+  if (!consoleArgs) {
+    return 1
+  }
+
+  const payload = await context.requestCommand(context.flags.server, 'console', {})
+  // --level 语义与 Playwright 一致：每个级别包含更严重的消息（error < warning < info < debug）
+  if (consoleArgs.level && payload.ok && isRecord(payload.result)) {
+    const maxRank = CONSOLE_LEVEL_ORDER.indexOf(consoleArgs.level)
+    const messages = Array.isArray(payload.result.messages) ? payload.result.messages : []
+    context.writeResult({
+      ...payload,
+      result: {
+        ...payload.result,
+        messages: messages.filter((message) =>
+          isRecord(message) ? consoleTypeRank(String(message.type || '')) <= maxRank : true,
+        ),
+      },
+    })
+    return 0
+  }
+
+  context.writeResult(payload)
+  return 0
+}
 
 const handleErrors = createNoArgRequestCommand({ helpPath: ['errors'], command: 'errors' })
 
@@ -494,6 +634,7 @@ const handlePdf = createNoArgRequestCommand({ helpPath: ['pdf'], command: 'pdf' 
 
 export const pageCommandRegistry: CommandRegistry = {
   eval: handleEval,
+  script: handleScript,
   snapshot: handleSnapshot,
   feed: handleFeed,
   screenshot: handleScreenshot,

@@ -306,3 +306,139 @@ describe('network domain HAR export', () => {
     expect(detail.harEntry.response.content.text?.length || 0).toBeLessThan(bigText.length)
   })
 })
+
+describe('network domain routes', () => {
+  function createRouteHarness() {
+    const state = createExtensionState(57978)
+    const sendCalls: Array<{ method: string; params?: Record<string, unknown> }> = []
+    const recordCall = async <TResult = unknown>(
+      _tabId: number,
+      method: string,
+      params?: Record<string, unknown>,
+    ): Promise<TResult> => {
+      sendCalls.push({ method, params })
+      return {} as TResult
+    }
+
+    const network = createNetworkDomain({
+      state,
+      getTargetTab: async () => ({ id: 1 }) as never,
+      sendRawDebuggerCommand: recordCall,
+      sendDebuggerCommand: recordCall,
+    })
+
+    return { state, network, sendCalls }
+  }
+
+  test('routeRequest 存储自定义 mock 参数，listRoutes 原样返回', async () => {
+    const { network } = createRouteHarness()
+
+    await network.routeRequest(1, '/api/user', {
+      body: { id: 1 },
+      status: 201,
+      contentType: 'application/vnd.api+json',
+      headers: { 'x-mock': 'yes' },
+    })
+
+    const listed = network.listRoutes() as {
+      routes: Array<{
+        id: string
+        pattern: string
+        abort: boolean
+        body?: unknown
+        status?: number
+        contentType?: string
+        headers?: Record<string, string>
+        createdAt?: string
+      }>
+    }
+    expect(listed.routes).toHaveLength(1)
+    expect(listed.routes[0]).toMatchObject({
+      pattern: '/api/user',
+      abort: false,
+      body: { id: 1 },
+      status: 201,
+      contentType: 'application/vnd.api+json',
+      headers: { 'x-mock': 'yes' },
+    })
+    expect(typeof listed.routes[0]?.id).toBe('string')
+    expect(typeof listed.routes[0]?.createdAt).toBe('string')
+  })
+
+  test('mock 响应使用自定义 status/content-type/headers  fulfill 请求', async () => {
+    const { network, sendCalls } = createRouteHarness()
+
+    await network.routeRequest(1, '/api/user', {
+      body: { id: 1 },
+      status: 404,
+      contentType: 'text/plain',
+      headers: { 'x-mock': 'yes' },
+    })
+
+    await network.handleRequestPaused(1, {
+      requestId: 'req-1',
+      request: { url: 'https://example.com/api/user', method: 'GET', headers: {} },
+    })
+
+    const fulfill = sendCalls.find((call) => call.method === 'Fetch.fulfillRequest')
+    expect(fulfill).toBeDefined()
+    expect(fulfill?.params?.responseCode).toBe(404)
+    expect(fulfill?.params?.responsePhrase).toBe('Not Found')
+    const headers = fulfill?.params?.responseHeaders as Array<{ name: string; value: string }>
+    // 显式 header 追加到响应头，默认 content-type 被 --content-type 覆盖
+    expect(headers).toContainEqual({ name: 'content-type', value: 'text/plain' })
+    expect(headers).toContainEqual({ name: 'x-mock', value: 'yes' })
+  })
+
+  test('mock 默认仍是 200 + application/json', async () => {
+    const { network, sendCalls } = createRouteHarness()
+
+    await network.routeRequest(1, '/api/user', { body: { ok: true } })
+
+    await network.handleRequestPaused(1, {
+      requestId: 'req-1',
+      request: { url: 'https://example.com/api/user', method: 'GET', headers: {} },
+    })
+
+    const fulfill = sendCalls.find((call) => call.method === 'Fetch.fulfillRequest')
+    expect(fulfill?.params?.responseCode).toBe(200)
+    const headers = fulfill?.params?.responseHeaders as Array<{ name: string; value: string }>
+    expect(headers).toEqual([{ name: 'content-type', value: 'application/json; charset=utf-8' }])
+  })
+
+  test('removeHeaders 的 route 删除指定请求头后放行', async () => {
+    const { network, sendCalls } = createRouteHarness()
+
+    await network.routeRequest(1, '/api/', { removeHeaders: ['Authorization', 'X-Debug'] })
+
+    await network.handleRequestPaused(1, {
+      requestId: 'req-2',
+      request: {
+        url: 'https://example.com/api/list',
+        method: 'GET',
+        headers: { Authorization: 'Bearer t', 'x-debug': '1', Accept: '*/*' },
+      },
+    })
+
+    const continued = sendCalls.find((call) => call.method === 'Fetch.continueRequest')
+    expect(continued).toBeDefined()
+    // 头名大小写不敏感，删除后只剩 Accept
+    expect(continued?.params?.headers).toEqual([{ name: 'Accept', value: '*/*' }])
+    expect(sendCalls.some((call) => call.method === 'Fetch.fulfillRequest')).toBeFalse()
+  })
+
+  test('无 removeHeaders 的 route 仍按原样放行', async () => {
+    const { network, sendCalls } = createRouteHarness()
+
+    await network.routeRequest(1, '/api/', {})
+
+    await network.handleRequestPaused(1, {
+      requestId: 'req-3',
+      request: { url: 'https://example.com/api/list', method: 'GET', headers: { Accept: '*/*' } },
+    })
+
+    const continued = sendCalls.find((call) => call.method === 'Fetch.continueRequest')
+    expect(continued).toBeDefined()
+    expect(continued?.params?.headers).toBeUndefined()
+  })
+})

@@ -34,6 +34,29 @@ interface SessionDomainDependencies {
   storageLocalSet: (items: Record<string, unknown>) => Promise<void>
 }
 
+function resolveTabHostname(tabUrl: string | undefined): string {
+  try {
+    return new URL(tabUrl || '').hostname.toLowerCase()
+  } catch {
+    // chrome:// 等无法解析的 URL 没有可匹配的域名
+    return ''
+  }
+}
+
+function cookieMatchesHostname(cookieDomain: string, hostname: string): boolean {
+  // cookie 的 domain 可能带前导点（如 .example.com），归一化后按域名后缀匹配父域/子域
+  const normalizedDomain = String(cookieDomain || '')
+    .replace(/^\.+/, '')
+    .toLowerCase()
+  return Boolean(
+    normalizedDomain &&
+    hostname &&
+    (normalizedDomain === hostname ||
+      hostname.endsWith(`.${normalizedDomain}`) ||
+      normalizedDomain.endsWith(`.${hostname}`)),
+  )
+}
+
 export function createSessionDomain({
   state,
   getTargetTab,
@@ -49,14 +72,24 @@ export function createSessionDomain({
   }
 
   async function readAllLocalStorage(tabId: TabInput, frameSelector?: FrameSelector) {
-    // 统一复用同一段页面内脚本，避免 `storage get` 与 `state save` 序列化结果逐渐漂移。
+    return await readAllStorage(tabId, false, frameSelector)
+  }
+
+  // sessionStorage 是 per-tab per-origin，与 localStorage 一样直接走页面内 evaluate，
+  // 用同一个表达式模板切换 store 对象，避免两套读取逻辑漂移
+  async function readAllStorage(
+    tabId: TabInput,
+    sessionOnly: boolean,
+    frameSelector?: FrameSelector,
+  ) {
+    const store = sessionOnly ? 'sessionStorage' : 'localStorage'
     const { value } = await evaluateInTabContext<Record<string, string | null>>(
       tabId,
       `(() => {
         const items = {};
-        for (let i = 0; i < localStorage.length; i++) {
-          const k = localStorage.key(i);
-          items[k] = localStorage.getItem(k);
+        for (let i = 0; i < ${store}.length; i++) {
+          const k = ${store}.key(i);
+          items[k] = ${store}.getItem(k);
         }
         return items;
       })()`,
@@ -66,14 +99,64 @@ export function createSessionDomain({
     return value || {}
   }
 
-  async function cookiesGet(tabId: TabInput) {
+  async function cookiesGet(tabId: TabInput, filters: { domain?: string; path?: string } = {}) {
     const tab = await getTargetTab(tabId)
     const result = await sendDebuggerCommand<{ cookies?: unknown[] }>(
       tab.id,
       'Network.getCookies',
       {},
     )
-    return { cookies: result.cookies || [] }
+    const domainFilter = String(filters.domain || '')
+      .replace(/^\.+/, '')
+      .toLowerCase()
+    const pathFilter = typeof filters.path === 'string' ? filters.path : ''
+    const cookies = (result.cookies || []).filter((cookie) => {
+      if (!cookie || typeof cookie !== 'object') {
+        return false
+      }
+
+      const record = cookie as { domain?: string; path?: string }
+      // domain 过滤复用域名后缀匹配，允许按父域/子域收敛结果
+      if (domainFilter && !cookieMatchesHostname(String(record.domain || ''), domainFilter)) {
+        return false
+      }
+
+      if (pathFilter && String(record.path || '') !== pathFilter) {
+        return false
+      }
+
+      return true
+    })
+    return { cookies }
+  }
+
+  async function cookiesDelete(tabId: TabInput, name: string) {
+    const tab = await getTargetTab(tabId)
+    const hostname = resolveTabHostname(tab.url)
+    if (!hostname) {
+      return { deleted: 0, name, domain: null }
+    }
+
+    const result = await sendDebuggerCommand<{
+      cookies?: Array<{ name?: string; domain?: string; path?: string }>
+    }>(tab.id, 'Network.getCookies', {})
+
+    let deleted = 0
+    for (const cookie of result.cookies || []) {
+      if (
+        String(cookie.name || '') === name &&
+        cookieMatchesHostname(String(cookie.domain || ''), hostname)
+      ) {
+        await sendDebuggerCommand(tab.id, 'Network.deleteCookies', {
+          name: cookie.name,
+          domain: cookie.domain,
+          path: cookie.path,
+        })
+        deleted += 1
+      }
+    }
+
+    return { deleted, name, domain: hostname }
   }
 
   async function cookiesSet(tabId: TabInput, name: string, value: string, domain?: string) {
@@ -89,12 +172,7 @@ export function createSessionDomain({
   async function cookiesClear(tabId: TabInput) {
     const tab = await getTargetTab(tabId)
     // 只清当前 tab 站点域名的 cookie，避免误清用户其他站点的登录态
-    let hostname = ''
-    try {
-      hostname = new URL(tab.url || '').hostname.toLowerCase()
-    } catch {
-      // chrome:// 等无法解析的 URL 没有可匹配的域名，此时不清除任何 cookie
-    }
+    const hostname = resolveTabHostname(tab.url)
 
     if (!hostname) {
       return { cleared: 0, domain: null }
@@ -106,16 +184,7 @@ export function createSessionDomain({
 
     let cleared = 0
     for (const cookie of result.cookies || []) {
-      // cookie 的 domain 可能带前导点（如 .example.com），归一化后按域名后缀匹配父域/子域
-      const cookieDomain = String(cookie.domain || '')
-        .replace(/^\.+/, '')
-        .toLowerCase()
-      if (
-        cookieDomain &&
-        (cookieDomain === hostname ||
-          hostname.endsWith(`.${cookieDomain}`) ||
-          cookieDomain.endsWith(`.${hostname}`))
-      ) {
+      if (cookieMatchesHostname(String(cookie.domain || ''), hostname)) {
         await sendDebuggerCommand(tab.id, 'Network.deleteCookies', {
           name: cookie.name,
           domain: cookie.domain,
@@ -132,14 +201,16 @@ export function createSessionDomain({
     tabId: TabInput,
     key: string | null | undefined,
     frameSelector: FrameSelector,
+    sessionOnly = false,
   ) {
     if (!key) {
-      return { storage: await readAllLocalStorage(tabId, frameSelector) }
+      return { storage: await readAllStorage(tabId, sessionOnly, frameSelector) }
     }
 
+    const store = sessionOnly ? 'sessionStorage' : 'localStorage'
     const { value } = await evaluateInTabContext(
       tabId,
-      `localStorage.getItem(${JSON.stringify(key)})`,
+      `${store}.getItem(${JSON.stringify(key)})`,
       withFrameSelectorOptions(frameSelector),
     )
     return { key, value }
@@ -150,21 +221,35 @@ export function createSessionDomain({
     key: string,
     value: string,
     frameSelector: FrameSelector,
+    sessionOnly = false,
   ) {
+    const store = sessionOnly ? 'sessionStorage' : 'localStorage'
     await evaluateInTabContext(
       tabId,
-      `localStorage.setItem(${JSON.stringify(key)}, ${JSON.stringify(value)})`,
+      `${store}.setItem(${JSON.stringify(key)}, ${JSON.stringify(value)})`,
       withFrameSelectorOptions(frameSelector),
     )
     return { key, value, set: true }
   }
 
-  async function storageClear(tabId: TabInput, frameSelector: FrameSelector) {
+  async function storageDelete(
+    tabId: TabInput,
+    key: string,
+    frameSelector: FrameSelector,
+    sessionOnly = false,
+  ) {
+    const store = sessionOnly ? 'sessionStorage' : 'localStorage'
     await evaluateInTabContext(
       tabId,
-      'localStorage.clear()',
+      `${store}.removeItem(${JSON.stringify(key)})`,
       withFrameSelectorOptions(frameSelector),
     )
+    return { key, deleted: true }
+  }
+
+  async function storageClear(tabId: TabInput, frameSelector: FrameSelector, sessionOnly = false) {
+    const store = sessionOnly ? 'sessionStorage' : 'localStorage'
+    await evaluateInTabContext(tabId, `${store}.clear()`, withFrameSelectorOptions(frameSelector))
     return { cleared: true }
   }
 
@@ -235,6 +320,49 @@ export function createSessionDomain({
       features: media ? [{ name: 'prefers-color-scheme', value: media }] : [],
     })
     return { media }
+  }
+
+  async function setPermission(tabId: TabInput, name: string, reset = false) {
+    const tab = await getTargetTab(tabId)
+    let origin: string | undefined
+    try {
+      const parsed = new URL(tab.url || '')
+      origin = parsed.origin === 'null' ? undefined : parsed.origin
+    } catch {
+      // chrome:// 等无法解析的 URL 不带 origin，授权退化为浏览器级默认上下文
+    }
+
+    await sendDebuggerCommand(tab.id, 'Browser.setPermission', {
+      permission: { name },
+      setting: reset ? 'default' : 'granted',
+      ...(origin ? { origin } : {}),
+    })
+    return { permission: name, setting: reset ? 'default' : 'granted', origin: origin ?? null }
+  }
+
+  async function setUserAgent(tabId: TabInput, userAgent: string | null | undefined) {
+    const tab = await getTargetTab(tabId)
+    // CDP 语义：空字符串即恢复默认 UA
+    await sendDebuggerCommand(tab.id, 'Emulation.setUserAgentOverride', {
+      userAgent: userAgent || '',
+    })
+    return { userAgent: userAgent || null }
+  }
+
+  async function setTimezone(tabId: TabInput, timezone: string | null | undefined) {
+    const tab = await getTargetTab(tabId)
+    await sendDebuggerCommand(tab.id, 'Emulation.setTimezoneOverride', {
+      timezoneId: timezone || '',
+    })
+    return { timezone: timezone || null }
+  }
+
+  async function setLocale(tabId: TabInput, locale: string | null | undefined) {
+    const tab = await getTargetTab(tabId)
+    await sendDebuggerCommand(tab.id, 'Emulation.setLocaleOverride', {
+      locale: locale || '',
+    })
+    return { locale: locale || null }
   }
 
   async function generatePdf(tabId: TabInput) {
@@ -395,6 +523,7 @@ export function createSessionDomain({
     clipboardRead,
     clipboardWrite,
     cookiesClear,
+    cookiesDelete,
     cookiesGet,
     cookiesSet,
     generatePdf,
@@ -405,10 +534,15 @@ export function createSessionDomain({
     saveState,
     setGeo,
     setHeaders,
+    setLocale,
     setMedia,
     setOffline,
+    setPermission,
+    setTimezone,
+    setUserAgent,
     setViewport,
     storageClear,
+    storageDelete,
     storageGet,
     storageSet,
   }

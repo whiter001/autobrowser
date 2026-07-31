@@ -52,6 +52,7 @@ interface PageInputDomain {
     selector: string,
     value: string,
     frameSelector: FrameSelector,
+    submit?: boolean,
   ) => Promise<unknown>
   hoverElement: (
     tabId: TabInput,
@@ -123,7 +124,11 @@ interface PageInputDomain {
 }
 
 interface PageObserveDomain {
-  snapshotTab: (tabId: TabInput, frameSelector: FrameSelector) => Promise<unknown>
+  snapshotTab: (
+    tabId: TabInput,
+    frameSelector: FrameSelector,
+    targetSelector?: string,
+  ) => Promise<unknown>
   collectFeed: (
     tabId: TabInput,
     options: CollectFeedOptions,
@@ -158,6 +163,7 @@ interface PageObserveDomain {
     text: string,
     timeout: number,
     frameSelector: FrameSelector,
+    gone?: boolean,
   ) => Promise<unknown>
   waitForLoadEvent: (tabId: TabInput, timeout: number) => Promise<unknown>
   waitForNetworkIdle: (tabId: TabInput, timeout: number) => Promise<unknown>
@@ -172,21 +178,34 @@ interface PageObserveDomain {
 interface SessionDomain {
   getDialogStatus: () => Record<string, unknown>
   handleDialog: (tabId: TabInput, accept: boolean, promptText?: string) => Promise<unknown>
-  cookiesGet: (tabId: TabInput) => Promise<unknown>
+  cookiesGet: (tabId: TabInput, filters?: { domain?: string; path?: string }) => Promise<unknown>
   cookiesSet: (tabId: TabInput, name: string, value: string, domain?: string) => Promise<unknown>
   cookiesClear: (tabId: TabInput) => Promise<unknown>
+  cookiesDelete: (tabId: TabInput, name: string) => Promise<unknown>
   storageGet: (
     tabId: TabInput,
     key: string | null | undefined,
     frameSelector: FrameSelector,
+    sessionOnly?: boolean,
   ) => Promise<unknown>
   storageSet: (
     tabId: TabInput,
     key: string,
     value: string,
     frameSelector: FrameSelector,
+    sessionOnly?: boolean,
   ) => Promise<unknown>
-  storageClear: (tabId: TabInput, frameSelector: FrameSelector) => Promise<unknown>
+  storageDelete: (
+    tabId: TabInput,
+    key: string,
+    frameSelector: FrameSelector,
+    sessionOnly?: boolean,
+  ) => Promise<unknown>
+  storageClear: (
+    tabId: TabInput,
+    frameSelector: FrameSelector,
+    sessionOnly?: boolean,
+  ) => Promise<unknown>
   setViewport: (
     tabId: TabInput,
     width: number,
@@ -206,6 +225,10 @@ interface SessionDomain {
     accuracy?: number,
   ) => Promise<unknown>
   setMedia: (tabId: TabInput, media: string | null | undefined) => Promise<unknown>
+  setPermission: (tabId: TabInput, name: string, reset?: boolean) => Promise<unknown>
+  setUserAgent: (tabId: TabInput, userAgent: string | null | undefined) => Promise<unknown>
+  setTimezone: (tabId: TabInput, timezone: string | null | undefined) => Promise<unknown>
+  setLocale: (tabId: TabInput, locale: string | null | undefined) => Promise<unknown>
   generatePdf: (tabId: TabInput) => Promise<unknown>
   clipboardRead: (tabId: TabInput) => Promise<unknown>
   clipboardWrite: (tabId: TabInput, text: string) => Promise<unknown>
@@ -214,9 +237,23 @@ interface SessionDomain {
   loadStateByName: (tabId: TabInput, name: string) => Promise<unknown>
 }
 
+interface NetworkRouteCommandOptions {
+  abort?: boolean
+  body?: unknown
+  status?: number
+  contentType?: string
+  headers?: Record<string, string>
+  removeHeaders?: string[]
+}
+
 interface NetworkDomain {
-  routeRequest: (tabId: TabInput, url: string, abort: boolean, body: unknown) => Promise<unknown>
+  routeRequest: (
+    tabId: TabInput,
+    url: string,
+    options: NetworkRouteCommandOptions,
+  ) => Promise<unknown>
   unrouteRequest: (tabId: TabInput, url: string) => Promise<unknown>
+  listRoutes: () => unknown
   listRequests: (args: CommandArgs) => unknown
   getRequestDetail: (requestId: string) => unknown
   startHar: (
@@ -226,12 +263,20 @@ interface NetworkDomain {
   stopHar: () => Promise<unknown>
 }
 
+interface InitScriptDomain {
+  addScript: (source: string) => Promise<unknown>
+  listScripts: () => unknown
+  removeScript: (id: string) => Promise<unknown>
+  removeAllScripts: () => Promise<unknown>
+}
+
 interface CommandRouterDependencies {
   state: ExtensionState
   pageInput: PageInputDomain
   pageObserve: PageObserveDomain
   session: SessionDomain
   network: NetworkDomain
+  initScripts: InitScriptDomain
   listTabs: () => Promise<TabSummary[]>
   getTargetTab: (tabId: TabInput) => Promise<TabWithId>
 }
@@ -242,6 +287,7 @@ export function createCommandRouter({
   pageObserve,
   session,
   network,
+  initScripts,
   listTabs,
   getTargetTab,
 }: CommandRouterDependencies) {
@@ -316,10 +362,12 @@ export function createCommandRouter({
   function readScreenshotOptions(args: CommandArgs): ScreenshotCaptureOptions {
     const format = readOptionalStringArg(args, 'format')
     const quality = readNumberArg(args, 'quality', 80)
+    const element = readOptionalStringArg(args, 'element')?.trim() || undefined
 
     return {
       full: readBooleanArg(args, 'full', false),
       annotate: readBooleanArg(args, 'annotate', false),
+      ...(element ? { element } : {}),
       ...(format ? { format } : {}),
       ...(quality ? { quality } : {}),
     }
@@ -451,6 +499,12 @@ export function createCommandRouter({
     const waitUrl = readStringArg(args, 'url')
     const waitText = readStringArg(args, 'text')
     const waitFn = readStringArg(args, 'fn')
+    const waitGone = readBooleanArg(args, 'gone', false)
+
+    // --gone 只定义在文本等待上（对齐 Playwright textGone），其它等待类型给了就报明确错误
+    if (waitGone && waitType !== 'text' && !waitText) {
+      throw new Error('wait --gone requires --text <text>')
+    }
 
     if (waitType === 'time' || waitMs > 0) {
       // time 等待必须显式给时长；缺省时兜底成整个 timeout（默认 30s）会让调用方傻等
@@ -475,7 +529,7 @@ export function createCommandRouter({
     }
 
     if (waitType === 'text' || waitText) {
-      return await pageObserve.waitForText(tabId, waitText, timeout, frameSelector)
+      return await pageObserve.waitForText(tabId, waitText, timeout, frameSelector, waitGone)
     }
 
     if (waitType === 'load') {
@@ -881,7 +935,7 @@ export function createCommandRouter({
       case 'eval':
         return await pageInput.evaluateScript(tabId, script, frameSelector)
       case 'snapshot':
-        return await pageObserve.snapshotTab(tabId, frameSelector)
+        return await pageObserve.snapshotTab(tabId, frameSelector, selector.trim() || undefined)
       case 'feed':
         return await pageObserve.collectFeed(
           tabId,
@@ -906,7 +960,13 @@ export function createCommandRouter({
       case 'find':
         return await handleFindCommand(tabId, args, frameSelector)
       case 'type':
-        return await pageInput.typeIntoSelector(tabId, selector, value, frameSelector)
+        return await pageInput.typeIntoSelector(
+          tabId,
+          selector,
+          value,
+          frameSelector,
+          readBooleanArg(args, 'submit', false),
+        )
       case 'hover':
         return await pageInput.hoverElement(tabId, selector, frameSelector)
       case 'press':
@@ -969,7 +1029,10 @@ export function createCommandRouter({
         return await handleWait(tabId, args, frameSelector)
       case 'cookies':
         if (action === 'get') {
-          return await session.cookiesGet(tabId)
+          return await session.cookiesGet(tabId, {
+            domain: readOptionalStringArg(args, 'domain'),
+            path: readOptionalStringArg(args, 'path'),
+          })
         }
         if (action === 'set') {
           return await session.cookiesSet(tabId, name, value, domain)
@@ -977,27 +1040,76 @@ export function createCommandRouter({
         if (action === 'clear') {
           return await session.cookiesClear(tabId)
         }
+        if (action === 'delete') {
+          if (!name || name === 'default') {
+            throw new Error('cookies delete requires a cookie name')
+          }
+          return await session.cookiesDelete(tabId, name)
+        }
         throw new Error(`unsupported cookies action: ${action}`)
-      case 'storage':
+      case 'storage': {
+        const sessionOnly = readBooleanArg(args, 'session', false)
         if (action === 'get') {
-          return await session.storageGet(tabId, storageKey, frameSelector)
+          return await session.storageGet(tabId, storageKey, frameSelector, sessionOnly)
         }
         if (action === 'set') {
-          return await session.storageSet(tabId, storageKey || '', storageValue, frameSelector)
+          return await session.storageSet(
+            tabId,
+            storageKey || '',
+            storageValue,
+            frameSelector,
+            sessionOnly,
+          )
+        }
+        if (action === 'delete') {
+          if (!storageKey) {
+            throw new Error('storage delete requires a key')
+          }
+          return await session.storageDelete(tabId, storageKey, frameSelector, sessionOnly)
         }
         if (action === 'clear') {
-          return await session.storageClear(tabId, frameSelector)
+          return await session.storageClear(tabId, frameSelector, sessionOnly)
         }
         throw new Error(`unsupported storage action: ${action}`)
+      }
       case 'console':
         return { messages: state.session.consoleMessages }
       case 'errors':
         return { errors: state.session.pageErrors }
       case 'batch':
         return await handleBatchCommand(args)
+      case 'script':
+        if (action === 'add') {
+          return await initScripts.addScript(readStringArg(args, 'source'))
+        }
+        if (action === 'list') {
+          return initScripts.listScripts()
+        }
+        if (action === 'remove') {
+          if (readBooleanArg(args, 'all', false)) {
+            return await initScripts.removeAllScripts()
+          }
+          const scriptId = readStringArg(args, 'id')
+          if (!scriptId) {
+            throw new Error('script remove requires an id or --all')
+          }
+          return await initScripts.removeScript(scriptId)
+        }
+        throw new Error(`unsupported script action: ${action}`)
       case 'network':
         if (action === 'route') {
-          return await network.routeRequest(tabId, url, args.abort === true, args.body)
+          if (subaction === 'list') {
+            return network.listRoutes()
+          }
+          const removeHeaders = readStringArrayArg(args, 'removeHeaders')
+          return await network.routeRequest(tabId, url, {
+            abort: args.abort === true,
+            body: args.body,
+            status: typeof args.status === 'number' ? args.status : undefined,
+            contentType: readOptionalStringArg(args, 'contentType'),
+            headers: readObjectArg(args, 'headers') as Record<string, string> | undefined,
+            removeHeaders: removeHeaders.length > 0 ? removeHeaders : undefined,
+          })
         }
         if (action === 'unroute') {
           return await network.unrouteRequest(tabId, readStringArg(args, 'url'))
@@ -1048,6 +1160,18 @@ export function createCommandRouter({
         }
         if (readStringArg(args, 'type') === 'media') {
           return await session.setMedia(tabId, media)
+        }
+        if (readStringArg(args, 'type') === 'permission') {
+          return await session.setPermission(tabId, name, readBooleanArg(args, 'reset', false))
+        }
+        if (readStringArg(args, 'type') === 'ua') {
+          return await session.setUserAgent(tabId, value || null)
+        }
+        if (readStringArg(args, 'type') === 'timezone') {
+          return await session.setTimezone(tabId, value || null)
+        }
+        if (readStringArg(args, 'type') === 'locale') {
+          return await session.setLocale(tabId, value || null)
         }
         throw new Error(`unsupported set type: ${readStringArg(args, 'type')}`)
       case 'pdf':

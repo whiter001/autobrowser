@@ -11,6 +11,7 @@ import {
 const NON_AMBIENT_ROUTER_COMMANDS = new Set([
   'open',
   'batch',
+  'script',
   'status',
   'tab.close',
   'tab.list',
@@ -126,6 +127,24 @@ describe('command specs', () => {
       }),
     ).toThrow('invalid command arguments for batch: retryDelayMs must be a non-negative number')
     expect(() => validateCommandArgs('goto', { url: 'https://example.com' })).not.toThrow()
+  })
+
+  test('validates script command arguments', () => {
+    expect(() =>
+      validateCommandArgs('script', { action: 'add', source: 'window.x = 1' }),
+    ).not.toThrow()
+    expect(() => validateCommandArgs('script', { action: 'list' })).not.toThrow()
+    expect(() => validateCommandArgs('script', { action: 'remove', id: 'script_1' })).not.toThrow()
+    expect(() => validateCommandArgs('script', { action: 'remove', all: true })).not.toThrow()
+    expect(() => validateCommandArgs('script', { action: 'add' })).toThrow(
+      'invalid command arguments for script: source must be a non-empty string',
+    )
+    expect(() => validateCommandArgs('script', { action: 'remove', all: 'yes' })).toThrow(
+      'invalid command arguments for script: all must be a boolean',
+    )
+    expect(() => validateCommandArgs('script', { action: 'run' })).toThrow(
+      'invalid command arguments for script: unsupported action',
+    )
   })
 
   test('covers the remaining command schema gaps', () => {

@@ -427,6 +427,9 @@ export function validateCommandArgs(command: string, args: unknown): void {
     case 'select':
       readStringField(normalizedArgs, 'selector', command)
       readStringField(normalizedArgs, 'value', command)
+      if (command === 'type') {
+        readBooleanField(normalizedArgs, 'submit', command)
+      }
       return
     case 'upload':
       readStringField(normalizedArgs, 'selector', command)
@@ -526,12 +529,24 @@ export function validateCommandArgs(command: string, args: unknown): void {
       readStringField(normalizedArgs, 'fn', command, { required: false })
       readNumberField(normalizedArgs, 'timeout', command, { required: false })
       readNumberField(normalizedArgs, 'ms', command, { required: false })
+      readBooleanField(normalizedArgs, 'gone', command)
       return
-    case 'screenshot':
-      readBooleanField(normalizedArgs, 'full', command)
+    case 'screenshot': {
+      const full = readBooleanField(normalizedArgs, 'full', command)
       readBooleanField(normalizedArgs, 'annotate', command)
       readStringField(normalizedArgs, 'format', command, { required: false })
       readNumberField(normalizedArgs, 'quality', command, { required: false })
+      const element = readStringField(normalizedArgs, 'element', command, { required: false })
+      if (element !== undefined && full === true) {
+        throw createCommandArgsValidationError(command, 'element cannot be combined with full', {
+          field: 'element',
+          value: element,
+        })
+      }
+      return
+    }
+    case 'snapshot':
+      readStringField(normalizedArgs, 'selector', command, { required: false })
       return
     case 'window':
       {
@@ -562,11 +577,13 @@ export function validateCommandArgs(command: string, args: unknown): void {
       readStringField(normalizedArgs, 'name', command, { required: false })
       readStringField(normalizedArgs, 'value', command, { required: false })
       readStringField(normalizedArgs, 'domain', command, { required: false })
+      readStringField(normalizedArgs, 'path', command, { required: false })
       return
     case 'storage':
       readStringField(normalizedArgs, 'action', command)
       readStringField(normalizedArgs, 'key', command, { required: false })
       readStringField(normalizedArgs, 'value', command, { required: false })
+      readBooleanField(normalizedArgs, 'session', command)
       readObjectOrArrayField(normalizedArgs, 'data', command)
       return
     case 'set': {
@@ -586,14 +603,34 @@ export function validateCommandArgs(command: string, args: unknown): void {
         readNumberField(normalizedArgs, 'accuracy', command, { required: false })
       } else if (type === 'media') {
         readStringField(normalizedArgs, 'media', command, { required: false })
+      } else if (type === 'permission') {
+        readStringField(normalizedArgs, 'name', command)
+        readBooleanField(normalizedArgs, 'reset', command)
+      } else if (type === 'ua' || type === 'timezone' || type === 'locale') {
+        // 空字符串表示恢复默认值，因此允许空串
+        readStringField(normalizedArgs, 'value', command, { required: false, allowEmpty: true })
       }
       return
     }
     case 'network': {
       const action = readStringField(normalizedArgs, 'action', command)
       if (action === 'route') {
+        const subaction = readStringField(normalizedArgs, 'subaction', command, { required: false })
+        if (subaction === 'list') {
+          return
+        }
         readStringField(normalizedArgs, 'url', command)
         readBooleanField(normalizedArgs, 'abort', command)
+        const status = readNumberField(normalizedArgs, 'status', command, { required: false })
+        if (status !== undefined && (status < 100 || status > 599 || !Number.isInteger(status))) {
+          throw createCommandArgsValidationError(command, 'status must be an integer 100-599', {
+            field: 'status',
+            value: status,
+          })
+        }
+        readStringField(normalizedArgs, 'contentType', command, { required: false })
+        readObjectOrArrayField(normalizedArgs, 'headers', command)
+        readStringArrayField(normalizedArgs, 'removeHeaders', command, { required: false })
       } else if (action === 'unroute') {
         readStringField(normalizedArgs, 'url', command)
       } else if (action === 'request') {
@@ -617,6 +654,21 @@ export function validateCommandArgs(command: string, args: unknown): void {
       readStringField(normalizedArgs, 'action', command)
       readStringField(normalizedArgs, 'text', command, { required: false })
       return
+    case 'script': {
+      const action = readStringField(normalizedArgs, 'action', command)
+      if (action === 'add') {
+        readStringField(normalizedArgs, 'source', command)
+      } else if (action === 'remove') {
+        readStringField(normalizedArgs, 'id', command, { required: false })
+        readBooleanField(normalizedArgs, 'all', command)
+      } else if (action !== 'list') {
+        throw createCommandArgsValidationError(command, 'unsupported action', {
+          field: 'action',
+          value: action,
+        })
+      }
+      return
+    }
     case 'state':
       readStringField(normalizedArgs, 'action', command)
       readStringField(normalizedArgs, 'name', command, { required: false })
@@ -631,7 +683,6 @@ export function validateCommandArgs(command: string, args: unknown): void {
       return
     case 'tab.list':
     case 'status':
-    case 'snapshot':
     case 'console':
     case 'errors':
     case 'pdf':

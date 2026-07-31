@@ -45,5 +45,6 @@ export function createExtensionState(defaultRelayPort: number): ExtensionState {
       harMaxRequests: 1000,
       harMaxBodyBytes: 256 * 1024,
     },
+    initScripts: [],
   }
 }

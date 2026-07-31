@@ -27,9 +27,19 @@ interface NetworkHarStopResult {
   stoppedAt?: string
 }
 
-const COOKIE_ACTIONS = ['get', 'set', 'clear'] as const
-const STORAGE_ACTIONS = ['get', 'set', 'clear'] as const
-const SET_ACTIONS = ['viewport', 'offline', 'headers', 'geo', 'media'] as const
+const COOKIE_ACTIONS = ['get', 'set', 'clear', 'delete'] as const
+const STORAGE_ACTIONS = ['get', 'set', 'clear', 'delete'] as const
+const SET_ACTIONS = [
+  'viewport',
+  'offline',
+  'headers',
+  'geo',
+  'media',
+  'permission',
+  'ua',
+  'timezone',
+  'locale',
+] as const
 const CLIPBOARD_ACTIONS = ['read', 'write'] as const
 const STATE_ACTIONS = ['save', 'load'] as const
 const NETWORK_ACTIONS = ['route', 'unroute', 'requests', 'export', 'request', 'har'] as const
@@ -39,8 +49,38 @@ const handleCookies = createActionCommand({
   helpPath: ['cookies'],
   allowed: COOKIE_ACTIONS,
   handle: async (rest, context, action) => {
-    if (action === 'get' || action === 'clear') {
+    if (action === 'get') {
+      const filters: Record<string, string> = {}
+      for (let index = 0; index < rest.length; index += 1) {
+        const value = rest[index]
+        if (value === '--domain' || value === '--path') {
+          const rawValue = rest[index + 1]
+          if (rawValue === undefined) {
+            return writeCommandError(`missing value for ${value}`)
+          }
+          filters[value.slice(2)] = rawValue
+          index += 1
+          continue
+        }
+        return writeCommandError(`unexpected cookies get argument: ${value}`)
+      }
+
+      await requestAndWrite(context, 'cookies', { action, ...filters })
+      return 0
+    }
+
+    if (action === 'clear') {
       await requestAndWrite(context, 'cookies', { action })
+      return 0
+    }
+
+    if (action === 'delete') {
+      const name = rest[0]
+      if (!name) {
+        return context.writeHelp(['cookies', 'delete'])
+      }
+
+      await requestAndWrite(context, 'cookies', { action, name })
       return 0
     }
 
@@ -63,20 +103,42 @@ const handleStorage = createActionCommand({
   helpPath: ['storage'],
   allowed: STORAGE_ACTIONS,
   handle: async (rest, context, action) => {
+    // --session 切换到 sessionStorage（per-tab per-origin），其余参数位置保持不变
+    const sessionOnly = rest.includes('--session')
+    const args = rest.filter((value) => value !== '--session')
+
     if (action === 'get') {
       await requestAndWrite(context, 'storage', {
         action,
-        key: rest[0],
+        key: args[0],
+        ...(sessionOnly ? { session: true } : {}),
       })
       return 0
     }
 
     if (action === 'clear') {
-      await requestAndWrite(context, 'storage', { action })
+      await requestAndWrite(context, 'storage', {
+        action,
+        ...(sessionOnly ? { session: true } : {}),
+      })
       return 0
     }
 
-    const [key, value] = rest
+    if (action === 'delete') {
+      const key = args[0]
+      if (!key) {
+        return context.writeHelp(['storage', 'delete'])
+      }
+
+      await requestAndWrite(context, 'storage', {
+        action,
+        key,
+        ...(sessionOnly ? { session: true } : {}),
+      })
+      return 0
+    }
+
+    const [key, value] = args
     if (!key || value === undefined) {
       return context.writeHelp(['storage', 'set'])
     }
@@ -85,6 +147,7 @@ const handleStorage = createActionCommand({
       action,
       key,
       value,
+      ...(sessionOnly ? { session: true } : {}),
     })
     return 0
   },
@@ -164,6 +227,33 @@ async function handleSet(rest: string[], context: CommandContext): Promise<numbe
     return 0
   }
 
+  if (type === 'permission') {
+    const reset = subArgs.includes('--reset')
+    const name = subArgs.filter((value) => value !== '--reset')[0]
+    if (!name) {
+      return context.writeHelp(['set', 'permission'])
+    }
+
+    await requestAndWrite(context, 'set', {
+      type: 'permission',
+      name,
+      ...(reset ? { reset: true } : {}),
+    })
+    return 0
+  }
+
+  if (type === 'ua' || type === 'timezone' || type === 'locale') {
+    // 空值（--reset 或不带参数）即恢复默认，与 CDP 空字符串语义一致
+    const reset = subArgs.includes('--reset')
+    const value = reset ? '' : subArgs.join(' ').trim()
+
+    await requestAndWrite(context, 'set', {
+      type,
+      value,
+    })
+    return 0
+  }
+
   await requestAndWrite(context, 'set', {
     type: 'media',
     media: subArgs[0] || '',
@@ -232,6 +322,14 @@ async function handleNetwork(rest: string[], context: CommandContext): Promise<n
       return 0
     }
 
+    if (rest[1] === 'list') {
+      await requestAndWrite(context, 'network', {
+        action: 'route',
+        subaction: 'list',
+      })
+      return 0
+    }
+
     const routeArgs = parseOrWriteError(() => parseNetworkRouteArgs(rest.slice(1)))
     if (!routeArgs) {
       return 1
@@ -246,6 +344,10 @@ async function handleNetwork(rest: string[], context: CommandContext): Promise<n
       url: routeArgs.url,
       abort: routeArgs.abort,
       body: routeArgs.body,
+      status: routeArgs.status,
+      contentType: routeArgs.contentType,
+      headers: routeArgs.headers,
+      removeHeaders: routeArgs.removeHeaders,
     })
     return 0
   }

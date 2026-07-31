@@ -46,6 +46,37 @@ interface FetchRequestPausedParams {
   timestamp?: number
 }
 
+export interface NetworkRouteOptions {
+  abort?: boolean
+  body?: unknown
+  status?: number
+  contentType?: string
+  headers?: Record<string, string>
+  removeHeaders?: string[]
+}
+
+/** 常见状态码对应的 reason phrase，未知状态码则不传（Fetch.fulfillRequest 的 responsePhrase 可省略） */
+const HTTP_STATUS_PHRASES: Record<number, string> = {
+  200: 'OK',
+  201: 'Created',
+  202: 'Accepted',
+  204: 'No Content',
+  301: 'Moved Permanently',
+  302: 'Found',
+  304: 'Not Modified',
+  400: 'Bad Request',
+  401: 'Unauthorized',
+  403: 'Forbidden',
+  404: 'Not Found',
+  405: 'Method Not Allowed',
+  409: 'Conflict',
+  418: "I'm a Teapot",
+  429: 'Too Many Requests',
+  500: 'Internal Server Error',
+  502: 'Bad Gateway',
+  503: 'Service Unavailable',
+}
+
 interface NetworkEventParams {
   requestId?: string
   request?: NetworkRequestPayload
@@ -521,12 +552,21 @@ export function createNetworkDomain({
           body.base64Encoded,
           getHarMaxBodyBytes(state),
         )
+        const mockStatus = route.status ?? 200
+        const mockContentType = route.contentType ?? 'application/json; charset=utf-8'
+        // 显式 --header 允许覆盖默认 content-type
+        const mockHeaders = normalizeHeaderPairs({
+          'content-type': mockContentType,
+          ...route.headers,
+        })
         try {
           await sendRawDebuggerCommand(tabId, 'Fetch.fulfillRequest', {
             requestId,
-            responseCode: 200,
-            responsePhrase: 'OK',
-            responseHeaders: [{ name: 'content-type', value: 'application/json; charset=utf-8' }],
+            responseCode: mockStatus,
+            ...(HTTP_STATUS_PHRASES[mockStatus]
+              ? { responsePhrase: HTTP_STATUS_PHRASES[mockStatus] }
+              : {}),
+            responseHeaders: mockHeaders,
             body: encodeBase64(body.text),
           })
           upsertNetworkRequest(state, {
@@ -535,9 +575,9 @@ export function createNetworkDomain({
             responseBodyTruncated: responseBodySummary.truncated,
             responseBodyBytes: responseBodySummary.byteLength,
             responseBodyBase64: false,
-            responseMimeType: 'application/json; charset=utf-8',
-            status: 200,
-            statusText: 'OK',
+            responseMimeType: mockContentType,
+            status: mockStatus,
+            statusText: HTTP_STATUS_PHRASES[mockStatus] || '',
             finishedAt: new Date().toISOString(),
             durationMs: 0,
           })
@@ -547,6 +587,20 @@ export function createNetworkDomain({
           await sendRawDebuggerCommand(tabId, 'Fetch.continueRequest', { requestId })
           return
         }
+      }
+
+      // removeHeaders 是请求头修改：删除指定头后用 Fetch.continueRequest 的 headers 放行
+      if (route?.removeHeaders && route.removeHeaders.length > 0) {
+        const removedNames = new Set(route.removeHeaders.map((name) => name.toLowerCase()))
+        const headers = normalizeHeaderPairs(
+          Object.fromEntries(
+            Object.entries(normalizeHeaders(request.headers)).filter(
+              ([name]) => !removedNames.has(name.toLowerCase()),
+            ),
+          ),
+        )
+        await sendRawDebuggerCommand(tabId, 'Fetch.continueRequest', { requestId, headers })
+        return
       }
 
       await sendRawDebuggerCommand(tabId, 'Fetch.continueRequest', { requestId })
@@ -718,16 +772,23 @@ export function createNetworkDomain({
   async function routeRequest(
     tabId: TabInput,
     url: string,
-    abort = false,
-    body: unknown = undefined,
+    options: NetworkRouteOptions = {},
   ): Promise<{ route: NetworkRoute; routes: NetworkRoute[] }> {
     const tab = await getTargetTab(tabId)
     await sendDebuggerCommand(tab.id, 'Network.enable', {})
     const route: NetworkRoute = {
       id: createNetworkRouteId(),
       pattern: String(url || '').trim(),
-      abort: Boolean(abort),
-      body: body === undefined ? undefined : body,
+      abort: Boolean(options.abort),
+      body: options.body === undefined ? undefined : options.body,
+      ...(options.status !== undefined ? { status: options.status } : {}),
+      ...(options.contentType ? { contentType: options.contentType } : {}),
+      ...(options.headers && Object.keys(options.headers).length > 0
+        ? { headers: { ...options.headers } }
+        : {}),
+      ...(options.removeHeaders && options.removeHeaders.length > 0
+        ? { removeHeaders: [...options.removeHeaders] }
+        : {}),
       createdAt: new Date().toISOString(),
     }
 
@@ -742,6 +803,10 @@ export function createNetworkDomain({
       route,
       routes: state.network.routes,
     }
+  }
+
+  function listRoutes(): { routes: NetworkRoute[] } {
+    return { routes: state.network.routes }
   }
 
   async function unrouteRequest(tabId: TabInput, url: string): Promise<{ routes: NetworkRoute[] }> {
@@ -845,6 +910,7 @@ export function createNetworkDomain({
     handleEvent,
     routeRequest,
     unrouteRequest,
+    listRoutes,
     listRequests,
     getRequestDetail,
     startHar,

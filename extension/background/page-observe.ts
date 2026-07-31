@@ -1,6 +1,7 @@
 import { AGENT_FRAME_REF_ATTRIBUTE, AGENT_FRAME_REF_PREFIX } from '../../src/core/agent-handles.js'
 import { AGENT_ELEMENT_REF_ATTRIBUTE } from '../../src/core/agent-selectors.js'
 import { buildDeepDomTraversalHelpersSource } from './deep-dom.js'
+import { createElementNotFoundError } from './page-input.js'
 import {
   collapseWhitespace,
   parsePageContextElementRefIndex,
@@ -381,6 +382,12 @@ ${PAGE_CONTEXT_DEEP_DOM_HELPERS_SOURCE}
   ) {
     const tab = await getTargetTab(tabId)
     const effectiveFrameSelector = resolveEffectiveFrameSelector(state, tab, frameSelector)
+
+    // 元素截图只裁元素区域，与整页截图语义冲突，提前报明确错误而不是静默二选一
+    if (options.element && options.full) {
+      throw new Error('screenshot element capture cannot be combined with --full')
+    }
+
     await sendDebuggerCommand(tab.id, 'Page.enable', {})
 
     let annotationCount = 0
@@ -399,7 +406,50 @@ ${PAGE_CONTEXT_DEEP_DOM_HELPERS_SOURCE}
           : {}),
       }
 
-      if (effectiveFrameSelector) {
+      if (options.element) {
+        const { resolvedSelector } = await resolveElementSelectorForTab(tab.id, options.element)
+        const { value: elementRect } = await evaluateInTabContext<{
+          x: number
+          y: number
+          width: number
+          height: number
+        }>(
+          tab.id,
+          `(() => {
+${PAGE_CONTEXT_DEEP_DOM_HELPERS_SOURCE}
+
+            const node = deepQuerySelector(document, ${JSON.stringify(resolvedSelector)});
+            if (!node) return null;
+            const rect = node.getBoundingClientRect();
+            return { x: rect.x, y: rect.y, width: rect.width, height: rect.height };
+          })()`,
+          withFrameSelectorOptions(effectiveFrameSelector),
+        )
+
+        if (!elementRect) {
+          throw createElementNotFoundError(options.element)
+        }
+
+        // frame 内元素的 rect 是 frame 视口坐标，clip 走主页面坐标系，要叠回 frame 偏移
+        let frameOffsetX = 0
+        let frameOffsetY = 0
+        if (effectiveFrameSelector) {
+          const frame = await resolveFrameTarget(tab.id, effectiveFrameSelector)
+          frameOffsetX = frame.left
+          frameOffsetY = frame.top
+        }
+
+        Object.assign(captureOptions, {
+          clip: {
+            x: Math.max(0, elementRect.x + frameOffsetX),
+            y: Math.max(0, elementRect.y + frameOffsetY),
+            width: Math.max(1, elementRect.width),
+            height: Math.max(1, elementRect.height),
+            // scale 取 1：输出像素 = CSS 尺寸 × devicePixelRatio，与 frame clip 的既有行为一致
+            scale: 1,
+          },
+        })
+      } else if (effectiveFrameSelector) {
         const frame = await resolveFrameTarget(tab.id, effectiveFrameSelector)
         Object.assign(captureOptions, {
           clip: {
@@ -429,6 +479,7 @@ ${PAGE_CONTEXT_DEEP_DOM_HELPERS_SOURCE}
         fullPage: Boolean(options.full),
         annotated: Boolean(options.annotate),
         annotationCount,
+        ...(options.element ? { element: options.element } : {}),
         dataUrl: `data:${format === 'jpeg' ? 'image/jpeg' : 'image/png'};base64,${result.data}`,
         data: result.data,
       }
@@ -441,8 +492,16 @@ ${PAGE_CONTEXT_DEEP_DOM_HELPERS_SOURCE}
     }
   }
 
-  async function snapshotTab(tabId: TabInput, frameSelector: FrameSelector) {
-    const tab = await getTargetTab(tabId)
+  async function snapshotTab(
+    tabId: TabInput,
+    frameSelector: FrameSelector,
+    targetSelector?: string,
+  ) {
+    // 子树截取：目标可以是 CSS selector 或 @eN ref，先解析成当前页面可用的 selector
+    const resolvedTarget = targetSelector?.trim()
+      ? await resolveElementSelectorForTab(tabId, targetSelector.trim())
+      : null
+    const tab = resolvedTarget ? resolvedTarget.tab : await getTargetTab(tabId)
     const pageEpoch = getPageEpoch(state, tab.id)
     const refAttribute = AGENT_ELEMENT_REF_ATTRIBUTE
     const frameAttribute = AGENT_FRAME_REF_ATTRIBUTE
@@ -454,11 +513,17 @@ ${PAGE_CONTEXT_DEEP_DOM_HELPERS_SOURCE}
         const frameAttribute = ${JSON.stringify(frameAttribute)};
         const frameRefPrefix = ${JSON.stringify(frameRefPrefix)};
         const pageEpoch = ${pageEpoch};
+        const targetRootSelector = ${JSON.stringify(resolvedTarget?.resolvedSelector || null)};
 
 ${PAGE_CONTEXT_TEXT_HELPERS_SOURCE}
 ${PAGE_CONTEXT_DEEP_DOM_HELPERS_SOURCE}
 
-        const deepElements = deepCollectElements(document);
+        const scope = targetRootSelector ? deepQuerySelector(document, targetRootSelector) : document;
+        if (!scope) {
+          return { found: false, pageEpoch };
+        }
+
+        const deepElements = deepCollectElements(scope);
         const deepLabels = deepElements.filter(
           (element) =>
             element instanceof HTMLElement &&
@@ -484,7 +549,7 @@ ${PAGE_CONTEXT_DEEP_DOM_HELPERS_SOURCE}
           }
 
           return splitWhitespaceTokens(labelledBy)
-            .map((id) => deepGetElementById(document, id))
+            .map((id) => deepGetElementById(scope, id))
             .filter(Boolean)
             .map((element) => readText(element))
             .filter(Boolean)
@@ -540,7 +605,8 @@ ${PAGE_CONTEXT_DEEP_DOM_HELPERS_SOURCE}
             : null,
         });
 
-        // 两种 ref 属性合并成一趟遍历清理，减少全 DOM 扫描次数
+        // 两种 ref 属性合并成一趟遍历清理，减少全 DOM 扫描次数。
+        // 子树截取时仍整页清理：refs 在子树内重新编号，不清理子树外的旧 ref 会造成同号冲突
         for (const element of deepQuerySelectorAll(document, '[' + refAttribute + '],[' + frameAttribute + ']')) {
           element.removeAttribute(refAttribute);
           element.removeAttribute(frameAttribute);
@@ -558,7 +624,12 @@ ${PAGE_CONTEXT_DEEP_DOM_HELPERS_SOURCE}
         ];
 
         // 合并成单个选择器，一次遍历取齐全部候选（deepQuerySelectorAll 内部已去重）
-        const candidates = deepQuerySelectorAll(document, selectors.join(','));
+        const actionableSelector = selectors.join(',');
+        const candidates = deepQuerySelectorAll(scope, actionableSelector);
+        // Element.querySelectorAll 不含根自身，子树根命中选择器时补进候选
+        if (scope instanceof HTMLElement && scope.matches(actionableSelector)) {
+          candidates.unshift(scope);
+        }
 
         const elements = [];
         for (const element of candidates) {
@@ -605,7 +676,7 @@ ${PAGE_CONTEXT_DEEP_DOM_HELPERS_SOURCE}
         }
 
         const frames = [];
-        for (const frameElement of deepQuerySelectorAll(document, 'iframe')) {
+        for (const frameElement of deepQuerySelectorAll(scope, 'iframe')) {
           if (!(frameElement instanceof HTMLIFrameElement)) {
             continue;
           }
@@ -646,15 +717,20 @@ ${PAGE_CONTEXT_DEEP_DOM_HELPERS_SOURCE}
           title: document.title,
           url: location.href,
           readyState: document.readyState,
-          text: (document.body?.innerText || "").slice(0, 5000),
+          text: (scope === document ? document.body?.innerText || '' : scope.innerText || '').slice(0, 5000),
           elements,
           frames,
-          headings: deepQuerySelectorAll(document, "h1,h2,h3").slice(0, 20).map(toNodeSummary),
-          buttons: deepQuerySelectorAll(document, "button,[role='button'],input[type='button'],input[type='submit']").slice(0, 20).map(toNodeSummary),
+          headings: deepQuerySelectorAll(scope, "h1,h2,h3").slice(0, 20).map(toNodeSummary),
+          buttons: deepQuerySelectorAll(scope, "button,[role='button'],input[type='button'],input[type='submit']").slice(0, 20).map(toNodeSummary),
         };
       })()`,
       withFrameSelectorOptions(frameSelector),
     )
+
+    // 子树目标不存在时与其它命令保持一致：抛带引导的 STALE_REFERENCE
+    if (value && (value as { found?: boolean }).found === false) {
+      throw createElementNotFoundError(targetSelector?.trim() || '')
+    }
 
     return value
   }
@@ -1382,19 +1458,25 @@ ${PAGE_CONTEXT_DEEP_DOM_HELPERS_SOURCE}
     text: string,
     timeout = 30000,
     frameSelector: FrameSelector,
+    gone = false,
   ) {
     return await pollUntil(
       timeout,
       async () => {
-        // 匹配在页面内完成，每轮 poll 只回传布尔值，避免整页 innerText 经 CDP 回传
+        // 匹配在页面内完成，每轮 poll 只回传布尔值，避免整页 innerText 经 CDP 回传。
+        // gone 时条件取反：body 不存在也视为"已消失"，与 textGone 语义对齐
         const { value } = await evaluateInTabContext<boolean>(
           tabId,
-          `document.body ? document.body.innerText.toLowerCase().includes(${JSON.stringify(text.toLowerCase())}) : false`,
+          gone
+            ? `document.body ? !document.body.innerText.toLowerCase().includes(${JSON.stringify(text.toLowerCase())}) : true`
+            : `document.body ? document.body.innerText.toLowerCase().includes(${JSON.stringify(text.toLowerCase())}) : false`,
           withFrameSelectorOptions(frameSelector),
         )
-        return value === true ? { waited: true, condition: 'text', text } : null
+        return value === true
+          ? { waited: true, condition: gone ? 'text-gone' : 'text', text }
+          : null
       },
-      `wait text timeout: ${text}`,
+      `wait ${gone ? 'text-gone' : 'text'} timeout: ${text}`,
     )
   }
 

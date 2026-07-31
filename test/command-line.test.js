@@ -5,9 +5,11 @@ import os from 'node:os'
 import path from 'node:path'
 import { buildSystemOpenCommand, main, parseWindowsNetstatListeningPid } from '../src/cli.js'
 import {
+  parseConsoleArgs,
   parseNetworkHarStartArgs,
   parseNetworkRequestsArgs,
   parseNetworkRouteArgs,
+  parseScreenshotArgs,
   parseWaitArgs,
 } from '../src/cli/parse.js'
 
@@ -160,6 +162,39 @@ describe('cli helpers', () => {
     expect(() => parseWaitArgs(['time'])).toThrow('missing wait time value')
   })
 
+  test('parses --gone as a text-gone wait modifier', () => {
+    expect(parseWaitArgs(['--text', 'Loading', '--gone'])).toMatchObject({
+      type: 'text',
+      text: 'Loading',
+      gone: true,
+    })
+  })
+
+  test('rejects --gone without a text wait', () => {
+    expect(() => parseWaitArgs(['#spinner', '--gone'])).toThrow('--gone requires --text')
+  })
+
+  test('parses screenshot element targets from flags and positionals', () => {
+    expect(parseScreenshotArgs(['--element', '#card'])).toMatchObject({
+      element: '#card',
+      path: null,
+    })
+    expect(parseScreenshotArgs(['@e3#p1'])).toMatchObject({
+      element: '@e3#p1',
+      path: null,
+    })
+    expect(parseScreenshotArgs(['out.png', '#card'])).toMatchObject({
+      path: 'out.png',
+      element: '#card',
+    })
+  })
+
+  test('rejects screenshot element targets combined with --full', () => {
+    expect(() => parseScreenshotArgs(['--element', '#card', '--full'])).toThrow(
+      'cannot be combined',
+    )
+  })
+
   test('documents wait durations as milliseconds in help output', async () => {
     const result = await runCli(['help', 'wait'])
 
@@ -188,7 +223,7 @@ describe('cli helpers', () => {
     const tabHelp = await runCli(['help', 'tab'])
     expect(tabHelp.exitCode).toBe(0)
     expect(tabHelp.stdout).toContain('autobrowser tab new [url]')
-    expect(tabHelp.stdout).toContain('autobrowser tab close [tN|--all]')
+    expect(tabHelp.stdout).toContain('autobrowser tab close [tN]')
 
     const findHelp = await runCli(['help', 'find'])
     expect(findHelp.exitCode).toBe(0)
@@ -2369,6 +2404,86 @@ describe('cli command routing', () => {
     })
   })
 
+  test('routes type --submit to the extension', async () => {
+    const result = await runCli(['type', '#q', 'hello', '--submit'])
+
+    expect(result.exitCode).toBe(0)
+    expect(result.fetchCalls).toHaveLength(1)
+    expect(result.fetchCalls[0].body).toEqual({
+      command: 'type',
+      args: {
+        selector: '#q',
+        value: 'hello',
+        submit: true,
+      },
+    })
+  })
+
+  test('routes element screenshots to the extension', async () => {
+    const outputDir = await mkdtemp(path.join(os.tmpdir(), 'autobrowser-screenshot-element-test-'))
+    const outputPath = path.join(outputDir, 'shot.png')
+    const screenshotBytes = Buffer.from('element-screenshot')
+
+    const result = await runCli(['screenshot', outputPath, '--element', '#card'], {
+      ok: true,
+      result: {
+        data: screenshotBytes.toString('base64'),
+        mimeType: 'image/png',
+      },
+    })
+
+    expect(result.exitCode).toBe(0)
+    expect(result.fetchCalls).toHaveLength(1)
+    expect(result.fetchCalls[0].body).toEqual({
+      command: 'screenshot',
+      args: {
+        full: false,
+        annotate: false,
+        format: 'png',
+        element: '#card',
+      },
+    })
+    expect((await readFile(outputPath)).toString()).toBe('element-screenshot')
+  })
+
+  test('rejects element screenshots combined with --full before calling the extension', async () => {
+    const result = await runCli(['screenshot', '--element', '#card', '--full'])
+
+    expect(result.exitCode).toBe(1)
+    expect(result.fetchCalls).toHaveLength(0)
+    expect(result.stderr).toContain('cannot be combined')
+  })
+
+  test('routes text-gone waits to the extension', async () => {
+    const result = await runCli(['wait', '--text', 'Loading', '--gone'])
+
+    expect(result.exitCode).toBe(0)
+    expect(result.fetchCalls).toHaveLength(1)
+    expect(result.fetchCalls[0].body).toEqual({
+      command: 'wait',
+      args: {
+        timeout: 30000,
+        state: 'visible',
+        type: 'text',
+        text: 'Loading',
+        gone: true,
+      },
+    })
+  })
+
+  test('routes snapshot subtree targets to the extension', async () => {
+    const result = await runCli(['snapshot', '--target', '#panel'])
+
+    expect(result.exitCode).toBe(0)
+    expect(result.fetchCalls).toHaveLength(1)
+    expect(result.fetchCalls[0].body).toEqual({
+      command: 'snapshot',
+      args: {
+        selector: '#panel',
+      },
+    })
+  })
+
   test('routes semantic role finds to the extension', async () => {
     const result = await runCli(['find', 'role', 'button', 'click', '--name', 'Submit'])
 
@@ -2899,6 +3014,249 @@ describe('cli command routing', () => {
           },
         },
       },
+    })
+  })
+})
+
+describe('cli network route and console argument parsing', () => {
+  test('parses network route mock options', () => {
+    expect(
+      parseNetworkRouteArgs([
+        '**/api/*',
+        '--status',
+        '404',
+        '--content-type',
+        'text/plain',
+        '--header',
+        'X-Mock: yes',
+        '--header',
+        'X-Other: a:b',
+        '--remove-headers',
+        'Authorization, X-Debug',
+      ]),
+    ).toEqual({
+      url: '**/api/*',
+      abort: false,
+      status: 404,
+      contentType: 'text/plain',
+      headers: { 'X-Mock': 'yes', 'X-Other': 'a:b' },
+      removeHeaders: ['Authorization', 'X-Debug'],
+    })
+  })
+
+  test('rejects invalid network route options', () => {
+    expect(() => parseNetworkRouteArgs(['**/api/*', '--status'])).toThrow('missing status value')
+    expect(() => parseNetworkRouteArgs(['**/api/*', '--status', '99'])).toThrow('expected >= 100')
+    expect(() => parseNetworkRouteArgs(['**/api/*', '--header', 'NoColon'])).toThrow(
+      'expected "Name: Value"',
+    )
+    expect(() => parseNetworkRouteArgs(['**/api/*', '--remove-headers'])).toThrow(
+      'missing remove-headers value',
+    )
+  })
+
+  test('parses console level with strict validation', () => {
+    expect(parseConsoleArgs([])).toEqual({ level: null })
+    expect(parseConsoleArgs(['--level', 'warning'])).toEqual({ level: 'warning' })
+    expect(() => parseConsoleArgs(['--level', 'verbose'])).toThrow('unsupported console level')
+    expect(() => parseConsoleArgs(['--bogus'])).toThrow('unsupported console option')
+    expect(() => parseConsoleArgs(['extra'])).toThrow('unexpected extra console argument')
+  })
+})
+
+describe('cli network/session command forwarding', () => {
+  test('routes network route list to the extension', async () => {
+    const result = await runCli(['network', 'route', 'list'])
+
+    expect(result.exitCode).toBe(0)
+    expect(result.fetchCalls[0].body).toEqual({
+      command: 'network',
+      args: { action: 'route', subaction: 'list' },
+    })
+  })
+
+  test('forwards network route mock options to the extension', async () => {
+    const result = await runCli([
+      'network',
+      'route',
+      '**/api/*',
+      '--status',
+      '503',
+      '--header',
+      'X-Mock: yes',
+      '--remove-headers',
+      'authorization,x-debug',
+    ])
+
+    expect(result.exitCode).toBe(0)
+    expect(result.fetchCalls[0].body).toEqual({
+      command: 'network',
+      args: {
+        action: 'route',
+        url: '**/api/*',
+        abort: false,
+        status: 503,
+        headers: { 'X-Mock': 'yes' },
+        removeHeaders: ['authorization', 'x-debug'],
+      },
+    })
+  })
+
+  test('forwards cookies get filters and delete to the extension', async () => {
+    const filtered = await runCli(['cookies', 'get', '--domain', 'example.com', '--path', '/'])
+    expect(filtered.fetchCalls[0].body).toEqual({
+      command: 'cookies',
+      args: { action: 'get', domain: 'example.com', path: '/' },
+    })
+
+    const deleted = await runCli(['cookies', 'delete', 'sid'])
+    expect(deleted.fetchCalls[0].body).toEqual({
+      command: 'cookies',
+      args: { action: 'delete', name: 'sid' },
+    })
+  })
+
+  test('forwards storage session flag and delete to the extension', async () => {
+    const deleted = await runCli(['storage', 'delete', '--session', 'draft'])
+    expect(deleted.fetchCalls[0].body).toEqual({
+      command: 'storage',
+      args: { action: 'delete', key: 'draft', session: true },
+    })
+
+    const listed = await runCli(['storage', 'get', '--session'])
+    expect(listed.fetchCalls[0].body).toEqual({
+      command: 'storage',
+      args: { action: 'get', session: true },
+    })
+  })
+
+  test('forwards set permission/ua/timezone/locale to the extension', async () => {
+    const granted = await runCli(['set', 'permission', 'geolocation'])
+    expect(granted.fetchCalls[0].body).toEqual({
+      command: 'set',
+      args: { type: 'permission', name: 'geolocation' },
+    })
+
+    const resetPermission = await runCli(['set', 'permission', 'geolocation', '--reset'])
+    expect(resetPermission.fetchCalls[0].body).toEqual({
+      command: 'set',
+      args: { type: 'permission', name: 'geolocation', reset: true },
+    })
+
+    const ua = await runCli(['set', 'ua', 'My Agent 1.0'])
+    expect(ua.fetchCalls[0].body).toEqual({
+      command: 'set',
+      args: { type: 'ua', value: 'My Agent 1.0' },
+    })
+
+    const resetUa = await runCli(['set', 'ua', '--reset'])
+    expect(resetUa.fetchCalls[0].body).toEqual({
+      command: 'set',
+      args: { type: 'ua', value: '' },
+    })
+
+    const timezone = await runCli(['set', 'timezone', 'Asia/Shanghai'])
+    expect(timezone.fetchCalls[0].body).toEqual({
+      command: 'set',
+      args: { type: 'timezone', value: 'Asia/Shanghai' },
+    })
+
+    const locale = await runCli(['set', 'locale', 'zh-CN'])
+    expect(locale.fetchCalls[0].body).toEqual({
+      command: 'set',
+      args: { type: 'locale', value: 'zh-CN' },
+    })
+  })
+
+  test('filters console messages by level on the CLI side', async () => {
+    const payload = {
+      ok: true,
+      result: {
+        messages: [
+          { type: 'error', text: 'e', timestamp: 1 },
+          { type: 'warning', text: 'w', timestamp: 2 },
+          { type: 'log', text: 'l', timestamp: 3 },
+          { type: 'debug', text: 'd', timestamp: 4 },
+        ],
+      },
+    }
+
+    const filtered = await runCli(['console', '--level', 'warning'], payload)
+    expect(filtered.exitCode).toBe(0)
+    const filteredOutput = JSON.parse(filtered.stdout)
+    // warning 级别包含更严重的 error，排除 log/debug
+    expect(filteredOutput.result.messages.map((message) => message.type)).toEqual([
+      'error',
+      'warning',
+    ])
+
+    const unfiltered = await runCli(['console'], payload)
+    const unfilteredOutput = JSON.parse(unfiltered.stdout)
+    expect(unfilteredOutput.result.messages).toHaveLength(4)
+  })
+})
+
+describe('cli script command forwarding', () => {
+  test('documents script help output', async () => {
+    const scriptHelp = await runCli(['help', 'script'])
+    expect(scriptHelp.exitCode).toBe(0)
+    expect(scriptHelp.stdout).toContain('autobrowser script <add|list|remove>')
+    expect(scriptHelp.stdout).toContain(
+      'autobrowser script add [--stdin|--file <path>|--base64] <source>',
+    )
+    expect(scriptHelp.stdout).toContain('autobrowser script remove <id|--all>')
+  })
+
+  test('forwards script add with a positional source', async () => {
+    const result = await runCli(['script', 'add', 'window.__injected = true'])
+
+    expect(result.exitCode).toBe(0)
+    expect(result.fetchCalls[0].body).toEqual({
+      command: 'script',
+      args: { action: 'add', source: 'window.__injected = true' },
+    })
+  })
+
+  test('forwards script add reading the source from --file and --base64', async () => {
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), 'autobrowser-script-'))
+    const scriptPath = path.join(tempDir, 'init.js')
+    await writeFile(scriptPath, 'window.__fromFile = 1\n', 'utf8')
+
+    const fromFile = await runCli(['script', 'add', '--file', scriptPath])
+    expect(fromFile.fetchCalls[0].body).toEqual({
+      command: 'script',
+      args: { action: 'add', source: 'window.__fromFile = 1' },
+    })
+
+    const fromBase64 = await runCli([
+      'script',
+      'add',
+      '--base64',
+      Buffer.from('window.__b64 = 2', 'utf8').toString('base64'),
+    ])
+    expect(fromBase64.fetchCalls[0].body).toEqual({
+      command: 'script',
+      args: { action: 'add', source: 'window.__b64 = 2' },
+    })
+  })
+
+  test('forwards script list and remove to the extension', async () => {
+    const listed = await runCli(['script', 'list'])
+    expect(listed.fetchCalls[0].body).toEqual({
+      command: 'script',
+      args: { action: 'list' },
+    })
+
+    const removed = await runCli(['script', 'remove', 'script_abc'])
+    expect(removed.fetchCalls[0].body).toEqual({
+      command: 'script',
+      args: { action: 'remove', id: 'script_abc' },
+    })
+
+    const removedAll = await runCli(['script', 'remove', '--all'])
+    expect(removedAll.fetchCalls[0].body).toEqual({
+      command: 'script',
+      args: { action: 'remove', all: true },
     })
   })
 })

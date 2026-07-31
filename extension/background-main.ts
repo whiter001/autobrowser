@@ -11,6 +11,7 @@ import {
 import { createCommandRouter } from './background/command-router.js'
 import { createConnectionRuntime } from './background/connection.js'
 import { createNetworkDomain } from './background/network.js'
+import { createInitScriptDomain } from './background/init-scripts.js'
 import { createPageInputDomain } from './background/page-input.js'
 import { createPageObserveDomain } from './background/page-observe.js'
 import { createSessionDomain } from './background/session.js'
@@ -71,6 +72,11 @@ const network = createNetworkDomain({
   sendDebuggerCommand,
 })
 
+const initScripts = createInitScriptDomain({
+  state,
+  sendRawDebuggerCommand,
+})
+
 const pageInput = createPageInputDomain({
   state,
   getTargetTab,
@@ -105,6 +111,7 @@ const commandRouter = createCommandRouter({
   pageObserve,
   session,
   network,
+  initScripts,
   listTabs,
   getTargetTab,
 })
@@ -179,6 +186,7 @@ async function ensureDebuggerAttached(tabId: number): Promise<void> {
   state.targeting.attachedTabs.add(tabId)
   await enableDebuggerDomains(tabId)
   await network.refreshInterceptors()
+  await initScripts.replayForTab(tabId)
 }
 
 async function detachDebugger(tabId: number): Promise<void> {

@@ -68,12 +68,18 @@ const HELP_ROOT = helpNode(
       helpNode('select', 'Select a tab by handle.', 'autobrowser tab select <tN>'),
       helpNode(
         'close',
-        'Close the current tab, a specific tab, or all tabs.',
-        'autobrowser tab close [tN|--all]',
+        'Close the current tab or a specific tab (use `close all` to close all tabs).',
+        'autobrowser tab close [tN]',
       ),
     ]),
     helpNode('open', 'Navigate to a URL.', 'autobrowser open <url>'),
     helpNode('goto', 'Navigate to a URL.', 'autobrowser goto <url>'),
+    helpNode(
+      'close',
+      'Close tabs in the current window (aliases: quit, exit).',
+      'autobrowser close [all]',
+      ['all  close every tab in the current window instead of just the target tab'],
+    ),
     helpNode('back', 'Go back in browser history.', 'autobrowser back'),
     helpNode('forward', 'Go forward in browser history.', 'autobrowser forward'),
     helpNode('reload', 'Reload the current page.', 'autobrowser reload'),
@@ -85,6 +91,30 @@ const HELP_ROOT = helpNode(
       'Run JavaScript in the page context.',
       'autobrowser eval [--stdin|--file path|--base64] <script>',
       ['--stdin', '--file <path>', '--base64'],
+    ),
+    helpNode(
+      'script',
+      'Manage init scripts injected before page scripts on every navigation.',
+      'autobrowser script <add|list|remove>',
+      undefined,
+      [
+        helpNode(
+          'add',
+          "Register an init script that runs after every navigation, before the page's own scripts; applies to all attached tabs, including tabs attached later.",
+          'autobrowser script add [--stdin|--file <path>|--base64] <source>',
+          ['--stdin', '--file <path>', '--base64'],
+        ),
+        helpNode(
+          'list',
+          'List registered init scripts with ids and source previews.',
+          'autobrowser script list',
+        ),
+        helpNode(
+          'remove',
+          'Remove an init script by id, or remove all of them.',
+          'autobrowser script remove <id|--all>',
+        ),
+      ],
     ),
     helpNode(
       'feed',
@@ -108,7 +138,12 @@ const HELP_ROOT = helpNode(
       'autobrowser find <role|text|label> <query> [locate|click|fill|type|hover|focus|check|uncheck|text] [value]',
       ['--name <name>', '--exact'],
     ),
-    helpNode('type', 'Type text into a selector.', 'autobrowser type <selector> <value>'),
+    helpNode(
+      'type',
+      'Type text into a selector.',
+      'autobrowser type <selector> <value> [--submit]',
+      ['--submit  press Enter after typing to submit the form'],
+    ),
     helpNode('press', 'Press a keyboard key.', 'autobrowser press <key>'),
     helpNode(
       'keyboard',
@@ -130,7 +165,7 @@ const HELP_ROOT = helpNode(
       'Scroll a selector into view.',
       'autobrowser scrollintoview <selector>',
     ),
-    helpNode('drag', 'Drag between elements.', 'autobrowser drag <startSelector> [endSelector]'),
+    helpNode('drag', 'Drag between elements.', 'autobrowser drag <startSelector> <endSelector>'),
     helpNode(
       'upload',
       'Upload files through a file input.',
@@ -155,61 +190,107 @@ const HELP_ROOT = helpNode(
     helpNode(
       'wait',
       'Wait for a selector state, text, URL, load state, function, or a fixed duration in milliseconds.',
-      'autobrowser wait [selector|time <ms>|ms <ms>|--text <text>|--url <pattern>|--load [networkidle]|--fn <expression>] [--state visible|hidden|stable|new] [--timeout <ms>]',
+      'autobrowser wait [selector|time <ms>|ms <ms>|--text <text> [--gone]|--url <pattern>|--load [networkidle]|--fn <expression>] [--state visible|hidden|stable|new] [--timeout <ms>]',
       [
         '--state <visible|hidden|stable|new>',
         '--timeout <ms> total timeout in milliseconds',
         '--text <text>',
+        '--gone  wait for --text to disappear instead of appear',
         '--url <pattern>',
         '--load [networkidle]',
         '--fn <expression>',
         '--ms <ms> wait a fixed duration in milliseconds',
-        'time <ms> positional alias for waiting a fixed duration in milliseconds',
+        'positional aliases: wait time|ms <ms>, wait url <pattern>, wait text <text>, wait load|networkidle, wait <ms>',
       ],
     ),
     helpNode(
       'cookies',
       'Inspect or update cookies.',
-      'autobrowser cookies <get|set|clear>',
+      'autobrowser cookies <get|set|clear|delete>',
       undefined,
       [
-        helpNode('get', 'List cookies.', 'autobrowser cookies get'),
+        helpNode(
+          'get',
+          'List cookies, optionally filtered by domain and path.',
+          'autobrowser cookies get [--domain <domain>] [--path <path>]',
+          ['--domain <domain>', '--path <path>'],
+        ),
         helpNode('set', 'Set a cookie.', 'autobrowser cookies set <name> <value> [domain]'),
         helpNode('clear', 'Clear cookies for the current site.', 'autobrowser cookies clear'),
+        helpNode(
+          'delete',
+          'Delete a cookie by name for the current site.',
+          'autobrowser cookies delete <name>',
+        ),
       ],
     ),
     helpNode(
       'storage',
       'Inspect or update storage.',
-      'autobrowser storage <get|set|clear>',
-      undefined,
+      'autobrowser storage <get|set|clear|delete> [--session]',
+      ['--session  operate on sessionStorage instead of localStorage'],
       [
-        helpNode('get', 'Read storage by key.', 'autobrowser storage get [key]'),
-        helpNode('set', 'Write storage by key.', 'autobrowser storage set <key> <value>'),
-        helpNode('clear', 'Clear storage.', 'autobrowser storage clear'),
+        helpNode('get', 'Read storage by key.', 'autobrowser storage get [key] [--session]'),
+        helpNode(
+          'set',
+          'Write storage by key.',
+          'autobrowser storage set <key> <value> [--session]',
+        ),
+        helpNode('clear', 'Clear storage.', 'autobrowser storage clear [--session]'),
+        helpNode('delete', 'Delete a storage key.', 'autobrowser storage delete <key> [--session]'),
       ],
     ),
-    helpNode('console', 'Read console output.', 'autobrowser console'),
+    helpNode(
+      'console',
+      'Read console output.',
+      'autobrowser console [--level error|warning|info|debug]',
+      ['--level <error|warning|info|debug> each level includes more severe messages'],
+    ),
     helpNode('errors', 'Read page errors.', 'autobrowser errors'),
     helpNode(
       'set',
       'Adjust browser state.',
-      'autobrowser set <viewport|offline|headers|geo|media>',
+      'autobrowser set <viewport|offline|headers|geo|media|permission|ua|timezone|locale>',
       undefined,
       [
         helpNode(
           'viewport',
           'Set viewport settings.',
-          'autobrowser set viewport <width> <height> [deviceScaleFactor] [mobile]',
+          'autobrowser set viewport [width] [height] [deviceScaleFactor] [mobile]',
         ),
         helpNode('offline', 'Toggle offline mode.', 'autobrowser set offline [false]'),
         helpNode('headers', 'Set request headers.', 'autobrowser set headers <name:value,...>'),
         helpNode(
           'geo',
           'Set geolocation.',
-          'autobrowser set geo <latitude> <longitude> [accuracy]',
+          'autobrowser set geo [latitude] [longitude] [accuracy]',
         ),
-        helpNode('media', 'Set media emulation.', 'autobrowser set media <scheme>'),
+        helpNode(
+          'media',
+          'Set media emulation; omit the scheme to clear it.',
+          'autobrowser set media [scheme]',
+        ),
+        helpNode(
+          'permission',
+          'Grant or reset a permission for the current tab origin.',
+          'autobrowser set permission <name> [--reset]',
+          ['--reset  remove the override and restore the default setting'],
+        ),
+        helpNode(
+          'ua',
+          'Override the user agent; empty value or --reset restores the default.',
+          'autobrowser set ua <string|--reset>',
+        ),
+        helpNode(
+          'timezone',
+          'Override the timezone (IANA name); --reset restores the default.',
+          'autobrowser set timezone <IANA-name|--reset>',
+        ),
+        helpNode(
+          'locale',
+          'Override the locale (BCP 47 tag); --reset restores the default.',
+          'autobrowser set locale <tag|--reset>',
+        ),
       ],
     ),
     helpNode('pdf', 'Export the current page as PDF.', 'autobrowser pdf'),
@@ -239,11 +320,23 @@ const HELP_ROOT = helpNode(
       [
         helpNode(
           'route',
-          'Add a network route.',
-          'autobrowser network route <url> [--abort] [--body <json>]',
-          ['--abort', '--body <json>'],
+          'Add a network route, or list active routes.',
+          'autobrowser network route <url> [--abort] [--body <json>] [--status <n>] [--content-type <mime>] [--header "Name: Value"]... [--remove-headers <a,b>]',
+          [
+            '--abort  fail matching requests',
+            '--body <json>  mock the response body (default 200 + application/json)',
+            '--status <n>  mock response status code (100-599, default 200)',
+            '--content-type <mime>  mock response content-type (default application/json)',
+            '--header "Name: Value"  add a response header to the mock (repeatable)',
+            '--remove-headers <a,b>  strip request headers before continuing the request',
+          ],
+          [helpNode('list', 'List active network routes.', 'autobrowser network route list')],
         ),
-        helpNode('unroute', 'Remove a network route.', 'autobrowser network unroute [url]'),
+        helpNode(
+          'unroute',
+          'Remove a network route; omit the url to remove all routes.',
+          'autobrowser network unroute [url]',
+        ),
         helpNode(
           'requests',
           'List captured requests.',
@@ -281,8 +374,9 @@ const HELP_ROOT = helpNode(
     helpNode(
       'screenshot',
       'Capture a screenshot.',
-      'autobrowser screenshot [path] [--full] [--annotate] [--screenshot-dir <dir>] [--screenshot-format png|jpeg] [--screenshot-quality <n>]',
+      'autobrowser screenshot [path] [--element <selector|@eN>] [--full] [--annotate] [--screenshot-dir <dir>] [--screenshot-format png|jpeg] [--screenshot-quality <n>]',
       [
+        '--element <selector|@eN>  capture only this element; an @eN ref positional also works, cannot be combined with --full',
         '--full',
         '--annotate',
         '--screenshot-dir <dir>',
@@ -290,18 +384,24 @@ const HELP_ROOT = helpNode(
         '--screenshot-quality <n>',
       ],
     ),
-    helpNode('snapshot', 'Capture or export a page snapshot.', 'autobrowser snapshot', undefined, [
-      helpNode(
-        'export',
-        'Export the page snapshot as JSONL.',
-        'autobrowser snapshot export [output.jsonl]',
-      ),
-      helpNode(
-        'extract',
-        'Extract field-oriented records from the snapshot as JSONL.',
-        'autobrowser snapshot extract [output.jsonl] [--field <fieldPath>]...',
-      ),
-    ]),
+    helpNode(
+      'snapshot',
+      'Capture or export a page snapshot.',
+      'autobrowser snapshot [selector|--target <selector|@eN>]',
+      ['--target <selector|@eN>  limit the snapshot to an element subtree'],
+      [
+        helpNode(
+          'export',
+          'Export the page snapshot as JSONL.',
+          'autobrowser snapshot export [output.jsonl]',
+        ),
+        helpNode(
+          'extract',
+          'Extract field-oriented records from the snapshot as JSONL.',
+          'autobrowser snapshot extract [output.jsonl] [--field <fieldPath>]...',
+        ),
+      ],
+    ),
   ],
 )
 

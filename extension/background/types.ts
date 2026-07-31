@@ -8,6 +8,8 @@ import type {
 export interface ScreenshotCaptureOptions {
   full?: boolean
   annotate?: boolean
+  /** 元素级截图目标（selector 或 @eN ref），与 full 互斥 */
+  element?: string
   format?: string
   quality?: number
 }
@@ -35,6 +37,14 @@ export interface NetworkRoute {
   pattern: string
   abort: boolean
   body?: unknown
+  /** mock 响应的状态码，默认 200 */
+  status?: number
+  /** mock 响应的 content-type，默认 application/json */
+  contentType?: string
+  /** mock 响应额外附加的响应头 */
+  headers?: Record<string, string>
+  /** 放行请求前要从请求头删除的字段名 */
+  removeHeaders?: string[]
   createdAt?: string
 }
 
@@ -65,6 +75,15 @@ export interface NetworkRequestRecord {
   postDataTruncated?: boolean
   postDataBytes?: number
   [key: string]: unknown
+}
+
+/** 每次导航后、页面自身脚本执行前注入的脚本（CDP Page.addScriptToEvaluateOnNewDocument） */
+export interface InitScriptRecord {
+  id: string
+  source: string
+  createdAt: string
+  /** addScriptToEvaluateOnNewDocument 按 CDP 会话注册，identifier 必须按 tab 记录，remove 时逐一移除 */
+  identifiersByTab: Map<number, string>
 }
 
 export interface NetworkState {
@@ -139,6 +158,7 @@ export interface ExtensionState {
   targeting: TargetingState
   session: SessionState
   network: NetworkState
+  initScripts: InitScriptRecord[]
 }
 
 export type TabInput = number | string | null | undefined

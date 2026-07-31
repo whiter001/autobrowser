@@ -7,6 +7,7 @@ export interface WaitArgs {
   ms?: number
   state?: string
   fn?: string
+  gone?: boolean
 }
 
 export interface FindArgs {
@@ -23,6 +24,8 @@ export interface ScreenshotArgs {
   path: string | null
   full: boolean
   annotate: boolean
+  /** 元素级截图目标（selector 或 @eN ref），与 full 互斥 */
+  element: string | null
   screenshotDir: string | null
   format: 'png' | 'jpeg'
   quality: number | null
@@ -204,12 +207,18 @@ export function parseNetworkHarStartArgs(rest: string[]): NetworkHarStartArgs {
   return result
 }
 
-export function parseNetworkRouteArgs(rest: string[]): {
+export interface NetworkRouteArgs {
   url: string
   abort: boolean
   body?: unknown
-} {
-  const result: { url: string; abort: boolean; body?: unknown } = {
+  status?: number
+  contentType?: string
+  headers?: Record<string, string>
+  removeHeaders?: string[]
+}
+
+export function parseNetworkRouteArgs(rest: string[]): NetworkRouteArgs {
+  const result: NetworkRouteArgs = {
     url: '',
     abort: false,
   }
@@ -232,6 +241,71 @@ export function parseNetworkRouteArgs(rest: string[]): {
       continue
     }
 
+    if (value === '--status') {
+      result.status = parseNumberArg(rest[index + 1], 'status', {
+        min: 100,
+        max: 599,
+        integer: true,
+      })
+      index += 1
+      continue
+    }
+
+    if (value === '--content-type') {
+      const rawContentType = rest[index + 1]
+      if (rawContentType === undefined) {
+        throw new Error('missing content-type value')
+      }
+
+      result.contentType = rawContentType
+      index += 1
+      continue
+    }
+
+    if (value === '--header') {
+      const rawHeader = rest[index + 1]
+      if (rawHeader === undefined) {
+        throw new Error('missing header value')
+      }
+
+      // 值里可能带冒号（如 Date 头），只按第一个冒号拆分
+      const separator = rawHeader.indexOf(':')
+      if (separator <= 0) {
+        throw new Error(`invalid header ${JSON.stringify(rawHeader)}: expected "Name: Value"`)
+      }
+
+      const headerName = rawHeader.slice(0, separator).trim()
+      if (!headerName) {
+        throw new Error(`invalid header ${JSON.stringify(rawHeader)}: expected "Name: Value"`)
+      }
+
+      result.headers = {
+        ...result.headers,
+        [headerName]: rawHeader.slice(separator + 1).trim(),
+      }
+      index += 1
+      continue
+    }
+
+    if (value === '--remove-headers') {
+      const rawRemoveHeaders = rest[index + 1]
+      if (rawRemoveHeaders === undefined) {
+        throw new Error('missing remove-headers value')
+      }
+
+      const names = rawRemoveHeaders
+        .split(',')
+        .map((name) => name.trim())
+        .filter(Boolean)
+      if (names.length === 0) {
+        throw new Error(`invalid remove-headers ${JSON.stringify(rawRemoveHeaders)}`)
+      }
+
+      result.removeHeaders = [...(result.removeHeaders || []), ...names]
+      index += 1
+      continue
+    }
+
     if (value.startsWith('--')) {
       throw new Error(`unsupported network option: ${value}`)
     }
@@ -245,6 +319,42 @@ export function parseNetworkRouteArgs(rest: string[]): {
   }
 
   return result
+}
+
+export const CONSOLE_LEVELS = ['error', 'warning', 'info', 'debug'] as const
+export type ConsoleLevel = (typeof CONSOLE_LEVELS)[number]
+
+export function parseConsoleArgs(rest: string[]): { level: ConsoleLevel | null } {
+  let level: ConsoleLevel | null = null
+
+  for (let index = 0; index < rest.length; index += 1) {
+    const value = rest[index]
+
+    if (value === '--level') {
+      const rawLevel = rest[index + 1]
+      if (rawLevel === undefined) {
+        throw new Error('missing level value')
+      }
+
+      if (!CONSOLE_LEVELS.includes(rawLevel as ConsoleLevel)) {
+        throw new Error(
+          `unsupported console level: ${rawLevel} (expected ${CONSOLE_LEVELS.join('|')})`,
+        )
+      }
+
+      level = rawLevel as ConsoleLevel
+      index += 1
+      continue
+    }
+
+    if (value.startsWith('--')) {
+      throw new Error(`unsupported console option: ${value}`)
+    }
+
+    throw new Error(`unexpected extra console argument: ${value}`)
+  }
+
+  return { level }
 }
 
 export function parseWaitArgs(rest: string[]): WaitArgs {
@@ -283,6 +393,11 @@ export function parseWaitArgs(rest: string[]): WaitArgs {
       waitArgs.type = 'text'
       waitArgs.text = rawText
       index += 1
+      continue
+    }
+
+    if (value === '--gone') {
+      waitArgs.gone = true
       continue
     }
 
@@ -379,6 +494,11 @@ export function parseWaitArgs(rest: string[]): WaitArgs {
 
   if (waitArgs.type === 'text' && !waitArgs.text && positionals.length > 0) {
     waitArgs.text = positionals[0]
+  }
+
+  // --gone 只适用于文本等待（对齐 Playwright textGone），其它类型给了属于误用
+  if (waitArgs.gone && waitArgs.type !== 'text') {
+    throw new Error('--gone requires --text <text>')
   }
 
   return waitArgs
@@ -478,6 +598,7 @@ export function parseScreenshotArgs(rest: string[]): ScreenshotArgs {
     path: null,
     full: false,
     annotate: false,
+    element: null,
     screenshotDir: null,
     format: 'png',
     quality: null,
@@ -493,6 +614,19 @@ export function parseScreenshotArgs(rest: string[]): ScreenshotArgs {
 
     if (value === '--annotate') {
       screenshotArgs.annotate = true
+      continue
+    }
+
+    if (value === '--element') {
+      const rawElement = rest[index + 1]
+      if (rawElement === undefined) {
+        throw new Error('missing element value')
+      }
+      if (screenshotArgs.element) {
+        throw new Error('element target specified more than once')
+      }
+      screenshotArgs.element = rawElement
+      index += 1
       continue
     }
 
@@ -530,9 +664,30 @@ export function parseScreenshotArgs(rest: string[]): ScreenshotArgs {
       continue
     }
 
-    if (!value.startsWith('--') && !screenshotArgs.path) {
-      screenshotArgs.path = value
+    // @eN 形式的 agent ref 不可能是文件路径，直接识别为元素目标；
+    // 其余位置参数按惯例第一个是输出路径、第二个是元素 selector
+    if (!value.startsWith('--')) {
+      if (value.startsWith('@') && !screenshotArgs.element) {
+        screenshotArgs.element = value
+        continue
+      }
+
+      if (!screenshotArgs.path) {
+        screenshotArgs.path = value
+        continue
+      }
+
+      if (!screenshotArgs.element) {
+        screenshotArgs.element = value
+        continue
+      }
+
+      throw new Error(`unexpected extra argument for screenshot: ${value}`)
     }
+  }
+
+  if (screenshotArgs.element && screenshotArgs.full) {
+    throw new Error('--element cannot be combined with --full')
   }
 
   return screenshotArgs

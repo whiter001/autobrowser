@@ -146,14 +146,25 @@ async function handleUpload(rest: string[], context: CommandContext): Promise<nu
 
 async function handleType(rest: string[], context: CommandContext): Promise<number | void> {
   const selector = readRequiredArg(rest[0], context, ['type'])
-  const value = rest.slice(1).join(' ')
   if (!selector) {
     return 0
   }
 
+  // --submit 是标志位而非输入内容，从文本参数里剔出来
+  let submit = false
+  const valueParts = rest.slice(1).filter((part) => {
+    if (part === '--submit') {
+      submit = true
+      return false
+    }
+    return true
+  })
+  const value = valueParts.join(' ')
+
   await requestAndWrite(context, 'type', {
     selector,
     value,
+    ...(submit ? { submit: true } : {}),
   })
   return 0
 }

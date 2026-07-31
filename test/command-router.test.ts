@@ -2,7 +2,7 @@ import { describe, expect, test } from 'bun:test'
 import { createCommandRouter } from '../extension/background/command-router.js'
 
 function createMinimalRouter() {
-  const snapshotCalls: Array<{ tabId: unknown; frameSelector: unknown }> = []
+  const snapshotCalls: Array<{ tabId: unknown; frameSelector: unknown; target?: unknown }> = []
   const feedCalls: Array<{
     tabId: unknown
     options: unknown
@@ -10,6 +10,9 @@ function createMinimalRouter() {
   }> = []
   const navigateCalls: Array<{ tabId: unknown; url: string }> = []
   const waitTimeoutCalls: number[] = []
+  const screenshotCalls: Array<{ tabId: unknown; options: unknown }> = []
+  const waitTextCalls: Array<{ text: unknown; gone?: unknown }> = []
+  const typeCalls: Array<{ selector: unknown; value: unknown; submit?: unknown }> = []
 
   const router = createCommandRouter({
     state: {
@@ -47,7 +50,16 @@ function createMinimalRouter() {
       },
       doubleClickSelector: async () => undefined,
       fillSelector: async () => undefined,
-      typeIntoSelector: async () => undefined,
+      typeIntoSelector: async (
+        _tabId: unknown,
+        selector: unknown,
+        value: unknown,
+        _frame: unknown,
+        submit?: unknown,
+      ) => {
+        typeCalls.push({ selector, value, submit })
+        return { found: true, selector, typed: true, ...(submit ? { submitted: true } : {}) }
+      },
       hoverElement: async () => undefined,
       pressKey: async () => undefined,
       insertTextSequentially: async () => undefined,
@@ -69,8 +81,8 @@ function createMinimalRouter() {
       getAttribute: async () => ({ value: undefined }),
     } as never,
     pageObserve: {
-      snapshotTab: async (tabId: unknown, frameSelector: unknown) => {
-        snapshotCalls.push({ tabId, frameSelector })
+      snapshotTab: async (tabId: unknown, frameSelector: unknown, target?: unknown) => {
+        snapshotCalls.push({ tabId, frameSelector, target })
         return { snapshotId: `snapshot-${snapshotCalls.length}` }
       },
       collectFeed: async (tabId: unknown, options: unknown, frameSelector: unknown) => {
@@ -89,7 +101,10 @@ function createMinimalRouter() {
           items: [],
         }
       },
-      captureScreenshot: async () => undefined,
+      captureScreenshot: async (tabId: unknown, options: unknown) => {
+        screenshotCalls.push({ tabId, options })
+        return { captured: true }
+      },
       findSemanticTarget: async () => ({ match: null, reason: 'not used in test' }),
       waitWithTimeout: async (_tabId: unknown, ms: number) => {
         waitTimeoutCalls.push(ms)
@@ -101,7 +116,16 @@ function createMinimalRouter() {
         state,
       }),
       waitForUrl: async () => undefined,
-      waitForText: async () => undefined,
+      waitForText: async (
+        _tabId: unknown,
+        text: unknown,
+        _timeout: unknown,
+        _frame: unknown,
+        gone?: unknown,
+      ) => {
+        waitTextCalls.push({ text, gone })
+        return { waited: true, condition: gone ? 'text-gone' : 'text', text }
+      },
       waitForLoadEvent: async () => undefined,
       waitForNetworkIdle: async () => undefined,
       waitForExpression: async () => undefined,
@@ -112,14 +136,27 @@ function createMinimalRouter() {
       cookiesGet: async () => undefined,
       cookiesSet: async () => undefined,
       cookiesClear: async () => undefined,
+      cookiesDelete: async (_tabId: unknown, name: string) => ({ deleted: 1, name }),
       storageGet: async () => undefined,
       storageSet: async () => undefined,
+      storageDelete: async (_tabId: unknown, key: string, _frame: unknown, session: boolean) => ({
+        key,
+        deleted: true,
+        session,
+      }),
       storageClear: async () => undefined,
       setViewport: async () => undefined,
       setOffline: async () => undefined,
       setHeaders: async () => undefined,
       setGeo: async () => undefined,
       setMedia: async () => undefined,
+      setPermission: async (_tabId: unknown, name: string, reset: boolean) => ({
+        permission: name,
+        setting: reset ? 'default' : 'granted',
+      }),
+      setUserAgent: async (_tabId: unknown, userAgent: string | null) => ({ userAgent }),
+      setTimezone: async (_tabId: unknown, timezone: string | null) => ({ timezone }),
+      setLocale: async (_tabId: unknown, locale: string | null) => ({ locale }),
       generatePdf: async () => undefined,
       clipboardRead: async () => undefined,
       clipboardWrite: async () => undefined,
@@ -128,18 +165,40 @@ function createMinimalRouter() {
       loadStateByName: async () => undefined,
     } as never,
     network: {
-      routeRequest: async () => undefined,
+      routeRequest: async (_tabId: unknown, url: string, options: unknown) => ({
+        route: { id: 'route_1', pattern: url, ...(options as Record<string, unknown>) },
+        routes: [],
+      }),
       unrouteRequest: async () => undefined,
+      listRoutes: () => ({ routes: [{ id: 'route_1', pattern: '**/api/*', abort: true }] }),
       listRequests: () => ({}),
       getRequestDetail: () => ({}),
       startHar: async () => undefined,
       stopHar: () => undefined,
     } as never,
+    initScripts: {
+      addScript: async (source: string) => ({
+        script: { id: 'script_1', preview: source },
+        scripts: [{ id: 'script_1', preview: source }],
+      }),
+      listScripts: () => ({ scripts: [{ id: 'script_1', preview: 'window.x = 1' }] }),
+      removeScript: async (id: string) => ({ removed: id, scripts: [] }),
+      removeAllScripts: async () => ({ removed: ['script_1'], scripts: [] }),
+    } as never,
     listTabs: async () => [],
     getTargetTab: async () => ({ id: 1 }) as never,
   } as never)
 
-  return { router, snapshotCalls, feedCalls, navigateCalls, waitTimeoutCalls }
+  return {
+    router,
+    snapshotCalls,
+    feedCalls,
+    navigateCalls,
+    waitTimeoutCalls,
+    screenshotCalls,
+    waitTextCalls,
+    typeCalls,
+  }
 }
 
 describe('command router batch handling', () => {
@@ -408,5 +467,237 @@ describe('command router batch handling', () => {
     })
 
     expect(waitTimeoutCalls).toEqual([50])
+  })
+})
+
+describe('command router network/session extensions', () => {
+  test('routes network route list to the network domain', async () => {
+    const { router } = createMinimalRouter()
+
+    const result = await router.handleCommand({
+      command: 'network',
+      args: { action: 'route', subaction: 'list' },
+    })
+
+    expect(result).toEqual({ routes: [{ id: 'route_1', pattern: '**/api/*', abort: true }] })
+  })
+
+  test('passes route mock options through to the network domain', async () => {
+    const { router } = createMinimalRouter()
+
+    const result = (await router.handleCommand({
+      command: 'network',
+      args: {
+        action: 'route',
+        url: '**/api/user',
+        status: 404,
+        contentType: 'text/plain',
+        headers: { 'x-mock': 'yes' },
+        removeHeaders: ['authorization'],
+      },
+    })) as { route: Record<string, unknown> }
+
+    expect(result.route).toMatchObject({
+      pattern: '**/api/user',
+      abort: false,
+      status: 404,
+      contentType: 'text/plain',
+      headers: { 'x-mock': 'yes' },
+      removeHeaders: ['authorization'],
+    })
+  })
+
+  test('rejects route mock options outside the 100-599 status range', async () => {
+    const { router } = createMinimalRouter()
+
+    await expect(
+      router.handleCommand({
+        command: 'network',
+        args: { action: 'route', url: '**/api/*', status: 99 },
+      }),
+    ).rejects.toThrow('status must be an integer 100-599')
+  })
+
+  test('routes cookies delete with a required name', async () => {
+    const { router } = createMinimalRouter()
+
+    const result = await router.handleCommand({
+      command: 'cookies',
+      args: { action: 'delete', name: 'session' },
+    })
+    expect(result).toEqual({ deleted: 1, name: 'session' })
+
+    await expect(
+      router.handleCommand({ command: 'cookies', args: { action: 'delete' } }),
+    ).rejects.toThrow('cookies delete requires a cookie name')
+  })
+
+  test('routes storage delete with the session flag', async () => {
+    const { router } = createMinimalRouter()
+
+    const result = await router.handleCommand({
+      command: 'storage',
+      args: { action: 'delete', key: 'draft', session: true },
+    })
+
+    expect(result).toEqual({ key: 'draft', deleted: true, session: true })
+  })
+
+  test('routes set permission/ua/timezone/locale to the session domain', async () => {
+    const { router } = createMinimalRouter()
+
+    await expect(
+      router.handleCommand({
+        command: 'set',
+        args: { type: 'permission', name: 'geolocation' },
+      }),
+    ).resolves.toEqual({ permission: 'geolocation', setting: 'granted' })
+
+    await expect(
+      router.handleCommand({
+        command: 'set',
+        args: { type: 'permission', name: 'geolocation', reset: true },
+      }),
+    ).resolves.toEqual({ permission: 'geolocation', setting: 'default' })
+
+    await expect(
+      router.handleCommand({ command: 'set', args: { type: 'ua', value: 'My Agent 1.0' } }),
+    ).resolves.toEqual({ userAgent: 'My Agent 1.0' })
+
+    await expect(
+      router.handleCommand({ command: 'set', args: { type: 'timezone', value: 'Asia/Shanghai' } }),
+    ).resolves.toEqual({ timezone: 'Asia/Shanghai' })
+
+    await expect(
+      router.handleCommand({ command: 'set', args: { type: 'locale', value: '' } }),
+    ).resolves.toEqual({ locale: null })
+  })
+})
+
+describe('command router script management', () => {
+  test('routes script add to the init script domain', async () => {
+    const { router } = createMinimalRouter()
+
+    const result = await router.handleCommand({
+      command: 'script',
+      args: { action: 'add', source: 'window.__injected = true' },
+    })
+
+    expect(result).toEqual({
+      script: { id: 'script_1', preview: 'window.__injected = true' },
+      scripts: [{ id: 'script_1', preview: 'window.__injected = true' }],
+    })
+  })
+
+  test('routes script list to the init script domain', async () => {
+    const { router } = createMinimalRouter()
+
+    const result = await router.handleCommand({
+      command: 'script',
+      args: { action: 'list' },
+    })
+
+    expect(result).toEqual({ scripts: [{ id: 'script_1', preview: 'window.x = 1' }] })
+  })
+
+  test('routes script remove by id and --all to the init script domain', async () => {
+    const { router } = createMinimalRouter()
+
+    await expect(
+      router.handleCommand({ command: 'script', args: { action: 'remove', id: 'script_1' } }),
+    ).resolves.toEqual({ removed: 'script_1', scripts: [] })
+
+    await expect(
+      router.handleCommand({ command: 'script', args: { action: 'remove', all: true } }),
+    ).resolves.toEqual({ removed: ['script_1'], scripts: [] })
+
+    await expect(
+      router.handleCommand({ command: 'script', args: { action: 'remove' } }),
+    ).rejects.toThrow('script remove requires an id or --all')
+  })
+
+  test('rejects script add without source', async () => {
+    const { router } = createMinimalRouter()
+
+    await expect(
+      router.handleCommand({ command: 'script', args: { action: 'add' } }),
+    ).rejects.toMatchObject({ code: 'INVALID_COMMAND_ARGS' })
+  })
+})
+
+describe('command router playwright parity commands', () => {
+  test('routes snapshot subtree targets to the page observer', async () => {
+    const { router, snapshotCalls } = createMinimalRouter()
+
+    await router.handleCommand({
+      command: 'snapshot',
+      args: { selector: '#panel' },
+    })
+
+    expect(snapshotCalls).toHaveLength(1)
+    expect(snapshotCalls[0]).toMatchObject({ frameSelector: null, target: '#panel' })
+  })
+
+  test('routes element screenshot options to the page observer', async () => {
+    const { router, screenshotCalls } = createMinimalRouter()
+
+    await router.handleCommand({
+      command: 'screenshot',
+      args: { element: '#card' },
+    })
+
+    expect(screenshotCalls).toHaveLength(1)
+    expect(screenshotCalls[0].options).toMatchObject({
+      full: false,
+      annotate: false,
+      element: '#card',
+    })
+  })
+
+  test('rejects element screenshots combined with full page capture', async () => {
+    const { router, screenshotCalls } = createMinimalRouter()
+
+    await expect(
+      router.handleCommand({
+        command: 'screenshot',
+        args: { element: '#card', full: true },
+      }),
+    ).rejects.toMatchObject({ code: 'INVALID_COMMAND_ARGS' })
+    expect(screenshotCalls).toHaveLength(0)
+  })
+
+  test('routes text-gone waits to the page observer', async () => {
+    const { router, waitTextCalls } = createMinimalRouter()
+
+    const result = await router.handleCommand({
+      command: 'wait',
+      args: { type: 'text', text: 'Loading', gone: true },
+    })
+
+    expect(waitTextCalls).toEqual([{ text: 'Loading', gone: true }])
+    expect(result).toEqual({ waited: true, condition: 'text-gone', text: 'Loading' })
+  })
+
+  test('rejects --gone for non-text waits', async () => {
+    const { router } = createMinimalRouter()
+
+    await expect(
+      router.handleCommand({
+        command: 'wait',
+        args: { selector: '#spinner', gone: true },
+      }),
+    ).rejects.toThrow('wait --gone requires --text')
+  })
+
+  test('routes type submit to the page input domain', async () => {
+    const { router, typeCalls } = createMinimalRouter()
+
+    const result = await router.handleCommand({
+      command: 'type',
+      args: { selector: '#q', value: 'hello', submit: true },
+    })
+
+    expect(typeCalls).toEqual([{ selector: '#q', value: 'hello', submit: true }])
+    expect(result).toMatchObject({ typed: true, submitted: true })
   })
 })

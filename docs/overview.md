@@ -7,7 +7,7 @@
 - 端口 `57978` 的本地中继服务
 - 端口 `57979` 的 CLI API 服务
 - 带有基于 token 的连接流程的浏览器扩展骨架
-- 覆盖服务与连接管理、导航、标签页和窗口控制、元素交互、对话框、等待与状态检查、cookie、存储、剪贴板、浏览器状态、网络检查与拦截、snapshot、snapshot 导出/提取、截图，以及 `batch`、`status`、`config`、`replay`、`network export` 这类实用命令的核心能力
+- 覆盖服务与连接管理、导航、标签页和窗口控制、元素交互、对话框、等待与状态检查、cookie、存储、剪贴板、浏览器状态、网络检查与拦截、snapshot、snapshot 导出/提取、截图、初始化脚本注入（`script add/list/remove`），以及 `batch`、`status`、`config`、`replay`、`network export` 这类实用命令的核心能力
 
 运行 `bun run src/cli.ts help` 可以查看完整命令树。`src/cli.ts` 里的命令树是标志位和语法的权威来源。
 

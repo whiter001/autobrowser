@@ -31,7 +31,7 @@ interface ElementActionResult extends Record<string, unknown> {
 
 // 元素找不到时统一抛带 STALE_REFERENCE code 和 suggestedAction 的错误，
 // 让调用方（AI Agent）能区分"选择器失效"和其它失败，并知道下一步该重新 snapshot
-function createElementNotFoundError(selector: string): Error {
+export function createElementNotFoundError(selector: string): Error {
   return Object.assign(new Error(`element not found: ${selector}`), {
     code: `STALE_REFERENCE`,
     suggestedAction: `The target element was not found. If this was from a previous snapshot reference like @eX, the page may have updated. Ensure you run 'snapshot' to get fresh element references.`,
@@ -818,13 +818,19 @@ export function createPageInputDomain({
     selector: string,
     value: string,
     frameSelector: FrameSelector,
+    submit = false,
   ) {
     await focusElement(tabId, selector, frameSelector)
     const typed = await insertTextSequentially(tabId, value)
+    // --submit 对齐 Playwright type 的语义：输入完成后补一次 Enter，触发表单提交
+    if (submit) {
+      await pressKey(tabId, 'Enter')
+    }
     return {
       found: true,
       selector,
       ...typed,
+      ...(submit ? { submitted: true } : {}),
     }
   }
 

@@ -31,6 +31,8 @@
 - `batch`，用于 JSON 编码的多步序列，支持重试和 continue-on-error
 - `status`、`config` 和 `replay`，用于运行时诊断与命令恢复
 - `snapshot export` / `snapshot extract` 以及 `network export`，用于更适合下游处理的 JSONL 输出
+- 对齐 Playwright 的一批页面能力：`screenshot --element`、`snapshot --target`、`wait --gone`、`type --submit`、`network route` 的 mock 参数扩展与 `route list`、`console --level`、`cookies delete` 与 `cookies get` 过滤、`storage --session`、`set permission/ua/timezone/locale`
+- `script add/list/remove`，用于管理每次导航后、页面自身脚本执行前注入的初始化脚本
 
 当前架构仍然是扩展优先：
 
