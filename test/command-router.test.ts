@@ -9,6 +9,7 @@ function createMinimalRouter() {
     frameSelector: unknown
   }> = []
   const navigateCalls: Array<{ tabId: unknown; url: string }> = []
+  const waitTimeoutCalls: number[] = []
 
   const router = createCommandRouter({
     state: {
@@ -29,7 +30,21 @@ function createMinimalRouter() {
         return { navigated: true, url }
       },
       evaluateScript: async () => undefined,
-      clickSelector: async () => undefined,
+      clickSelector: async (_tabId: unknown, selector: unknown) => {
+        // 模拟元素缺失时带引导字段的错误，验证 batch 错误序列化不丢字段
+        if (selector === '#missing') {
+          const error = new Error(`element not found: ${selector}`) as Error & {
+            code?: string
+            suggestedAction?: string
+            ref?: string
+          }
+          error.code = 'STALE_REFERENCE'
+          error.suggestedAction = "run 'snapshot' to get fresh element references"
+          error.ref = String(selector)
+          throw error
+        }
+        return { found: true, selector }
+      },
       doubleClickSelector: async () => undefined,
       fillSelector: async () => undefined,
       typeIntoSelector: async () => undefined,
@@ -76,7 +91,9 @@ function createMinimalRouter() {
       },
       captureScreenshot: async () => undefined,
       findSemanticTarget: async () => ({ match: null, reason: 'not used in test' }),
-      waitWithTimeout: async () => undefined,
+      waitWithTimeout: async (_tabId: unknown, ms: number) => {
+        waitTimeoutCalls.push(ms)
+      },
       waitForSelectorState: async (_tabId: unknown, selector: unknown, state: unknown) => ({
         waited: true,
         condition: 'selector-stable',
@@ -122,7 +139,7 @@ function createMinimalRouter() {
     getTargetTab: async () => ({ id: 1 }) as never,
   } as never)
 
-  return { router, snapshotCalls, feedCalls, navigateCalls }
+  return { router, snapshotCalls, feedCalls, navigateCalls, waitTimeoutCalls }
 }
 
 describe('command router batch handling', () => {
@@ -344,5 +361,52 @@ describe('command router batch handling', () => {
 
     expect(snapshotCalls).toHaveLength(1)
     expect(navigateCalls).toHaveLength(2)
+  })
+
+  test('keeps AI guidance fields on batch step errors', async () => {
+    const { router } = createMinimalRouter()
+
+    const result = await router.handleCommand({
+      command: 'batch',
+      args: {
+        continueOnError: true,
+        steps: [{ command: 'click', args: { selector: '#missing' } }, { command: 'snapshot' }],
+      },
+    })
+
+    const [failedStep] = (
+      result as { steps: Array<{ response: { ok: boolean; error?: unknown } }> }
+    ).steps
+    expect(failedStep.response).toEqual({
+      ok: false,
+      error: {
+        message: 'element not found: #missing',
+        code: 'STALE_REFERENCE',
+        suggestedAction: "run 'snapshot' to get fresh element references",
+        ref: '#missing',
+      },
+    })
+  })
+
+  test('rejects time waits without an explicit duration', async () => {
+    const { router } = createMinimalRouter()
+
+    await expect(
+      router.handleCommand({
+        command: 'wait',
+        args: { type: 'time' },
+      }),
+    ).rejects.toThrow('wait type "time" requires a positive ms duration')
+  })
+
+  test('waits the explicit duration for time waits', async () => {
+    const { router, waitTimeoutCalls } = createMinimalRouter()
+
+    await router.handleCommand({
+      command: 'wait',
+      args: { type: 'time', ms: 50 },
+    })
+
+    expect(waitTimeoutCalls).toEqual([50])
   })
 })

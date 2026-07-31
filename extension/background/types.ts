@@ -71,6 +71,10 @@ export interface NetworkState {
   routes: NetworkRoute[]
   requests: NetworkRequestRecord[]
   requestMap: Map<string, NetworkRequestRecord>
+  /** requests 数组下标索引，避免每个网络事件对上万条记录做 findIndex 全表扫描 */
+  requestIndex: Map<string, number>
+  /** 进行中的响应体抓取（Network.getResponseBody），stopHar 收集前需等待其 settle，避免 HAR 丢 body */
+  pendingBodyFetches: Set<Promise<unknown>>
   harRecording: boolean
   harStartedAt: string | null
   harMaxRequests: number | null
@@ -186,6 +190,10 @@ export interface EvaluateInTabContextOptions extends Record<string, unknown> {
 export interface FrameExecutionContext {
   tab: TabWithId
   executionContextId: number | null
+  /** isolated world 缓存键，无 frame 场景为 null */
+  worldCacheKey?: string | null
+  /** executionContextId 是否来自缓存（用于失效重试判断） */
+  worldFromCache?: boolean
 }
 
 export interface ResolvedSelectorTarget {

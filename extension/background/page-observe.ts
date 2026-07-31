@@ -1,4 +1,4 @@
-import { AGENT_FRAME_REF_ATTRIBUTE, formatAgentFrameRef } from '../../src/core/agent-handles.js'
+import { AGENT_FRAME_REF_ATTRIBUTE, AGENT_FRAME_REF_PREFIX } from '../../src/core/agent-handles.js'
 import { AGENT_ELEMENT_REF_ATTRIBUTE } from '../../src/core/agent-selectors.js'
 import { buildDeepDomTraversalHelpersSource } from './deep-dom.js'
 import {
@@ -27,6 +27,16 @@ const SCREENSHOT_ANNOTATION_MAX_ELEMENTS = 200
 const AGENT_SNAPSHOT_MAX_ELEMENTS = 200
 const FEED_MAX_ITEMS = 200
 const FEED_MAX_SCROLLS = 40
+
+// command-spec 路径下这些字段是可选的，undefined 时 Math.floor 会得到 NaN，
+// 导致 limit 变成 NaN 而静默返回 0 条；这里统一兜底到与 CLI 一致的默认值
+function normalizeFeedCount(value: number | undefined, fallback: number): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    return fallback
+  }
+
+  return Math.max(0, Math.floor(value))
+}
 
 const PAGE_CONTEXT_TEXT_HELPERS_SOURCE = [
   collapseWhitespace.toString(),
@@ -436,7 +446,7 @@ ${PAGE_CONTEXT_DEEP_DOM_HELPERS_SOURCE}
     const pageEpoch = getPageEpoch(state, tab.id)
     const refAttribute = AGENT_ELEMENT_REF_ATTRIBUTE
     const frameAttribute = AGENT_FRAME_REF_ATTRIBUTE
-    const frameRefPrefix = formatAgentFrameRef(1).replace('1', '')
+    const frameRefPrefix = AGENT_FRAME_REF_PREFIX
     const { value } = await evaluateInTabContext(
       tab.id,
       `(() => {
@@ -530,12 +540,10 @@ ${PAGE_CONTEXT_DEEP_DOM_HELPERS_SOURCE}
             : null,
         });
 
-        for (const element of deepQuerySelectorAll(document, '[' + refAttribute + ']')) {
+        // 两种 ref 属性合并成一趟遍历清理，减少全 DOM 扫描次数
+        for (const element of deepQuerySelectorAll(document, '[' + refAttribute + '],[' + frameAttribute + ']')) {
           element.removeAttribute(refAttribute);
-        }
-
-        for (const frameElement of deepQuerySelectorAll(document, '[' + frameAttribute + ']')) {
-          frameElement.removeAttribute(frameAttribute);
+          element.removeAttribute(frameAttribute);
         }
 
         const selectors = [
@@ -549,18 +557,8 @@ ${PAGE_CONTEXT_DEEP_DOM_HELPERS_SOURCE}
           '[tabindex]:not([tabindex="-1"])',
         ];
 
-        const seen = new Set();
-        const candidates = [];
-        for (const selector of selectors) {
-          for (const element of deepQuerySelectorAll(document, selector)) {
-            if (seen.has(element)) {
-              continue;
-            }
-
-            seen.add(element);
-            candidates.push(element);
-          }
-        }
+        // 合并成单个选择器，一次遍历取齐全部候选（deepQuerySelectorAll 内部已去重）
+        const candidates = deepQuerySelectorAll(document, selectors.join(','));
 
         const elements = [];
         for (const element of candidates) {
@@ -840,9 +838,17 @@ ${PAGE_CONTEXT_FIND_HELPERS_SOURCE}
           '[tabindex]:not([tabindex="-1"])',
         ]);
 
-        const broadTextCandidates = deepElements.filter(
-          (node) => node instanceof HTMLElement && isVisible(node),
-        );
+        // 惰性计算：broadTextCandidates 需要逐节点 isVisible（强制同步布局），
+        // 只有 text 策略的兜底分支才真正用到
+        let broadTextCandidates = null;
+        const getBroadTextCandidates = () => {
+          if (!broadTextCandidates) {
+            broadTextCandidates = deepElements.filter(
+              (node) => node instanceof HTMLElement && isVisible(node),
+            );
+          }
+          return broadTextCandidates;
+        };
 
         const pickActionableNode = (node) => {
           if (!(node instanceof HTMLElement)) {
@@ -894,7 +900,7 @@ ${PAGE_CONTEXT_FIND_HELPERS_SOURCE}
           }) || null;
 
           if (!match) {
-            match = broadTextCandidates.find((node) => matchesText(readText(node), query)) || null;
+            match = getBroadTextCandidates().find((node) => matchesText(readText(node), query)) || null;
           }
 
           match = pickActionableNode(match);
@@ -954,10 +960,10 @@ ${PAGE_CONTEXT_FIND_HELPERS_SOURCE}
     const tab = await getTargetTab(tabId)
     const pageEpoch = getPageEpoch(state, tab.id)
     const selector = String(options.selector || '').trim() || 'article'
-    const limit = Math.max(0, Math.min(FEED_MAX_ITEMS, Math.floor(options.limit)))
-    const maxScrolls = Math.max(0, Math.min(FEED_MAX_SCROLLS, Math.floor(options.maxScrolls)))
-    const pauseMs = Math.max(0, Math.floor(options.pauseMs))
-    const stallRounds = Math.max(0, Math.floor(options.stallRounds))
+    const limit = Math.min(FEED_MAX_ITEMS, normalizeFeedCount(options.limit, 30))
+    const maxScrolls = Math.min(FEED_MAX_SCROLLS, normalizeFeedCount(options.maxScrolls, 20))
+    const pauseMs = normalizeFeedCount(options.pauseMs, 900)
+    const stallRounds = normalizeFeedCount(options.stallRounds, 3)
     const dedupe = options.dedupe
 
     const { value } = await evaluateInTabContext<FeedCollectionResult>(
@@ -1147,7 +1153,12 @@ ${PAGE_CONTEXT_DEEP_DOM_HELPERS_SOURCE}
       withFrameSelectorOptions(frameSelector),
     )
 
-    return (value || {
+    // evaluate 抛异常时上层已 throw；这里只对空结果做结构兜底
+    if (value && Array.isArray(value.items)) {
+      return value
+    }
+
+    return {
       pageEpoch,
       selector,
       limit,
@@ -1159,11 +1170,17 @@ ${PAGE_CONTEXT_DEEP_DOM_HELPERS_SOURCE}
       stopReason: 'stalled',
       count: 0,
       items: [],
-    }) as FeedCollectionResult
+    }
   }
 
   async function waitForLoadEvent(tabId: TabInput, timeout = 30000) {
     const tab = await getTargetTab(tabId)
+    // 页面可能早已加载完成，之后不会再触发 load 事件，先查 readyState 避免空等到超时
+    const { value: readyState } = await evaluateInTabContext<string>(tab.id, 'document.readyState')
+    if (readyState === 'complete') {
+      return { waited: true, condition: 'load' }
+    }
+
     return await waitForDebuggerEvent(
       tab.id,
       timeout,
@@ -1210,6 +1227,9 @@ ${PAGE_CONTEXT_DEEP_DOM_HELPERS_SOURCE}
       const { value } = await evaluateInTabContext<{ signature: string } | null>(
         tab.id,
         `(() => {
+${PAGE_CONTEXT_TEXT_HELPERS_SOURCE}
+${PAGE_CONTEXT_DEEP_DOM_HELPERS_SOURCE}
+
           const visibleNodes = Array.from(deepQuerySelectorAll(document, ${JSON.stringify(resolvedSelector)})).filter((node) => {
             if (!(node instanceof HTMLElement)) {
               return false;
@@ -1307,6 +1327,8 @@ ${PAGE_CONTEXT_DEEP_DOM_HELPERS_SOURCE}
         const { value } = await evaluateInTabContext(
           tab.id,
           `(() => {
+${PAGE_CONTEXT_DEEP_DOM_HELPERS_SOURCE}
+
             const node = deepQuerySelector(document, ${JSON.stringify(resolvedSelector)});
             const visible = Boolean(node) && (() => {
               const rect = node.getBoundingClientRect();
@@ -1364,15 +1386,13 @@ ${PAGE_CONTEXT_DEEP_DOM_HELPERS_SOURCE}
     return await pollUntil(
       timeout,
       async () => {
-        const { value } = await evaluateInTabContext<string>(
+        // 匹配在页面内完成，每轮 poll 只回传布尔值，避免整页 innerText 经 CDP 回传
+        const { value } = await evaluateInTabContext<boolean>(
           tabId,
-          "document.body ? document.body.innerText : ''",
+          `document.body ? document.body.innerText.toLowerCase().includes(${JSON.stringify(text.toLowerCase())}) : false`,
           withFrameSelectorOptions(frameSelector),
         )
-        const pageText = (value || '').toLowerCase()
-        return pageText.includes(text.toLowerCase())
-          ? { waited: true, condition: 'text', text }
-          : null
+        return value === true ? { waited: true, condition: 'text', text } : null
       },
       `wait text timeout: ${text}`,
     )

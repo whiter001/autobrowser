@@ -171,8 +171,9 @@ async function readRawCliConfig(homeDir: string): Promise<Record<string, unknown
 async function writeCliConfig(homeDir: string, config: Record<string, unknown>): Promise<void> {
   try {
     await writeJsonFile(getConfigPath(homeDir), config)
-  } catch {
-    return
+  } catch (error) {
+    // 配置写盘失败必须留痕：扩展 ID/浏览器配置的修改无声丢失会让用户误以为已生效
+    console.error('[autobrowser] failed to write CLI config:', error)
   }
 }
 

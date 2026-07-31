@@ -226,10 +226,11 @@ function upsertNetworkRequest(
   const merged: NetworkRequestRecord = { ...existing, ...record }
   state.network.requestMap.set(key, merged)
 
-  const index = state.network.requests.findIndex((item) => item.id === key)
-  if (index >= 0) {
+  const index = state.network.requestIndex.get(key)
+  if (index !== undefined) {
     state.network.requests[index] = merged
   } else {
+    state.network.requestIndex.set(key, state.network.requests.length)
     state.network.requests.push(merged)
   }
 
@@ -242,6 +243,14 @@ function upsertNetworkRequest(
     for (const item of removed) {
       if (item && typeof item.id === 'string') {
         state.network.requestMap.delete(item.id)
+      }
+    }
+    // splice 会让所有下标前移，裁剪不频繁，直接整体重建下标表最简单可靠
+    state.network.requestIndex.clear()
+    for (let i = 0; i < state.network.requests.length; i += 1) {
+      const itemId = state.network.requests[i]?.id
+      if (typeof itemId === 'string') {
+        state.network.requestIndex.set(itemId, i)
       }
     }
   }
@@ -679,7 +688,13 @@ export function createNetworkDomain({
           typeof payload.encodedDataLength === 'number' ? payload.encodedDataLength : null,
       })
 
-      void finalizeRequestBody(tabId, requestId)
+      const bodyFetch = finalizeRequestBody(tabId, requestId)
+      // fire-and-forget 的 body 抓取要登记下来，stopHar 导出前会等待它们 settle，
+      // 否则“页面加载完立刻 network har stop”时 HAR 会大面积缺响应体
+      state.network.pendingBodyFetches.add(bodyFetch)
+      void bodyFetch.finally(() => {
+        state.network.pendingBodyFetches.delete(bodyFetch)
+      })
       return
     }
 
@@ -790,13 +805,19 @@ export function createNetworkDomain({
     }
   }
 
-  function stopHar(): Record<string, unknown> {
+  async function stopHar(): Promise<Record<string, unknown>> {
+    // 先停记录再等 body：stop 之后 loadingFinished 不再触发新的抓取，
+    // 等待当前已注册的 promise 即可（它们是 CDP 请求，自身会超时 settle）
     const startedAt = state.network.harStartedAt
     const stoppedAt = new Date().toISOString()
     state.network.harRecording = false
     state.network.harStartedAt = null
     state.network.harMaxRequests = DEFAULT_HAR_MAX_REQUESTS
     state.network.harMaxBodyBytes = DEFAULT_HAR_MAX_BODY_BYTES
+
+    if (state.network.pendingBodyFetches.size > 0) {
+      await Promise.allSettled(state.network.pendingBodyFetches)
+    }
 
     const requests = state.network.requests.filter((record) => {
       if (!startedAt) {

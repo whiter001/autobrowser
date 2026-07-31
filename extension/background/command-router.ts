@@ -7,6 +7,7 @@ import {
   windowsUpdate,
 } from './chrome.js'
 import { getOrCreateTabHandle, rememberTargetTab, toTabSummary } from './targeting.js'
+import { serializeCommandError, type SerializedCommandError } from './errors.js'
 import { validateCommandArgs } from '../../src/core/command-spec.js'
 import type {
   CommandArgs,
@@ -222,7 +223,7 @@ interface NetworkDomain {
     tabId: TabInput,
     options?: { maxRequests?: number | null; maxBodyBytes?: number | null },
   ) => Promise<unknown>
-  stopHar: () => unknown
+  stopHar: () => Promise<unknown>
 }
 
 interface CommandRouterDependencies {
@@ -452,7 +453,11 @@ export function createCommandRouter({
     const waitFn = readStringArg(args, 'fn')
 
     if (waitType === 'time' || waitMs > 0) {
-      return await pageObserve.waitWithTimeout(tabId, waitMs || timeout)
+      // time 等待必须显式给时长；缺省时兜底成整个 timeout（默认 30s）会让调用方傻等
+      if (waitMs <= 0) {
+        throw new Error('wait type "time" requires a positive ms duration (pass --ms <ms>)')
+      }
+      return await pageObserve.waitWithTimeout(tabId, waitMs)
     }
 
     if (waitType === 'selector' || waitSelector) {
@@ -553,9 +558,7 @@ export function createCommandRouter({
     command: string
     args: CommandArgs
     label: string | null
-    response:
-      | { ok: true; result: unknown }
-      | { ok: false; error: { message: string; code?: string; details?: unknown } }
+    response: { ok: true; result: unknown } | { ok: false; error: SerializedCommandError }
   }
 
   interface BatchCommandOptions {
@@ -577,19 +580,6 @@ export function createCommandRouter({
 
   function isRecord(value: unknown): value is Record<string, unknown> {
     return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
-  }
-
-  function serializeCommandError(error: unknown): {
-    message: string
-    code?: string
-    details?: unknown
-  } {
-    const err = error as ErrorWithCode
-    return {
-      message: err.message || 'extension command failed',
-      code: err.code || 'EXTENSION_COMMAND_ERROR',
-      ...(typeof err.details !== 'undefined' ? { details: err.details } : {}),
-    }
   }
 
   function normalizeBatchCommandStep(value: unknown, index: number): BatchCommandStep {
@@ -661,7 +651,7 @@ export function createCommandRouter({
 
   function createBatchStepFailureResponse(error: unknown): {
     ok: false
-    error: { message: string; code?: string; details?: unknown }
+    error: SerializedCommandError
   } {
     return {
       ok: false,
@@ -1032,7 +1022,7 @@ export function createCommandRouter({
             })
           }
           if (subaction === 'stop') {
-            return network.stopHar()
+            return await network.stopHar()
           }
           throw new Error(`unsupported network har action: ${subaction}`)
         }

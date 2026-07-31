@@ -1,6 +1,7 @@
 export interface DeepDomNodeLike {
   id?: string | null
   shadowRoot?: DeepDomRootLike | null
+  matches?: (selector: string) => boolean
 }
 
 export interface DeepDomRootLike {
@@ -98,7 +99,9 @@ export function deepQuerySelectorAll(
       return
     }
 
-    for (const node of toArray(currentRoot.querySelectorAll(selector))) {
+    // 单趟 '*' 遍历：matches 判断命中的节点，同时发现 shadow host 就地递归，
+    // 避免每层 root 先查选择器再查 '*' 找 host 的双重遍历
+    for (const node of toArray(currentRoot.querySelectorAll('*'))) {
       if (results.length >= nodeLimit) {
         return
       }
@@ -108,19 +111,13 @@ export function deepQuerySelectorAll(
       }
 
       seen.add(node)
-      results.push(node)
-    }
-
-    if (depth >= depthLimit || results.length >= nodeLimit) {
-      return
-    }
-
-    for (const node of toArray(currentRoot.querySelectorAll('*'))) {
-      if (results.length >= nodeLimit) {
-        return
+      if (typeof node.matches === 'function' && node.matches(selector)) {
+        results.push(node)
       }
-      if (node?.shadowRoot) {
-        visitRoot(node.shadowRoot, depth + 1)
+
+      const shadowRoot = node.shadowRoot
+      if (shadowRoot && depth < depthLimit) {
+        visitRoot(shadowRoot, depth + 1)
       }
     }
   }
@@ -185,6 +182,7 @@ export function buildDeepDomTraversalHelpersSource(): string {
   return [
     toArray.toString(),
     normalizeMaxDepth.toString(),
+    normalizeMaxNodes.toString(),
     deepCollectElements.toString(),
     deepQuerySelectorAll.toString(),
     deepQuerySelector.toString(),

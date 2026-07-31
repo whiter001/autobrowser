@@ -224,8 +224,8 @@ export interface Runtime {
     socket: Bun.ServerWebSocket<ExtensionMetadata>,
     meta?: ExtensionMetadata,
   ) => void
-  /** 断开当前浏览器扩展的连接并清理状态 */
-  detachExtension: () => void
+  /** 断开浏览器扩展连接并清理状态；传入 socket 时仅当它是当前连接才断开（防重连竞态） */
+  detachExtension: (socket?: Bun.ServerWebSocket<ExtensionMetadata>) => void
   /** 处理来自扩展的原始消息（RPC 响应、事件、心跳） */
   handleExtensionMessage: (rawMessage: unknown) => void
   /** 向扩展分发命令并等待响应 */
@@ -284,6 +284,9 @@ export async function createRuntime(options: RuntimeOptions = {}): Promise<Runti
     snapshot.pageEpochs = normalizePageEpochs(persistedState.snapshot.pageEpochs)
   }
 
+  // token 从不在运行期变化，只在首次写盘或值变化时落盘，避免心跳等高频 persist 反复 chmod
+  let lastPersistedToken: string | null = null
+
   async function persist(): Promise<void> {
     await writeJsonFile(getStatePath(homeDir), {
       token: runtime.token,
@@ -292,7 +295,10 @@ export async function createRuntime(options: RuntimeOptions = {}): Promise<Runti
       startedAt: runtime.startedAt,
       snapshot,
     })
-    await writeJsonFile(getTokenPath(homeDir), { token: runtime.token })
+    if (lastPersistedToken !== runtime.token) {
+      await writeJsonFile(getTokenPath(homeDir), { token: runtime.token })
+      lastPersistedToken = runtime.token
+    }
   }
 
   let persistChain: Promise<void> = Promise.resolve()
@@ -386,6 +392,17 @@ export async function createRuntime(options: RuntimeOptions = {}): Promise<Runti
     socket: Bun.ServerWebSocket<ExtensionMetadata>,
     meta: ExtensionMetadata = {},
   ): void {
+    const previousSocket = runtime.extensionSocket
+    if (previousSocket && previousSocket !== socket) {
+      // 扩展重连时旧 socket 还挂在运行时上：主动关闭它，使其 close 事件尽快到达；
+      // detachExtension 会做身份校验，不会误伤新连接
+      try {
+        previousSocket.close()
+      } catch {
+        // 旧连接可能已断开，忽略关闭失败
+      }
+    }
+
     runtime.extensionSocket = socket
     runtime.extensionId = typeof meta.extensionId === 'string' ? meta.extensionId : null
     snapshot.extension = {
@@ -398,11 +415,23 @@ export async function createRuntime(options: RuntimeOptions = {}): Promise<Runti
     schedulePersist()
   }
 
-  function detachExtension(): void {
+  function detachExtension(socket?: Bun.ServerWebSocket<ExtensionMetadata>): void {
+    if (socket && runtime.extensionSocket !== socket) {
+      // 重连竞态：旧 socket 的 close 事件晚于新连接 attach 到达，不能把新连接踢掉
+      return
+    }
+
     runtime.extensionSocket = null
     runtime.extensionId = null
     snapshot.extension = null
     rejectPendingRequests(pendingRequests, 'extension disconnected')
+    // 断开时立即唤醒等待连接的 waiter，否则它们只能干等超时
+    // reject 内的 settle 会把 waiter 从 Set 删除，Set 迭代期间删除当前元素是安全的
+    for (const waiter of connectionWaiters) {
+      waiter.reject(
+        createExtensionDisconnectedError('extension disconnected while waiting for connection'),
+      )
+    }
     schedulePersist()
   }
 
@@ -452,9 +481,9 @@ export async function createRuntime(options: RuntimeOptions = {}): Promise<Runti
     }
 
     if (message?.type === 'heartbeat') {
+      // 心跳每 30s 一次，lastHeartbeatAt 是运行时状态无需持久化；只更新内存，避免每次都全量落盘
       if (snapshot.extension) {
         snapshot.extension.lastHeartbeatAt = new Date().toISOString()
-        schedulePersist()
       }
 
       if (runtime.extensionSocket && runtime.extensionSocket.readyState === WebSocket.OPEN) {
@@ -523,13 +552,30 @@ export async function createRuntime(options: RuntimeOptions = {}): Promise<Runti
     return await new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         pendingRequests.delete(id)
-        reject(new Error(`command timed out: ${command}`))
+        reject(
+          new Error(
+            `command timed out after ${requestTimeoutMs}ms: ${command}. ` +
+              'The extension did not respond in time. Check that the browser extension is still connected ' +
+              "(e.g. run 'status'), or that the page is not stuck on a long-running task, then retry the command.",
+          ),
+        )
       }, requestTimeoutMs)
 
       pendingRequests.set(id, { resolve, reject, timer })
 
       try {
-        socket.send(JSON.stringify(payload))
+        // waitForExtensionConnection 返回到 send 之间扩展可能已断开；
+        // Bun 对已关闭 socket 的 send 不抛异常而是返回 ≤0，需检查返回值快速失败
+        const sent = socket.send(JSON.stringify(payload))
+        if (sent <= 0) {
+          clearTimeout(timer)
+          pendingRequests.delete(id)
+          reject(
+            createExtensionDisconnectedError(
+              `extension disconnected while sending command: ${command}`,
+            ),
+          )
+        }
       } catch (error) {
         clearTimeout(timer)
         pendingRequests.delete(id)

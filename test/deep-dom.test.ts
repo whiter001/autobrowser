@@ -12,6 +12,7 @@ type MockNode = {
   id?: string
   children?: MockNode[]
   shadowRoot?: MockRoot | null
+  matches?: (selector: string) => boolean
 }
 
 class MockRoot {
@@ -22,6 +23,16 @@ class MockRoot {
     activeElement: MockNode | null = null,
   ) {
     this.activeElement = activeElement
+    // mock 节点没有原生 matches，遍历整棵 light DOM 树补上，对齐 DeepDomNodeLike 接口
+    const attachMatches = (list: MockNode[]) => {
+      for (const node of list) {
+        node.matches = (selector: string) => matchesSelector(node, selector)
+        if (node.children?.length) {
+          attachMatches(node.children)
+        }
+      }
+    }
+    attachMatches(nodes)
   }
 
   querySelectorAll(selector: string): MockNode[] {

@@ -300,11 +300,19 @@ export async function stopBackgroundServer(
     return
   }
 
-  if (
-    response.status === 404 &&
-    (await terminateProcessListeningOnPort(ipcPort, findProcessIdByPort, killProcess))
-  ) {
-    return
+  if (response.status === 404) {
+    // 404 只说明没有 /shutdown 端点；杀进程前先确认占用端口的确是 autobrowser 服务，
+    // 避免误杀端口复用的无关进程
+    const status = await getStatus(`http://127.0.0.1:${ipcPort}`).catch(() => null)
+    if (!isServerSnapshotStatus(status)) {
+      throw new Error(
+        `port ${ipcPort} is occupied by a process that is not an autobrowser server; stop it manually before retrying`,
+      )
+    }
+
+    if (await terminateProcessListeningOnPort(ipcPort, findProcessIdByPort, killProcess)) {
+      return
+    }
   }
 
   if (!response.ok || payload?.ok === false) {

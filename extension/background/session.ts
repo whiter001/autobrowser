@@ -88,8 +88,44 @@ export function createSessionDomain({
 
   async function cookiesClear(tabId: TabInput) {
     const tab = await getTargetTab(tabId)
-    await sendDebuggerCommand(tab.id, 'Network.clearBrowserCookies', {})
-    return { cleared: true }
+    // 只清当前 tab 站点域名的 cookie，避免误清用户其他站点的登录态
+    let hostname = ''
+    try {
+      hostname = new URL(tab.url || '').hostname.toLowerCase()
+    } catch {
+      // chrome:// 等无法解析的 URL 没有可匹配的域名，此时不清除任何 cookie
+    }
+
+    if (!hostname) {
+      return { cleared: 0, domain: null }
+    }
+
+    const result = await sendDebuggerCommand<{
+      cookies?: Array<{ name?: string; domain?: string; path?: string }>
+    }>(tab.id, 'Network.getCookies', {})
+
+    let cleared = 0
+    for (const cookie of result.cookies || []) {
+      // cookie 的 domain 可能带前导点（如 .example.com），归一化后按域名后缀匹配父域/子域
+      const cookieDomain = String(cookie.domain || '')
+        .replace(/^\.+/, '')
+        .toLowerCase()
+      if (
+        cookieDomain &&
+        (cookieDomain === hostname ||
+          hostname.endsWith(`.${cookieDomain}`) ||
+          cookieDomain.endsWith(`.${hostname}`))
+      ) {
+        await sendDebuggerCommand(tab.id, 'Network.deleteCookies', {
+          name: cookie.name,
+          domain: cookie.domain,
+          path: cookie.path,
+        })
+        cleared += 1
+      }
+    }
+
+    return { cleared, domain: hostname }
   }
 
   async function storageGet(

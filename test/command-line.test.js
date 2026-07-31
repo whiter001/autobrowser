@@ -7,6 +7,7 @@ import { buildSystemOpenCommand, main, parseWindowsNetstatListeningPid } from '.
 import {
   parseNetworkHarStartArgs,
   parseNetworkRequestsArgs,
+  parseNetworkRouteArgs,
   parseWaitArgs,
 } from '../src/cli/parse.js'
 
@@ -233,6 +234,52 @@ describe('cli helpers', () => {
     // '--filtter' 是故意拼错的 flag，用于验证未知选项会被拒绝
     expect(() => parseNetworkRequestsArgs(['--filtter', 'api'])).toThrow(
       'unsupported network option: --filtter',
+    )
+  })
+
+  test('rejects unknown global flags before the command name', async () => {
+    // '--selecor' 是故意拼错的 flag；放在命令名前必须直接报错而不是被当成命令/位置参数
+    const result = await runCli(['--selecor', '#submit', 'click'])
+
+    expect(result.exitCode).toBe(1)
+    expect(result.fetchCalls).toHaveLength(0)
+    expect(result.stderr).toContain('unsupported global option: --selecor')
+    expect(result.stderr).toContain('--tab')
+    expect(result.stderr).toContain('--ipc-port')
+  })
+
+  test('rejects unsupported network har start flags', () => {
+    expect(() => parseNetworkHarStartArgs(['--har-max-request', '10'])).toThrow(
+      'unsupported network option: --har-max-request',
+    )
+    expect(() => parseNetworkHarStartArgs(['extra'])).toThrow(
+      'unexpected extra network argument: extra',
+    )
+  })
+
+  test('rejects unsupported network har start flags before dispatching commands', async () => {
+    const result = await runCli(['network', 'har', 'start', '--har-max-request', '10'])
+
+    expect(result.exitCode).toBe(1)
+    expect(result.fetchCalls).toHaveLength(0)
+    expect(result.stderr).toContain('unsupported network option: --har-max-request')
+  })
+
+  test('rejects unsupported network route arguments', () => {
+    expect(() => parseNetworkRouteArgs(['**/api/*', '--bogus'])).toThrow(
+      'unsupported network option: --bogus',
+    )
+    expect(() => parseNetworkRouteArgs(['**/api/*', '**/other/*'])).toThrow(
+      'unexpected extra network argument: **/other/*',
+    )
+  })
+
+  test('rejects unsupported wait --load values', () => {
+    expect(parseWaitArgs(['--load'])).toMatchObject({ type: 'networkidle' })
+    expect(parseWaitArgs(['--load', 'load'])).toMatchObject({ type: 'load' })
+    expect(parseWaitArgs(['--load', 'networkidle'])).toMatchObject({ type: 'networkidle' })
+    expect(() => parseWaitArgs(['--load', 'interactive'])).toThrow(
+      'unsupported --load value: interactive',
     )
   })
 
@@ -1811,28 +1858,94 @@ describe('cli command routing', () => {
           if (String(url).endsWith('/shutdown')) {
             expect(init.method).toBe('POST')
             expect(init.headers?.authorization).toBe('Bearer stop-token')
-          } else if (String(url).endsWith('/status')) {
-            expect(init.method).toBeUndefined()
-          } else {
-            throw new Error(`unexpected URL: ${String(url)}`)
+            return {
+              ok: false,
+              status: 404,
+              statusText: 'Not Found',
+              async text() {
+                return 'not found'
+              },
+            }
           }
 
-          return {
-            ok: false,
-            status: 404,
-            statusText: 'Not Found',
-            async text() {
-              return 'not found'
-            },
+          if (String(url).endsWith('/status')) {
+            expect(init.method).toBeUndefined()
+            return {
+              ok: true,
+              async json() {
+                return { relayPort: 49011, ipcPort: 49012 }
+              },
+            }
           }
+
+          throw new Error(`unexpected URL: ${String(url)}`)
         },
       },
     )
 
     expect(result.exitCode).toBeUndefined()
-    expect(result.fetchCalls).toHaveLength(1)
+    expect(result.fetchCalls).toHaveLength(2)
     expect(killCalls).toEqual([{ pid: 12345, signal: 'SIGTERM' }])
     expect(result.stdout).toContain('stopped')
+  })
+
+  test('server stop refuses to kill a foreign process occupying the port', async () => {
+    const homeDir = await mkdtemp(path.join(os.tmpdir(), 'autobrowser-stop-foreign-test-'))
+    const stateDir = path.join(homeDir, '.autobrowser')
+    await mkdir(stateDir, { recursive: true })
+    await writeFile(
+      path.join(stateDir, 'state.json'),
+      JSON.stringify({
+        token: 'stop-token',
+        relayPort: 49011,
+        ipcPort: 49012,
+      }),
+    )
+    await writeFile(path.join(stateDir, 'token'), JSON.stringify({ token: 'stop-token' }))
+
+    const killCalls = []
+
+    const result = await runCli(
+      ['server', 'stop'],
+      { ok: true, result: { stopping: true } },
+      {
+        homeDir,
+        findProcessIdByPort: async () => 12345,
+        killProcess: (pid, signal) => {
+          killCalls.push({ pid, signal })
+          return true
+        },
+        fetchImpl: async (url, init = {}) => {
+          if (String(url).endsWith('/shutdown')) {
+            expect(init.method).toBe('POST')
+            return {
+              ok: false,
+              status: 404,
+              statusText: 'Not Found',
+              async text() {
+                return 'not found'
+              },
+            }
+          }
+
+          if (String(url).endsWith('/status')) {
+            // 响应不是 autobrowser 形态（缺 relayPort/ipcPort），说明端口被无关进程占用
+            return {
+              ok: true,
+              async json() {
+                return { service: 'something-else' }
+              },
+            }
+          }
+
+          throw new Error(`unexpected URL: ${String(url)}`)
+        },
+      },
+    )
+
+    expect(result.exitCode).toBe(1)
+    expect(killCalls).toEqual([])
+    expect(result.stderr).toContain('not an autobrowser server')
   })
 
   test('connect keeps working when config persistence is unavailable', async () => {

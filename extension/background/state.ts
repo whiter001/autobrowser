@@ -38,6 +38,8 @@ export function createExtensionState(defaultRelayPort: number): ExtensionState {
       routes: [],
       requests: [],
       requestMap: new Map(),
+      requestIndex: new Map(),
+      pendingBodyFetches: new Set(),
       harRecording: false,
       harStartedAt: null,
       harMaxRequests: 1000,

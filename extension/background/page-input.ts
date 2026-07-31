@@ -29,6 +29,15 @@ interface ElementActionResult extends Record<string, unknown> {
   reason?: string
 }
 
+// 元素找不到时统一抛带 STALE_REFERENCE code 和 suggestedAction 的错误，
+// 让调用方（AI Agent）能区分"选择器失效"和其它失败，并知道下一步该重新 snapshot
+function createElementNotFoundError(selector: string): Error {
+  return Object.assign(new Error(`element not found: ${selector}`), {
+    code: `STALE_REFERENCE`,
+    suggestedAction: `The target element was not found. If this was from a previous snapshot reference like @eX, the page may have updated. Ensure you run 'snapshot' to get fresh element references.`,
+  })
+}
+
 interface PageInputDependencies {
   state: ExtensionState
   getTargetTab: (tabId: TabInput) => Promise<TabWithId>
@@ -175,9 +184,11 @@ export function createPageInputDomain({
 
   async function insertTextSequentially(tabId: TabInput, text: string) {
     const normalizedText = String(text || '')
+    // 逐字符输入时 tab 只解析一次，否则每个字符都会 tabs.get + debugger 各往返一次
+    const tab = await getTargetTab(tabId)
 
     for (const character of normalizedText) {
-      await dispatchInsertText(tabId, character)
+      await sendDebuggerCommand(tab.id, 'Input.insertText', { text: character })
     }
 
     return { typed: true, text: normalizedText }
@@ -226,10 +237,7 @@ export function createPageInputDomain({
 
     const box = await getElementBox(tab.id, selector, frameSelector)
     if (!box) {
-      throw Object.assign(new Error(`element not found: ${selector}`), {
-        code: `STALE_REFERENCE`,
-        suggestedAction: `The target element was not found. If this was from a previous snapshot reference like @eX, the page may have updated. Ensure you run 'snapshot' to get fresh element references.`,
-      })
+      throw createElementNotFoundError(selector)
     }
 
     await dispatchMouseClick(tab.id, box, 1)
@@ -240,10 +248,7 @@ export function createPageInputDomain({
     const { tab, resolvedSelector } = await resolveElementSelectorForTab(tabId, selector)
     const box = await getElementBox(tab.id, selector, frameSelector)
     if (!box) {
-      throw Object.assign(new Error(`element not found: ${selector}`), {
-        code: `STALE_REFERENCE`,
-        suggestedAction: `The target element was not found. If this was from a previous snapshot reference like @eX, the page may have updated. Ensure you run 'snapshot' to get fresh element references.`,
-      })
+      throw createElementNotFoundError(selector)
     }
 
     const { value } = await evaluateInTabContext<boolean>(
@@ -308,10 +313,7 @@ export function createPageInputDomain({
       return value
     }
 
-    throw Object.assign(new Error(`element not found: ${selector}`), {
-      code: `STALE_REFERENCE`,
-      suggestedAction: `The target element was not found. If this was from a previous snapshot reference like @eX, the page may have updated. Ensure you run 'snapshot' to get fresh element references.`,
-    })
+    throw createElementNotFoundError(selector)
   }
 
   async function selectOption(
@@ -338,10 +340,7 @@ export function createPageInputDomain({
     if (result?.found) {
       return result
     }
-    throw Object.assign(new Error(`element not found: ${selector}`), {
-      code: `STALE_REFERENCE`,
-      suggestedAction: `The target element was not found. If this was from a previous snapshot reference like @eX, the page may have updated. Ensure you run 'snapshot' to get fresh element references.`,
-    })
+    throw createElementNotFoundError(selector)
   }
 
   async function checkElement(
@@ -368,10 +367,7 @@ export function createPageInputDomain({
     if (result?.found) {
       return result
     }
-    throw Object.assign(new Error(`element not found: ${selector}`), {
-      code: `STALE_REFERENCE`,
-      suggestedAction: `The target element was not found. If this was from a previous snapshot reference like @eX, the page may have updated. Ensure you run 'snapshot' to get fresh element references.`,
-    })
+    throw createElementNotFoundError(selector)
   }
 
   async function scrollElement(
@@ -402,6 +398,10 @@ export function createPageInputDomain({
       })()`,
       withFrameSelectorOptions(frameSelector),
     )
+
+    if (selector && value && value.found === false) {
+      throw createElementNotFoundError(selector)
+    }
 
     return value || { found: true, scrolled: true }
   }
@@ -475,19 +475,31 @@ export function createPageInputDomain({
   ) {
     const { resolvedSelector } = await resolveElementSelectorForTab(tabId, selector)
     const { tab, executionContextId } = await getFrameExecutionContext(tabId, frameSelector)
-    const result = await sendDebuggerCommand<{ result?: { objectId?: string } }>(
-      tab.id,
-      'Runtime.evaluate',
-      {
-        expression: `(() => {
+    const result = await sendDebuggerCommand<{
+      result?: { objectId?: string }
+      exceptionDetails?: {
+        text?: string
+        exception?: { description?: string }
+      }
+    }>(tab.id, 'Runtime.evaluate', {
+      expression: `(() => {
+        ${PAGE_CONTEXT_DEEP_DOM_HELPERS_SOURCE}
+
         const node = deepQuerySelector(document, ${JSON.stringify(resolvedSelector)});
         return node && node.tagName === 'INPUT' && node.type === 'file' ? node : null;
       })()`,
-        awaitPromise: true,
-        returnByValue: false,
-        ...(executionContextId ? { contextId: executionContextId } : {}),
-      },
-    )
+      awaitPromise: true,
+      returnByValue: false,
+      ...(executionContextId ? { contextId: executionContextId } : {}),
+    })
+
+    // evaluate 抛异常时 result 是异常对象，其 objectId 若传给 setFileInputFiles 会产生误导性报错
+    if (result?.exceptionDetails) {
+      const details = result.exceptionDetails
+      throw new Error(
+        `failed to resolve file input ${selector}: ${details.exception?.description || details.text || 'unknown error'}`,
+      )
+    }
 
     const objectId = result?.result?.objectId
     if (!objectId) {
@@ -661,40 +673,34 @@ export function createPageInputDomain({
     const resolvedSelector = selectorContext?.resolvedSelector || resolveAgentSelector(selector)
     const resolvedTabId = selectorContext?.tab.id ?? tabId
 
-    if (attrName === 'text') {
-      const { value } = await evaluateInTabContext(
+    // 依赖目标元素的读取统一走这里：节点不存在时抛 STALE_REFERENCE，
+    // 避免把"元素不存在"静默伪装成 found:true + value:null
+    async function readElementValue<TValue>(valueExpression: string): Promise<TValue> {
+      const { value } = await evaluateInTabContext<{ found: boolean; value: TValue }>(
         resolvedTabId,
         `(() => {
           const node = deepQuerySelector(document, ${JSON.stringify(resolvedSelector)});
-          return node ? node.textContent : null;
+          if (!node) return { found: false };
+          return { found: true, value: (${valueExpression}) };
         })()`,
         withFrameSelectorOptions(frameSelector),
       )
-      return { found: true, value }
+      if (!value?.found) {
+        throw createElementNotFoundError(selector)
+      }
+      return value.value
+    }
+
+    if (attrName === 'text') {
+      return { found: true, value: await readElementValue('node.textContent') }
     }
 
     if (attrName === 'html') {
-      const { value } = await evaluateInTabContext(
-        resolvedTabId,
-        `(() => {
-          const node = deepQuerySelector(document, ${JSON.stringify(resolvedSelector)});
-          return node ? node.innerHTML : null;
-        })()`,
-        withFrameSelectorOptions(frameSelector),
-      )
-      return { found: true, value }
+      return { found: true, value: await readElementValue('node.innerHTML') }
     }
 
     if (attrName === 'value') {
-      const { value } = await evaluateInTabContext(
-        resolvedTabId,
-        `(() => {
-          const node = deepQuerySelector(document, ${JSON.stringify(resolvedSelector)});
-          return node ? node.value : null;
-        })()`,
-        withFrameSelectorOptions(frameSelector),
-      )
-      return { found: true, value }
+      return { found: true, value: await readElementValue('node.value') }
     }
 
     if (attrName === 'title') {
@@ -727,42 +733,29 @@ export function createPageInputDomain({
     }
 
     if (attrName === 'box') {
-      const { value } = await evaluateInTabContext(
-        resolvedTabId,
-        `(() => {
-          const node = deepQuerySelector(document, ${JSON.stringify(resolvedSelector)});
-          if (!node) return null;
+      return {
+        found: true,
+        value: await readElementValue(`(() => {
           const rect = node.getBoundingClientRect();
           return { x: rect.x, y: rect.y, width: rect.width, height: rect.height };
-        })()`,
-        withFrameSelectorOptions(frameSelector),
-      )
-      return { found: true, value }
+        })()`),
+      }
     }
 
     if (attrName === 'styles') {
-      const { value } = await evaluateInTabContext(
-        resolvedTabId,
-        `(() => {
-          const node = deepQuerySelector(document, ${JSON.stringify(resolvedSelector)});
-          if (!node) return null;
+      return {
+        found: true,
+        value: await readElementValue(`(() => {
           const styles = window.getComputedStyle(node);
           return Object.fromEntries(Array.from(styles).map((name) => [name, styles.getPropertyValue(name)]));
-        })()`,
-        withFrameSelectorOptions(frameSelector),
-      )
-      return { found: true, value }
+        })()`),
+      }
     }
 
-    const { value } = await evaluateInTabContext(
-      resolvedTabId,
-      `(() => {
-        const node = deepQuerySelector(document, ${JSON.stringify(resolvedSelector)});
-        return node ? node.getAttribute(${JSON.stringify(attrName)}) : null;
-      })()`,
-      withFrameSelectorOptions(frameSelector),
-    )
-    return { found: true, value }
+    return {
+      found: true,
+      value: await readElementValue(`node.getAttribute(${JSON.stringify(attrName)})`),
+    }
   }
 
   async function fillSelector(
@@ -793,7 +786,15 @@ export function createPageInputDomain({
       withFrameSelectorOptions(frameSelector),
     )
 
-    return result
+    if (result?.found) {
+      return result
+    }
+
+    if (result?.reason) {
+      throw new Error(`cannot fill ${selector}: ${result.reason}`)
+    }
+
+    throw createElementNotFoundError(selector)
   }
 
   async function keyDownOnly(tabId: TabInput, key: string) {
@@ -834,10 +835,7 @@ export function createPageInputDomain({
   ) {
     const box = await getElementBox(tabId, selector, frameSelector)
     if (!box) {
-      throw Object.assign(new Error(`element not found: ${selector}`), {
-        code: `STALE_REFERENCE`,
-        suggestedAction: `The target element was not found. If this was from a previous snapshot reference like @eX, the page may have updated. Ensure you run 'snapshot' to get fresh element references.`,
-      })
+      throw createElementNotFoundError(selector)
     }
 
     const tab = await getTargetTab(tabId)
@@ -870,7 +868,16 @@ export function createPageInputDomain({
       withFrameSelectorOptions(frameSelector),
     )
 
-    return value
+    if (value?.found) {
+      return value
+    }
+
+    // 页面内执行异常（如滚动画廊报错）与元素缺失区分开，避免误报 STALE_REFERENCE
+    if (value?.reason && value.reason !== 'element not found') {
+      throw new Error(`failed to scroll into view: ${selector}: ${value.reason}`)
+    }
+
+    throw createElementNotFoundError(selector)
   }
 
   return {

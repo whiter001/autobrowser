@@ -46,6 +46,9 @@ import { clearRemovedTabId, pickLastNonActiveTab } from '../src/core/tab-selecti
 
 const DEFAULT_SERVER_PORT = DEFAULT_RELAY_PORT
 const FRAME_WORLD_NAME = 'autobrowser-frame'
+// 按 (tabId, frameId) 缓存 isolated world 的 executionContextId，epoch 不匹配即视为导航后失效。
+// 否则带 frameSelector 的每次 evaluate 都 createIsolatedWorld，world 会持续累积到导航才释放
+const frameWorldContextCache = new Map<string, { epoch: number; contextId: number }>()
 const PAGE_CONTEXT_DEEP_DOM_HELPERS_SOURCE = buildDeepDomTraversalHelpersSource()
 
 interface FrameTargetEvaluation {
@@ -333,6 +336,17 @@ async function getFrameExecutionContext(
   }
 
   const frame = await resolveFrameTarget(tab.id, selector)
+  const worldCacheKey = `${tab.id}:${frame.frameId}`
+  const cachedWorld = frameWorldContextCache.get(worldCacheKey)
+  if (cachedWorld && cachedWorld.epoch === frame.pageEpoch) {
+    return {
+      tab,
+      executionContextId: cachedWorld.contextId,
+      worldCacheKey,
+      worldFromCache: true,
+    }
+  }
+
   await sendDebuggerCommand(tab.id, 'Page.enable', {})
   const isolatedWorld = await sendDebuggerCommand<{ executionContextId?: number | null }>(
     tab.id,
@@ -342,10 +356,25 @@ async function getFrameExecutionContext(
       worldName: FRAME_WORLD_NAME,
     },
   )
+  const executionContextId = isolatedWorld.executionContextId ?? null
+  if (executionContextId !== null) {
+    frameWorldContextCache.set(worldCacheKey, {
+      epoch: frame.pageEpoch,
+      contextId: executionContextId,
+    })
+  }
   return {
     tab,
-    executionContextId: isolatedWorld.executionContextId ?? null,
+    executionContextId,
+    worldCacheKey,
+    worldFromCache: false,
   }
+}
+
+// 缓存的 world 可能已被页面销毁（如 iframe 重载但 epoch 未变），CDP 此时报 context 不存在
+function isStaleWorldContextError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error)
+  return /cannot find context/i.test(message)
 }
 
 async function evaluateInTabContext<TValue = unknown>(
@@ -359,14 +388,46 @@ async function evaluateInTabContext<TValue = unknown>(
 }> {
   const runtimeConfig = options
   const { frameSelector, ...runtimeOptions } = runtimeConfig
-  const { tab, executionContextId } = await getFrameExecutionContext(tabId, frameSelector)
-  const response = await sendDebuggerCommand<{ result: unknown }>(tab.id, 'Runtime.evaluate', {
-    expression,
-    awaitPromise: true,
-    returnByValue: true,
-    ...(executionContextId ? { contextId: executionContextId } : {}),
-    ...runtimeOptions,
-  })
+  const context = await getFrameExecutionContext(tabId, frameSelector)
+  let { tab, executionContextId } = context
+
+  const evaluate = (contextId: number | null) =>
+    sendDebuggerCommand<{
+      result: unknown
+      exceptionDetails?: {
+        text?: string
+        exception?: { description?: string }
+      }
+    }>(tab.id, 'Runtime.evaluate', {
+      expression,
+      awaitPromise: true,
+      returnByValue: true,
+      ...(contextId ? { contextId } : {}),
+      ...runtimeOptions,
+    })
+
+  let response: Awaited<ReturnType<typeof evaluate>>
+  try {
+    response = await evaluate(executionContextId)
+  } catch (error) {
+    // 只有命中缓存的 world 才可能是缓存失效，清掉重建一次，再失败就原样抛出
+    if (!context.worldFromCache || !context.worldCacheKey || !isStaleWorldContextError(error)) {
+      throw error
+    }
+    frameWorldContextCache.delete(context.worldCacheKey)
+    const retryContext = await getFrameExecutionContext(tabId, frameSelector)
+    tab = retryContext.tab
+    executionContextId = retryContext.executionContextId
+    response = await evaluate(executionContextId)
+  }
+  // 页面内表达式抛异常时 CDP 不返回 value，必须把真实异常原因抛给调用方，
+  // 否则 description 字符串会被当成正常结果继续传递
+  if (response.exceptionDetails) {
+    const details = response.exceptionDetails
+    throw new Error(
+      `page evaluation failed: ${details.exception?.description || details.text || 'unknown error'}`,
+    )
+  }
   return {
     tab,
     response,
@@ -380,12 +441,19 @@ function unwrapEvaluationResult<TValue = unknown>(result: unknown): TValue | nul
   }
 
   const evaluationResult = result as {
+    type?: string
     value?: unknown
     description?: string | null
   }
 
   if (Object.prototype.hasOwnProperty.call(evaluationResult, 'value')) {
     return evaluationResult.value as TValue
+  }
+
+  // 表达式结果为 undefined 时 CDP 只给 { type: 'undefined' }，没有 value；
+  // 不能把 description 里的字符串 'undefined' 当成正常结果
+  if (evaluationResult.type === 'undefined') {
+    return null
   }
 
   return (evaluationResult.description || null) as TValue | null
@@ -396,6 +464,12 @@ function clearTabRuntimeState(tabId: number): void {
   state.targeting.targetTabId = clearRemovedTabId(state.targeting.targetTabId, tabId)
   clearRemovedTabHandle(state, tabId)
   clearRemovedPageEpoch(state, tabId)
+  // tab 关闭后其 isolated world 一并销毁，清掉对应缓存避免泄漏
+  for (const key of frameWorldContextCache.keys()) {
+    if (key.startsWith(`${tabId}:`)) {
+      frameWorldContextCache.delete(key)
+    }
+  }
 }
 
 connection.registerChromeListeners()

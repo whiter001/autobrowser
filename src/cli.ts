@@ -56,6 +56,23 @@ import { type CliDependencies, type CliFlags, type ParsedCli } from './cli/types
 const execFileAsync = promisify(execFile)
 const JSON_INDENT = '  '
 
+const SUPPORTED_GLOBAL_FLAGS = [
+  '--json',
+  '--raw',
+  '--stdin',
+  '--base64',
+  '--tab',
+  '--frame',
+  '--file',
+  '--server',
+  '--relay-port',
+  '--ipc-port',
+  '--extension-id',
+  '--auto-connect',
+  '--browser-command',
+  '--browser-arg',
+]
+
 function readFlagValue(argv: string[], index: number, flag: string): string {
   if (index + 1 >= argv.length) {
     throw new Error(`missing value for ${flag}`)
@@ -183,6 +200,14 @@ function parseCli(argv: string[]): ParsedCli {
       flags.browserArgs.push(readFlagValue(argv, index, value))
       index += 1
       continue
+    }
+
+    // 命令名（首个位置参数）之前的 --flag 只能是全局 flag；
+    // 拼错时直接报错，避免被静默当成命令名/位置参数发给扩展
+    if (args.length === 0 && value.startsWith('--') && value !== '--help') {
+      throw new Error(
+        `unsupported global option: ${value} (supported: ${SUPPORTED_GLOBAL_FLAGS.join(', ')})`,
+      )
     }
 
     args.push(value)
@@ -632,41 +657,54 @@ async function collectHarFromNetwork(
     .filter((request) => !startedAt || String(request.startedAt || '') >= startedAt)
     .sort((left, right) => compareHarRecords(left, right))
 
-  const entries: Record<string, unknown>[] = []
+  // 逐条回拉 harEntry 是 N+1 往返，用有界并发池提速；按原列表下标写入以保持输出顺序
+  const entries: Record<string, unknown>[] = Array.from({ length: filteredSummaries.length })
+  const HAR_DETAIL_CONCURRENCY = 8
+  let nextIndex = 0
 
-  for (const request of filteredSummaries) {
+  const collectOne = (request: NetworkRequestSummary): Promise<Record<string, unknown>> => {
     const requestId = String(request.requestId || request.id || '')
     if (!requestId) {
-      entries.push(buildFallbackHarEntry(request))
-      continue
+      return Promise.resolve(buildFallbackHarEntry(request))
     }
 
-    try {
-      const requestPayload = await requestCommandRaw(
-        baseUrl,
-        'network',
-        {
-          action: 'request',
-          requestId,
-        },
-        { token },
-      )
+    return requestCommandRaw(
+      baseUrl,
+      'network',
+      {
+        action: 'request',
+        requestId,
+      },
+      { token },
+    )
+      .then((requestPayload) => {
+        if (requestPayload?.ok === false) {
+          return buildFallbackHarEntry(request)
+        }
 
-      if (requestPayload?.ok === false) {
-        entries.push(buildFallbackHarEntry(request))
-        continue
-      }
+        const requestResult = isRecord(requestPayload?.result)
+          ? (requestPayload.result as Record<string, unknown>)
+          : null
+        const harEntry = isRecord(requestResult?.harEntry) ? requestResult.harEntry : null
 
-      const requestResult = isRecord(requestPayload?.result)
-        ? (requestPayload.result as Record<string, unknown>)
-        : null
-      const harEntry = isRecord(requestResult?.harEntry) ? requestResult.harEntry : null
+        return harEntry || buildFallbackHarEntry(request)
+      })
+      .catch(() => buildFallbackHarEntry(request))
+  }
 
-      entries.push(harEntry || buildFallbackHarEntry(request))
-    } catch {
-      entries.push(buildFallbackHarEntry(request))
+  const worker = async () => {
+    while (nextIndex < filteredSummaries.length) {
+      const index = nextIndex
+      nextIndex += 1
+      entries[index] = await collectOne(filteredSummaries[index])
     }
   }
+
+  await Promise.all(
+    Array.from({ length: Math.min(HAR_DETAIL_CONCURRENCY, filteredSummaries.length) }, () =>
+      worker(),
+    ),
+  )
 
   return buildHarPayload(entries)
 }

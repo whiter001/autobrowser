@@ -7,6 +7,7 @@ import {
   type DiagnosticsState,
 } from '../shared.js'
 import type { CommandMessage, ErrorWithCode, ExtensionState, TabSummary } from './types.js'
+import { serializeCommandError } from './errors.js'
 import { getPageEpoch } from './targeting.js'
 
 interface NetworkDomain {
@@ -261,9 +262,8 @@ export function createConnectionRuntime({
           args?: unknown[]
         }
 
-        // Skip log spam from requestAnimationFrame / internal noise if it exceeds safe bounds
-        // or just throttle?
-        // Wait, is there a simple fix? Let's just limit the string calculation if it's very large array
+        // 控制台消息可能含巨型数组（如 rAF 每帧打印的动画数据），逐项 stringify 开销过大，
+        // 这里直接限制每个参数的字符串长度
 
         const messageText = Array.isArray(consoleParams.args)
           ? consoleParams.args
@@ -527,19 +527,7 @@ export function createConnectionRuntime({
               type: 'response',
               id: message.id,
               ok: false,
-              error: {
-                message: err.message,
-                code: err.code || 'EXTENSION_COMMAND_ERROR',
-                ...(typeof err.details !== 'undefined' ? { details: err.details } : {}),
-                ...(err.suggestedAction ? { suggestedAction: err.suggestedAction } : {}),
-                ...(err.ref ? { ref: err.ref } : {}),
-                ...(typeof err.expectedPageEpoch === 'number'
-                  ? { expectedPageEpoch: err.expectedPageEpoch }
-                  : {}),
-                ...(typeof err.currentPageEpoch === 'number'
-                  ? { currentPageEpoch: err.currentPageEpoch }
-                  : {}),
-              },
+              error: serializeCommandError(error),
             }),
           )
         }

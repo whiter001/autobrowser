@@ -73,4 +73,38 @@ describe('server command authentication', () => {
     expect(authorizedResponse.status).toBe(200)
     await expect(authorizedResponse.json()).resolves.toMatchObject({ ok: true })
   })
+
+  test('public /status endpoints do not expose the token', async () => {
+    const homeDir = await mkdtemp(path.join(os.tmpdir(), 'autobrowser-status-token-'))
+    tempDirs.push(homeDir)
+    const relayPort = await getFreePort()
+    const ipcPort = await getFreePort()
+    const server = await startServers({
+      homeDir,
+      relayPort,
+      ipcPort,
+      token: 'secret-token',
+    })
+    servers.push(server)
+
+    for (const port of [relayPort, ipcPort]) {
+      const response = await fetch(`http://127.0.0.1:${port}/status`)
+      expect(response.status).toBe(200)
+      const status = (await response.json()) as Record<string, unknown>
+      expect(status.token).toBeUndefined()
+      expect(JSON.stringify(status)).not.toContain('secret-token')
+    }
+
+    // 已鉴权的 /command status 仍然返回完整快照（含 token），供 CLI 使用
+    const authorizedResponse = await fetch(`http://127.0.0.1:${ipcPort}/command`, {
+      method: 'POST',
+      headers: {
+        authorization: 'Bearer secret-token',
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({ command: 'status' }),
+    })
+    const payload = (await authorizedResponse.json()) as { result?: { token?: string } }
+    expect(payload.result?.token).toBe('secret-token')
+  })
 })

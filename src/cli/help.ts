@@ -175,7 +175,7 @@ const HELP_ROOT = helpNode(
       [
         helpNode('get', 'List cookies.', 'autobrowser cookies get'),
         helpNode('set', 'Set a cookie.', 'autobrowser cookies set <name> <value> [domain]'),
-        helpNode('clear', 'Clear cookies.', 'autobrowser cookies clear'),
+        helpNode('clear', 'Clear cookies for the current site.', 'autobrowser cookies clear'),
       ],
     ),
     helpNode(

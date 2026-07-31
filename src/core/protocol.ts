@@ -1,4 +1,4 @@
-import { chmod, mkdir, readFile, writeFile } from 'node:fs/promises'
+import { chmod, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
 import { createConnection } from 'node:net'
 import os from 'node:os'
 import path from 'node:path'
@@ -109,6 +109,11 @@ export async function readJsonFile<T>(
     }
 
     if (error instanceof SyntaxError) {
+      // 状态文件损坏（如进程中途被杀留下截断的 JSON）：回退默认值，但必须留痕
+      console.error(
+        `[autobrowser] failed to parse JSON file ${filePath}, falling back to default value:`,
+        error.message,
+      )
       return fallback
     }
 
@@ -118,20 +123,31 @@ export async function readJsonFile<T>(
 
 /**
  * 将对象转换并写入为缩进后的 JSON 文件，并设置严格的权限 (0o600)。
+ * 先写同目录临时文件再原子 rename，避免进程中途被杀留下截断的状态文件。
  */
 export async function writeJsonFile(filePath: string, value: unknown): Promise<void> {
   await mkdir(path.dirname(filePath), { recursive: true })
-  await writeFile(filePath, `${JSON.stringify(value, null, 2)}\n`, 'utf8')
-  if (process.platform !== 'win32') {
-    // 本地状态文件可能包含连接 token；权限收紧失败时直接报错，避免留下可被其他用户读取的凭据。
-    try {
-      await chmod(filePath, 0o600)
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error)
-      throw new Error(`failed to set private file permissions for ${filePath}: ${message}`, {
-        cause: error,
-      })
+  // 临时文件名带进程号和随机后缀，避免并发写同一路径时互相覆盖
+  const tempPath = `${filePath}.${process.pid}.${crypto.randomUUID()}.tmp`
+  await writeFile(tempPath, `${JSON.stringify(value, null, 2)}\n`, 'utf8')
+  try {
+    if (process.platform !== 'win32') {
+      // 本地状态文件可能包含连接 token；权限收紧失败时直接报错，避免留下可被其他用户读取的凭据。
+      // 必须在 rename 之前收紧临时文件权限，避免目标文件出现权限窗口期。
+      try {
+        await chmod(tempPath, 0o600)
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error)
+        throw new Error(`failed to set private file permissions for ${filePath}: ${message}`, {
+          cause: error,
+        })
+      }
     }
+    await rename(tempPath, filePath)
+  } catch (error) {
+    // rename 失败时清理临时文件，避免在状态目录里堆积 .tmp 垃圾
+    await rm(tempPath, { force: true }).catch(() => {})
+    throw error
   }
 }
 
@@ -147,17 +163,6 @@ export function jsonResponse(value: unknown, init: ResponseInit = {}): Response 
     ...init,
     headers,
   })
-}
-
-/**
- * 从请求主体中解析 JSON 数据，为空时返回空对象。
- */
-export async function parseJsonRequest<T = Record<string, unknown>>(request: Request): Promise<T> {
-  const text = await request.text()
-  if (!text.trim()) {
-    return {} as T
-  }
-  return JSON.parse(text) as T
 }
 
 /**
@@ -180,26 +185,6 @@ export function htmlResponse(value: string, init: ResponseInit = {}): Response {
     headers.set('content-type', 'text/html; charset=utf-8')
   }
   return new Response(value, { ...init, headers })
-}
-
-/**
- * 返回标准化的成功响应格式。
- */
-export function success<T>(
-  result: T,
-  meta: Record<string, unknown> = {},
-): { ok: true; result: T; [key: string]: unknown } {
-  return { ok: true, result, ...meta }
-}
-
-/**
- * 返回标准化的失败响应格式。
- */
-export function failure(
-  message: string,
-  meta: Record<string, unknown> = {},
-): { ok: false; error: { message: string; [key: string]: unknown } } {
-  return { ok: false, error: { message, ...meta } }
 }
 
 /**

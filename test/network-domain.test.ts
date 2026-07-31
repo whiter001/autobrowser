@@ -3,7 +3,7 @@ import { createNetworkDomain } from '../extension/background/network.js'
 import { createExtensionState } from '../extension/background/state.js'
 
 describe('network domain HAR export', () => {
-  test('stopHar returns a complete HAR payload without extra round trips', () => {
+  test('stopHar returns a complete HAR payload without extra round trips', async () => {
     const state = createExtensionState(57978)
     state.network.harRecording = true
     state.network.harStartedAt = '2026-04-20T15:00:00.000Z'
@@ -64,7 +64,7 @@ describe('network domain HAR export', () => {
       sendDebuggerCommand: emptyDebuggerCommand,
     })
 
-    const result = network.stopHar() as {
+    const result = (await network.stopHar()) as {
       recording: boolean
       startedAt: string | null
       stoppedAt: string
@@ -109,6 +109,56 @@ describe('network domain HAR export', () => {
     })
     expect(state.network.harRecording).toBe(false)
     expect(state.network.harStartedAt).toBeNull()
+  })
+
+  test('stopHar waits for in-flight response body fetches before exporting', async () => {
+    const state = createExtensionState(57978)
+    state.network.harRecording = true
+    state.network.harStartedAt = '2026-04-20T15:00:00.000Z'
+
+    let resolveBody: ((value: { body: string; base64Encoded: boolean }) => void) | null = null
+    const network = createNetworkDomain({
+      state,
+      getTargetTab: async () => ({ id: 1 }) as never,
+      // getResponseBody 挂起直到测试手动放行，模拟 stop 时 body 抓取仍在飞行中
+      sendRawDebuggerCommand: async <TResult = unknown>(
+        _tabId: number,
+        method: string,
+      ): Promise<TResult> => {
+        if (method === 'Network.getResponseBody') {
+          return (await new Promise<{ body: string; base64Encoded: boolean }>((resolve) => {
+            resolveBody = resolve
+          })) as TResult
+        }
+        return {} as TResult
+      },
+      sendDebuggerCommand: async <TResult = unknown>(): Promise<TResult> => ({}) as TResult,
+    })
+
+    await network.handleEvent({ tabId: 1 }, 'Network.requestWillBeSent', {
+      requestId: 'req-1',
+      request: { url: 'https://example.com/slow', method: 'GET', headers: {} },
+      type: 'XHR',
+      timestamp: 100,
+      wallTime: 100,
+    })
+    await network.handleEvent({ tabId: 1 }, 'Network.loadingFinished', {
+      requestId: 'req-1',
+      timestamp: 101,
+      encodedDataLength: 10,
+    })
+
+    const stopPromise = network.stopHar() as Promise<{
+      har: { log: { entries: Array<{ response: { content: { text?: string } } }> } }
+    }>
+    // body 未放行前 stopHar 必须保持等待
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(state.network.pendingBodyFetches.size).toBe(1)
+
+    resolveBody!({ body: '{"slow":true}', base64Encoded: false })
+    const result = await stopPromise
+    expect(result.har.log.entries[0]?.response.content.text).toBe('{"slow":true}')
+    expect(state.network.pendingBodyFetches.size).toBe(0)
   })
 
   test('respects unlimited HAR limits during capture', async () => {

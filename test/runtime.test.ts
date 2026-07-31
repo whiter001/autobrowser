@@ -259,4 +259,97 @@ describe('runtime snapshot', () => {
       lastError: null,
     })
   })
+
+  test('closes the previous socket on re-attach and ignores its late close event', async () => {
+    const homeDir = await mkdtemp(path.join(os.tmpdir(), 'autobrowser-runtime-test-'))
+    tempDirs.push(homeDir)
+
+    const runtime = await createRuntime({ homeDir })
+
+    let oldSocketClosed = false
+    const oldSocket = {
+      readyState: WebSocket.OPEN,
+      send: () => 1,
+      close: () => {
+        oldSocketClosed = true
+      },
+    } as unknown as Bun.ServerWebSocket<{ extensionId?: string | null; userAgent?: string | null }>
+
+    const newSocket = {
+      readyState: WebSocket.OPEN,
+      send: () => 1,
+    } as unknown as Bun.ServerWebSocket<{ extensionId?: string | null; userAgent?: string | null }>
+
+    runtime.attachExtension(oldSocket)
+    runtime.attachExtension(newSocket)
+
+    expect(oldSocketClosed).toBe(true)
+
+    // 旧 socket 的 close 事件晚于新连接 attach 到达，不应踢掉新连接
+    runtime.detachExtension(oldSocket)
+    expect(runtime.runtime.extensionSocket).toBe(newSocket)
+    expect(runtime.snapshot().extensionConnected).toBe(true)
+
+    runtime.detachExtension(newSocket)
+    expect(runtime.runtime.extensionSocket).toBeNull()
+    expect(runtime.snapshot().extensionConnected).toBe(false)
+  })
+
+  test('rejects pending connection waiters when the extension detaches', async () => {
+    const homeDir = await mkdtemp(path.join(os.tmpdir(), 'autobrowser-runtime-test-'))
+    tempDirs.push(homeDir)
+
+    const runtime = await createRuntime({ homeDir, requestTimeoutMs: 5_000 })
+
+    const commandPromise = runtime.dispatchCommand('goto', { url: 'https://example.com' })
+
+    runtime.detachExtension()
+
+    // 注意：bun 的 expect(p).rejects 必须在 promise settle 之后调用，
+    // 提前调用会拿到 connection 超时错误而非 detach 错误
+    await expect(commandPromise).rejects.toMatchObject({
+      code: 'EXTENSION_DISCONNECTED',
+      message: 'extension disconnected while waiting for connection',
+    })
+  })
+
+  test('fails fast when the socket is closed between connect check and send', async () => {
+    const homeDir = await mkdtemp(path.join(os.tmpdir(), 'autobrowser-runtime-test-'))
+    tempDirs.push(homeDir)
+
+    const runtime = await createRuntime({ homeDir, requestTimeoutMs: 5_000 })
+
+    // 模拟已半关闭的 socket：readyState 仍为 OPEN，但 send 返回 0（Bun 不抛异常）
+    const socket = {
+      readyState: WebSocket.OPEN,
+      send: () => 0,
+    } as unknown as Bun.ServerWebSocket<{ extensionId?: string | null; userAgent?: string | null }>
+
+    runtime.attachExtension(socket)
+
+    await expect(
+      runtime.dispatchCommand('goto', { url: 'https://example.com' }),
+    ).rejects.toMatchObject({
+      code: 'EXTENSION_DISCONNECTED',
+      message: 'extension disconnected while sending command: goto',
+    })
+  })
+
+  test('reports the timeout budget and troubleshooting hints on command timeout', async () => {
+    const homeDir = await mkdtemp(path.join(os.tmpdir(), 'autobrowser-runtime-test-'))
+    tempDirs.push(homeDir)
+
+    const runtime = await createRuntime({ homeDir, requestTimeoutMs: 150 })
+
+    const socket = {
+      readyState: WebSocket.OPEN,
+      send: () => 1,
+    } as unknown as Bun.ServerWebSocket<{ extensionId?: string | null; userAgent?: string | null }>
+
+    runtime.attachExtension(socket)
+
+    await expect(runtime.dispatchCommand('goto', { url: 'https://example.com' })).rejects.toThrow(
+      /command timed out after 150ms: goto/,
+    )
+  })
 })

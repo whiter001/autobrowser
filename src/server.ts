@@ -18,6 +18,12 @@ interface SnapshotData {
   extensionConnected: boolean
 }
 
+// token 不出现在公开端点，只在已鉴权的 /command status 中返回
+function publicSnapshot(runtime: Runtime) {
+  const { token: _token, ...publicStatus } = runtime.snapshot()
+  return publicStatus
+}
+
 function connectPage(snapshot: SnapshotData, extensionId?: string | null): string {
   const token = escapeHtml(snapshot.token)
   const relayUrl = `ws://127.0.0.1:${snapshot.relayPort}/ws`
@@ -266,7 +272,7 @@ export async function startServers(options: ServerOptions = {}): Promise<StartSe
       }
 
       if (url.pathname === '/status') {
-        return jsonResponse(runtime.snapshot())
+        return jsonResponse(publicSnapshot(runtime))
       }
 
       return textResponse('not found', { status: 404 })
@@ -286,8 +292,8 @@ export async function startServers(options: ServerOptions = {}): Promise<StartSe
       message(socket, message) {
         runtime.handleExtensionMessage(message)
       },
-      close() {
-        runtime.detachExtension()
+      close(socket) {
+        runtime.detachExtension(socket)
       },
     },
   })
@@ -300,9 +306,7 @@ export async function startServers(options: ServerOptions = {}): Promise<StartSe
         const url = new URL(request.url)
 
         if (url.pathname === '/status' && request.method === 'GET') {
-          // token 不出现在公开端点，只在已鉴权的 /command status 中返回
-          const { token: _token, ...publicStatus } = runtime.snapshot()
-          return jsonResponse(publicStatus)
+          return jsonResponse(publicSnapshot(runtime))
         }
 
         if (url.pathname === '/shutdown' && request.method === 'POST') {

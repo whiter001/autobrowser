@@ -193,6 +193,12 @@ export function parseNetworkHarStartArgs(rest: string[]): NetworkHarStartArgs {
       index += 1
       continue
     }
+
+    if (value.startsWith('--')) {
+      throw new Error(`unsupported network option: ${value}`)
+    }
+
+    throw new Error(`unexpected extra network argument: ${value}`)
   }
 
   return result
@@ -226,9 +232,16 @@ export function parseNetworkRouteArgs(rest: string[]): {
       continue
     }
 
-    if (!value.startsWith('--') && !result.url) {
-      result.url = value
+    if (value.startsWith('--')) {
+      throw new Error(`unsupported network option: ${value}`)
     }
+
+    if (!result.url) {
+      result.url = value
+      continue
+    }
+
+    throw new Error(`unexpected extra network argument: ${value}`)
   }
 
   return result
@@ -298,7 +311,12 @@ export function parseWaitArgs(rest: string[]): WaitArgs {
     if (value === '--load') {
       const rawLoadState = rest[index + 1]
       if (rawLoadState && !rawLoadState.startsWith('--')) {
-        waitArgs.type = rawLoadState === 'networkidle' ? 'networkidle' : 'load'
+        if (rawLoadState !== 'load' && rawLoadState !== 'networkidle') {
+          throw new Error(
+            `unsupported --load value: ${rawLoadState} (expected load or networkidle)`,
+          )
+        }
+        waitArgs.type = rawLoadState
         index += 1
       } else {
         waitArgs.type = 'networkidle'
