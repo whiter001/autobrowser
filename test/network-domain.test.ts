@@ -551,3 +551,142 @@ describe('network domain request list pagination', () => {
     })
   })
 })
+
+describe('network domain HAR field completion', () => {
+  function createHarHarness() {
+    const state = createExtensionState(57978)
+    const network = createNetworkDomain({
+      state,
+      getTargetTab: async () => {
+        throw new Error('not used in this test')
+      },
+      sendRawDebuggerCommand: async <TResult = unknown>(): Promise<TResult> => ({}) as TResult,
+      sendDebuggerCommand: async <TResult = unknown>(): Promise<TResult> => ({}) as TResult,
+    })
+    return { state, network }
+  }
+
+  test('buildHarEntry maps queryString, protocol httpVersion, and ResourceTiming phases', async () => {
+    const { network } = createHarHarness()
+
+    await network.handleEvent({ tabId: 1 }, 'Network.requestWillBeSent', {
+      requestId: 'req-q',
+      request: {
+        url: 'https://example.com/search?q=hello&page=2',
+        method: 'GET',
+        headers: {},
+      },
+      type: 'XHR',
+      timestamp: 100,
+      wallTime: 100,
+    })
+    await network.handleEvent({ tabId: 1 }, 'Network.responseReceived', {
+      requestId: 'req-q',
+      response: {
+        status: 200,
+        statusText: 'OK',
+        headers: { 'content-type': 'application/json' },
+        mimeType: 'application/json',
+        protocol: 'h2',
+        // ResourceTiming 各阶段相对 requestTime 的秒数偏移
+        timing: {
+          requestTime: 1.0,
+          dnsStart: 1.001,
+          dnsEnd: 1.01,
+          connectStart: 1.01,
+          connectEnd: 1.05,
+          sslStart: 1.05,
+          sslEnd: 1.08,
+          sendStart: 1.09,
+          sendEnd: 1.1,
+          receiveHeadersEnd: 1.2,
+        },
+      },
+      timestamp: 101,
+    })
+    await network.handleEvent({ tabId: 1 }, 'Network.loadingFinished', {
+      requestId: 'req-q',
+      timestamp: 102,
+      encodedDataLength: 10,
+    })
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    const detail = network.getRequestDetail('1:req-q') as {
+      harEntry: {
+        time: number
+        request: {
+          url: string
+          httpVersion: string
+          queryString: Array<{ name: string; value: string }>
+        }
+        response: { httpVersion: string }
+        timings: Record<string, number>
+      }
+    }
+
+    // queryString 从 URL 的 query 参数解析
+    expect(detail.harEntry.request.queryString).toEqual([
+      { name: 'q', value: 'hello' },
+      { name: 'page', value: '2' },
+    ])
+    // protocol 字段（h2）映射为 HAR 惯例的 HTTP/2
+    expect(detail.harEntry.request.httpVersion).toBe('HTTP/2')
+    expect(detail.harEntry.response.httpVersion).toBe('HTTP/2')
+    // blocked = connectStart - requestTime；wait = receiveHeadersEnd - sendEnd（DevTools 同款近似）
+    expect(detail.harEntry.timings).toEqual({
+      blocked: 10,
+      dns: 9,
+      connect: 40,
+      ssl: 30,
+      send: 10,
+      wait: 100,
+      receive: 1000,
+    })
+    // time = loadingFinished(102) - requestWillBeSent(100) = 2000ms
+    expect(detail.harEntry.time).toBe(2000)
+  })
+
+  test('keeps the legacy timings shape and HTTP/1.1 fallback when timing is missing', async () => {
+    const { network } = createHarHarness()
+
+    await network.handleEvent({ tabId: 1 }, 'Network.requestWillBeSent', {
+      requestId: 'req-plain',
+      request: { url: 'https://example.com/plain', method: 'GET', headers: {} },
+      type: 'XHR',
+      timestamp: 200,
+      wallTime: 200,
+    })
+    await network.handleEvent({ tabId: 1 }, 'Network.responseReceived', {
+      requestId: 'req-plain',
+      response: {
+        status: 200,
+        statusText: 'OK',
+        headers: {},
+        mimeType: 'text/plain',
+      },
+      timestamp: 201,
+    })
+    await network.handleEvent({ tabId: 1 }, 'Network.loadingFinished', {
+      requestId: 'req-plain',
+      timestamp: 202,
+      encodedDataLength: 5,
+    })
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    const detail = network.getRequestDetail('1:req-plain') as {
+      harEntry: {
+        request: { httpVersion: string; queryString: unknown[] }
+        timings: Record<string, number>
+      }
+    }
+
+    // 无 timing 时保持旧形状（send/wait/receive），httpVersion 回退 HTTP/1.1
+    expect(detail.harEntry.request.httpVersion).toBe('HTTP/1.1')
+    expect(detail.harEntry.request.queryString).toEqual([])
+    expect(detail.harEntry.timings).toEqual({
+      send: 0,
+      wait: 1000,
+      receive: 1000,
+    })
+  })
+})

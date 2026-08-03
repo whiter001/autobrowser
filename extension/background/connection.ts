@@ -345,7 +345,11 @@ export function createConnectionRuntime({
           state.session.dialogs.set(tabId, dialogState)
         }
 
-        if (['alert', 'beforeunload'].includes(dialogState.type) && tabId !== null) {
+        if (
+          ['alert', 'beforeunload'].includes(dialogState.type) &&
+          tabId !== null &&
+          state.session.dialogAutoAccept !== false
+        ) {
           void sendDebuggerCommand(tabId, 'Page.handleJavaScriptDialog', {
             accept: true,
           })
@@ -542,6 +546,14 @@ export function createConnectionRuntime({
             state.connection.heartbeatTimeoutTimer = null
           }
 
+          return
+        }
+
+        if (message?.type === 'displaced') {
+          // 被另一个扩展实例顶替：服务端会在关闭前发这条通知，记日志即可，无需其它处理
+          console.warn(
+            `autobrowser: connection displaced by another extension instance${typeof message.reason === 'string' && message.reason ? `: ${message.reason}` : ''}`,
+          )
           return
         }
 

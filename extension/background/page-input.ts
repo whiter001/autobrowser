@@ -482,46 +482,66 @@ export function createPageInputDomain({
     const { tab, resolvedSelector } = await resolveElementSelectorForTab(tabId, selector)
     const beforeEpoch = getPageEpoch(state, tab.id)
     const beforeUrl = tab.url
-    const { value: result } = await evaluateInTabContext<ElementActionResult>(
+
+    // CDP 优先：先 scrollIntoView 并取元素中心坐标，走 trusted 的 Input.dispatchMouseEvent；
+    // 依赖 isTrusted 的页面（表单校验/统计埋点等）必须由真实输入事件触发
+    const { value: boxResult } = await evaluateInTabContext<ElementBox | null>(
       tab.id,
       `(() => {
         const node = deepQuerySelector(document, ${JSON.stringify(resolvedSelector)});
-        if (!node) return { found: false };
+        if (!node) return null;
         node.scrollIntoView({ block: 'center', inline: 'center' });
-        node.click();
-        return { found: true, selector: ${JSON.stringify(selector)} };
+        const rect = node.getBoundingClientRect();
+        if (rect.width === 0 && rect.height === 0) return null;
+        return {
+          x: rect.x + rect.width / 2,
+          y: rect.y + rect.height / 2,
+          width: rect.width,
+          height: rect.height
+        };
       })()`,
       withFrameSelectorOptions(frameSelector),
     )
 
-    if (result?.found) {
-      // 点击可能触发导航（链接/表单提交），检测到变化后等待页面稳定，并回显新 URL
-      const navigated = await detectNavigationAfterClick(tab.id, beforeEpoch, beforeUrl)
-      if (navigated) {
-        const settle = await waitForPageSettled(tab.id, { timeoutMs })
-        let currentUrl: string | null = null
-        try {
-          const currentTab = await getTargetTab(tab.id)
-          currentUrl = currentTab.url || null
-        } catch {
-          // 点击后 tab 被关闭（如 window.open + 原页关闭），保持 null
-        }
-        return {
-          ...result,
-          navigatedToUrl: currentUrl,
-          settled: settle.settled,
-          ...(settle.settled ? {} : { settleReason: settle.settleReason || 'page did not settle' }),
-        }
+    if (boxResult) {
+      await dispatchMouseClick(tab.id, boxResult, 1)
+    } else {
+      // 坐标拿不到（display:none 等不可见元素）时回退到页面内 node.click()
+      const { value: jsResult } = await evaluateInTabContext<ElementActionResult>(
+        tab.id,
+        `(() => {
+          const node = deepQuerySelector(document, ${JSON.stringify(resolvedSelector)});
+          if (!node) return { found: false };
+          node.click();
+          return { found: true, selector: ${JSON.stringify(selector)} };
+        })()`,
+        withFrameSelectorOptions(frameSelector),
+      )
+
+      if (!jsResult?.found) {
+        throw createElementNotFoundError(selector)
       }
-      return result
     }
 
-    const box = await getElementBox(tab.id, selector, frameSelector)
-    if (!box) {
-      throw createElementNotFoundError(selector)
+    // 点击可能触发导航（链接/表单提交），两条路径统一在这里检测并等待页面稳定
+    const navigated = await detectNavigationAfterClick(tab.id, beforeEpoch, beforeUrl)
+    if (navigated) {
+      const settle = await waitForPageSettled(tab.id, { timeoutMs })
+      let currentUrl: string | null = null
+      try {
+        const currentTab = await getTargetTab(tab.id)
+        currentUrl = currentTab.url || null
+      } catch {
+        // 点击后 tab 被关闭（如 window.open + 原页关闭），保持 null
+      }
+      return {
+        found: true,
+        selector,
+        navigatedToUrl: currentUrl,
+        settled: settle.settled,
+        ...(settle.settled ? {} : { settleReason: settle.settleReason || 'page did not settle' }),
+      }
     }
-
-    await dispatchMouseClick(tab.id, box, 1)
     return { found: true, selector }
   }
 

@@ -37,6 +37,10 @@ interface NetworkResponsePayload {
   statusText?: string
   headers?: Record<string, unknown>
   mimeType?: string
+  /** 协议版本（如 h2 / http/1.1），HAR httpVersion 用 */
+  protocol?: string
+  /** ResourceTiming：各阶段相对 requestTime 的秒数偏移，HAR timings 近似映射用 */
+  timing?: Record<string, number>
 }
 
 interface FetchRequestPausedParams {
@@ -338,6 +342,104 @@ function summarizeNetworkRequest(record: NetworkRequestRecord): Record<string, u
   }
 }
 
+/** 从 URL 解析 query 参数数组（HAR queryString 字段），无 query 时返回空数组 */
+function parseQueryString(url: string | undefined): Array<{ name: string; value: string }> {
+  if (!url) {
+    return []
+  }
+
+  try {
+    const parsed = new URL(url, 'http://localhost')
+    const query: Array<{ name: string; value: string }> = []
+    parsed.searchParams.forEach((value, name) => {
+      query.push({ name, value })
+    })
+    return query
+  } catch {
+    // URL 无法解析（如 blob:/data:），没有可拆分的 query
+    return []
+  }
+}
+
+/** CDP 的 protocol 值（h2/http/1.1）转 HAR 惯例的 HTTP 版本号写法，缺失时回退 HTTP/1.1 */
+function normalizeHttpVersion(protocol: string | undefined): string {
+  const normalized = String(protocol || '')
+    .trim()
+    .toLowerCase()
+  if (normalized.startsWith('h2')) {
+    return 'HTTP/2'
+  }
+  if (normalized.startsWith('h3')) {
+    return 'HTTP/3'
+  }
+  if (normalized.startsWith('http/1')) {
+    return 'HTTP/1.1'
+  }
+  return 'HTTP/1.1'
+}
+
+/** ResourceTiming 阶段差（秒 → 毫秒，四舍五入到整数毫秒），任一端点缺失返回 null */
+function timingDelta(
+  timing: Record<string, number>,
+  fromKey: string,
+  toKey: string,
+): number | null {
+  const from = timing[fromKey]
+  const to = timing[toKey]
+  if (typeof from !== 'number' || typeof to !== 'number') {
+    return null
+  }
+  return Math.max(0, Math.round((to - from) * 1000))
+}
+
+/**
+ * HAR timings 映射（DevTools HAR 也是近似值，参考其惯例）：
+ * - blocked = 首个连接阶段 - requestTime；dns/connect/ssl/send/wait 用对应阶段差，
+ *   wait = receiveHeadersEnd - sendEnd；
+ * - receive 沿用事件时间戳（loadingFinished - responseReceived）的 receiveMs 近似；
+ * - 有 timing 时缺失的阶段记 -1（DevTools 惯例），完全没有 timing 时保持旧的
+ *   send/wait/receive 形状，避免破坏老数据。
+ */
+function buildHarTimings(record: NetworkRequestRecord): Record<string, number> {
+  const timing = record.timing
+  if (!timing || typeof timing !== 'object') {
+    return {
+      send: 0,
+      wait: typeof record.waitMs === 'number' ? record.waitMs : 0,
+      receive: typeof record.receiveMs === 'number' ? record.receiveMs : 0,
+    }
+  }
+
+  const requestTime = typeof timing.requestTime === 'number' ? timing.requestTime : null
+  const deltaFromRequest = (key: string): number | null => {
+    if (requestTime === null) {
+      return null
+    }
+    const value = timing[key]
+    return typeof value === 'number' ? Math.max(0, Math.round((value - requestTime) * 1000)) : null
+  }
+
+  const blocked =
+    deltaFromRequest('proxyEnd') ??
+    deltaFromRequest('connectStart') ??
+    deltaFromRequest('requestStart')
+  const dns = timingDelta(timing, 'dnsStart', 'dnsEnd')
+  const connect = timingDelta(timing, 'connectStart', 'connectEnd')
+  const ssl = timingDelta(timing, 'sslStart', 'sslEnd')
+  const send = timingDelta(timing, 'sendStart', 'sendEnd')
+  const wait = timingDelta(timing, 'sendEnd', 'receiveHeadersEnd')
+
+  return {
+    blocked: blocked ?? -1,
+    dns: dns ?? -1,
+    connect: connect ?? -1,
+    ssl: ssl ?? -1,
+    send: send ?? 0,
+    wait: wait ?? (typeof record.waitMs === 'number' ? record.waitMs : 0),
+    receive: typeof record.receiveMs === 'number' ? record.receiveMs : 0,
+  }
+}
+
 function buildHarEntry(record: NetworkRequestRecord): Record<string, unknown> {
   const requestHeaders = normalizeHeaderPairs(normalizeHeaders(record.requestHeaders))
   const responseHeaders = normalizeHeaderPairs(normalizeHeaders(record.responseHeaders))
@@ -373,16 +475,18 @@ function buildHarEntry(record: NetworkRequestRecord): Record<string, unknown> {
     }
   }
 
+  // 请求/响应 cookie 不做解析：从 header 还原 Set-Cookie/Cookie 成本高、收益低，
+  // 需要时可直接看 requestHeaders/responseHeaders
   return {
     startedDateTime: record.startedAt,
     time: typeof record.durationMs === 'number' ? record.durationMs : 0,
     request: {
       method: record.method || 'GET',
       url: record.url || '',
-      httpVersion: 'HTTP/1.1',
+      httpVersion: normalizeHttpVersion(record.protocol),
       cookies: [],
       headers: requestHeaders,
-      queryString: [],
+      queryString: parseQueryString(record.url),
       headersSize: -1,
       bodySize: requestBodyBytes,
       postData:
@@ -401,7 +505,7 @@ function buildHarEntry(record: NetworkRequestRecord): Record<string, unknown> {
     response: {
       status: Number(record.status || 0),
       statusText: String(record.statusText || ''),
-      httpVersion: 'HTTP/1.1',
+      httpVersion: normalizeHttpVersion(record.protocol),
       cookies: [],
       headers: responseHeaders,
       content: responseContent,
@@ -410,11 +514,7 @@ function buildHarEntry(record: NetworkRequestRecord): Record<string, unknown> {
       bodySize: responseBodyBytes,
     },
     cache: {},
-    timings: {
-      send: 0,
-      wait: typeof record.waitMs === 'number' ? record.waitMs : 0,
-      receive: typeof record.receiveMs === 'number' ? record.receiveMs : 0,
-    },
+    timings: buildHarTimings(record),
     pageref:
       record.tabId === null || record.tabId === undefined ? undefined : `tab-${record.tabId}`,
   }
@@ -701,6 +801,11 @@ export function createNetworkDomain({
         statusText: String(payload.response?.statusText || ''),
         responseHeaders: normalizeHeaders(payload.response?.headers),
         responseMimeType: String(payload.response?.mimeType || 'application/octet-stream'),
+        protocol: String(payload.response?.protocol || ''),
+        timing:
+          payload.response?.timing && typeof payload.response.timing === 'object'
+            ? { ...payload.response.timing }
+            : undefined,
         responseReceivedAt: typeof payload.timestamp === 'number' ? payload.timestamp : null,
       })
       return

@@ -311,6 +311,40 @@ describe('runtime snapshot', () => {
     expect(runtime.snapshot().extensionConnected).toBe(false)
   })
 
+  test('notifies the displaced socket before closing it on re-attach', async () => {
+    const homeDir = await mkdtemp(path.join(os.tmpdir(), 'autobrowser-runtime-test-'))
+    tempDirs.push(homeDir)
+
+    const runtime = await createRuntime({ homeDir })
+
+    const sentPayloads: string[] = []
+    const oldSocket = {
+      readyState: WebSocket.OPEN,
+      send: (payload: string) => {
+        sentPayloads.push(payload)
+        return 1
+      },
+      close: () => {},
+    } as unknown as Bun.ServerWebSocket<{ extensionId?: string | null; userAgent?: string | null }>
+
+    const newSocket = {
+      readyState: WebSocket.OPEN,
+      send: () => 1,
+    } as unknown as Bun.ServerWebSocket<{ extensionId?: string | null; userAgent?: string | null }>
+
+    runtime.attachExtension(oldSocket)
+    runtime.attachExtension(newSocket)
+
+    expect(sentPayloads).toHaveLength(1)
+    const displaced = JSON.parse(sentPayloads[0]) as {
+      type?: string
+      reason?: string
+    }
+    expect(displaced.type).toBe('displaced')
+    expect(typeof displaced.reason).toBe('string')
+    expect(displaced.reason?.length).toBeGreaterThan(0)
+  })
+
   test('rejects pending connection waiters when the extension detaches', async () => {
     const homeDir = await mkdtemp(path.join(os.tmpdir(), 'autobrowser-runtime-test-'))
     tempDirs.push(homeDir)

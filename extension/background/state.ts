@@ -35,6 +35,9 @@ export function createExtensionState(defaultRelayPort: number): ExtensionState {
       consoleMessages: [],
       pageErrors: [],
       emulation: new Map<number, EmulationOverrides>(),
+      // 默认自动 accept alert/beforeunload，保持历史行为兼容；仅运行期内存状态
+      dialogAutoAccept: true,
+      downloads: [],
     },
     network: {
       routes: [],

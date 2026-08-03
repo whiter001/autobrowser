@@ -25,7 +25,7 @@ import {
 import type { CommandContext, CommandHandler, CommandRegistry } from './types.js'
 
 const WINDOW_ACTIONS = ['new'] as const
-const DIALOG_ACTIONS = ['accept', 'dismiss', 'status'] as const
+const DIALOG_ACTIONS = ['accept', 'dismiss', 'status', 'auto'] as const
 const FEED_DEDUPE_OPTIONS = ['url', 'text', 'none'] as const
 const SCRIPT_ACTIONS = ['add', 'list', 'remove'] as const
 
@@ -569,6 +569,24 @@ const handleDialog = createActionCommand({
       return 0
     }
 
+    if (action === 'auto') {
+      // 不带开关只查询当前值；--on/--off 设置开关（重启扩展后回到默认 true）
+      const rawValue = rest[0]
+      if (rawValue === '--on' || rawValue === 'on') {
+        await requestAndWrite(context, 'dialog', { action: 'auto', enabled: true })
+        return 0
+      }
+      if (rawValue === '--off' || rawValue === 'off') {
+        await requestAndWrite(context, 'dialog', { action: 'auto', enabled: false })
+        return 0
+      }
+      if (rawValue !== undefined) {
+        return writeCommandError(`unexpected dialog auto argument: ${rawValue}`)
+      }
+      await requestAndWrite(context, 'dialog', { action: 'auto' })
+      return 0
+    }
+
     await requestAndWrite(context, 'dialog', {
       accept: action !== 'dismiss',
       promptText: rest.join(' '),
@@ -576,6 +594,36 @@ const handleDialog = createActionCommand({
     return 0
   },
 })
+
+const handleDownloads: CommandHandler = async (rest, context) => {
+  const subcommand = rest[0]
+  if (helpRequested(subcommand, context, ['downloads'])) {
+    return 0
+  }
+
+  // list 是默认 subaction（不带子命令时直接列出），分页参数复用 console/errors 的解析
+  const action = subcommand === 'clear' ? 'clear' : 'list'
+  const argRest = subcommand === 'clear' || subcommand === 'list' ? rest.slice(1) : rest
+
+  if (action === 'clear') {
+    if (argRest.length > 0) {
+      return writeCommandError(`unexpected downloads clear argument: ${argRest[0]}`)
+    }
+    await requestAndWrite(context, 'downloads', { action: 'clear' })
+    return 0
+  }
+
+  const listArgs = parseOrWriteError(() => parseConsoleArgs(argRest))
+  if (!listArgs) {
+    return 1
+  }
+  await requestAndWrite(context, 'downloads', {
+    action: 'list',
+    ...(listArgs.pageIdx !== undefined ? { pageIdx: listArgs.pageIdx } : {}),
+    ...(listArgs.pageSize !== undefined ? { pageSize: listArgs.pageSize } : {}),
+  })
+  return 0
+}
 
 async function handleWait(rest: string[], context: CommandContext): Promise<number | void> {
   if (helpRequested(rest[0], context, ['wait'])) {
@@ -679,6 +727,7 @@ export const pageCommandRegistry: CommandRegistry = {
   is: handleIs,
   get: handleGet,
   dialog: handleDialog,
+  downloads: handleDownloads,
   wait: handleWait,
   console: handleConsole,
   errors: handleErrors,

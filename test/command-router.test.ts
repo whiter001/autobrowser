@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 import { createCommandRouter } from '../extension/background/command-router.js'
+import { createStaleTabHandleError } from '../extension/background/targeting.js'
 import type { DialogState } from '../extension/background/types.js'
 
 // tab-target 命令的元数据：mock getTargetTab 返回 { id: 1 }，无 url/title
@@ -78,6 +79,7 @@ function createMinimalRouter(overrides?: {
     options: unknown
     frameSelector: unknown
   }> = []
+  const downloadsCalls: Array<{ method: string; args: unknown[] }> = []
 
   const state = {
     targeting: {
@@ -236,6 +238,8 @@ function createMinimalRouter(overrides?: {
     } as never,
     session: {
       getDialogStatus: () => ({}),
+      getDialogAutoAccept: () => true,
+      setDialogAutoAccept: (enabled: boolean) => ({ autoAccept: enabled }),
       handleDialog: async () => undefined,
       cookiesGet: async () => undefined,
       cookiesSet: async () => undefined,
@@ -280,6 +284,20 @@ function createMinimalRouter(overrides?: {
       startHar: async () => undefined,
       stopHar: () => undefined,
     } as never,
+    downloads: {
+      listDownloads: (...args: unknown[]) => {
+        downloadsCalls.push({ method: 'list', args })
+        return {
+          downloads: [],
+          total: 0,
+          pagination: singlePageInfo(0),
+        }
+      },
+      clearDownloads: () => {
+        downloadsCalls.push({ method: 'clear', args: [] })
+        return { cleared: 0 }
+      },
+    } as never,
     initScripts: {
       addScript: async (source: string) => ({
         script: { id: 'script_1', preview: source },
@@ -304,6 +322,7 @@ function createMinimalRouter(overrides?: {
     waitTextCalls,
     typeCalls,
     searchCalls,
+    downloadsCalls,
   }
 }
 
@@ -1784,5 +1803,124 @@ describe('command router meta dialog/emulation/target', () => {
     }
 
     expect(result.meta).toEqual(ambientTabMeta())
+  })
+})
+
+describe('command router window/downloads/dialog-auto routing', () => {
+  function defineGlobalValue(name: string, value: unknown): void {
+    Object.defineProperty(globalThis, name, {
+      configurable: true,
+      enumerable: true,
+      writable: true,
+      value,
+    })
+  }
+
+  test('window new remembers the new tab as the command target', async () => {
+    const originalChrome = globalThis.chrome
+    defineGlobalValue('chrome', {
+      runtime: { lastError: undefined },
+      windows: {
+        // chrome.js 的 runChromeCallback 通过回调收结果，mock 必须显式调用 callback
+        create: (_createData: unknown, callback: (window: unknown) => void) => {
+          callback({ id: 10, tabs: [{ id: 5 }] })
+        },
+      },
+    })
+
+    try {
+      const { router, state } = createMinimalRouter()
+      const result = (await router.handleCommand({
+        command: 'window',
+        args: { action: 'new' },
+      })) as { windowId: number; tabId: number }
+
+      expect(result).toMatchObject({ windowId: 10, tabId: 5 })
+      // 新窗口的第一个 tab 成为后续命令的默认目标
+      expect(state.targeting.targetTabId).toBe(5)
+    } finally {
+      defineGlobalValue('chrome', originalChrome)
+    }
+  })
+
+  test('downloads list defaults to the first page and passes pagination through', async () => {
+    const { router, downloadsCalls } = createMinimalRouter()
+
+    const result = (await router.handleCommand({
+      command: 'downloads',
+      args: { action: 'list', pageIdx: 2, pageSize: 10 },
+    })) as { downloads: unknown[]; total: number }
+
+    expect(result).toMatchObject({ downloads: [], total: 0 })
+    expect(downloadsCalls).toContainEqual({ method: 'list', args: [2, 10] })
+  })
+
+  test('downloads without an action falls back to list', async () => {
+    const { router, downloadsCalls } = createMinimalRouter()
+
+    await router.handleCommand({ command: 'downloads', args: {} })
+
+    expect(downloadsCalls.some((call) => call.method === 'list')).toBe(true)
+  })
+
+  test('downloads clear empties the buffer through the domain', async () => {
+    const { router, downloadsCalls } = createMinimalRouter()
+
+    const result = (await router.handleCommand({
+      command: 'downloads',
+      args: { action: 'clear' },
+    })) as { cleared: number }
+
+    expect(result).toMatchObject({ cleared: 0 })
+    expect(downloadsCalls).toContainEqual({ method: 'clear', args: [] })
+  })
+
+  test('dialog auto without enabled queries the current flag', async () => {
+    const { router } = createMinimalRouter()
+
+    const result = (await router.handleCommand({
+      command: 'dialog',
+      args: { action: 'auto' },
+    })) as { autoAccept: boolean }
+
+    expect(result).toMatchObject({ autoAccept: true })
+  })
+
+  test('dialog auto with enabled updates the runtime flag', async () => {
+    const { router } = createMinimalRouter()
+
+    const result = (await router.handleCommand({
+      command: 'dialog',
+      args: { action: 'auto', enabled: false },
+    })) as { autoAccept: boolean }
+
+    expect(result).toMatchObject({ autoAccept: false })
+  })
+})
+
+describe('stale tab handle errors', () => {
+  test('createStaleTabHandleError carries a machine-readable code and guidance', () => {
+    const error = createStaleTabHandleError('t99')
+
+    expect(error).toMatchObject({
+      message: 'tab not found: t99',
+      code: 'STALE_TAB_HANDLE',
+      suggestedAction: 'Run tab list to see open tabs and refresh handles.',
+    })
+  })
+
+  test('stale tab handle errors propagate through the command path unchanged', async () => {
+    const { router } = createMinimalRouter({
+      getTargetTab: async () => {
+        throw createStaleTabHandleError('t99')
+      },
+    })
+
+    await expect(
+      router.handleCommand({ command: 'tab.select', args: { handle: 't99' } }),
+    ).rejects.toMatchObject({
+      code: 'STALE_TAB_HANDLE',
+      suggestedAction: 'Run tab list to see open tabs and refresh handles.',
+    })
   })
 })

@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 import { createPageInputDomain } from '../extension/background/page-input.js'
+import { createExtensionState } from '../extension/background/state.js'
 
 function createPageInput(evaluateValue: unknown) {
   return createPageInputDomain({
@@ -469,5 +470,161 @@ describe('page input fillFields batch', () => {
       succeeded: 2,
       failed: 0,
     })
+  })
+})
+
+describe('page input click CDP-first priority', () => {
+  interface ClickHarnessOptions {
+    evaluateValues: unknown[]
+    /** 点击是否触发导航：CDP 路径在 Input.dispatchMouseEvent 时、JS 路径在 node.click() 时递增 pageEpoch */
+    navigates?: boolean
+    /** getTargetTab 返回的当前 URL（导航后回显用），缺省与 tab 初始 URL 相同 */
+    currentTabUrl?: string
+  }
+
+  function createClickHarness(options: ClickHarnessOptions) {
+    const state = createExtensionState(9222)
+    const debuggerCalls: Array<{ method: string; params?: Record<string, unknown> }> = []
+    const evaluateCalls: string[] = []
+    const initialUrl = 'https://example.com'
+    const currentUrl = options.currentTabUrl ?? initialUrl
+    const remainingValues = [...options.evaluateValues]
+
+    const pageInput = createPageInputDomain({
+      state,
+      getTargetTab: async () => ({ id: 1, url: currentUrl }) as never,
+      resolveElementSelectorForTab: async () =>
+        ({ tab: { id: 1, url: initialUrl }, resolvedSelector: '#btn' }) as never,
+      resolveFrameTarget: async () => {
+        throw new Error('unused in click tests')
+      },
+      getFrameExecutionContext: async () => {
+        throw new Error('unused in click tests')
+      },
+      evaluateInTabContext: async (_tabId: unknown, expression: string) => {
+        evaluateCalls.push(expression)
+        // 模拟页面内 node.click() 触发的导航 commit（connection.ts 的 frameNavigated 递增 epoch）
+        if (options.navigates && expression.includes('node.click()')) {
+          state.targeting.pageEpochs.set(1, (state.targeting.pageEpochs.get(1) || 0) + 1)
+        }
+        const value = remainingValues.shift()
+        return { tab: { id: 1 } as never, response: { result: undefined }, value } as never
+      },
+      sendDebuggerCommand: async (
+        _tabId: number,
+        method: string,
+        params?: Record<string, unknown>,
+      ) => {
+        debuggerCalls.push({ method, params })
+        // CDP 坐标点击后触发导航时同样递增 epoch，验证 CDP 路径的导航等待不缺失
+        if (options.navigates && method === 'Input.dispatchMouseEvent') {
+          state.targeting.pageEpochs.set(1, (state.targeting.pageEpochs.get(1) || 0) + 1)
+        }
+        return undefined as never
+      },
+    })
+
+    return { pageInput, state, debuggerCalls, evaluateCalls }
+  }
+
+  test('prefers a trusted CDP mouse click when the element box is available', async () => {
+    const { pageInput, debuggerCalls, evaluateCalls } = createClickHarness({
+      evaluateValues: [{ x: 10, y: 20, width: 100, height: 50 }],
+    })
+
+    const result = await pageInput.clickSelector(1, '#btn', null, 1000)
+
+    expect(result).toEqual({ found: true, selector: '#btn' })
+    // 只做了一次坐标查询，没有走到 node.click() 回退
+    expect(evaluateCalls).toHaveLength(1)
+    expect(evaluateCalls[0]).not.toContain('node.click()')
+    const mouseEvents = debuggerCalls.filter((call) => call.method === 'Input.dispatchMouseEvent')
+    // evaluate 返回的 box 已含中心点坐标，CDP 直接在中心按下/释放
+    expect(mouseEvents).toEqual([
+      {
+        method: 'Input.dispatchMouseEvent',
+        params: { type: 'mousePressed', x: 10, y: 20, button: 'left', clickCount: 1 },
+      },
+      {
+        method: 'Input.dispatchMouseEvent',
+        params: { type: 'mouseReleased', x: 10, y: 20, button: 'left', clickCount: 1 },
+      },
+    ])
+  })
+
+  test('falls back to node.click() when the box cannot be measured', async () => {
+    const { pageInput, debuggerCalls, evaluateCalls } = createClickHarness({
+      // 第一次坐标查询返回 null（display:none 等不可见元素），第二次 JS click 成功
+      evaluateValues: [null, { found: true, selector: '#btn' }],
+    })
+
+    const result = await pageInput.clickSelector(1, '#btn', null, 1000)
+
+    expect(result).toEqual({ found: true, selector: '#btn' })
+    expect(evaluateCalls).toHaveLength(2)
+    expect(evaluateCalls[1]).toContain('node.click()')
+    expect(debuggerCalls.some((call) => call.method === 'Input.dispatchMouseEvent')).toBe(false)
+  })
+
+  test('throws STALE_REFERENCE when both the box and the JS click fail', async () => {
+    const { pageInput } = createClickHarness({
+      evaluateValues: [null, { found: false }],
+    })
+
+    await expect(pageInput.clickSelector(1, '#missing', null, 1000)).rejects.toMatchObject({
+      message: 'element not found: #missing',
+      code: 'STALE_REFERENCE',
+      suggestedAction: expect.stringContaining('snapshot'),
+    })
+  })
+
+  test('runs the navigation wait after a CDP mouse click', async () => {
+    const { pageInput, evaluateCalls } = createClickHarness({
+      evaluateValues: [{ x: 10, y: 20, width: 100, height: 50 }, 'complete', { settled: true }],
+      navigates: true,
+      currentTabUrl: 'https://new.example.com',
+    })
+
+    const result = (await pageInput.clickSelector(1, '#btn', null, 1000)) as Record<string, unknown>
+
+    expect(result).toMatchObject({
+      found: true,
+      selector: '#btn',
+      navigatedToUrl: 'https://new.example.com',
+      settled: true,
+    })
+    // 坐标查询 + waitForPageSettled 的 readyState/mutation 判定，证明 CDP 路径也做了导航等待
+    expect(evaluateCalls.length).toBeGreaterThan(1)
+  })
+
+  test('runs the navigation wait after the node.click() fallback', async () => {
+    const { pageInput, evaluateCalls } = createClickHarness({
+      evaluateValues: [null, { found: true, selector: '#btn' }, 'complete', { settled: true }],
+      navigates: true,
+      currentTabUrl: 'https://new.example.com',
+    })
+
+    const result = (await pageInput.clickSelector(1, '#btn', null, 1000)) as Record<string, unknown>
+
+    expect(result).toMatchObject({
+      found: true,
+      selector: '#btn',
+      navigatedToUrl: 'https://new.example.com',
+      settled: true,
+    })
+    expect(evaluateCalls.length).toBeGreaterThan(2)
+  })
+
+  test('does not settle-wait when no navigation happens', async () => {
+    const { pageInput, evaluateCalls } = createClickHarness({
+      evaluateValues: [{ x: 10, y: 20, width: 100, height: 50 }],
+      currentTabUrl: 'https://example.com',
+    })
+
+    const result = await pageInput.clickSelector(1, '#btn', null, 1000)
+
+    expect(result).toEqual({ found: true, selector: '#btn' })
+    // 无导航时不进 waitForPageSettled，没有多余的页面判定
+    expect(evaluateCalls).toHaveLength(1)
   })
 })

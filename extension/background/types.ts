@@ -82,6 +82,10 @@ export interface NetworkRequestRecord {
   responseBodyTruncated?: boolean
   responseBodyBytes?: number
   responseMimeType?: string
+  /** Network.responseReceived 的 protocol 字段（如 h2 / http/1.1），HAR httpVersion 用 */
+  protocol?: string
+  /** Network.responseReceived 的 response.timing（ResourceTiming），HAR timings 映射用 */
+  timing?: Record<string, number>
   postData?: string | null
   postDataTruncated?: boolean
   postDataBytes?: number
@@ -173,6 +177,22 @@ export interface EmulationOverrides {
   headers?: string[]
 }
 
+/** chrome.downloads 跟踪记录，字段对齐 DownloadItem，仅保留 agent 排障需要的子集 */
+export interface DownloadRecord {
+  id: number
+  url: string
+  filename: string
+  /** in_progress / complete / interrupted，与 DownloadItem.state 一致 */
+  state: string
+  bytesReceived: number
+  totalBytes: number
+  danger: string
+  startTime: string
+  endTime?: string | null
+  /** interrupted 时的失败原因（DownloadItem.error），正常为 null */
+  error?: string | null
+}
+
 /** 页面会话级别的可观测状态 */
 export interface SessionState {
   /** 当前打开的 JS 对话框，按 tab 记录 */
@@ -183,6 +203,11 @@ export interface SessionState {
   pageErrors: PageErrorRecord[]
   /** 各 tab 生效中的仿真覆盖记录，meta 回显用；reset 命令会把对应键删除 */
   emulation: Map<number, EmulationOverrides>
+  /** 是否自动 accept alert/beforeunload（confirm/prompt 始终走 MODAL_OPEN 阻塞）；
+   *  仅运行期内存状态，扩展重启后回到默认 true */
+  dialogAutoAccept: boolean
+  /** 有界 downloads 缓冲（200 条 FIFO），onCreated/onChanged 合并写入 */
+  downloads: DownloadRecord[]
 }
 
 export interface ExtensionState {

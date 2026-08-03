@@ -10,6 +10,7 @@ import {
 } from './background/chrome.js'
 import { createCommandRouter } from './background/command-router.js'
 import { createConnectionRuntime } from './background/connection.js'
+import { createDownloadsDomain } from './background/downloads.js'
 import { createNetworkDomain } from './background/network.js'
 import { createInitScriptDomain } from './background/init-scripts.js'
 import { createPageInputDomain } from './background/page-input.js'
@@ -22,6 +23,7 @@ import {
   clearRemovedPageEpoch,
   clearRemovedTabHandle,
   clearSelectedFrame,
+  createStaleTabHandleError,
   getPageEpoch,
   rememberTargetTab,
   resolveTabInput,
@@ -67,6 +69,8 @@ interface FrameTargetEvaluation {
 }
 
 const state = createExtensionState(DEFAULT_SERVER_PORT)
+
+const downloads = createDownloadsDomain(state)
 
 const network = createNetworkDomain({
   state,
@@ -114,6 +118,7 @@ const commandRouter = createCommandRouter({
   pageObserve,
   session,
   network,
+  downloads,
   initScripts,
   listTabs,
   getTargetTab,
@@ -136,11 +141,17 @@ async function loadTargetTab(tabId: TabInput): Promise<TabWithId | null> {
   const resolvedTabId = resolveTabInput(state, tabId)
 
   if (typeof resolvedTabId === 'number') {
-    return await tabsGet(resolvedTabId)
+    try {
+      return await tabsGet(resolvedTabId)
+    } catch {
+      // 数字 tabId / 已失效 handle 指向的 tab 已关闭：统一抛机器可读的错误码，
+      // 让 agent 能区分「句柄过期」与其它失败，并按 suggestedAction 重新拉取 tab 列表
+      throw createStaleTabHandleError(tabId)
+    }
   }
 
   if (tabId !== undefined && tabId !== null && String(tabId).trim()) {
-    throw new Error(`tab not found: ${tabId}`)
+    throw createStaleTabHandleError(tabId)
   }
 
   if (typeof state.targeting.targetTabId === 'number') {
@@ -511,4 +522,5 @@ function clearTabRuntimeState(tabId: number): void {
 }
 
 connection.registerChromeListeners()
+downloads.registerChromeListeners()
 connection.initialize()

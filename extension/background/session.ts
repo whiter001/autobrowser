@@ -613,6 +613,19 @@ export function createSessionDomain({
     }
   }
 
+  function getDialogAutoAccept(): boolean {
+    return state.session.dialogAutoAccept !== false
+  }
+
+  function setDialogAutoAccept(enabled: boolean): { autoAccept: boolean; note: string } {
+    // 不持久化：扩展重启后回到默认 true，命令返回里说明即可
+    state.session.dialogAutoAccept = enabled
+    return {
+      autoAccept: enabled,
+      note: 'dialogAutoAccept is a runtime-only setting; it resets to true when the extension restarts',
+    }
+  }
+
   return {
     clipboardRead,
     clipboardWrite,
@@ -621,11 +634,13 @@ export function createSessionDomain({
     cookiesGet,
     cookiesSet,
     generatePdf,
+    getDialogAutoAccept,
     getDialogStatus,
     handleDialog,
     loadState,
     loadStateByName,
     saveState,
+    setDialogAutoAccept,
     setGeo,
     setHeaders,
     setLocale,

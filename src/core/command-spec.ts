@@ -774,7 +774,7 @@ export function validateCommandArgs(command: string, args: unknown): void {
     case 'dialog':
       {
         const action = readStringField(normalizedArgs, 'action', command, { required: false })
-        if (action && action !== 'status') {
+        if (action && !['status', 'auto'].includes(action)) {
           throw createCommandArgsValidationError(command, 'unsupported action', {
             field: 'action',
             value: action,
@@ -782,7 +782,13 @@ export function validateCommandArgs(command: string, args: unknown): void {
         }
       }
       readBooleanField(normalizedArgs, 'accept', command)
+      readBooleanField(normalizedArgs, 'enabled', command)
       readStringField(normalizedArgs, 'promptText', command, { required: false, allowEmpty: true })
+      return
+    case 'downloads':
+      readStringField(normalizedArgs, 'action', command, { required: false })
+      readOptionalNonNegativeIntegerField(normalizedArgs, 'pageIdx', command)
+      readOptionalNonNegativeIntegerField(normalizedArgs, 'pageSize', command)
       return
     case 'cookies':
       readStringField(normalizedArgs, 'action', command)

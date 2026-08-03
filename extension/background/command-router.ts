@@ -247,6 +247,8 @@ interface PageObserveDomain {
 interface SessionDomain {
   getDialogStatus: (tabId?: TabInput) => Record<string, unknown>
   handleDialog: (tabId: TabInput, accept: boolean, promptText?: string) => Promise<unknown>
+  getDialogAutoAccept: () => boolean
+  setDialogAutoAccept: (enabled: boolean) => { autoAccept: boolean }
   cookiesGet: (tabId: TabInput, filters?: { domain?: string; path?: string }) => Promise<unknown>
   cookiesSet: (tabId: TabInput, name: string, value: string, domain?: string) => Promise<unknown>
   cookiesClear: (tabId: TabInput) => Promise<unknown>
@@ -339,12 +341,18 @@ interface InitScriptDomain {
   removeAllScripts: () => Promise<unknown>
 }
 
+interface DownloadsDomain {
+  listDownloads: (pageIdx?: number, pageSize?: number) => unknown
+  clearDownloads: () => unknown
+}
+
 interface CommandRouterDependencies {
   state: ExtensionState
   pageInput: PageInputDomain
   pageObserve: PageObserveDomain
   session: SessionDomain
   network: NetworkDomain
+  downloads: DownloadsDomain
   initScripts: InitScriptDomain
   listTabs: () => Promise<TabSummary[]>
   getTargetTab: (tabId: TabInput) => Promise<TabWithId>
@@ -356,6 +364,7 @@ export function createCommandRouter({
   pageObserve,
   session,
   network,
+  downloads,
   initScripts,
   listTabs,
   getTargetTab,
@@ -531,7 +540,12 @@ export function createCommandRouter({
       url: 'about:blank',
       focused: true,
     })
-    return { windowId: window?.id ?? null, tabId: window?.tabs?.[0]?.id ?? null }
+    const tabId = window?.tabs?.[0]?.id
+    if (typeof tabId === 'number') {
+      // 新窗口的第一个 tab 成为新的命令目标，否则后续命令的目标会漂移到旧 tab
+      rememberTargetTab(state, tabId)
+    }
+    return { windowId: window?.id ?? null, tabId: tabId ?? null }
   }
 
   const VALID_FIND_ACTIONS = [
@@ -1589,7 +1603,23 @@ export function createCommandRouter({
           if (action === 'status') {
             return session.getDialogStatus(tabId)
           }
+          if (action === 'auto') {
+            // 不带 enabled 时只查询当前值；默认值 true 与扩展重启后的初始状态一致
+            if (args.enabled === undefined) {
+              return {
+                autoAccept: session.getDialogAutoAccept(),
+                note: 'dialogAutoAccept is a runtime-only setting; it resets to true when the extension restarts',
+              }
+            }
+            return session.setDialogAutoAccept(readBooleanArg(args, 'enabled', true))
+          }
           return await session.handleDialog(tabId, accept, promptText)
+        case 'downloads':
+          if (action === 'clear') {
+            return downloads.clearDownloads()
+          }
+          // list 是默认 subaction，复用 console/errors 的分页参数
+          return downloads.listDownloads(pageIdx, pageSize)
         case 'wait':
           return await handleWait(tabId, args, frameSelector)
         case 'cookies':

@@ -193,11 +193,41 @@ const HELP_ROOT = helpNode(
       'text, html, value, count, box, and styles read from the selector',
       'other attribute names are passed through to the page element',
     ]),
-    helpNode('dialog', 'Handle dialogs.', 'autobrowser dialog <accept|dismiss|status>', undefined, [
-      helpNode('accept', 'Accept the active dialog.', 'autobrowser dialog accept [promptText]'),
-      helpNode('dismiss', 'Dismiss the active dialog.', 'autobrowser dialog dismiss [promptText]'),
-      helpNode('status', 'Show dialog status.', 'autobrowser dialog status'),
-    ]),
+    helpNode(
+      'dialog',
+      'Handle dialogs.',
+      'autobrowser dialog <accept|dismiss|status|auto>',
+      undefined,
+      [
+        helpNode('accept', 'Accept the active dialog.', 'autobrowser dialog accept [promptText]'),
+        helpNode(
+          'dismiss',
+          'Dismiss the active dialog.',
+          'autobrowser dialog dismiss [promptText]',
+        ),
+        helpNode('status', 'Show dialog status.', 'autobrowser dialog status'),
+        helpNode(
+          'auto',
+          'Query or toggle auto-accept of alert/beforeunload dialogs (runtime-only, defaults to on).',
+          'autobrowser dialog auto [--on|--off]',
+        ),
+      ],
+    ),
+    helpNode(
+      'downloads',
+      'List tracked downloads or clear the download buffer.',
+      'autobrowser downloads <list|clear>',
+      ['--page-idx <n>', '--page-size <n>'],
+      [
+        helpNode(
+          'list',
+          'List tracked downloads with pagination (default subaction).',
+          'autobrowser downloads list [--page-idx <n>] [--page-size <n>]',
+          ['--page-idx <n>', '--page-size <n>'],
+        ),
+        helpNode('clear', 'Clear the tracked downloads buffer.', 'autobrowser downloads clear'),
+      ],
+    ),
     helpNode(
       'wait',
       'Wait for a selector state, text, URL, load state, function, or a fixed duration in milliseconds.',

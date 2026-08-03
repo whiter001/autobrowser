@@ -93,6 +93,7 @@ function createSessionHarness(options: SessionHarnessOptions = {}) {
       lastDialog: null as Record<string, unknown> | null,
       consoleMessages: [] as unknown[],
       pageErrors: [] as unknown[],
+      dialogAutoAccept: true,
     },
   }
   if (options.dialog) {
@@ -124,6 +125,18 @@ function createSessionHarness(options: SessionHarnessOptions = {}) {
 }
 
 describe('session handleDialog', () => {
+  test('dialog auto-accept flag queries and toggles the runtime-only setting', () => {
+    const { session, state } = createSessionHarness()
+
+    expect(session.getDialogAutoAccept()).toBe(true)
+    // 设置后立即反映到状态；不持久化（重启回默认 true）
+    expect(session.setDialogAutoAccept(false)).toMatchObject({ autoAccept: false })
+    expect(state.session.dialogAutoAccept).toBe(false)
+    expect(session.getDialogAutoAccept()).toBe(false)
+    expect(session.setDialogAutoAccept(true)).toMatchObject({ autoAccept: true })
+    expect(session.getDialogAutoAccept()).toBe(true)
+  })
+
   test('accepts an open prompt and records a dialog-command entry', async () => {
     const { session, state, debuggerCalls } = createSessionHarness({
       dialog: sampleDialog({ type: 'prompt', message: 'Enter name', defaultPrompt: 'Alice' }),
@@ -415,6 +428,56 @@ describe('connection dialog event tracking', () => {
         handledBy: 'auto-accept',
         accepted: true,
       })
+    } finally {
+      harness.restore()
+    }
+  })
+
+  test('keeps alert dialogs open with MODAL_OPEN semantics when auto-accept is disabled', async () => {
+    const harness = createConnectionHarness()
+    try {
+      harness.state.session.dialogAutoAccept = false
+      harness.initialize()
+      await flushMicrotasks()
+
+      harness.listenerRegistry.debuggerEvent[0]({ tabId: 11 }, 'Page.javascriptDialogOpening', {
+        type: 'alert',
+        message: 'Hello',
+        defaultPrompt: '',
+        url: null,
+      })
+      await flushMicrotasks()
+
+      // 关闭自动 accept 后 alert 留在 dialog map 里，交互命令会走 MODAL_OPEN 阻塞语义
+      expect(harness.state.session.dialogs.size).toBe(1)
+      expect(harness.state.session.dialogs.get(11)).toMatchObject({
+        open: true,
+        type: 'alert',
+        message: 'Hello',
+      })
+      expect(harness.state.session.lastDialog).toBeNull()
+    } finally {
+      harness.restore()
+    }
+  })
+
+  test('beforeunload also blocks when auto-accept is disabled', async () => {
+    const harness = createConnectionHarness()
+    try {
+      harness.state.session.dialogAutoAccept = false
+      harness.initialize()
+      await flushMicrotasks()
+
+      harness.listenerRegistry.debuggerEvent[0]({ tabId: 11 }, 'Page.javascriptDialogOpening', {
+        type: 'beforeunload',
+        message: '',
+        defaultPrompt: '',
+        url: null,
+      })
+      await flushMicrotasks()
+
+      expect(harness.state.session.dialogs.get(11)?.type).toBe('beforeunload')
+      expect(harness.state.session.lastDialog).toBeNull()
     } finally {
       harness.restore()
     }

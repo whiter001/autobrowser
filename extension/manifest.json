@@ -3,7 +3,7 @@
   "name": "autobrowser bridge",
   "version": "0.1.0",
   "description": "Bridge Chrome DevTools Protocol traffic to the local autobrowser daemon.",
-  "permissions": ["tabs", "debugger", "storage", "clipboardWrite"],
+  "permissions": ["tabs", "debugger", "storage", "clipboardWrite", "downloads"],
   "host_permissions": [
     "http://127.0.0.1:*/*",
     "http://localhost:*/*",

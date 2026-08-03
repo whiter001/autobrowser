@@ -441,8 +441,19 @@ export async function createRuntime(options: RuntimeOptions = {}): Promise<Runti
   ): void {
     const previousSocket = runtime.extensionSocket
     if (previousSocket && previousSocket !== socket) {
-      // 扩展重连时旧 socket 还挂在运行时上：主动关闭它，使其 close 事件尽快到达；
-      // detachExtension 会做身份校验，不会误伤新连接
+      // 扩展重连时旧 socket 还挂在运行时上：先通知旧连接被新实例顶替，再主动关闭，
+      // 否则旧侧会把断开误判成网络故障；detachExtension 会做身份校验，不会误伤新连接
+      try {
+        const displacedPayload = JSON.stringify({
+          type: 'displaced',
+          reason: 'A new extension instance connected and took over this connection.',
+        })
+        if (typeof previousSocket.send === 'function') {
+          previousSocket.send(displacedPayload)
+        }
+      } catch {
+        // 旧连接可能已断开，忽略发送失败
+      }
       try {
         previousSocket.close()
       } catch {

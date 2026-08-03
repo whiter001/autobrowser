@@ -17,6 +17,7 @@ const NON_AMBIENT_ROUTER_COMMANDS = new Set([
   'tab.list',
   'tab.new',
   'tab.select',
+  'downloads',
 ])
 
 function uniqueSorted(values: Iterable<string>): string[] {
@@ -266,6 +267,19 @@ describe('command specs', () => {
     )
     expect(() => validateCommandArgs('window', { action: 'close' })).toThrow(
       'invalid command arguments for window: unsupported action',
+    )
+    expect(() => validateCommandArgs('dialog', { action: 'auto' })).not.toThrow()
+    expect(() => validateCommandArgs('dialog', { action: 'auto', enabled: false })).not.toThrow()
+    expect(() => validateCommandArgs('downloads', { action: 'list' })).not.toThrow()
+    expect(() => validateCommandArgs('downloads', { action: 'clear' })).not.toThrow()
+    expect(() =>
+      validateCommandArgs('downloads', { action: 'list', pageIdx: 1, pageSize: 50 }),
+    ).not.toThrow()
+    expect(() => validateCommandArgs('downloads', { action: 'list', pageIdx: -1 })).toThrow(
+      'invalid command arguments for downloads: pageIdx must be a non-negative integer',
+    )
+    expect(() => validateCommandArgs('downloads', { action: 'list', pageSize: -1 })).toThrow(
+      'invalid command arguments for downloads: pageSize must be a non-negative integer',
     )
     expect(() =>
       validateCommandArgs('find', {
