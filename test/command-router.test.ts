@@ -129,6 +129,14 @@ function createMinimalRouter(overrides?: {
       },
       doubleClickSelector: async () => undefined,
       fillSelector: async () => undefined,
+      fillFields: async (_tabId: unknown, fields: unknown) => ({
+        results: (fields as Array<{ selector: string }>).map((field) => ({
+          selector: field.selector,
+          ok: true,
+        })),
+        succeeded: Array.isArray(fields) ? fields.length : 0,
+        failed: 0,
+      }),
       typeIntoSelector: async (
         _tabId: unknown,
         selector: unknown,
@@ -1230,6 +1238,47 @@ describe('command router playwright parity commands', () => {
 
     expect(typeCalls).toEqual([{ selector: '#q', value: 'hello', submit: true }])
     expect(result).toMatchObject({ typed: true, submitted: true })
+  })
+
+  test('routes fillform fields to the page input batch fill with statistics', async () => {
+    const { router } = createMinimalRouter()
+
+    const result = await router.handleCommand({
+      command: 'fillform',
+      args: {
+        fields: [
+          { selector: '#name', value: 'Ada' },
+          { selector: '#age', value: '36' },
+        ],
+      },
+    })
+
+    expect(result).toEqual({
+      results: [
+        { selector: '#name', ok: true },
+        { selector: '#age', ok: true },
+      ],
+      succeeded: 2,
+      failed: 0,
+      meta: fallbackTabMeta(),
+    })
+  })
+
+  test('rejects fillform with invalid fields', async () => {
+    const { router } = createMinimalRouter()
+
+    await expect(
+      router.handleCommand({ command: 'fillform', args: { fields: [] } }),
+    ).rejects.toMatchObject({ code: 'INVALID_COMMAND_ARGS' })
+    await expect(
+      router.handleCommand({ command: 'fillform', args: { fields: [{ selector: '#a' }] } }),
+    ).rejects.toMatchObject({ code: 'INVALID_COMMAND_ARGS' })
+    await expect(
+      router.handleCommand({
+        command: 'fillform',
+        args: { fields: [{ selector: ' ', value: 'x' }] },
+      }),
+    ).rejects.toMatchObject({ code: 'INVALID_COMMAND_ARGS' })
   })
 })
 

@@ -205,6 +205,49 @@ describe('command specs', () => {
     )
   })
 
+  test('validates fillform fields', () => {
+    expect(() =>
+      validateCommandArgs('fillform', {
+        fields: [
+          { selector: '#a', value: '1' },
+          { selector: '#b', value: '2' },
+        ],
+      }),
+    ).not.toThrow()
+    expect(() =>
+      validateCommandArgs('fillform', { fields: [{ selector: '#a', value: '' }] }),
+    ).not.toThrow()
+
+    expect(() => validateCommandArgs('fillform', {})).toThrow(
+      'invalid command arguments for fillform: fields must be an array',
+    )
+    expect(() => validateCommandArgs('fillform', { fields: 'x' })).toThrow(
+      'invalid command arguments for fillform: fields must be an array',
+    )
+    expect(() => validateCommandArgs('fillform', { fields: [] })).toThrow(
+      'invalid command arguments for fillform: fields must contain 1 to 50 items',
+    )
+    expect(() =>
+      validateCommandArgs('fillform', {
+        fields: Array.from({ length: 51 }, () => ({ selector: '#a', value: 'x' })),
+      }),
+    ).toThrow('invalid command arguments for fillform: fields must contain 1 to 50 items')
+    expect(() => validateCommandArgs('fillform', { fields: ['#a'] })).toThrow(
+      'invalid command arguments for fillform: fields[0] must be an object',
+    )
+    expect(() => validateCommandArgs('fillform', { fields: [{ value: 'x' }] })).toThrow(
+      'invalid command arguments for fillform: fields[0].selector must be a non-empty string',
+    )
+    expect(() =>
+      validateCommandArgs('fillform', { fields: [{ selector: ' ', value: 'x' }] }),
+    ).toThrow(
+      'invalid command arguments for fillform: fields[0].selector must be a non-empty string',
+    )
+    expect(() =>
+      validateCommandArgs('fillform', { fields: [{ selector: '#a', value: 42 }] }),
+    ).toThrow('invalid command arguments for fillform: fields[0].value must be a string')
+  })
+
   test('covers the remaining command schema gaps', () => {
     expect(() => validateCommandArgs('close', { all: 'yes' })).toThrow(
       'invalid command arguments for close: all must be a boolean',

@@ -70,6 +70,81 @@ const PAGE_CONTEXT_DEEP_DOM_HELPERS_SOURCE = buildDeepDomTraversalHelpersSource(
 // 导航类命令（goto/open/back/forward/reload）等待"导航发生 + 页面稳定"的默认总预算
 const DEFAULT_NAVIGATION_WAIT_TIMEOUT_MS = 10000
 
+// Input.insertText 每次往返一次 CDP。逐字符输入长文本时往返数过大，会撞上 30s
+// 服务端超时；insertText 本身是"整段粘贴"语义而非逐键事件，分块只减少往返、
+// 不改变最终输入内容，因此按块发送
+const INSERT_TEXT_CHUNK_SIZE = 50
+
+export interface FillFormField {
+  selector: string
+  value: string
+}
+
+// 序列化进页面执行的 fill 核心，按元素类型分派：
+// - SELECT：按 option 文本（trim 后）或 option.value 匹配；未命中时列出前 10 个
+//   可选项文本，让 AI 能根据真实选项自我纠正；
+// - checkbox/radio：只接受 true/false（大小写不敏感），其它值直接报错；
+// - 其余元素：仅当拥有 value 属性时赋值。
+// 返回 { found, ... }；found:false + reason 由调用方转成带 selector 的 throw。
+// 用 tagName/type 而非 instanceof，避免跨 iframe realm 的实例判断失效。
+function applyFillValue(
+  node: any,
+  value: string,
+): { found: boolean; reason?: string; checked?: boolean } {
+  const tagName = typeof node?.tagName === 'string' ? node.tagName.toUpperCase() : ''
+  const inputType = typeof node?.type === 'string' ? node.type.toLowerCase() : ''
+
+  if (tagName === 'SELECT') {
+    const options = Array.from((node.options as Array<{ text: string; value: string }>) || [])
+    const trimmedValue = String(value).trim()
+    const matched =
+      options.find((option) => String(option.text).trim() === trimmedValue) ||
+      options.find((option) => String(option.value) === String(value))
+    if (!matched) {
+      const available = options
+        .slice(0, 10)
+        .map((option) => String(option.text).trim())
+        .join(', ')
+      return {
+        found: false,
+        reason: `no option matches "${value}". available options: ${available || '(none)'}`,
+      }
+    }
+    node.focus()
+    node.value = matched.value
+    node.dispatchEvent(new Event('input', { bubbles: true }))
+    node.dispatchEvent(new Event('change', { bubbles: true }))
+    return { found: true }
+  }
+
+  if (tagName === 'INPUT' && (inputType === 'checkbox' || inputType === 'radio')) {
+    const normalized = String(value).trim().toLowerCase()
+    if (normalized !== 'true' && normalized !== 'false') {
+      return {
+        found: false,
+        reason: `checkbox/radio value must be "true" or "false" (got "${value}")`,
+      }
+    }
+    node.focus()
+    node.checked = normalized === 'true'
+    node.dispatchEvent(new Event('input', { bubbles: true }))
+    node.dispatchEvent(new Event('change', { bubbles: true }))
+    return { found: true, checked: node.checked }
+  }
+
+  if (!('value' in node)) {
+    return { found: false, reason: 'element does not accept value' }
+  }
+
+  node.focus()
+  node.value = value
+  node.dispatchEvent(new Event('input', { bubbles: true }))
+  node.dispatchEvent(new Event('change', { bubbles: true }))
+  return { found: true }
+}
+
+const FILL_VALUE_HELPER_SOURCE = `const applyFillValue = ${applyFillValue.toString()};`
+
 export function createPageInputDomain({
   state,
   getTargetTab,
@@ -330,11 +405,13 @@ export function createPageInputDomain({
 
   async function insertTextSequentially(tabId: TabInput, text: string) {
     const normalizedText = String(text || '')
-    // 逐字符输入时 tab 只解析一次，否则每个字符都会 tabs.get + debugger 各往返一次
+    // tab 只解析一次，否则每个块都会 tabs.get + debugger 各往返一次
     const tab = await getTargetTab(tabId)
 
-    for (const character of normalizedText) {
-      await sendDebuggerCommand(tab.id, 'Input.insertText', { text: character })
+    for (let offset = 0; offset < normalizedText.length; offset += INSERT_TEXT_CHUNK_SIZE) {
+      await sendDebuggerCommand(tab.id, 'Input.insertText', {
+        text: normalizedText.slice(offset, offset + INSERT_TEXT_CHUNK_SIZE),
+      })
     }
 
     return { typed: true, text: normalizedText }
@@ -1041,30 +1118,25 @@ export function createPageInputDomain({
     }
   }
 
-  async function fillSelector(
+  /** 单字段填充核心：解析 selector → 页面内执行三分支 fill 逻辑 → 按结果抛错 */
+  async function fillElement(
     tabId: TabInput,
     selector: string,
     value: string,
     frameSelector: FrameSelector,
-  ) {
+  ): Promise<ElementActionResult> {
     const { tab, resolvedSelector } = await resolveElementSelectorForTab(tabId, selector)
     const { value: result } = await evaluateInTabContext<ElementActionResult>(
       tab.id,
       `(() => {
+        ${FILL_VALUE_HELPER_SOURCE}
         const node = deepQuerySelector(document, ${JSON.stringify(resolvedSelector)});
         if (!node) {
           return { found: false };
         }
 
-        if (!("value" in node)) {
-          return { found: false, reason: "element does not accept value" };
-        }
-
-        node.focus();
-        node.value = ${JSON.stringify(value)};
-        node.dispatchEvent(new Event("input", { bubbles: true }));
-        node.dispatchEvent(new Event("change", { bubbles: true }));
-        return { found: true, selector: ${JSON.stringify(selector)} };
+        const result = applyFillValue(node, ${JSON.stringify(value)});
+        return { ...result, selector: ${JSON.stringify(selector)} };
       })()`,
       withFrameSelectorOptions(frameSelector),
     )
@@ -1078,6 +1150,46 @@ export function createPageInputDomain({
     }
 
     throw createElementNotFoundError(selector)
+  }
+
+  async function fillSelector(
+    tabId: TabInput,
+    selector: string,
+    value: string,
+    frameSelector: FrameSelector,
+  ) {
+    return await fillElement(tabId, selector, value, frameSelector)
+  }
+
+  /** 批量填表：逐 field 串行执行 fillElement，单个失败不中断（语义同 batch 的
+   *  continueOnError）。全部失败时也照常 200 返回，由 succeeded/failed 统计体现 */
+  async function fillFields(
+    tabId: TabInput,
+    fields: FillFormField[],
+    frameSelector: FrameSelector,
+  ): Promise<{
+    results: Array<{ selector: string; ok: boolean; error?: string }>
+    succeeded: number
+    failed: number
+  }> {
+    const results: Array<{ selector: string; ok: boolean; error?: string }> = []
+    let succeeded = 0
+    let failed = 0
+    for (const field of fields) {
+      try {
+        await fillElement(tabId, field.selector, field.value, frameSelector)
+        results.push({ selector: field.selector, ok: true })
+        succeeded += 1
+      } catch (error) {
+        results.push({
+          selector: field.selector,
+          ok: false,
+          error: error instanceof Error ? error.message : String(error),
+        })
+        failed += 1
+      }
+    }
+    return { results, succeeded, failed }
   }
 
   async function keyDownOnly(tabId: TabInput, key: string) {
@@ -1175,6 +1287,8 @@ export function createPageInputDomain({
     clickSelector,
     doubleClickSelector,
     evaluateScript,
+    fillElement,
+    fillFields,
     fillSelector,
     focusElement,
     getAttribute,

@@ -138,6 +138,12 @@ const HELP_ROOT = helpNode(
     helpNode('dblclick', 'Double-click a selector.', 'autobrowser dblclick <selector>'),
     helpNode('fill', 'Fill a selector with text.', 'autobrowser fill <selector> <value>'),
     helpNode(
+      'fillform',
+      'Fill multiple form fields in one call; individual failures do not stop the rest.',
+      'autobrowser fillform [--stdin|--file <path>|--base64] <json-array|json-object>',
+      ['--stdin', '--file <path>', '--base64'],
+    ),
+    helpNode(
       'find',
       'Find elements by role, text, label, or other attributes and optionally act on them.',
       'autobrowser find <role|text|label|placeholder|alt|title|test-id|exact-name> <query> [locate|click|fill|type|hover|focus|check|uncheck|text] [value]',
@@ -395,7 +401,7 @@ const HELP_ROOT = helpNode(
       'autobrowser snapshot [selector|--target <selector|@eN>] [--role <a,b,c>] [--changed]',
       [
         '--target <selector|@eN>  limit the snapshot to an element subtree',
-        '--role <button,link,...>  only return elements with matching roles (refs are renumbered)',
+        '--role <button,link,...>  only return elements with matching roles; @eN refs stay stable across snapshots',
         '--changed  only return elements added or changed since the last snapshot; first run returns the full snapshot with full:true',
       ],
       [

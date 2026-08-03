@@ -54,6 +54,7 @@ const DIALOG_BLOCKED_COMMANDS = new Set([
   'click',
   'dblclick',
   'fill',
+  'fillform',
   'find',
   'type',
   'hover',
@@ -103,6 +104,11 @@ interface PageInputDomain {
     tabId: TabInput,
     selector: string,
     value: string,
+    frameSelector: FrameSelector,
+  ) => Promise<unknown>
+  fillFields: (
+    tabId: TabInput,
+    fields: Array<{ selector: string; value: string }>,
     frameSelector: FrameSelector,
   ) => Promise<unknown>
   typeIntoSelector: (
@@ -406,6 +412,21 @@ export function createCommandRouter({
     return value && typeof value === 'object' && !Array.isArray(value)
       ? (value as Record<string, unknown>)
       : undefined
+  }
+
+  /** validateCommandArgs 已保证 fields 结构合法，这里只做防御性读取 */
+  function readFillFormFields(args: CommandArgs): Array<{ selector: string; value: string }> {
+    const raw = args.fields
+    if (!Array.isArray(raw)) {
+      return []
+    }
+    return raw
+      .filter(isRecord)
+      .map((field) => ({
+        selector: typeof field.selector === 'string' ? field.selector : '',
+        value: typeof field.value === 'string' ? field.value : '',
+      }))
+      .filter((field) => field.selector.trim().length > 0)
   }
 
   function readSavedStateArg(args: CommandArgs, key: string): SavedStateData | undefined {
@@ -1499,6 +1520,8 @@ export function createCommandRouter({
           return await pageInput.doubleClickSelector(tabId, selector, frameSelector)
         case 'fill':
           return await pageInput.fillSelector(tabId, selector, value, frameSelector)
+        case 'fillform':
+          return await pageInput.fillFields(tabId, readFillFormFields(args), frameSelector)
         case 'find':
           return await handleFindCommand(tabId, args, frameSelector)
         case 'type':

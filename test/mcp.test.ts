@@ -27,6 +27,13 @@ const KNOWN_TOOL_NAMES = [
   'tab_select',
   'tab_close',
   'eval',
+  'console',
+  'errors',
+  'network_requests',
+  'dialog',
+  'cookies',
+  'storage',
+  'fill_form',
 ]
 
 interface RecordedCall {
@@ -54,7 +61,7 @@ function okResult(result: unknown): CommandResponse {
 }
 
 describe('AutobrowserMcpServer.listTools', () => {
-  test('exposes all 19 tools with object-typed input schemas', () => {
+  test('exposes all 26 tools with object-typed input schemas', () => {
     const server = new AutobrowserMcpServer({ requestCommand: async () => okResult({}) })
     const tools = server.listTools()
 
@@ -178,6 +185,148 @@ describe('AutobrowserMcpServer.callTool', () => {
     await server.callTool('tab_select', { handle: 't3' })
 
     expect(mock.calls).toEqual([{ command: 'tab.select', args: { handle: 't3' } }])
+  })
+
+  test('console/errors forward pagination and inject the tab target', async () => {
+    const mock = recordingRequestCommand(okResult({ messages: [], pagination: {} }))
+    const server = new AutobrowserMcpServer({ requestCommand: mock })
+
+    await server.callTool('console', { pageIdx: 2, pageSize: 25, tab: 't2' })
+    await server.callTool('errors', { pageSize: 10 })
+
+    expect(mock.calls).toEqual([
+      { command: 'console', args: { pageIdx: 2, pageSize: 25, tabId: 't2' } },
+      { command: 'errors', args: { pageSize: 10 } },
+    ])
+  })
+
+  test('network_requests maps to the network requests action with pagination', async () => {
+    const mock = recordingRequestCommand(okResult({ requests: [], pagination: {} }))
+    const server = new AutobrowserMcpServer({ requestCommand: mock })
+
+    await server.callTool('network_requests', { pageIdx: 1, pageSize: 5, tab: 't4' })
+
+    expect(mock.calls).toEqual([
+      {
+        command: 'network',
+        args: { action: 'requests', pageIdx: 1, pageSize: 5, tabId: 't4' },
+      },
+    ])
+  })
+
+  test('dialog maps accept/dismiss to the accept boolean and status to the action', async () => {
+    const mock = recordingRequestCommand(okResult({ handled: true }))
+    const server = new AutobrowserMcpServer({ requestCommand: mock })
+
+    await server.callTool('dialog', { action: 'accept' })
+    await server.callTool('dialog', { action: 'accept', promptText: 'yes' })
+    await server.callTool('dialog', { action: 'dismiss' })
+    await server.callTool('dialog', { action: 'status' })
+
+    expect(mock.calls).toEqual([
+      { command: 'dialog', args: { accept: true } },
+      { command: 'dialog', args: { accept: true, promptText: 'yes' } },
+      { command: 'dialog', args: { accept: false } },
+      { command: 'dialog', args: { action: 'status' } },
+    ])
+  })
+
+  test('dialog rejects an unknown action as an isError result', async () => {
+    const mock = recordingRequestCommand(okResult({}))
+    const server = new AutobrowserMcpServer({ requestCommand: mock })
+
+    const result = await server.callTool('dialog', { action: 'snooze' })
+
+    expect(result.isError).toBe(true)
+    expect(mock.calls).toEqual([])
+  })
+
+  test('cookies maps action plus optional name/value/domain and injects the tab', async () => {
+    const mock = recordingRequestCommand(okResult({ cookies: [] }))
+    const server = new AutobrowserMcpServer({ requestCommand: mock })
+
+    await server.callTool('cookies', {
+      action: 'set',
+      name: 'sid',
+      value: 'abc',
+      domain: '.example.com',
+      tab: 't1',
+    })
+    await server.callTool('cookies', { action: 'get' })
+
+    expect(mock.calls).toEqual([
+      {
+        command: 'cookies',
+        args: { action: 'set', name: 'sid', value: 'abc', domain: '.example.com', tabId: 't1' },
+      },
+      { command: 'cookies', args: { action: 'get' } },
+    ])
+  })
+
+  test('storage maps action plus optional key/value/session and injects tab and frame', async () => {
+    const mock = recordingRequestCommand(okResult({ storage: {} }))
+    const server = new AutobrowserMcpServer({ requestCommand: mock })
+
+    await server.callTool('storage', {
+      action: 'set',
+      key: 'theme',
+      value: 'dark',
+      session: true,
+      tab: 't2',
+      frame: '@f1',
+    })
+
+    expect(mock.calls).toEqual([
+      {
+        command: 'storage',
+        args: {
+          action: 'set',
+          key: 'theme',
+          value: 'dark',
+          session: true,
+          tabId: 't2',
+          frame: '@f1',
+        },
+      },
+    ])
+  })
+
+  test('fill_form passes the fields array through with tab and frame injection', async () => {
+    const mock = recordingRequestCommand(okResult({ results: [], succeeded: 0, failed: 0 }))
+    const server = new AutobrowserMcpServer({ requestCommand: mock })
+
+    await server.callTool('fill_form', {
+      fields: [
+        { selector: '#name', value: 'Ada' },
+        { selector: '#age', value: '36' },
+      ],
+      tab: 't1',
+      frame: '@f2',
+    })
+
+    expect(mock.calls).toEqual([
+      {
+        command: 'fillform',
+        args: {
+          fields: [
+            { selector: '#name', value: 'Ada' },
+            { selector: '#age', value: '36' },
+          ],
+          tabId: 't1',
+          frame: '@f2',
+        },
+      },
+    ])
+  })
+
+  test('fill_form rejects a non-array fields argument', async () => {
+    const mock = recordingRequestCommand(okResult({}))
+    const server = new AutobrowserMcpServer({ requestCommand: mock })
+
+    const result = await server.callTool('fill_form', { fields: 'oops' })
+
+    expect(result.isError).toBe(true)
+    expect(mock.calls).toEqual([])
   })
 
   test('screenshot returns an image block plus a summary', async () => {

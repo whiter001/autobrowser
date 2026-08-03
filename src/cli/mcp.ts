@@ -60,7 +60,7 @@ const MCP_TOOLS: McpToolDefinition[] = [
   {
     name: 'navigate',
     description:
-      'Navigate to a URL in the current tab. Waits for the page to finish loading before returning.',
+      'Navigate to a URL in the current tab. Waits for the navigation to commit and the page to settle; the result reports settled, and settleReason when the page did not settle in time.',
     command: 'goto',
     inputSchema: {
       type: 'object',
@@ -87,7 +87,7 @@ const MCP_TOOLS: McpToolDefinition[] = [
           type: 'array',
           items: { type: 'string' },
           description:
-            'Only return elements with these roles (e.g. button, link); refs are renumbered.',
+            'Only return elements with these roles (e.g. button, link); @eN refs stay stable across snapshots.',
         },
         changed: {
           type: 'boolean',
@@ -184,7 +184,7 @@ const MCP_TOOLS: McpToolDefinition[] = [
   },
   selectorOnlyTool(
     'click',
-    'Click an element. Accepts a CSS selector or an @eN element ref from snapshot.',
+    'Click an element. Accepts a CSS selector or an @eN element ref from snapshot. If the click triggers a navigation, waits for the page to settle and reports navigatedToUrl/settled.',
     'click',
   ),
   selectorOnlyTool(
@@ -200,7 +200,7 @@ const MCP_TOOLS: McpToolDefinition[] = [
   {
     name: 'fill',
     description:
-      'Replace the value of a text field (input, textarea, contenteditable). Accepts a CSS selector or an @eN element ref.',
+      'Fill a form field: text inputs, textareas and contenteditable take the text value; select elements match an option by its text or value; checkbox/radio inputs take "true" or "false". Accepts a CSS selector or an @eN element ref.',
     command: 'fill',
     inputSchema: {
       type: 'object',
@@ -420,6 +420,164 @@ const MCP_TOOLS: McpToolDefinition[] = [
       required: ['script'],
     },
     toArgs: (args) => ({ script: args.script }),
+  },
+  {
+    name: 'console',
+    description:
+      'Return console messages recorded for the target tab (folded consecutive duplicates with repeatCount). Messages are paginated; an out-of-range pageIdx falls back to the first page with pagination.invalidPage: true. Use pageSize to control how many messages come back (default 50, max 200).',
+    command: 'console',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        pageIdx: { type: 'number', description: 'Zero-based page index (default 0).' },
+        pageSize: { type: 'number', description: 'Messages per page (default 50, max 200).' },
+      },
+    },
+    toArgs: (args) => onlyDefined(args, ['pageIdx', 'pageSize']),
+  },
+  {
+    name: 'errors',
+    description:
+      'Return page errors (uncaught exceptions, failed loads) recorded for the target tab. Paginated like console: an out-of-range pageIdx falls back to the first page with pagination.invalidPage: true.',
+    command: 'errors',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        pageIdx: { type: 'number', description: 'Zero-based page index (default 0).' },
+        pageSize: { type: 'number', description: 'Errors per page (default 50, max 200).' },
+      },
+    },
+    toArgs: (args) => onlyDefined(args, ['pageIdx', 'pageSize']),
+  },
+  {
+    name: 'network_requests',
+    description:
+      'Return network requests observed by the extension (document loads, XHR, fetch), in chronological order. Paginated like console: an out-of-range pageIdx falls back to the first page with pagination.invalidPage: true.',
+    command: 'network',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        pageIdx: { type: 'number', description: 'Zero-based page index (default 0).' },
+        pageSize: { type: 'number', description: 'Requests per page (default 50, max 200).' },
+      },
+    },
+    toArgs: (args) => ({ action: 'requests', ...onlyDefined(args, ['pageIdx', 'pageSize']) }),
+  },
+  {
+    name: 'dialog',
+    description:
+      'Inspect or respond to the JavaScript dialog (alert/confirm/prompt) open in the target tab. status reports whether a dialog is open and its message; accept or dismiss closes it (accept a prompt dialog with an optional promptText).',
+    command: 'dialog',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        action: {
+          type: 'string',
+          description: 'What to do with the dialog.',
+          enum: ['accept', 'dismiss', 'status'],
+        },
+        promptText: {
+          type: 'string',
+          description: 'Text to supply when accepting a prompt dialog.',
+        },
+      },
+      required: ['action'],
+    },
+    toArgs: (args) => {
+      const action = args.action
+      if (action === 'status') {
+        return { action: 'status' }
+      }
+      if (action === 'accept') {
+        return { accept: true, ...onlyDefined(args, ['promptText']) }
+      }
+      if (action === 'dismiss') {
+        return { accept: false, ...onlyDefined(args, ['promptText']) }
+      }
+      throw new Error('dialog action must be accept, dismiss, or status')
+    },
+  },
+  {
+    name: 'cookies',
+    description:
+      'Inspect or modify cookies for the target tab. get lists cookies (optionally filtered by domain), set stores a cookie by name/value/domain, delete removes a cookie by name, clear removes all cookies for the current site.',
+    command: 'cookies',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        action: {
+          type: 'string',
+          description: 'What to do with cookies.',
+          enum: ['get', 'set', 'delete', 'clear'],
+        },
+        name: { type: 'string', description: 'Cookie name (set/delete).' },
+        value: { type: 'string', description: 'Cookie value (set).' },
+        domain: { type: 'string', description: 'Cookie domain (set, or get filter).' },
+      },
+      required: ['action'],
+    },
+    toArgs: (args) => ({ action: args.action, ...onlyDefined(args, ['name', 'value', 'domain']) }),
+  },
+  {
+    name: 'storage',
+    description:
+      'Read or modify localStorage for the target tab (sessionStorage when session is true). get reads a key, set writes a key/value, delete removes a key, clear empties the storage.',
+    command: 'storage',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        action: {
+          type: 'string',
+          description: 'What to do with storage.',
+          enum: ['get', 'set', 'delete', 'clear'],
+        },
+        key: { type: 'string', description: 'Storage key (get/set/delete).' },
+        value: { type: 'string', description: 'Storage value (set).' },
+        session: {
+          type: 'boolean',
+          description: 'Operate on sessionStorage instead of localStorage.',
+        },
+      },
+      required: ['action'],
+    },
+    toArgs: (args) => ({ action: args.action, ...onlyDefined(args, ['key', 'value', 'session']) }),
+  },
+  {
+    name: 'fill_form',
+    description:
+      'Fill multiple form fields in one call; each field is filled in order and a failing field is reported in results without stopping the rest. ALWAYS prefer this tool over multiple individual fill calls when filling several fields.',
+    command: 'fillform',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        fields: {
+          type: 'array',
+          description: 'The fields to fill, in order.',
+          items: {
+            type: 'object',
+            properties: {
+              selector: {
+                type: 'string',
+                description: 'A CSS selector or an @eN element ref from snapshot.',
+              },
+              value: {
+                type: 'string',
+                description:
+                  'The text to fill. For select elements, match an option by its text or value; for checkbox/radio inputs use "true" or "false".',
+              },
+            },
+            required: ['selector', 'value'],
+          },
+        },
+      },
+      required: ['fields'],
+    },
+    toArgs: (args) => {
+      if (!Array.isArray(args.fields)) {
+        throw new Error('fill_form requires a fields array')
+      }
+      return { fields: args.fields }
+    },
   },
 ]
 

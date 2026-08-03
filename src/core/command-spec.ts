@@ -25,6 +25,7 @@ const TAB_TARGET_COMMANDS = [
   'errors',
   'eval',
   'fill',
+  'fillform',
   'feed',
   'find',
   'focus',
@@ -62,6 +63,7 @@ const FRAME_TARGET_COMMANDS = [
   'drag',
   'eval',
   'fill',
+  'fillform',
   'feed',
   'find',
   'focus',
@@ -342,6 +344,50 @@ function readObjectOrArrayField(
   return value
 }
 
+// fillform 的 fields 约束：1-50 项，每项必须是非空 selector + 字符串 value。
+// value 允许空串（fill 空值语义是清空字段），但字段本身必须存在
+function validateFillFormFields(args: Record<string, unknown>, command: string): void {
+  const fields = args.fields
+  if (!Array.isArray(fields)) {
+    throw createCommandArgsValidationError(command, 'fields must be an array', {
+      field: 'fields',
+      value: fields,
+    })
+  }
+
+  if (fields.length < 1 || fields.length > 50) {
+    throw createCommandArgsValidationError(command, 'fields must contain 1 to 50 items', {
+      field: 'fields',
+      value: fields,
+    })
+  }
+
+  fields.forEach((field, index) => {
+    if (!isRecord(field)) {
+      throw createCommandArgsValidationError(command, `fields[${index}] must be an object`, {
+        field: 'fields',
+        value: field,
+      })
+    }
+
+    const selector = field.selector
+    if (typeof selector !== 'string' || !selector.trim()) {
+      throw createCommandArgsValidationError(
+        command,
+        `fields[${index}].selector must be a non-empty string`,
+        { field: 'selector', value: selector },
+      )
+    }
+
+    if (typeof field.value !== 'string') {
+      throw createCommandArgsValidationError(command, `fields[${index}].value must be a string`, {
+        field: 'value',
+        value: field.value,
+      })
+    }
+  })
+}
+
 function validateBatchWhen(value: unknown): void {
   if (!isRecord(value)) {
     throw new Error('when must be an object')
@@ -523,6 +569,9 @@ export function validateCommandArgs(command: string, args: unknown): void {
       if (command === 'type') {
         readBooleanField(normalizedArgs, 'submit', command)
       }
+      return
+    case 'fillform':
+      validateFillFormFields(normalizedArgs, command)
       return
     case 'upload':
       readStringField(normalizedArgs, 'selector', command)
