@@ -1,3 +1,5 @@
+import { parseSearchQueryRegex } from '../core/search.js'
+
 export interface WaitArgs {
   timeout: number
   type?: string
@@ -11,11 +13,15 @@ export interface WaitArgs {
 }
 
 export interface FindArgs {
-  strategy: 'role' | 'text' | 'label'
+  strategy: 'role' | 'text' | 'label' | 'placeholder' | 'alt' | 'title' | 'test-id' | 'exact-name'
   role?: string
   query?: string
   name?: string
   exact: boolean
+  /** first / last / nth=N，缺省为 first */
+  position?: string
+  /** >0 时返回按质量排序的 Top-N 候选列表，而不是单个目标 */
+  candidates?: number
   action?: string
   value?: string
 }
@@ -29,6 +35,24 @@ export interface ScreenshotArgs {
   screenshotDir: string | null
   format: 'png' | 'jpeg'
   quality: number | null
+}
+
+export interface SnapshotArgs {
+  /** 子树截取目标（CSS selector 或 @eN ref） */
+  target: string | null
+  /** role 过滤列表；null 表示不过滤（保持默认行为） */
+  roles: string[] | null
+  /** 增量模式：只返回相对上次快照新增/变化的元素 */
+  changed: boolean
+}
+
+export interface SearchArgs {
+  /** 查询串：纯文本子串或 /pattern/flags 正则 */
+  query: string
+  /** 每个匹配窗口包含的上下文行数 */
+  context: number
+  /** 返回的最大匹配窗口数 */
+  limit: number
 }
 
 export interface NetworkHarStartArgs {
@@ -516,11 +540,26 @@ const FIND_ACTIONS = new Set([
   'text',
 ])
 
+const FIND_STRATEGIES = new Set([
+  'role',
+  'text',
+  'label',
+  'placeholder',
+  'alt',
+  'title',
+  'test-id',
+  'exact-name',
+])
+
+function isValidFindPosition(value: string): boolean {
+  return value === 'first' || value === 'last' || /^nth=[1-9]\d*$/.test(value)
+}
+
 export function parseFindArgs(rest: string[]): FindArgs {
   const strategy = String(rest[0] || '').trim()
   const queryOrRole = rest[1]
 
-  if (!['role', 'text', 'label'].includes(strategy)) {
+  if (!FIND_STRATEGIES.has(strategy)) {
     throw new Error(`unsupported find strategy: ${strategy || '(empty)'}`)
   }
 
@@ -559,11 +598,42 @@ export function parseFindArgs(rest: string[]): FindArgs {
       continue
     }
 
+    if (value === '--position') {
+      const rawPosition = rest[index + 1]
+      if (rawPosition === undefined) {
+        throw new Error('missing position value')
+      }
+      if (!isValidFindPosition(rawPosition)) {
+        throw new Error(`unsupported find position: ${rawPosition} (use first, last, or nth=N)`)
+      }
+      findArgs.position = rawPosition
+      index += 1
+      continue
+    }
+
+    if (value === '--candidates') {
+      const rawCount = rest[index + 1]
+      if (rawCount === undefined) {
+        throw new Error('missing candidates value')
+      }
+      const count = Number(rawCount)
+      if (!Number.isInteger(count) || count < 1) {
+        throw new Error('candidates must be a positive integer')
+      }
+      findArgs.candidates = count
+      index += 1
+      continue
+    }
+
     if (value.startsWith('--')) {
       throw new Error(`unsupported find option: ${value}`)
     }
 
     positionals.push(value)
+  }
+
+  if (findArgs.candidates !== undefined && findArgs.position !== undefined) {
+    throw new Error('find --candidates cannot be combined with --position')
   }
 
   if (positionals.length === 0) {
@@ -573,6 +643,10 @@ export function parseFindArgs(rest: string[]): FindArgs {
   const action = positionals[0]
   if (!FIND_ACTIONS.has(action)) {
     throw new Error(`unsupported find action: ${action}`)
+  }
+
+  if (findArgs.candidates !== undefined && action !== 'locate') {
+    throw new Error(`find --candidates only supports the locate action: ${action}`)
   }
 
   findArgs.action = action
@@ -691,4 +765,122 @@ export function parseScreenshotArgs(rest: string[]): ScreenshotArgs {
   }
 
   return screenshotArgs
+}
+
+export function parseSnapshotArgs(rest: string[]): SnapshotArgs {
+  let target: string | null = null
+  let roles: string[] | null = null
+  let changed = false
+
+  for (let index = 0; index < rest.length; index += 1) {
+    const value = rest[index]
+
+    if (value === '--target') {
+      const rawTarget = rest[index + 1]
+      if (rawTarget === undefined) {
+        throw new Error('missing target value')
+      }
+
+      if (target) {
+        throw new Error('target specified more than once')
+      }
+
+      target = rawTarget
+      index += 1
+      continue
+    }
+
+    if (value === '--role') {
+      const rawRoles = rest[index + 1]
+      if (rawRoles === undefined) {
+        throw new Error('missing role value')
+      }
+
+      if (roles) {
+        throw new Error('role specified more than once')
+      }
+
+      roles = rawRoles
+        .split(',')
+        .map((role) => role.trim())
+        .filter((role) => role.length > 0)
+      if (roles.length === 0) {
+        throw new Error('missing role value')
+      }
+
+      index += 1
+      continue
+    }
+
+    if (value === '--changed') {
+      changed = true
+      continue
+    }
+
+    if (value.startsWith('--')) {
+      throw new Error(`unsupported snapshot option: ${value}`)
+    }
+
+    if (!target) {
+      target = value
+      continue
+    }
+
+    throw new Error(`unexpected extra argument for snapshot: ${value}`)
+  }
+
+  return { target, roles, changed }
+}
+
+export function parseSearchArgs(rest: string[]): SearchArgs {
+  let query = ''
+  let context = 3
+  let limit = 20
+
+  for (let index = 0; index < rest.length; index += 1) {
+    const value = rest[index]
+
+    if (value === '--context') {
+      const rawContext = rest[index + 1]
+      if (rawContext === undefined) {
+        throw new Error('missing context value')
+      }
+
+      context = parseNumberArg(rawContext, 'context', { min: 0, integer: true })
+      index += 1
+      continue
+    }
+
+    if (value === '--limit') {
+      const rawLimit = rest[index + 1]
+      if (rawLimit === undefined) {
+        throw new Error('missing limit value')
+      }
+
+      limit = parseNumberArg(rawLimit, 'limit', { min: 0, integer: true })
+      index += 1
+      continue
+    }
+
+    if (value.startsWith('--')) {
+      throw new Error(`unsupported search option: ${value}`)
+    }
+
+    if (!query) {
+      query = value
+      continue
+    }
+
+    throw new Error(`unexpected extra search argument: ${value}`)
+  }
+
+  const trimmedQuery = query.trim()
+  if (!trimmedQuery) {
+    throw new Error('missing search query')
+  }
+
+  // 提前校验正则，把无效模式挡在 CLI 侧，避免发给扩展后再失败
+  parseSearchQueryRegex(trimmedQuery)
+
+  return { query: trimmedQuery, context, limit }
 }

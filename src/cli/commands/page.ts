@@ -2,7 +2,13 @@ import { mkdtemp, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { isRecord } from '../client.js'
-import { parseConsoleArgs, parseScreenshotArgs, parseWaitArgs } from '../parse.js'
+import {
+  parseConsoleArgs,
+  parseScreenshotArgs,
+  parseSearchArgs,
+  parseSnapshotArgs,
+  parseWaitArgs,
+} from '../parse.js'
 import { buildSnapshotJsonl } from '../snapshot-export.js'
 import { buildSnapshotFieldJsonl, type SnapshotFieldSelection } from '../snapshot-structure.js'
 import {
@@ -206,42 +212,6 @@ function parseSnapshotFieldSelectors(rest: string[]): {
   return { outputPath, selection }
 }
 
-function parseSnapshotTargetArgs(rest: string[]): { target: string | null } {
-  let target: string | null = null
-
-  for (let index = 0; index < rest.length; index += 1) {
-    const value = rest[index]
-
-    if (value === '--target') {
-      const rawTarget = rest[index + 1]
-      if (rawTarget === undefined) {
-        throw new Error('missing target value')
-      }
-
-      if (target) {
-        throw new Error('target specified more than once')
-      }
-
-      target = rawTarget
-      index += 1
-      continue
-    }
-
-    if (value.startsWith('--')) {
-      throw new Error(`unsupported snapshot option: ${value}`)
-    }
-
-    if (!target) {
-      target = value
-      continue
-    }
-
-    throw new Error(`unexpected extra argument for snapshot: ${value}`)
-  }
-
-  return { target }
-}
-
 async function handleEval(rest: string[], context: CommandContext): Promise<number | void> {
   if (helpRequested(rest[0], context, ['eval'])) {
     return 0
@@ -385,18 +355,35 @@ async function handleSnapshot(rest: string[], context: CommandContext): Promise<
     return 0
   }
 
-  const snapshotTarget = parseOrWriteError(() => parseSnapshotTargetArgs(rest))
+  const snapshotTarget = parseOrWriteError(() => parseSnapshotArgs(rest))
   if (!snapshotTarget) {
     return 1
   }
 
-  const payload = await context.requestCommand(
-    context.flags.server,
-    'snapshot',
-    snapshotTarget.target ? { selector: snapshotTarget.target } : {},
-  )
+  const payload = await context.requestCommand(context.flags.server, 'snapshot', {
+    ...(snapshotTarget.target ? { selector: snapshotTarget.target } : {}),
+    ...(snapshotTarget.roles && snapshotTarget.roles.length > 0
+      ? { roles: snapshotTarget.roles }
+      : {}),
+    ...(snapshotTarget.changed ? { changed: true } : {}),
+  })
   context.writeResult(payload)
   return 0
+}
+
+async function handleSearch(rest: string[], context: CommandContext): Promise<number | void> {
+  if (helpRequested(rest[0], context, ['search'])) {
+    return 0
+  }
+
+  const searchArgs = parseOrWriteError(() => parseSearchArgs(rest))
+  if (!searchArgs) {
+    return 1
+  }
+
+  const payload = await context.requestCommand(context.flags.server, 'search', searchArgs)
+  context.writeResult(payload)
+  return payload.ok === false ? 1 : 0
 }
 
 async function handleFeed(rest: string[], context: CommandContext): Promise<number | void> {
@@ -636,6 +623,7 @@ export const pageCommandRegistry: CommandRegistry = {
   eval: handleEval,
   script: handleScript,
   snapshot: handleSnapshot,
+  search: handleSearch,
   feed: handleFeed,
   screenshot: handleScreenshot,
   back: handleBack,

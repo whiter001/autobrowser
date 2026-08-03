@@ -3,10 +3,21 @@ import { isRecord } from '../client.js'
 import { helpRequested, parseOrWriteError } from './shared.js'
 import type { CommandContext, CommandRegistry } from './types.js'
 
+interface BatchStepWhen {
+  step: string | number
+  path?: string
+  equals?: unknown
+  truthy?: boolean
+  exists?: boolean
+}
+
 interface BatchStepObject {
   command?: unknown
   args?: unknown
   label?: unknown
+  id?: unknown
+  when?: unknown
+  skipRemainingOnFailure?: unknown
 }
 
 interface BatchInputObject {
@@ -20,6 +31,9 @@ interface BatchStep {
   command: string
   args: Record<string, unknown>
   label: string | null
+  id?: string
+  when?: BatchStepWhen
+  skipRemainingOnFailure?: boolean
 }
 
 interface BatchOptions {
@@ -48,6 +62,56 @@ function normalizeBatchStepForDispatch(step: BatchStep, context: CommandContext)
     ...step,
     args,
   }
+}
+
+function normalizeBatchWhen(value: unknown, index: number): BatchStepWhen {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error(`invalid batch step ${index + 1}: when must be an object`)
+  }
+
+  const record = value as BatchStepWhen
+  const stepRef = record.step
+  const isStringRef = typeof stepRef === 'string' && stepRef.trim().length > 0
+  const isIntegerRef = typeof stepRef === 'number' && Number.isInteger(stepRef) && stepRef >= 1
+  if (!isStringRef && !isIntegerRef) {
+    throw new Error(
+      `invalid batch step ${index + 1}: when.step must be a step id string or a positive integer`,
+    )
+  }
+
+  if (record.path !== undefined && typeof record.path !== 'string') {
+    throw new Error(`invalid batch step ${index + 1}: when.path must be a string`)
+  }
+
+  const declared = ['equals', 'truthy', 'exists'].filter((key) => key in (value as object))
+  if (declared.length !== 1) {
+    throw new Error(
+      `invalid batch step ${index + 1}: when must declare exactly one of equals, truthy, or exists`,
+    )
+  }
+
+  if (record.truthy !== undefined && typeof record.truthy !== 'boolean') {
+    throw new Error(`invalid batch step ${index + 1}: when.truthy must be a boolean`)
+  }
+
+  if (record.exists !== undefined && typeof record.exists !== 'boolean') {
+    throw new Error(`invalid batch step ${index + 1}: when.exists must be a boolean`)
+  }
+
+  const when: BatchStepWhen = { step: stepRef as string | number }
+  if (record.path !== undefined) {
+    when.path = record.path
+  }
+  if (record.equals !== undefined) {
+    when.equals = record.equals
+  }
+  if (record.truthy !== undefined) {
+    when.truthy = record.truthy
+  }
+  if (record.exists !== undefined) {
+    when.exists = record.exists
+  }
+  return when
 }
 
 function normalizeBatchStep(value: unknown, index: number): BatchStep {
@@ -81,11 +145,31 @@ function normalizeBatchStep(value: unknown, index: number): BatchStep {
     throw new Error(`invalid batch step ${index + 1}: args must be an object`)
   }
 
-  return {
+  const step: BatchStep = {
     command,
     args: (record.args as Record<string, unknown>) || {},
     label: typeof record.label === 'string' && record.label.trim() ? record.label.trim() : null,
   }
+
+  if (record.id !== undefined && record.id !== null) {
+    if (typeof record.id !== 'string' || !record.id.trim()) {
+      throw new Error(`invalid batch step ${index + 1}: id must be a non-empty string`)
+    }
+    step.id = record.id.trim()
+  }
+
+  if (record.skipRemainingOnFailure !== undefined && record.skipRemainingOnFailure !== null) {
+    if (typeof record.skipRemainingOnFailure !== 'boolean') {
+      throw new Error(`invalid batch step ${index + 1}: skipRemainingOnFailure must be a boolean`)
+    }
+    step.skipRemainingOnFailure = record.skipRemainingOnFailure
+  }
+
+  if (record.when !== undefined && record.when !== null) {
+    step.when = normalizeBatchWhen(record.when, index)
+  }
+
+  return step
 }
 
 function readBatchOptions(value: BatchInputObject): BatchOptions {
@@ -189,6 +273,15 @@ function buildBatchFailurePayload(payload: {
   }
 }
 
+/**
+ * batch 输入为 JSON 数组（步骤列表）或 JSON 对象（steps + 选项）。
+ * 每个步骤可以是命令字符串，或 { command, args, label, id?, when?, skipRemainingOnFailure? }：
+ * - `id`：步骤标识，供后续步骤的 `when` 引用（无 id 时用 1 起的序号引用）。
+ * - `when`：声明式条件，形如 { step, path?, equals? | truthy? | exists? }。求值失败则跳过该步，
+ *   结果带 skipped:true 与 reason。引用的前置步骤必须已成功执行。
+ * - `skipRemainingOnFailure`：仅在 continueOnError:true 下生效——该步失败后不再继续执行
+ *   剩余步骤，而是标记 skipped 并返回（summary.terminated:true），与 continueOnError 的"继续"语义区分。
+ */
 async function handleBatch(rest: string[], context: CommandContext): Promise<number | void> {
   if (helpRequested(rest[0], context, ['batch'])) {
     return 0

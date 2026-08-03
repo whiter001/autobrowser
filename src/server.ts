@@ -195,6 +195,8 @@ interface ServerOptions {
   homeDir?: string
   token?: string
   extensionId?: string | null
+  /** 关闭流程完成（连接已断开、端口已释放）后同步回调；CLI 用它触发持久化收尾与进程退出 */
+  onShutdown?: () => void
 }
 
 interface StartServersResult {
@@ -240,10 +242,13 @@ export async function startServers(options: ServerOptions = {}): Promise<StartSe
 
     shuttingDown = true
     runtime.detachExtension()
-    relayServer?.stop()
-    ipcServer?.stop()
+    // stop(true) 会关闭仍处于活动状态的连接（relay 的 WebSocket、IPC 的 keep-alive），
+    // 否则仅停掉监听后这些连接仍会让事件循环保持存活，--serve 进程无法自然退出
+    relayServer?.stop(true)
+    ipcServer?.stop(true)
     relayServer = null
     ipcServer = null
+    options.onShutdown?.()
   }
 
   relayServer = Bun.serve<RelaySocketData>({

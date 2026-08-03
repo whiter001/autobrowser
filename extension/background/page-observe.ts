@@ -1,5 +1,6 @@
 import { AGENT_FRAME_REF_ATTRIBUTE, AGENT_FRAME_REF_PREFIX } from '../../src/core/agent-handles.js'
 import { AGENT_ELEMENT_REF_ATTRIBUTE } from '../../src/core/agent-selectors.js'
+import { parseSearchQueryRegex } from '../../src/core/search.js'
 import { buildDeepDomTraversalHelpersSource } from './deep-dom.js'
 import { createElementNotFoundError } from './page-input.js'
 import {
@@ -28,6 +29,8 @@ const SCREENSHOT_ANNOTATION_MAX_ELEMENTS = 200
 const AGENT_SNAPSHOT_MAX_ELEMENTS = 200
 const FEED_MAX_ITEMS = 200
 const FEED_MAX_SCROLLS = 40
+const SEARCH_LINE_MAX_LENGTH = 240
+const SEARCH_MAX_LIMIT = 200
 
 // command-spec 路径下这些字段是可选的，undefined 时 Math.floor 会得到 NaN，
 // 导致 limit 变成 NaN 而静默返回 0 条；这里统一兜底到与 CLI 一致的默认值
@@ -52,6 +55,124 @@ const PAGE_CONTEXT_FIND_HELPERS_SOURCE = [
   parsePageContextElementRefIndex.toString(),
 ].join('\n')
 
+export interface SearchMatchLine {
+  line: number
+  text: string
+  matched: boolean
+  /** 该行文本超过行宽上限被截断 */
+  truncated: boolean
+}
+
+export interface SearchWindow {
+  startLine: number
+  endLine: number
+  lines: SearchMatchLine[]
+}
+
+export interface SearchPageTextResult {
+  pageEpoch: number
+  query: string
+  /** 查询是否为 /pattern/flags 正则形式（false 表示纯文本子串匹配） */
+  regex: boolean
+  /** 用户输入的原始模式（正则形式去掉首尾斜杠） */
+  pattern: string
+  context: number
+  limit: number
+  readyState: string
+  totalMatches: number
+  returned: number
+  /** 合并后的匹配窗口数超过 limit，返回结果被截断 */
+  truncated: boolean
+  windows: SearchWindow[]
+  modal?: {
+    open: boolean
+    type: string
+    message: string
+    defaultPrompt: string
+  }
+}
+
+export interface SearchPageTextOptions {
+  query?: string
+  context?: number
+  limit?: number
+}
+
+/**
+ * 纯函数：把页面可见文本按行切分，找出匹配行并组装上下文窗口。
+ * 通过 toString() 嵌入页面上下文执行，因此不能引用任何模块级闭包变量。
+ */
+export function computeSearchPageTextMatches(
+  rawText: string,
+  query: string,
+  pattern: string,
+  regexFlags: string,
+  context: number,
+  limit: number,
+  lineMax: number,
+  readyState: string,
+): Omit<SearchPageTextResult, 'pageEpoch'> {
+  const escapeRegExpSource = (value: string): string => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  // 查询解析规则与 src/core/search.ts 的 parseSearchQueryRegex 保持一致：
+  // /pattern/flags 形式按正则处理，其余文本当作大小写不敏感的子串匹配
+  const literal = !/^\/(.+)\/([a-zA-Z]*)$/.test(query)
+  const source = literal ? escapeRegExpSource(pattern) : pattern
+  const regex = new RegExp(source, regexFlags)
+  const lines = rawText.split('\n')
+  const lineCount = lines.length
+  const matchedLines: number[] = []
+  for (let index = 0; index < lineCount; index += 1) {
+    regex.lastIndex = 0
+    if (regex.test(lines[index])) {
+      matchedLines.push(index + 1)
+    }
+  }
+  const totalMatches = matchedLines.length
+
+  // 相邻或重叠的上下文窗口合并成同一个窗口，避免连续命中时返回重复片段
+  const mergedWindows: Array<{ startLine: number; endLine: number }> = []
+  for (const matchLine of matchedLines) {
+    const windowStart = Math.max(1, matchLine - context)
+    const windowEnd = Math.min(lineCount, matchLine + context)
+    const last = mergedWindows[mergedWindows.length - 1]
+    if (last && windowStart <= last.endLine + 1) {
+      last.endLine = Math.max(last.endLine, windowEnd)
+    } else {
+      mergedWindows.push({ startLine: windowStart, endLine: windowEnd })
+    }
+  }
+
+  const windows = mergedWindows.slice(0, limit).map(({ startLine, endLine }) => ({
+    startLine,
+    endLine,
+    lines: Array.from({ length: endLine - startLine + 1 }, (_, offset) => {
+      const lineNumber = startLine + offset
+      const text = lines[lineNumber - 1] ?? ''
+      return {
+        line: lineNumber,
+        text: text.slice(0, lineMax),
+        matched: regex.test(text),
+        truncated: text.length > lineMax,
+      }
+    }),
+  }))
+
+  return {
+    query,
+    regex: !literal,
+    pattern,
+    context,
+    limit,
+    readyState,
+    totalMatches,
+    returned: windows.length,
+    truncated: mergedWindows.length > limit,
+    windows,
+  }
+}
+
+const SEARCH_TEXT_MATCH_HELPERS_SOURCE = computeSearchPageTextMatches.toString()
+
 interface ScreenshotAnnotationResult {
   count?: number
 }
@@ -73,6 +194,7 @@ export interface SemanticTargetResult extends Record<string, unknown> {
   reason?: string
   pageEpoch?: number
   match?: SemanticTargetMatch
+  candidates?: SemanticTargetMatch[]
 }
 
 export interface FindSemanticTargetOptions {
@@ -81,6 +203,10 @@ export interface FindSemanticTargetOptions {
   query: string
   name: string
   exact: boolean
+  /** first / last / nth=N，缺省为 first */
+  position?: string
+  /** >0 时返回按质量排序的 Top-N 候选列表，而不是单个目标 */
+  candidates?: number
 }
 
 export type FeedDedupeStrategy = 'url' | 'text' | 'none'
@@ -120,6 +246,15 @@ export interface CollectFeedOptions {
   stallRounds: number
 }
 
+export interface SnapshotTabOptions {
+  /** CSS selector 或 @eN ref：只截取该元素子树 */
+  selector?: string
+  /** 只返回匹配这些 role 的元素；空数组表示不过滤（保持默认行为） */
+  roles?: string[]
+  /** 增量模式：只返回相对上次快照新增/变化的元素，并带 unchangedCount 汇总 */
+  changed?: boolean
+}
+
 interface PageObserveDependencies {
   state: ExtensionState
   getTargetTab: (tabId: TabInput) => Promise<TabWithId>
@@ -152,6 +287,15 @@ export function createPageObserveDomain({
   evaluateInTabContext,
   sendDebuggerCommand,
 }: PageObserveDependencies) {
+  // 增量快照缓存：按 tab + roles + 子树 selector 缓存最近一次快照的元素签名，随 pageEpoch 变化作废。
+  // 签名集合由 roles 过滤与子树范围共同决定，只按 tab 键控会让 role 子集快照覆盖全量签名，
+  // 之后不带 roles 的全量 --changed 用子集签名 diff 全量元素，导致非目标角色被误判为 changed。
+  const snapshotSignatureCache = new Map<string, { pageEpoch: number; signatures: string[] }>()
+
+  // 缓存键：同一 tab 上不同 roles / 子树产生的签名集合互不兼容，必须分开缓存
+  const snapshotCacheKey = (tabId: number, roles: string[], selector?: string) =>
+    `${tabId}|${[...roles].sort().join(',')}|${selector?.trim() || ''}`
+
   async function pollUntil<TResult>(
     timeout: number,
     step: () => Promise<TResult | null>,
@@ -495,14 +639,42 @@ ${PAGE_CONTEXT_DEEP_DOM_HELPERS_SOURCE}
   async function snapshotTab(
     tabId: TabInput,
     frameSelector: FrameSelector,
-    targetSelector?: string,
+    options: SnapshotTabOptions = {},
   ) {
     // 子树截取：目标可以是 CSS selector 或 @eN ref，先解析成当前页面可用的 selector
+    const targetSelector = options.selector
     const resolvedTarget = targetSelector?.trim()
       ? await resolveElementSelectorForTab(tabId, targetSelector.trim())
       : null
     const tab = resolvedTarget ? resolvedTarget.tab : await getTargetTab(tabId)
+    const openDialog = state.session.dialogs.get(tab.id)
+    if (openDialog) {
+      // 页面被未处理的 JS 对话框阻塞：不执行 DOM 遍历（会挂起），直接返回 modal 描述
+      return {
+        pageEpoch: getPageEpoch(state, tab.id),
+        title: null,
+        url: null,
+        readyState: 'blocked',
+        text: '',
+        elements: [],
+        frames: [],
+        headings: [],
+        buttons: [],
+        modal: {
+          open: true,
+          type: openDialog.type,
+          message: openDialog.message,
+          defaultPrompt: openDialog.defaultPrompt,
+        },
+      }
+    }
     const pageEpoch = getPageEpoch(state, tab.id)
+    const roles = options.roles ?? []
+    const changedMode = Boolean(options.changed)
+    // 增量模式：pageEpoch 未变时用上次缓存的签名做页内 diff，否则退化为全量
+    const cacheKey = snapshotCacheKey(tab.id, roles, options.selector)
+    const cached = changedMode ? snapshotSignatureCache.get(cacheKey) : undefined
+    const previousSignatures = cached && cached.pageEpoch === pageEpoch ? cached.signatures : []
     const refAttribute = AGENT_ELEMENT_REF_ATTRIBUTE
     const frameAttribute = AGENT_FRAME_REF_ATTRIBUTE
     const frameRefPrefix = AGENT_FRAME_REF_PREFIX
@@ -514,6 +686,9 @@ ${PAGE_CONTEXT_DEEP_DOM_HELPERS_SOURCE}
         const frameRefPrefix = ${JSON.stringify(frameRefPrefix)};
         const pageEpoch = ${pageEpoch};
         const targetRootSelector = ${JSON.stringify(resolvedTarget?.resolvedSelector || null)};
+        const roles = ${JSON.stringify(roles)};
+        const changedMode = ${changedMode};
+        const previousSignatures = ${JSON.stringify(previousSignatures)};
 
 ${PAGE_CONTEXT_TEXT_HELPERS_SOURCE}
 ${PAGE_CONTEXT_DEEP_DOM_HELPERS_SOURCE}
@@ -654,15 +829,24 @@ ${PAGE_CONTEXT_DEEP_DOM_HELPERS_SOURCE}
             continue;
           }
 
+          // role 过滤在可见性检查之后、ref 编号之前：ref 按过滤后的集合重新编号
+          const role = inferRole(element);
+          if (roles.length > 0 && (!role || !roles.includes(role))) {
+            continue;
+          }
+
           const refValue = 'e' + (elements.length + 1);
           element.setAttribute(refAttribute, refValue);
+
+          const text = readText(element).slice(0, 240);
+          const name = getName(element).slice(0, 240);
 
           elements.push({
             ref: '@' + refValue + '#p' + pageEpoch,
             tag: element.tagName.toLowerCase(),
-            role: inferRole(element),
-            text: readText(element).slice(0, 240),
-            name: getName(element).slice(0, 240),
+            role,
+            text,
+            name,
             placeholder: element.getAttribute('placeholder') || null,
             type: element instanceof HTMLInputElement ? element.type || 'text' : null,
             href: element instanceof HTMLAnchorElement ? element.href || null : null,
@@ -712,16 +896,31 @@ ${PAGE_CONTEXT_DEEP_DOM_HELPERS_SOURCE}
           });
         }
 
+        // 轻量指纹：ref + role + text + name，页内计算，供扩展做增量 diff 缓存
+        const signatureOf = (el) => [el.ref, el.role || '', el.text, el.name].join('~');
+        const signatures = elements.map(signatureOf);
+        let visibleElements = elements;
+        let unchangedCount = 0;
+        let full = true;
+        if (changedMode && previousSignatures.length > 0) {
+          const previousSet = new Set(previousSignatures);
+          visibleElements = elements.filter((el) => !previousSet.has(signatureOf(el)));
+          unchangedCount = elements.length - visibleElements.length;
+          full = false;
+        }
+
         return {
           pageEpoch,
           title: document.title,
           url: location.href,
           readyState: document.readyState,
           text: (scope === document ? document.body?.innerText || '' : scope.innerText || '').slice(0, 5000),
-          elements,
+          elements: visibleElements,
           frames,
           headings: deepQuerySelectorAll(scope, "h1,h2,h3").slice(0, 20).map(toNodeSummary),
           buttons: deepQuerySelectorAll(scope, "button,[role='button'],input[type='button'],input[type='submit']").slice(0, 20).map(toNodeSummary),
+          signatures,
+          ...(changedMode ? { unchangedCount, full } : {}),
         };
       })()`,
       withFrameSelectorOptions(frameSelector),
@@ -730,6 +929,27 @@ ${PAGE_CONTEXT_DEEP_DOM_HELPERS_SOURCE}
     // 子树目标不存在时与其它命令保持一致：抛带引导的 STALE_REFERENCE
     if (value && (value as { found?: boolean }).found === false) {
       throw createElementNotFoundError(targetSelector?.trim() || '')
+    }
+
+    // 增量缓存更新：只认本次收集集的签名；found 检查之后再写，失败不污染缓存
+    if (
+      value &&
+      typeof value === 'object' &&
+      Array.isArray((value as Record<string, unknown>).signatures)
+    ) {
+      snapshotSignatureCache.set(cacheKey, {
+        pageEpoch,
+        signatures: (value as Record<string, unknown>).signatures as string[],
+      })
+    }
+
+    // signatures 是内部透传字段，剥掉后再返回，避免泄漏进 JSONL export 与 meta 包络
+    if (value && typeof value === 'object') {
+      const { signatures: _omitted, ...result } = value as { signatures?: unknown } & Record<
+        string,
+        unknown
+      >
+      return result
     }
 
     return value
@@ -747,8 +967,15 @@ ${PAGE_CONTEXT_DEEP_DOM_HELPERS_SOURCE}
     const query = String(options.query || '').trim()
     const name = String(options.name || '').trim()
     const exact = options.exact === true
+    const position = String(options.position || 'first').trim()
+    const candidatesCount =
+      typeof options.candidates === 'number' && options.candidates > 0 ? options.candidates : 0
 
-    if (!['role', 'text', 'label'].includes(strategy)) {
+    if (
+      !['role', 'text', 'label', 'placeholder', 'alt', 'title', 'test-id', 'exact-name'].includes(
+        strategy,
+      )
+    ) {
       throw new Error(`unsupported find strategy: ${strategy || '(empty)'}`)
     }
 
@@ -770,6 +997,8 @@ ${PAGE_CONTEXT_DEEP_DOM_HELPERS_SOURCE}
         const query = ${JSON.stringify(query)};
         const name = ${JSON.stringify(name)};
         const exact = ${exact ? 'true' : 'false'};
+        const position = ${JSON.stringify(position)};
+        const candidatesCount = ${candidatesCount};
         const actionableSelector = 'a[href],button,input:not([type="hidden"]),textarea,select,summary,[role],[tabindex]:not([tabindex="-1"])';
 
 ${PAGE_CONTEXT_FIND_HELPERS_SOURCE}
@@ -954,44 +1183,172 @@ ${PAGE_CONTEXT_FIND_HELPERS_SOURCE}
           return '@' + refValue + '#p' + pageEpoch;
         };
 
-        let match = null;
+        // 排序键：精确匹配优先于模糊，可交互优先于纯文本兜底；值越小越靠前
+        const interactiveSet = new Set(interactiveCandidates);
+        const isExactText = (candidate, needle) => {
+          const normalizedCandidate = normalizeText(candidate).toLowerCase();
+          const normalizedNeedle = normalizeText(needle).toLowerCase();
+          return Boolean(normalizedNeedle) && normalizedCandidate === normalizedNeedle;
+        };
+        const rankMatch = (candidate) =>
+          (candidate.exact ? 0 : 2) + (interactiveSet.has(candidate.node) ? 0 : 1);
+
+        const toTargetDescriptor = (node) => {
+          const actionable = pickActionableNode(node);
+          const rect = actionable.getBoundingClientRect();
+          return {
+            ref: ensureRef(actionable),
+            tag: String(actionable.tagName || '').toLowerCase(),
+            role: inferRole(actionable),
+            text: readText(actionable).slice(0, 240),
+            name: getAccessibleName(actionable).slice(0, 240),
+            x: Math.round(rect.left + rect.width / 2),
+            y: Math.round(rect.top + rect.height / 2),
+            width: Math.round(rect.width),
+            height: Math.round(rect.height),
+          };
+        };
+
+        // 按 DOM 顺序收集全部匹配，first/last/nth 都基于这个序列取值
+        const matches = [];
 
         if (strategy === 'role') {
-          match = interactiveCandidates.find((node) => {
+          for (const node of interactiveCandidates) {
             if (inferRole(node) !== role) {
-              return false;
+              continue;
             }
-
-            if (!name) {
-              return true;
+            if (name && !matchesText(getAccessibleName(node), name)) {
+              continue;
             }
-
-            return matchesText(getAccessibleName(node), name);
-          }) || null;
+            matches.push({
+              node,
+              exact: !name || isExactText(getAccessibleName(node), name),
+            });
+          }
         }
 
         if (strategy === 'text') {
-          match = interactiveCandidates.find((node) => {
-            return matchesText(getAccessibleName(node), query) || matchesText(readText(node), query);
-          }) || null;
-
-          if (!match) {
-            match = getBroadTextCandidates().find((node) => matchesText(readText(node), query)) || null;
+          for (const node of interactiveCandidates) {
+            if (matchesText(getAccessibleName(node), query) || matchesText(readText(node), query)) {
+              matches.push({
+                node,
+                exact:
+                  isExactText(getAccessibleName(node), query) || isExactText(readText(node), query),
+              });
+            }
           }
+          if (matches.length === 0) {
+            for (const node of getBroadTextCandidates()) {
+              if (matchesText(readText(node), query)) {
+                matches.push({ node, exact: isExactText(readText(node), query) });
+              }
+            }
+          }
+        }
 
-          match = pickActionableNode(match);
+        if (strategy === 'exact-name') {
+          for (const node of interactiveCandidates) {
+            if (isExactText(getAccessibleName(node), query) || isExactText(readText(node), query)) {
+              matches.push({ node, exact: true });
+            }
+          }
+          if (matches.length === 0) {
+            for (const node of getBroadTextCandidates()) {
+              if (isExactText(readText(node), query)) {
+                matches.push({ node, exact: true });
+              }
+            }
+          }
         }
 
         if (strategy === 'label') {
-          match = uniqueCandidates(['input:not([type="hidden"])', 'textarea', 'select']).find((node) => {
-            return (
+          for (const node of uniqueCandidates(['input:not([type="hidden"])', 'textarea', 'select'])) {
+            if (
               matchesText(getAssociatedLabelText(node), query) ||
               matchesText(getAccessibleName(node), query)
-            );
-          }) || null;
+            ) {
+              matches.push({
+                node,
+                exact:
+                  isExactText(getAssociatedLabelText(node), query) ||
+                  isExactText(getAccessibleName(node), query),
+              });
+            }
+          }
         }
 
-        if (!match) {
+        if (strategy === 'placeholder') {
+          for (const node of uniqueCandidates(['input:not([type="hidden"])', 'textarea'])) {
+            const placeholderText = normalizeText(node.getAttribute('placeholder'));
+            if (placeholderText && matchesText(placeholderText, query)) {
+              matches.push({ node, exact: isExactText(placeholderText, query) });
+            }
+          }
+        }
+
+        if (strategy === 'alt') {
+          for (const node of uniqueCandidates(['[alt]'])) {
+            const altText = normalizeText(node.getAttribute('alt'));
+            if (altText && matchesText(altText, query)) {
+              matches.push({ node, exact: isExactText(altText, query) });
+            }
+          }
+        }
+
+        if (strategy === 'title') {
+          for (const node of getBroadTextCandidates()) {
+            const titleText = normalizeText(node.getAttribute('title'));
+            if (titleText && matchesText(titleText, query)) {
+              matches.push({ node, exact: isExactText(titleText, query) });
+            }
+          }
+        }
+
+        if (strategy === 'test-id') {
+          for (const node of uniqueCandidates(['[data-testid]'])) {
+            const testId = normalizeText(node.getAttribute('data-testid'));
+            if (testId && matchesText(testId, query)) {
+              matches.push({ node, exact: isExactText(testId, query) });
+            }
+          }
+        }
+
+        if (candidatesCount > 0) {
+          const sorted = matches.slice().sort((a, b) => rankMatch(a) - rankMatch(b));
+          return {
+            found: true,
+            pageEpoch,
+            candidates: sorted
+              .slice(0, candidatesCount)
+              .map((candidate) => toTargetDescriptor(candidate.node)),
+          };
+        }
+
+        let selected = null;
+        if (matches.length > 0) {
+          if (position === 'last') {
+            selected = matches[matches.length - 1].node;
+          } else if (position === 'first') {
+            selected = matches[0].node;
+          } else {
+            const nthIndex = position.startsWith('nth=') ? Number(position.slice(4)) : NaN;
+            if (!Number.isInteger(nthIndex) || nthIndex < 1 || nthIndex > matches.length) {
+              return {
+                found: false,
+                reason:
+                  'nth position out of range: ' +
+                  position +
+                  ' (only ' +
+                  matches.length +
+                  (matches.length === 1 ? ' match' : ' matches') +
+                  ' found)',
+              };
+            }
+            selected = matches[nthIndex - 1].node;
+          }
+        }
+
+        if (!selected) {
           return {
             found: false,
             reason:
@@ -1001,31 +1358,125 @@ ${PAGE_CONTEXT_FIND_HELPERS_SOURCE}
           };
         }
 
-        const rect = match.getBoundingClientRect();
         return {
           found: true,
           pageEpoch,
-          match: {
-            ref: ensureRef(match),
-            tag: String(match.tagName || '').toLowerCase(),
-            role: inferRole(match),
-            text: readText(match).slice(0, 240),
-            name: getAccessibleName(match).slice(0, 240),
-            x: Math.round(rect.left + rect.width / 2),
-            y: Math.round(rect.top + rect.height / 2),
-            width: Math.round(rect.width),
-            height: Math.round(rect.height),
-          },
+          match: toTargetDescriptor(selected),
         };
       })()`,
       withFrameSelectorOptions(frameSelector),
     )
 
-    if (!value?.found || !value?.match?.ref) {
+    if (!value?.found || (!value?.match?.ref && !Array.isArray(value.candidates))) {
       throw new Error(value?.reason || `failed to find ${strategy} target`)
     }
 
     return value
+  }
+
+  async function searchPageText(
+    tabId: TabInput,
+    options: SearchPageTextOptions = {},
+    frameSelector: FrameSelector,
+  ): Promise<SearchPageTextResult> {
+    const query = String(options.query ?? '').trim()
+    const context =
+      typeof options.context === 'number' && Number.isFinite(options.context)
+        ? Math.max(0, Math.floor(options.context))
+        : 3
+    const limit =
+      typeof options.limit === 'number' && Number.isFinite(options.limit)
+        ? Math.min(SEARCH_MAX_LIMIT, Math.max(0, Math.floor(options.limit)))
+        : 20
+
+    const tab = await getTargetTab(tabId)
+    const pageEpoch = getPageEpoch(state, tab.id)
+    const openDialog = state.session.dialogs.get(tab.id)
+    if (openDialog) {
+      // 页面被未处理的 JS 对话框阻塞：不执行 DOM 遍历（会挂起），直接返回 modal 描述
+      return {
+        pageEpoch,
+        query,
+        regex: false,
+        pattern: '',
+        context,
+        limit,
+        readyState: 'blocked',
+        totalMatches: 0,
+        returned: 0,
+        truncated: false,
+        windows: [],
+        modal: {
+          open: true,
+          type: openDialog.type,
+          message: openDialog.message,
+          defaultPrompt: openDialog.defaultPrompt,
+        },
+      }
+    }
+
+    if (!query) {
+      // 空查询：防御性直接返回，避免无意义的页面求值
+      return {
+        pageEpoch,
+        query,
+        regex: false,
+        pattern: '',
+        context,
+        limit,
+        readyState: 'complete',
+        totalMatches: 0,
+        returned: 0,
+        truncated: false,
+        windows: [],
+      }
+    }
+
+    const spec = parseSearchQueryRegex(query)
+    const { value } = await evaluateInTabContext<Partial<SearchPageTextResult>>(
+      tab.id,
+      `(() => {
+        const pageEpoch = ${pageEpoch};
+        const query = ${JSON.stringify(query)};
+        const pattern = ${JSON.stringify(spec.pattern)};
+        const regexFlags = ${JSON.stringify(spec.flags)};
+        const context = ${context};
+        const limit = ${limit};
+        const lineMax = ${SEARCH_LINE_MAX_LENGTH};
+        const readyState = document.readyState;
+        const rawText = document.body?.innerText ?? '';
+
+${SEARCH_TEXT_MATCH_HELPERS_SOURCE}
+
+        return computeSearchPageTextMatches(
+          rawText,
+          query,
+          pattern,
+          regexFlags,
+          context,
+          limit,
+          lineMax,
+          readyState,
+        );
+      })()`,
+      withFrameSelectorOptions(frameSelector),
+    )
+
+    const matches = value ?? {}
+    return {
+      pageEpoch,
+      query,
+      regex: !spec.literal,
+      pattern: spec.pattern,
+      context,
+      limit,
+      // 直接回显页面报告的 readyState，与注入表达式里读的 document.readyState 保持一致
+      readyState: matches.readyState ?? 'complete',
+      totalMatches: matches.totalMatches ?? 0,
+      returned: matches.returned ?? 0,
+      truncated: matches.truncated ?? false,
+      windows: matches.windows ?? [],
+    }
   }
 
   async function collectFeed(
@@ -1516,6 +1967,7 @@ ${PAGE_CONTEXT_DEEP_DOM_HELPERS_SOURCE}
     collectFeed,
     captureScreenshot,
     findSemanticTarget,
+    searchPageText,
     snapshotTab,
     waitForExpression,
     waitForLoadEvent,

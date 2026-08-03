@@ -472,6 +472,8 @@ function clearTabRuntimeState(tabId: number): void {
   state.targeting.targetTabId = clearRemovedTabId(state.targeting.targetTabId, tabId)
   clearRemovedTabHandle(state, tabId)
   clearRemovedPageEpoch(state, tabId)
+  // tab 关闭后其打开的对话框一并失效，清掉避免残留阻塞该 tab 后续命令
+  state.session.dialogs.delete(tabId)
   // tab 关闭后其 isolated world 一并销毁，清掉对应缓存避免泄漏
   for (const key of frameWorldContextCache.keys()) {
     if (key.startsWith(`${tabId}:`)) {

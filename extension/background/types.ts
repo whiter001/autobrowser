@@ -32,6 +32,17 @@ export interface DialogState {
   openedAt: string
 }
 
+/** 对话框被处理/关闭后留档的记录，让 agent 感知发生过但已自动处理的对话框 */
+export interface LastDialogRecord {
+  tabId: number
+  type: string
+  message: string
+  handledBy: 'auto-accept' | 'dialog-command' | 'page-closed'
+  accepted: boolean
+  openedAt: string
+  handledAt: string
+}
+
 export interface NetworkRoute {
   id: string
   pattern: string
@@ -148,7 +159,10 @@ export interface TargetingState {
 
 /** 页面会话级别的可观测状态 */
 export interface SessionState {
-  dialog: DialogState | null
+  /** 当前打开的 JS 对话框，按 tab 记录 */
+  dialogs: Map<number, DialogState>
+  /** 最近一次对话框处理/关闭记录（含自动 accept），null 表示从未发生过 */
+  lastDialog: LastDialogRecord | null
   consoleMessages: ConsoleMessageRecord[]
   pageErrors: PageErrorRecord[]
 }
@@ -201,6 +215,16 @@ export interface TabSummary {
   pinned: boolean
   status: string
   windowId: number | null
+}
+
+/** 命令成功响应中回显的目标 tab 上下文元数据，取不到的字段为 null */
+export interface CommandMeta {
+  tabHandle: string | null
+  tabId: number | null
+  frame: string | null
+  pageEpoch: number | null
+  url: string | null
+  title: string | null
 }
 
 export interface EvaluateInTabContextOptions extends Record<string, unknown> {

@@ -22,6 +22,9 @@ import {
 import { startServers } from '../../server.js'
 import type { CommandContext, CommandRegistry } from './types.js'
 
+/** 优雅关闭时等待 state 持久化完成的兜底时长；超时则强制退出，避免 --serve 进程挂死 */
+const SHUTDOWN_WATCHDOG_MS = 5_000
+
 export function formatStatusSummary(status: Record<string, unknown>): string {
   const lines: string[] = ['autobrowser status']
   const relayPort = typeof status.relayPort === 'number' ? status.relayPort : null
@@ -265,18 +268,40 @@ async function handleServer(rest: string[], context: CommandContext): Promise<nu
     }
 
     const extensionId = await resolveExtensionId(context.homeDir, context.flags.extensionId)
+    let shutdownStarted = false
+    const hardExit = (code: number): void => {
+      if (shutdownStarted) {
+        return
+      }
+      shutdownStarted = true
+      process.exit(code)
+    }
+
     const servers = await startServers({
       relayPort: context.flags.relayPort,
       ipcPort: context.flags.ipcPort,
       extensionId,
+      onShutdown: () => {
+        // 关闭流程已完成（连接断开、端口释放）：先落盘 state，再退出进程。
+        // 由 setTimeout 兜底，即使持久化卡住（磁盘故障等）也保证进程不挂死。
+        const watchdog = setTimeout(() => hardExit(0), SHUTDOWN_WATCHDOG_MS)
+        if (watchdog.unref) {
+          watchdog.unref()
+        }
+        servers.runtime
+          .persist()
+          .then(() => hardExit(0))
+          .catch(() => hardExit(1))
+      },
     })
     process.stdout.write(
       `autobrowser server started\nrelay: http://127.0.0.1:${servers.runtime.runtime.relayPort}\nipc: http://127.0.0.1:${servers.runtime.runtime.ipcPort}\n`,
     )
 
-    const shutdown = () => {
+    const shutdown = (): void => {
+      // 只触发关闭流程，不直接 process.exit：让 onShutdown 完成持久化后再退出，
+      // 避免 SIGINT/SIGTERM 时丢 in-flight 的 state.json 写入；防重入由 performShutdown 的 flag 保证
       servers.stop()
-      process.exit(0)
     }
 
     process.on('SIGINT', shutdown)

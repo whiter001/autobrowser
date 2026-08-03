@@ -1,9 +1,15 @@
 import { afterEach, describe, expect, test } from 'bun:test'
-import { mkdtemp, rm, stat } from 'node:fs/promises'
+import { access, mkdir, mkdtemp, rm, stat, utimes, writeFile } from 'node:fs/promises'
 import { createServer } from 'node:http'
 import os from 'node:os'
 import path from 'node:path'
-import { isPortInUse, isValidPort, readJsonFile, writeJsonFile } from '../src/core/protocol.js'
+import {
+  cleanupStaleTempFiles,
+  isPortInUse,
+  isValidPort,
+  readJsonFile,
+  writeJsonFile,
+} from '../src/core/protocol.js'
 
 describe('protocol file helpers', () => {
   const tempDirs: string[] = []
@@ -37,6 +43,42 @@ describe('protocol file helpers', () => {
     await Bun.write(filePath, '{bad json')
 
     await expect(readJsonFile(filePath, { ok: false })).resolves.toEqual({ ok: false })
+  })
+
+  test('removes stale crash-left temp files but keeps fresh ones', async () => {
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), 'autobrowser-protocol-test-'))
+    tempDirs.push(tempDir)
+    const stateDir = path.join(tempDir, '.autobrowser')
+    await mkdir(stateDir, { recursive: true })
+
+    const staleState = path.join(stateDir, 'state.json.1234.deadbeef.tmp')
+    const staleToken = path.join(stateDir, 'token.1234.deadbeef.tmp')
+    const fresh = path.join(stateDir, 'config.json.9999.fresh.tmp')
+    const unrelated = path.join(stateDir, 'notes.txt')
+    await writeFile(staleState, '{')
+    await writeFile(staleToken, '{')
+    await writeFile(fresh, '{')
+    await writeFile(unrelated, 'keep me')
+
+    const hourAgo = new Date(Date.now() - 3_600_000)
+    await utimes(staleState, hourAgo, hourAgo)
+    await utimes(staleToken, hourAgo, hourAgo)
+
+    await cleanupStaleTempFiles(tempDir)
+
+    await expect(access(staleState)).rejects.toThrow()
+    await expect(access(staleToken)).rejects.toThrow()
+    // 新鲜（仍在写入中）的临时文件和无关文件不应被删
+    // （bun 的 access() 成功时 resolve 为 null，因此这里直接 await，缺文件会抛 ENOENT）
+    await access(fresh)
+    await access(unrelated)
+  })
+
+  test('tolerates a missing state directory during temp cleanup', async () => {
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), 'autobrowser-protocol-test-'))
+    tempDirs.push(tempDir)
+
+    await expect(cleanupStaleTempFiles(tempDir)).resolves.toBeUndefined()
   })
 })
 

@@ -1,4 +1,5 @@
 import {
+  cleanupStaleTempFiles,
   createId,
   createToken,
   DEFAULT_REQUEST_TIMEOUT_MS,
@@ -44,8 +45,12 @@ export interface RuntimeOptions {
   relayPort?: number
   ipcPort?: number
   requestTimeoutMs?: number
+  heartbeatTimeoutMs?: number
   token?: string
 }
+
+/** 扩展每 30s 发一次心跳；超过该时长未收到心跳视为连接已死（半开连接），主动断开 */
+const DEFAULT_HEARTBEAT_TIMEOUT_MS = 45_000
 
 interface PendingRequest {
   resolve: (value: unknown) => void
@@ -75,7 +80,8 @@ function rejectPendingRequests(
 ): void {
   for (const [id, pending] of pendingRequests) {
     clearTimeout(pending.timer)
-    pending.reject(new Error(message))
+    // 带 EXTENSION_DISCONNECTED 标记，便于调用方区分「扩展断开」与「超时」
+    pending.reject(createExtensionDisconnectedError(message))
     pendingRequests.delete(id)
   }
 }
@@ -251,6 +257,7 @@ export async function createRuntime(options: RuntimeOptions = {}): Promise<Runti
   const relayPort = options.relayPort || DEFAULT_RELAY_PORT
   const ipcPort = options.ipcPort || DEFAULT_IPC_PORT
   const requestTimeoutMs = options.requestTimeoutMs || DEFAULT_REQUEST_TIMEOUT_MS
+  const heartbeatTimeoutMs = options.heartbeatTimeoutMs ?? DEFAULT_HEARTBEAT_TIMEOUT_MS
 
   const persistedState = await readJsonFile<{
     token?: string
@@ -260,6 +267,9 @@ export async function createRuntime(options: RuntimeOptions = {}): Promise<Runti
   const tokenFile = await readJsonFile<{ token: string } | null>(getTokenPath(homeDir), null)
 
   const persistedToken = options.token || persistedState?.token || tokenFile?.token
+
+  // 清理上一次崩溃（如 SIGKILL）可能残留的 .tmp 文件，避免状态目录堆积垃圾
+  await cleanupStaleTempFiles(homeDir)
 
   // pendingRequests maps CLI commands to extension responses
   const pendingRequests = new Map<string, PendingRequest>()
@@ -317,6 +327,43 @@ export async function createRuntime(options: RuntimeOptions = {}): Promise<Runti
       clearTimeout(waiter.timer)
       waiter.resolve(socket)
     }
+  }
+
+  let heartbeatTimer: ReturnType<typeof setTimeout> | null = null
+
+  function clearHeartbeatTimeout(): void {
+    if (heartbeatTimer) {
+      clearTimeout(heartbeatTimer)
+      heartbeatTimer = null
+    }
+  }
+
+  function scheduleHeartbeatTimeout(socket: Bun.ServerWebSocket<ExtensionMetadata>): void {
+    clearHeartbeatTimeout()
+    if (!(heartbeatTimeoutMs > 0)) {
+      return
+    }
+
+    heartbeatTimer = setTimeout(() => {
+      heartbeatTimer = null
+      // 重连竞态：定时器触发时可能已经换了连接，只对当前 socket 生效
+      if (runtime.extensionSocket !== socket) {
+        return
+      }
+
+      // 主动关掉半开连接；close 事件会走 detach 身份校验（对当前 socket 生效）。
+      // 直接 detach 兜底，避免部分环境 close 事件不可达时扩展仍被误认为在线。
+      try {
+        if (typeof socket.close === 'function') {
+          socket.close()
+        }
+      } catch {
+        // 连接可能已断开，忽略关闭失败
+      }
+      // detachExtension 是 hoisted 的函数声明，定时器触发时必然已定义；
+      // 直接调用（runtime 是 RuntimeState 对象，没有 detachExtension）
+      detachExtension(socket)
+    }, heartbeatTimeoutMs)
   }
 
   function waitForExtensionConnection(
@@ -412,6 +459,7 @@ export async function createRuntime(options: RuntimeOptions = {}): Promise<Runti
       lastHeartbeatAt: null,
     }
     resolveConnectionWaiters(socket)
+    scheduleHeartbeatTimeout(socket)
     schedulePersist()
   }
 
@@ -424,6 +472,7 @@ export async function createRuntime(options: RuntimeOptions = {}): Promise<Runti
     runtime.extensionSocket = null
     runtime.extensionId = null
     snapshot.extension = null
+    clearHeartbeatTimeout()
     rejectPendingRequests(pendingRequests, 'extension disconnected')
     // 断开时立即唤醒等待连接的 waiter，否则它们只能干等超时
     // reject 内的 settle 会把 waiter 从 Set 删除，Set 迭代期间删除当前元素是安全的
@@ -484,6 +533,11 @@ export async function createRuntime(options: RuntimeOptions = {}): Promise<Runti
       // 心跳每 30s 一次，lastHeartbeatAt 是运行时状态无需持久化；只更新内存，避免每次都全量落盘
       if (snapshot.extension) {
         snapshot.extension.lastHeartbeatAt = new Date().toISOString()
+      }
+
+      // 收到心跳说明连接仍健康，重置超时计时
+      if (runtime.extensionSocket) {
+        scheduleHeartbeatTimeout(runtime.extensionSocket)
       }
 
       if (runtime.extensionSocket && runtime.extensionSocket.readyState === WebSocket.OPEN) {

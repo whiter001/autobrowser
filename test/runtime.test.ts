@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from 'bun:test'
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { access, mkdir, mkdtemp, readFile, rm, utimes, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { createRuntime } from '../src/core/runtime.js'
@@ -260,6 +260,22 @@ describe('runtime snapshot', () => {
     })
   })
 
+  test('cleans up stale crash-left temp files on startup', async () => {
+    const homeDir = await mkdtemp(path.join(os.tmpdir(), 'autobrowser-runtime-test-'))
+    tempDirs.push(homeDir)
+
+    const stateDir = path.join(homeDir, '.autobrowser')
+    await mkdir(stateDir, { recursive: true })
+    const staleTemp = path.join(stateDir, 'state.json.1234.deadbeef.tmp')
+    await writeFile(staleTemp, '{')
+    const hourAgo = new Date(Date.now() - 3_600_000)
+    await utimes(staleTemp, hourAgo, hourAgo)
+
+    await createRuntime({ homeDir })
+
+    await expect(access(staleTemp)).rejects.toThrow()
+  })
+
   test('closes the previous socket on re-attach and ignores its late close event', async () => {
     const homeDir = await mkdtemp(path.join(os.tmpdir(), 'autobrowser-runtime-test-'))
     tempDirs.push(homeDir)
@@ -351,5 +367,89 @@ describe('runtime snapshot', () => {
     await expect(runtime.dispatchCommand('goto', { url: 'https://example.com' })).rejects.toThrow(
       /command timed out after 150ms: goto/,
     )
+  })
+
+  test('detaches the extension when heartbeats stop arriving', async () => {
+    const homeDir = await mkdtemp(path.join(os.tmpdir(), 'autobrowser-runtime-test-'))
+    tempDirs.push(homeDir)
+
+    const runtime = await createRuntime({ homeDir, heartbeatTimeoutMs: 50 })
+
+    const socket = {
+      readyState: WebSocket.OPEN,
+      send: () => 1,
+      close: () => {
+        ;(socket as { readyState: number }).readyState = WebSocket.CLOSED
+      },
+    } as unknown as Bun.ServerWebSocket<{ extensionId?: string | null; userAgent?: string | null }>
+
+    runtime.attachExtension(socket)
+    expect(runtime.snapshot().extensionConnected).toBe(true)
+
+    await delay(120)
+
+    expect(runtime.runtime.extensionSocket).toBeNull()
+    expect(runtime.snapshot().extensionConnected).toBe(false)
+  })
+
+  test('keeps the extension attached while heartbeats keep arriving', async () => {
+    const homeDir = await mkdtemp(path.join(os.tmpdir(), 'autobrowser-runtime-test-'))
+    tempDirs.push(homeDir)
+
+    const runtime = await createRuntime({ homeDir, heartbeatTimeoutMs: 60 })
+
+    const socket = {
+      readyState: WebSocket.OPEN,
+      send: () => 1,
+      close: () => {
+        ;(socket as { readyState: number }).readyState = WebSocket.CLOSED
+      },
+    } as unknown as Bun.ServerWebSocket<{ extensionId?: string | null; userAgent?: string | null }>
+
+    runtime.attachExtension(socket)
+
+    for (let i = 0; i < 5; i += 1) {
+      await delay(25)
+      runtime.handleExtensionMessage(
+        JSON.stringify({
+          type: 'heartbeat',
+          sentAt: new Date().toISOString(),
+        }),
+      )
+    }
+
+    expect(runtime.snapshot().extensionConnected).toBe(true)
+
+    // 心跳停止后超时触发，连接被断开
+    await delay(120)
+    expect(runtime.snapshot().extensionConnected).toBe(false)
+  })
+
+  test('rejects pending commands when the extension heartbeat times out', async () => {
+    const homeDir = await mkdtemp(path.join(os.tmpdir(), 'autobrowser-runtime-test-'))
+    tempDirs.push(homeDir)
+
+    const runtime = await createRuntime({
+      homeDir,
+      requestTimeoutMs: 5_000,
+      heartbeatTimeoutMs: 60,
+    })
+
+    const socket = {
+      readyState: WebSocket.OPEN,
+      send: () => 1,
+      close: () => {
+        ;(socket as { readyState: number }).readyState = WebSocket.CLOSED
+      },
+    } as unknown as Bun.ServerWebSocket<{ extensionId?: string | null; userAgent?: string | null }>
+
+    runtime.attachExtension(socket)
+
+    const commandPromise = runtime.dispatchCommand('goto', { url: 'https://example.com' })
+
+    // 心跳超时触发 detach 时，in-flight 命令应立即以 EXTENSION_DISCONNECTED 失败，而不是干等 30s
+    await expect(commandPromise).rejects.toMatchObject({
+      code: 'EXTENSION_DISCONNECTED',
+    })
   })
 })

@@ -1,3 +1,5 @@
+import { parseSearchQueryRegex } from './search.js'
+
 export interface CommandSpec {
   name: string
   supportsTabTarget?: boolean
@@ -40,6 +42,7 @@ const TAB_TARGET_COMMANDS = [
   'screenshot',
   'scroll',
   'scrollintoview',
+  'search',
   'select',
   'set',
   'snapshot',
@@ -68,6 +71,7 @@ const FRAME_TARGET_COMMANDS = [
   'screenshot',
   'scroll',
   'scrollintoview',
+  'search',
   'select',
   'snapshot',
   'storage',
@@ -338,6 +342,36 @@ function readObjectOrArrayField(
   return value
 }
 
+function validateBatchWhen(value: unknown): void {
+  if (!isRecord(value)) {
+    throw new Error('when must be an object')
+  }
+
+  const stepRef = value.step
+  const isStringRef = typeof stepRef === 'string' && stepRef.trim().length > 0
+  const isIntegerRef = typeof stepRef === 'number' && Number.isInteger(stepRef) && stepRef >= 1
+  if (!isStringRef && !isIntegerRef) {
+    throw new Error('when.step must be a step id string or a positive integer')
+  }
+
+  if (value.path !== undefined && typeof value.path !== 'string') {
+    throw new Error('when.path must be a string')
+  }
+
+  const declared = ['equals', 'truthy', 'exists'].filter((key) => key in value)
+  if (declared.length !== 1) {
+    throw new Error('when must declare exactly one of equals, truthy, or exists')
+  }
+
+  if (value.truthy !== undefined && typeof value.truthy !== 'boolean') {
+    throw new Error('when.truthy must be a boolean')
+  }
+
+  if (value.exists !== undefined && typeof value.exists !== 'boolean') {
+    throw new Error('when.exists must be a boolean')
+  }
+}
+
 function validateBatchStep(value: unknown, index: number): void {
   const stepLabel = `step ${index + 1}`
 
@@ -365,6 +399,23 @@ function validateBatchStep(value: unknown, index: number): void {
 
     if (value.label !== undefined && value.label !== null && typeof value.label !== 'string') {
       throw new Error('label must be a string')
+    }
+
+    if (value.id !== undefined && value.id !== null) {
+      if (typeof value.id !== 'string' || !value.id.trim()) {
+        throw new Error('id must be a non-empty string')
+      }
+    }
+
+    if (
+      value.skipRemainingOnFailure !== undefined &&
+      typeof value.skipRemainingOnFailure !== 'boolean'
+    ) {
+      throw new Error('skipRemainingOnFailure must be a boolean')
+    }
+
+    if (value.when !== undefined) {
+      validateBatchWhen(value.when)
     }
 
     validateCommandArgs(command, value.args ?? {})
@@ -396,6 +447,41 @@ export function validateCommandArgs(command: string, args: unknown): void {
       }
 
       steps.forEach((step, index) => validateBatchStep(step, index))
+
+      const stepIds = new Map<string, number>()
+      steps.forEach((step, index) => {
+        if (isRecord(step) && typeof step.id === 'string' && step.id.trim()) {
+          const id = step.id.trim()
+          if (stepIds.has(id)) {
+            throw createCommandArgsValidationError(
+              command,
+              `step ${index + 1}: duplicate step id: ${id}`,
+              { stepIndex: index + 1, stepId: id },
+            )
+          }
+          stepIds.set(id, index)
+        }
+      })
+
+      steps.forEach((step, index) => {
+        if (!isRecord(step) || !isRecord(step.when)) {
+          return
+        }
+        const ref = step.when.step
+        let referencedIndex: number | null = null
+        if (typeof ref === 'number') {
+          referencedIndex = ref >= 1 && ref <= steps.length ? ref - 1 : null
+        } else if (typeof ref === 'string') {
+          referencedIndex = stepIds.get(ref.trim()) ?? null
+        }
+        if (referencedIndex === null || referencedIndex >= index) {
+          throw createCommandArgsValidationError(
+            command,
+            `step ${index + 1}: when.step must reference an earlier step: ${String(ref)}`,
+            { stepIndex: index + 1, whenStep: ref },
+          )
+        }
+      })
 
       readBooleanField(normalizedArgs, 'continueOnError', command)
       readOptionalNonNegativeIntegerField(normalizedArgs, 'retries', command)
@@ -472,11 +558,20 @@ export function validateCommandArgs(command: string, args: unknown): void {
       return
     case 'find': {
       const strategy = readStringField(normalizedArgs, 'strategy', command)
-      if (!strategy || !['role', 'text', 'label'].includes(strategy)) {
-        throw createCommandArgsValidationError(command, 'strategy must be role, text, or label', {
-          field: 'strategy',
-          value: strategy,
-        })
+      if (
+        !strategy ||
+        !['role', 'text', 'label', 'placeholder', 'alt', 'title', 'test-id', 'exact-name'].includes(
+          strategy,
+        )
+      ) {
+        throw createCommandArgsValidationError(
+          command,
+          'strategy must be role, text, label, placeholder, alt, title, test-id, or exact-name',
+          {
+            field: 'strategy',
+            value: strategy,
+          },
+        )
       }
 
       if (strategy === 'role') {
@@ -487,6 +582,37 @@ export function validateCommandArgs(command: string, args: unknown): void {
 
       readStringField(normalizedArgs, 'name', command, { required: false })
       readBooleanField(normalizedArgs, 'exact', command)
+
+      const position = readStringField(normalizedArgs, 'position', command, { required: false })
+      if (
+        position !== undefined &&
+        !['first', 'last'].includes(position) &&
+        !/^nth=[1-9]\d*$/.test(position)
+      ) {
+        throw createCommandArgsValidationError(command, 'position must be first, last, or nth=N', {
+          field: 'position',
+          value: position,
+        })
+      }
+
+      const candidates = readOptionalNonNegativeIntegerField(normalizedArgs, 'candidates', command)
+      if (candidates !== undefined && candidates < 1) {
+        throw createCommandArgsValidationError(command, 'candidates must be a positive integer', {
+          field: 'candidates',
+          value: candidates,
+        })
+      }
+
+      if (candidates !== undefined && position !== undefined) {
+        throw createCommandArgsValidationError(
+          command,
+          'candidates cannot be combined with position',
+          {
+            field: 'candidates',
+            value: candidates,
+          },
+        )
+      }
 
       const action = readStringField(normalizedArgs, 'action', command, { required: false })
       if (action === undefined) {
@@ -502,6 +628,17 @@ export function validateCommandArgs(command: string, args: unknown): void {
           field: 'action',
           value: action,
         })
+      }
+
+      if (candidates !== undefined && action !== 'locate') {
+        throw createCommandArgsValidationError(
+          command,
+          'candidates only supports the locate action',
+          {
+            field: 'action',
+            value: action,
+          },
+        )
       }
 
       if (action === 'fill' || action === 'type') {
@@ -547,7 +684,25 @@ export function validateCommandArgs(command: string, args: unknown): void {
     }
     case 'snapshot':
       readStringField(normalizedArgs, 'selector', command, { required: false })
+      readStringArrayField(normalizedArgs, 'roles', command, { required: false })
+      readBooleanField(normalizedArgs, 'changed', command)
       return
+    case 'search': {
+      const query = readStringField(normalizedArgs, 'query', command)
+      readOptionalNonNegativeIntegerField(normalizedArgs, 'context', command)
+      readOptionalNonNegativeIntegerField(normalizedArgs, 'limit', command)
+      try {
+        // readStringField 保证 query 非空字符串，这里仅做正则语法校验
+        parseSearchQueryRegex(query as string)
+      } catch (error) {
+        throw createCommandArgsValidationError(
+          command,
+          error instanceof Error ? error.message : 'invalid search regex',
+          { field: 'query', value: query },
+        )
+      }
+      return
+    }
     case 'window':
       {
         const action = readStringField(normalizedArgs, 'action', command)

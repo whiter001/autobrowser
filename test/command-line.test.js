@@ -3,13 +3,20 @@ import { chmod, mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises'
 import { createServer } from 'node:net'
 import os from 'node:os'
 import path from 'node:path'
-import { buildSystemOpenCommand, main, parseWindowsNetstatListeningPid } from '../src/cli.js'
+import {
+  BrowserProfileLockError,
+  buildSystemOpenCommand,
+  detectBrowserProfileLock,
+  main,
+  parseWindowsNetstatListeningPid,
+} from '../src/cli.js'
 import {
   parseConsoleArgs,
   parseNetworkHarStartArgs,
   parseNetworkRequestsArgs,
   parseNetworkRouteArgs,
   parseScreenshotArgs,
+  parseSearchArgs,
   parseWaitArgs,
 } from '../src/cli/parse.js'
 
@@ -133,6 +140,14 @@ describe('cli helpers', () => {
     })
   })
 
+  test('detects browser profile lock signatures in stderr', () => {
+    expect(detectBrowserProfileLock('Opening in existing browser session.\n')).toBe(true)
+    expect(detectBrowserProfileLock('ERROR: profile is already in use')).toBe(true)
+    expect(detectBrowserProfileLock('user data directory is already in use')).toBe(true)
+    expect(detectBrowserProfileLock('')).toBe(false)
+    expect(detectBrowserProfileLock('DevTools listening on ws://127.0.0.1:9222')).toBe(false)
+  })
+
   test('parses the exact listening pid from netstat output', () => {
     const stdout = [
       '  TCP    0.0.0.0:57978    0.0.0.0:0     LISTENING       12345',
@@ -228,10 +243,12 @@ describe('cli helpers', () => {
     const findHelp = await runCli(['help', 'find'])
     expect(findHelp.exitCode).toBe(0)
     expect(findHelp.stdout).toContain(
-      'autobrowser find <role|text|label> <query> [locate|click|fill|type|hover|focus|check|uncheck|text] [value]',
+      'autobrowser find <role|text|label|placeholder|alt|title|test-id|exact-name> <query> [locate|click|fill|type|hover|focus|check|uncheck|text] [value]',
     )
     expect(findHelp.stdout).toContain('--name <name>')
     expect(findHelp.stdout).toContain('--exact')
+    expect(findHelp.stdout).toContain('--position <first|last|nth=N>')
+    expect(findHelp.stdout).toContain('--candidates <n>')
 
     const getHelp = await runCli(['help', 'get'])
     expect(getHelp.exitCode).toBe(0)
@@ -240,6 +257,17 @@ describe('cli helpers', () => {
       'title, url, and cdp-url read the current page and ignore selector',
     )
     expect(getHelp.stdout).toContain('other attribute names are passed through to the page element')
+  })
+
+  test('documents search help output', async () => {
+    const result = await runCli(['help', 'search'])
+
+    expect(result.exitCode).toBe(0)
+    expect(result.stdout).toContain(
+      'autobrowser search <query|/regex/flags> [--context <n>] [--limit <n>]',
+    )
+    expect(result.stdout).toContain('--context <n>')
+    expect(result.stdout).toContain('--limit <n>')
   })
 
   test('documents configurable HAR limits in help output', async () => {
@@ -263,6 +291,18 @@ describe('cli helpers', () => {
       maxRequests: 5000,
       maxBodyBytes: 1048576,
     })
+  })
+
+  test('parses search arguments with defaults', () => {
+    expect(parseSearchArgs(['Sign in'])).toEqual({ query: 'Sign in', context: 3, limit: 20 })
+    expect(parseSearchArgs(['/foo/i', '--context', '5', '--limit', '2'])).toEqual({
+      query: '/foo/i',
+      context: 5,
+      limit: 2,
+    })
+    expect(() => parseSearchArgs([])).toThrow('missing search query')
+    expect(() => parseSearchArgs(['x', '--bogus'])).toThrow('unsupported search option: --bogus')
+    expect(() => parseSearchArgs(['x', 'extra'])).toThrow('unexpected extra search argument: extra')
   })
 
   test('rejects unsupported network request filter flags', () => {
@@ -1509,6 +1549,25 @@ describe('cli command routing', () => {
     ])
   })
 
+  test('reports an actionable error when the browser profile is already in use', async () => {
+    const result = await runCli(
+      ['connect', '--browser-command', 'chrome'],
+      { ok: true, token: 'live-token', relayPort: 48011, ipcPort: 48012 },
+      {
+        openUrl: async () => {
+          throw new BrowserProfileLockError()
+        },
+      },
+    )
+
+    expect(result.exitCode).toBe(1)
+    // 不应回退到 relay 页：浏览器根本没起来，回退没有意义
+    expect(result.openCalls).toHaveLength(1)
+    expect(result.openCalls[0]).toContain('connect.html')
+    expect(result.stderr).toContain('--user-data-dir')
+    expect(result.stderr).toContain('already in use')
+  })
+
   test('connect repairs an invalid persisted extension id', async () => {
     const homeDir = await mkdtemp(path.join(os.tmpdir(), 'autobrowser-invalid-config-'))
     const stateDir = path.join(homeDir, '.autobrowser')
@@ -2484,6 +2543,20 @@ describe('cli command routing', () => {
     })
   })
 
+  test('routes snapshot role filters and changed mode to the extension', async () => {
+    const result = await runCli(['snapshot', '--role', 'button,link', '--changed'])
+
+    expect(result.exitCode).toBe(0)
+    expect(result.fetchCalls).toHaveLength(1)
+    expect(result.fetchCalls[0].body).toEqual({
+      command: 'snapshot',
+      args: {
+        roles: ['button', 'link'],
+        changed: true,
+      },
+    })
+  })
+
   test('routes semantic role finds to the extension', async () => {
     const result = await runCli(['find', 'role', 'button', 'click', '--name', 'Submit'])
 
@@ -2534,6 +2607,50 @@ describe('cli command routing', () => {
     })
   })
 
+  test('routes find candidates mode to the extension', async () => {
+    const result = await runCli(['find', 'text', 'Save', '--candidates', '3'])
+
+    expect(result.exitCode).toBe(0)
+    expect(result.fetchCalls).toHaveLength(1)
+    expect(result.fetchCalls[0].body).toEqual({
+      command: 'find',
+      args: {
+        strategy: 'text',
+        query: 'Save',
+        exact: false,
+        candidates: 3,
+      },
+    })
+  })
+
+  test('routes find position selection to the extension', async () => {
+    const result = await runCli(['find', 'role', 'button', '--position', 'last'])
+
+    expect(result.exitCode).toBe(0)
+    expect(result.fetchCalls).toHaveLength(1)
+    expect(result.fetchCalls[0].body).toEqual({
+      command: 'find',
+      args: {
+        strategy: 'role',
+        role: 'button',
+        exact: false,
+        position: 'last',
+      },
+    })
+  })
+
+  test('rejects find candidates combined with position', async () => {
+    const result = await runCli(['find', 'text', 'Save', '--candidates', '3', '--position', 'last'])
+    expect(result.exitCode).toBe(1)
+    expect(result.stderr).toContain('--candidates cannot be combined with --position')
+  })
+
+  test('rejects find candidates with a non-locate action', async () => {
+    const result = await runCli(['find', 'text', 'Save', '--candidates', '3', 'click'])
+    expect(result.exitCode).toBe(1)
+    expect(result.stderr).toContain('--candidates only supports the locate action')
+  })
+
   test('adds global tab and frame overrides to selector commands', async () => {
     const result = await runCli(['click', '--tab', 't2', '--frame', '@f1', '@e3'])
 
@@ -2577,6 +2694,75 @@ describe('cli command routing', () => {
         frame: '@f2',
       },
     })
+  })
+
+  test('routes search queries to the extension', async () => {
+    const result = await runCli(['search', 'Sign in'])
+
+    expect(result.exitCode).toBe(0)
+    expect(result.fetchCalls).toHaveLength(1)
+    expect(result.fetchCalls[0].body).toEqual({
+      command: 'search',
+      args: {
+        query: 'Sign in',
+        context: 3,
+        limit: 20,
+      },
+    })
+  })
+
+  test('routes search regex queries with context and limit options', async () => {
+    const result = await runCli(['search', '/foo/i', '--context', '5', '--limit', '2'])
+
+    expect(result.exitCode).toBe(0)
+    expect(result.fetchCalls).toHaveLength(1)
+    expect(result.fetchCalls[0].body).toEqual({
+      command: 'search',
+      args: {
+        query: '/foo/i',
+        context: 5,
+        limit: 2,
+      },
+    })
+  })
+
+  test('adds global tab and frame overrides to search commands', async () => {
+    const result = await runCli(['search', '--tab', 't2', '--frame', '@f1', 'Sign in'])
+
+    expect(result.exitCode).toBe(0)
+    expect(result.fetchCalls).toHaveLength(1)
+    expect(result.fetchCalls[0].body).toEqual({
+      command: 'search',
+      args: {
+        query: 'Sign in',
+        context: 3,
+        limit: 20,
+        tabId: 't2',
+        frame: '@f1',
+      },
+    })
+  })
+
+  test('rejects invalid search invocations', async () => {
+    const missingQuery = await runCli(['search'])
+    expect(missingQuery.exitCode).toBe(1)
+    expect(missingQuery.stderr).toContain('missing search query')
+    expect(missingQuery.fetchCalls).toHaveLength(0)
+
+    const badRegex = await runCli(['search', '/foo[/'])
+    expect(badRegex.exitCode).toBe(1)
+    expect(badRegex.stderr).toContain('invalid search regex')
+    expect(badRegex.fetchCalls).toHaveLength(0)
+
+    const badOption = await runCli(['search', 'x', '--bogus'])
+    expect(badOption.exitCode).toBe(1)
+    expect(badOption.stderr).toContain('unsupported search option: --bogus')
+    expect(badOption.fetchCalls).toHaveLength(0)
+
+    const extraArg = await runCli(['search', 'x', 'extra'])
+    expect(extraArg.exitCode).toBe(1)
+    expect(extraArg.stderr).toContain('unexpected extra search argument: extra')
+    expect(extraArg.fetchCalls).toHaveLength(0)
   })
 
   test('adds global tab overrides without leaking frame overrides to frame selection', async () => {

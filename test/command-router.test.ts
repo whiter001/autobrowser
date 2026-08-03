@@ -1,8 +1,31 @@
 import { describe, expect, test } from 'bun:test'
 import { createCommandRouter } from '../extension/background/command-router.js'
+import type { DialogState } from '../extension/background/types.js'
 
-function createMinimalRouter() {
-  const snapshotCalls: Array<{ tabId: unknown; frameSelector: unknown; target?: unknown }> = []
+// tab-target 命令的元数据：mock getTargetTab 返回 { id: 1 }，无 url/title
+const TAB_META = {
+  tabHandle: 't1',
+  tabId: 1,
+  frame: null,
+  pageEpoch: 1,
+  url: null,
+  title: null,
+}
+// 无页面上下文命令（status/script/batch 等）的元数据全为 null
+const EMPTY_META = {
+  tabHandle: null,
+  tabId: null,
+  frame: null,
+  pageEpoch: null,
+  url: null,
+  title: null,
+}
+
+function createMinimalRouter(overrides?: {
+  getTargetTab?: () => Promise<{ id: number }>
+  snapshotTab?: (tabId: unknown, frameSelector: unknown, options?: unknown) => Promise<unknown>
+}) {
+  const snapshotCalls: Array<{ tabId: unknown; frameSelector: unknown; options?: unknown }> = []
   const feedCalls: Array<{
     tabId: unknown
     options: unknown
@@ -13,13 +36,31 @@ function createMinimalRouter() {
   const screenshotCalls: Array<{ tabId: unknown; options: unknown }> = []
   const waitTextCalls: Array<{ text: unknown; gone?: unknown }> = []
   const typeCalls: Array<{ selector: unknown; value: unknown; submit?: unknown }> = []
+  const searchCalls: Array<{
+    tabId: unknown
+    options: unknown
+    frameSelector: unknown
+  }> = []
+
+  const state = {
+    targeting: {
+      targetTabId: null as number | null,
+      tabIdsByHandle: new Map<string, number>(),
+      tabHandles: new Map<number, string>(),
+      selectedFrames: new Map<number, string>(),
+      pageEpochs: new Map<number, number>(),
+      nextTabHandleIndex: 1,
+    },
+    session: {
+      dialogs: new Map<number, DialogState>(),
+      lastDialog: null as Record<string, unknown> | null,
+      consoleMessages: [] as unknown[],
+      pageErrors: [] as unknown[],
+    },
+  }
 
   const router = createCommandRouter({
-    state: {
-      consoleMessages: [],
-      pageErrors: [],
-      targetTabId: null,
-    } as never,
+    state,
     pageInput: {
       navigateTo: async (tabId: unknown, url: string) => {
         navigateCalls.push({ tabId, url })
@@ -81,8 +122,9 @@ function createMinimalRouter() {
       getAttribute: async () => ({ value: undefined }),
     } as never,
     pageObserve: {
-      snapshotTab: async (tabId: unknown, frameSelector: unknown, target?: unknown) => {
-        snapshotCalls.push({ tabId, frameSelector, target })
+      snapshotTab: async (tabId: unknown, frameSelector: unknown, options?: unknown) => {
+        snapshotCalls.push({ tabId, frameSelector, options })
+        if (overrides?.snapshotTab) return overrides.snapshotTab(tabId, frameSelector, options)
         return { snapshotId: `snapshot-${snapshotCalls.length}` }
       },
       collectFeed: async (tabId: unknown, options: unknown, frameSelector: unknown) => {
@@ -106,6 +148,22 @@ function createMinimalRouter() {
         return { captured: true }
       },
       findSemanticTarget: async () => ({ match: null, reason: 'not used in test' }),
+      searchPageText: async (tabId: unknown, options: unknown, frameSelector: unknown) => {
+        searchCalls.push({ tabId, options, frameSelector })
+        return {
+          pageEpoch: 1,
+          query: '',
+          regex: false,
+          pattern: '',
+          context: 3,
+          limit: 20,
+          readyState: 'complete',
+          totalMatches: 0,
+          returned: 0,
+          truncated: false,
+          windows: [],
+        }
+      },
       waitWithTimeout: async (_tabId: unknown, ms: number) => {
         waitTimeoutCalls.push(ms)
       },
@@ -186,11 +244,12 @@ function createMinimalRouter() {
       removeAllScripts: async () => ({ removed: ['script_1'], scripts: [] }),
     } as never,
     listTabs: async () => [],
-    getTargetTab: async () => ({ id: 1 }) as never,
+    getTargetTab: (overrides?.getTargetTab ?? (async () => ({ id: 1 }))) as never,
   } as never)
 
   return {
     router,
+    state,
     snapshotCalls,
     feedCalls,
     navigateCalls,
@@ -198,6 +257,7 @@ function createMinimalRouter() {
     screenshotCalls,
     waitTextCalls,
     typeCalls,
+    searchCalls,
   }
 }
 
@@ -223,7 +283,7 @@ describe('command router batch handling', () => {
           label: null,
           response: {
             ok: true,
-            result: { snapshotId: 'snapshot-1' },
+            result: { snapshotId: 'snapshot-1', meta: TAB_META },
           },
         },
         {
@@ -233,7 +293,11 @@ describe('command router batch handling', () => {
           label: null,
           response: {
             ok: true,
-            result: { navigated: true, url: 'https://example.com' },
+            result: {
+              navigated: true,
+              url: 'https://example.com',
+              meta: { ...TAB_META, url: 'https://example.com' },
+            },
           },
         },
       ],
@@ -242,11 +306,13 @@ describe('command router batch handling', () => {
         completed: 2,
         succeeded: 2,
         failed: 0,
+        skippedCount: 0,
         retried: 0,
         continueOnError: false,
         retries: 0,
         retryDelayMs: 0,
       },
+      meta: EMPTY_META,
     })
   })
 
@@ -283,6 +349,7 @@ describe('command router batch handling', () => {
       stopReason: 'stalled',
       count: 0,
       items: [],
+      meta: TAB_META,
     })
   })
 
@@ -303,6 +370,7 @@ describe('command router batch handling', () => {
       condition: 'selector-stable',
       selector: 'article',
       state: 'stable',
+      meta: TAB_META,
     })
   })
 
@@ -402,7 +470,7 @@ describe('command router batch handling', () => {
           label: null,
           response: {
             ok: true,
-            result: { snapshotId: 'snapshot-1' },
+            result: { snapshotId: 'snapshot-1', meta: TAB_META },
           },
         },
       ],
@@ -411,11 +479,13 @@ describe('command router batch handling', () => {
         completed: 2,
         succeeded: 1,
         failed: 1,
+        skippedCount: 0,
         retried: 1,
         continueOnError: true,
         retries: 1,
         retryDelayMs: 0,
       },
+      meta: EMPTY_META,
     })
 
     expect(snapshotCalls).toHaveLength(1)
@@ -445,6 +515,386 @@ describe('command router batch handling', () => {
         ref: '#missing',
       },
     })
+  })
+
+  test('gates batch steps on a when condition with truthy', async () => {
+    const { router } = createMinimalRouter()
+
+    const hit = await router.handleCommand({
+      command: 'batch',
+      args: {
+        continueOnError: true,
+        steps: [
+          { command: 'snapshot' },
+          {
+            command: 'click',
+            args: { selector: '#btn' },
+            when: { step: 1, path: 'snapshotId', truthy: true },
+          },
+        ],
+      },
+    })
+
+    expect(hit).toEqual({
+      steps: [
+        {
+          index: 1,
+          command: 'snapshot',
+          args: {},
+          label: null,
+          response: {
+            ok: true,
+            result: { snapshotId: 'snapshot-1', meta: TAB_META },
+          },
+        },
+        {
+          index: 2,
+          command: 'click',
+          args: { selector: '#btn' },
+          label: null,
+          response: {
+            ok: true,
+            result: { found: true, selector: '#btn', meta: TAB_META },
+          },
+        },
+      ],
+      summary: {
+        total: 2,
+        completed: 2,
+        succeeded: 2,
+        failed: 0,
+        skippedCount: 0,
+        retried: 0,
+        continueOnError: true,
+        retries: 0,
+        retryDelayMs: 0,
+      },
+      meta: EMPTY_META,
+    })
+
+    // truthy 不命中：引用路径不存在 → 跳过
+    const missRouter = createMinimalRouter()
+    const miss = await missRouter.router.handleCommand({
+      command: 'batch',
+      args: {
+        continueOnError: true,
+        steps: [
+          { command: 'snapshot' },
+          {
+            command: 'click',
+            args: { selector: '#btn' },
+            when: { step: 1, path: 'missing', truthy: true },
+          },
+        ],
+      },
+    })
+
+    expect(miss).toEqual({
+      steps: [
+        {
+          index: 1,
+          command: 'snapshot',
+          args: {},
+          label: null,
+          response: {
+            ok: true,
+            result: { snapshotId: 'snapshot-1', meta: TAB_META },
+          },
+        },
+        {
+          index: 2,
+          command: 'click',
+          args: { selector: '#btn' },
+          label: null,
+          skipped: true,
+          reason: 'skipped: when condition not met (references step 1)',
+        },
+      ],
+      summary: {
+        total: 2,
+        completed: 1,
+        succeeded: 1,
+        failed: 0,
+        skippedCount: 1,
+        retried: 0,
+        continueOnError: true,
+        retries: 0,
+        retryDelayMs: 0,
+      },
+      meta: EMPTY_META,
+    })
+  })
+
+  test('supports equals and exists predicates on snapshot result paths', async () => {
+    const { router } = createMinimalRouter()
+
+    const result = (await router.handleCommand({
+      command: 'batch',
+      args: {
+        continueOnError: true,
+        steps: [
+          { command: 'snapshot' },
+          { command: 'snapshot', when: { step: 1, path: 'meta.tabId', equals: 1 } },
+          { command: 'snapshot', when: { step: 1, path: 'meta', exists: true } },
+          { command: 'snapshot', when: { step: 1, path: 'elements', exists: true } },
+        ],
+      },
+    })) as {
+      steps: Array<{
+        index: number
+        command: string
+        args: Record<string, unknown>
+        label: string | null
+        skipped?: true
+        reason?: string
+      }>
+      summary: { completed: number; skippedCount: number }
+    }
+
+    expect(result.steps.map((step) => step.skipped ?? false)).toEqual([false, false, false, true])
+    expect(result.steps[3]).toEqual({
+      index: 4,
+      command: 'snapshot',
+      args: {},
+      label: null,
+      skipped: true,
+      reason: 'skipped: when condition not met (references step 1)',
+    })
+    expect(result.summary).toMatchObject({ completed: 3, skippedCount: 1 })
+
+    // equals 不命中 → 跳过
+    const miss = (await router.handleCommand({
+      command: 'batch',
+      args: {
+        continueOnError: true,
+        steps: [
+          { command: 'snapshot' },
+          { command: 'snapshot', when: { step: 1, path: 'meta.tabId', equals: 2 } },
+        ],
+      },
+    })) as { steps: Array<{ command?: string; skipped?: true }>; summary: Record<string, unknown> }
+
+    expect(miss.steps[1]).toMatchObject({
+      index: 2,
+      command: 'snapshot',
+      skipped: true,
+      reason: 'skipped: when condition not met (references step 1)',
+    })
+    expect(miss.summary).toMatchObject({
+      completed: 1,
+      succeeded: 1,
+      failed: 0,
+      skippedCount: 1,
+    })
+  })
+
+  test('resolves when paths into array elements with dot notation', async () => {
+    const { router } = createMinimalRouter({
+      snapshotTab: async () => ({ snapshotId: 's', elements: [{ ref: '@e1' }] }),
+    })
+
+    const hit = (await router.handleCommand({
+      command: 'batch',
+      args: {
+        continueOnError: true,
+        steps: [
+          { command: 'snapshot' },
+          { command: 'snapshot', when: { step: 1, path: 'elements.0.ref', equals: '@e1' } },
+        ],
+      },
+    })) as { steps: Array<{ skipped?: true }> }
+
+    expect(hit.steps[1]).toMatchObject({ index: 2, command: 'snapshot' })
+    expect(hit.steps[1]).not.toHaveProperty('skipped')
+
+    const miss = (await router.handleCommand({
+      command: 'batch',
+      args: {
+        continueOnError: true,
+        steps: [
+          { command: 'snapshot' },
+          { command: 'snapshot', when: { step: 1, path: 'elements.0.ref', equals: '@e2' } },
+        ],
+      },
+    })) as { steps: Array<{ skipped?: true }> }
+
+    expect(miss.steps[1]).toMatchObject({ index: 2, skipped: true })
+  })
+
+  test('references earlier steps by id in a when condition', async () => {
+    const { router } = createMinimalRouter()
+
+    const result = (await router.handleCommand({
+      command: 'batch',
+      args: {
+        continueOnError: true,
+        steps: [
+          { command: 'snapshot', id: 'snap' },
+          {
+            command: 'click',
+            args: { selector: '#btn' },
+            when: { step: 'snap', path: 'snapshotId', truthy: true },
+          },
+        ],
+      },
+    })) as {
+      steps: Array<{ id?: string; skipped?: true; response?: { ok: boolean } }>
+    }
+
+    expect(result.steps[0]).toMatchObject({ index: 1, id: 'snap' })
+    expect(result.steps[1]).toMatchObject({ index: 2, response: { ok: true } })
+    expect(result.steps[1]).not.toHaveProperty('skipped')
+  })
+
+  test('skips a when step whose referenced step failed', async () => {
+    const { router } = createMinimalRouter()
+
+    const result = (await router.handleCommand({
+      command: 'batch',
+      args: {
+        continueOnError: true,
+        retries: 1,
+        steps: [
+          { command: 'goto', args: { url: 'chrome://settings' } },
+          { command: 'snapshot', when: { step: 1, path: 'snapshotId', truthy: true } },
+          { command: 'snapshot' },
+        ],
+      },
+    })) as {
+      steps: Array<{ skipped?: true; reason?: string }>
+      summary: Record<string, unknown>
+    }
+
+    expect(result.steps[1]).toMatchObject({
+      index: 2,
+      skipped: true,
+      reason: 'skipped: when condition not met (references step 1)',
+    })
+    expect(result.steps[2]).not.toHaveProperty('skipped')
+    expect(result.summary).toMatchObject({
+      total: 3,
+      completed: 2,
+      succeeded: 1,
+      failed: 1,
+      skippedCount: 1,
+      retried: 1,
+      continueOnError: true,
+    })
+  })
+
+  test('terminates remaining steps when skipRemainingOnFailure is set', async () => {
+    const { router, snapshotCalls, navigateCalls } = createMinimalRouter()
+
+    const result = (await router.handleCommand({
+      command: 'batch',
+      args: {
+        continueOnError: true,
+        steps: [
+          { command: 'snapshot' },
+          {
+            command: 'goto',
+            args: { url: 'chrome://settings' },
+            skipRemainingOnFailure: true,
+          },
+          { command: 'snapshot' },
+          { command: 'snapshot' },
+        ],
+      },
+    })) as {
+      steps: Array<{ command?: string; skipped?: true; reason?: string }>
+      summary: Record<string, unknown>
+    }
+
+    expect(snapshotCalls).toHaveLength(1)
+    expect(navigateCalls).toHaveLength(1)
+    expect(result.steps[2]).toMatchObject({
+      index: 3,
+      command: 'snapshot',
+      skipped: true,
+      reason: 'terminated: step 2 failed with skipRemainingOnFailure',
+    })
+    expect(result.steps[3]).toMatchObject({ index: 4, skipped: true })
+    expect(result.summary).toEqual({
+      total: 4,
+      completed: 2,
+      succeeded: 1,
+      failed: 1,
+      skippedCount: 2,
+      retried: 0,
+      continueOnError: true,
+      retries: 0,
+      retryDelayMs: 0,
+      terminated: true,
+    })
+  })
+
+  test('ignores skipRemainingOnFailure unless continueOnError is set', async () => {
+    const { router } = createMinimalRouter()
+
+    await expect(
+      router.handleCommand({
+        command: 'batch',
+        args: {
+          steps: [
+            { command: 'snapshot' },
+            {
+              command: 'goto',
+              args: { url: 'chrome://settings' },
+              skipRemainingOnFailure: true,
+            },
+          ],
+        },
+      }),
+    ).rejects.toMatchObject({ code: 'BATCH_STEP_FAILED' })
+  })
+
+  test('rejects invalid batch when conditions', async () => {
+    const { router } = createMinimalRouter()
+
+    const cases: Array<{ steps: Array<Record<string, unknown>>; message: string }> = [
+      {
+        steps: [{ command: 'snapshot' }, { command: 'snapshot', when: { step: 1 } }],
+        message:
+          'invalid command arguments for batch: step 2: when must declare exactly one of equals, truthy, or exists',
+      },
+      {
+        steps: [
+          { command: 'snapshot' },
+          { command: 'snapshot', when: { step: 0, path: 'x', truthy: true } },
+        ],
+        message:
+          'invalid command arguments for batch: step 2: when.step must be a step id string or a positive integer',
+      },
+      {
+        steps: [{ command: 'snapshot' }, { command: 'snapshot', when: { step: 1, truthy: 'yes' } }],
+        message: 'invalid command arguments for batch: step 2: when.truthy must be a boolean',
+      },
+      {
+        steps: [
+          { command: 'snapshot' },
+          { command: 'snapshot', when: { step: 'nope', path: 'x', truthy: true } },
+        ],
+        message:
+          'invalid command arguments for batch: step 2: when.step must reference an earlier step: nope',
+      },
+      {
+        steps: [
+          { command: 'snapshot' },
+          { command: 'snapshot', when: { step: 5, path: 'x', truthy: true } },
+        ],
+        message:
+          'invalid command arguments for batch: step 2: when.step must reference an earlier step: 5',
+      },
+    ]
+
+    for (const { steps, message } of cases) {
+      await expect(
+        router.handleCommand({ command: 'batch', args: { steps } }),
+      ).rejects.toMatchObject({ code: 'INVALID_COMMAND_ARGS' })
+      await expect(router.handleCommand({ command: 'batch', args: { steps } })).rejects.toThrow(
+        message,
+      )
+    }
   })
 
   test('rejects time waits without an explicit duration', async () => {
@@ -479,7 +929,10 @@ describe('command router network/session extensions', () => {
       args: { action: 'route', subaction: 'list' },
     })
 
-    expect(result).toEqual({ routes: [{ id: 'route_1', pattern: '**/api/*', abort: true }] })
+    expect(result).toEqual({
+      routes: [{ id: 'route_1', pattern: '**/api/*', abort: true }],
+      meta: TAB_META,
+    })
   })
 
   test('passes route mock options through to the network domain', async () => {
@@ -525,7 +978,7 @@ describe('command router network/session extensions', () => {
       command: 'cookies',
       args: { action: 'delete', name: 'session' },
     })
-    expect(result).toEqual({ deleted: 1, name: 'session' })
+    expect(result).toEqual({ deleted: 1, name: 'session', meta: TAB_META })
 
     await expect(
       router.handleCommand({ command: 'cookies', args: { action: 'delete' } }),
@@ -540,7 +993,7 @@ describe('command router network/session extensions', () => {
       args: { action: 'delete', key: 'draft', session: true },
     })
 
-    expect(result).toEqual({ key: 'draft', deleted: true, session: true })
+    expect(result).toEqual({ key: 'draft', deleted: true, session: true, meta: TAB_META })
   })
 
   test('routes set permission/ua/timezone/locale to the session domain', async () => {
@@ -551,26 +1004,26 @@ describe('command router network/session extensions', () => {
         command: 'set',
         args: { type: 'permission', name: 'geolocation' },
       }),
-    ).resolves.toEqual({ permission: 'geolocation', setting: 'granted' })
+    ).resolves.toEqual({ permission: 'geolocation', setting: 'granted', meta: TAB_META })
 
     await expect(
       router.handleCommand({
         command: 'set',
         args: { type: 'permission', name: 'geolocation', reset: true },
       }),
-    ).resolves.toEqual({ permission: 'geolocation', setting: 'default' })
+    ).resolves.toEqual({ permission: 'geolocation', setting: 'default', meta: TAB_META })
 
     await expect(
       router.handleCommand({ command: 'set', args: { type: 'ua', value: 'My Agent 1.0' } }),
-    ).resolves.toEqual({ userAgent: 'My Agent 1.0' })
+    ).resolves.toEqual({ userAgent: 'My Agent 1.0', meta: TAB_META })
 
     await expect(
       router.handleCommand({ command: 'set', args: { type: 'timezone', value: 'Asia/Shanghai' } }),
-    ).resolves.toEqual({ timezone: 'Asia/Shanghai' })
+    ).resolves.toEqual({ timezone: 'Asia/Shanghai', meta: TAB_META })
 
     await expect(
       router.handleCommand({ command: 'set', args: { type: 'locale', value: '' } }),
-    ).resolves.toEqual({ locale: null })
+    ).resolves.toEqual({ locale: null, meta: TAB_META })
   })
 })
 
@@ -586,6 +1039,7 @@ describe('command router script management', () => {
     expect(result).toEqual({
       script: { id: 'script_1', preview: 'window.__injected = true' },
       scripts: [{ id: 'script_1', preview: 'window.__injected = true' }],
+      meta: EMPTY_META,
     })
   })
 
@@ -597,7 +1051,10 @@ describe('command router script management', () => {
       args: { action: 'list' },
     })
 
-    expect(result).toEqual({ scripts: [{ id: 'script_1', preview: 'window.x = 1' }] })
+    expect(result).toEqual({
+      scripts: [{ id: 'script_1', preview: 'window.x = 1' }],
+      meta: EMPTY_META,
+    })
   })
 
   test('routes script remove by id and --all to the init script domain', async () => {
@@ -605,11 +1062,11 @@ describe('command router script management', () => {
 
     await expect(
       router.handleCommand({ command: 'script', args: { action: 'remove', id: 'script_1' } }),
-    ).resolves.toEqual({ removed: 'script_1', scripts: [] })
+    ).resolves.toEqual({ removed: 'script_1', scripts: [], meta: EMPTY_META })
 
     await expect(
       router.handleCommand({ command: 'script', args: { action: 'remove', all: true } }),
-    ).resolves.toEqual({ removed: ['script_1'], scripts: [] })
+    ).resolves.toEqual({ removed: ['script_1'], scripts: [], meta: EMPTY_META })
 
     await expect(
       router.handleCommand({ command: 'script', args: { action: 'remove' } }),
@@ -635,7 +1092,7 @@ describe('command router playwright parity commands', () => {
     })
 
     expect(snapshotCalls).toHaveLength(1)
-    expect(snapshotCalls[0]).toMatchObject({ frameSelector: null, target: '#panel' })
+    expect(snapshotCalls[0]).toMatchObject({ frameSelector: null, options: { selector: '#panel' } })
   })
 
   test('routes element screenshot options to the page observer', async () => {
@@ -652,6 +1109,37 @@ describe('command router playwright parity commands', () => {
       annotate: false,
       element: '#card',
     })
+  })
+
+  test('routes search queries with default context and limit', async () => {
+    const { router, searchCalls } = createMinimalRouter()
+
+    const result = await router.handleCommand({
+      command: 'search',
+      args: { tabId: 1, query: 'Sign in' },
+    })
+
+    expect(searchCalls).toEqual([
+      { tabId: 1, options: { query: 'Sign in', context: 3, limit: 20 }, frameSelector: null },
+    ])
+    expect(result).toEqual(
+      expect.objectContaining({
+        readyState: 'complete',
+        meta: TAB_META,
+      }),
+    )
+  })
+
+  test('rejects search queries with invalid arguments', async () => {
+    const { router, searchCalls } = createMinimalRouter()
+
+    await expect(
+      router.handleCommand({ command: 'search', args: { tabId: 1 } }),
+    ).rejects.toMatchObject({ code: 'INVALID_COMMAND_ARGS' })
+    await expect(
+      router.handleCommand({ command: 'search', args: { tabId: 1, query: '/foo[/' } }),
+    ).rejects.toMatchObject({ code: 'INVALID_COMMAND_ARGS' })
+    expect(searchCalls).toHaveLength(0)
   })
 
   test('rejects element screenshots combined with full page capture', async () => {
@@ -675,7 +1163,12 @@ describe('command router playwright parity commands', () => {
     })
 
     expect(waitTextCalls).toEqual([{ text: 'Loading', gone: true }])
-    expect(result).toEqual({ waited: true, condition: 'text-gone', text: 'Loading' })
+    expect(result).toEqual({
+      waited: true,
+      condition: 'text-gone',
+      text: 'Loading',
+      meta: TAB_META,
+    })
   })
 
   test('rejects --gone for non-text waits', async () => {
@@ -699,5 +1192,218 @@ describe('command router playwright parity commands', () => {
 
     expect(typeCalls).toEqual([{ selector: '#q', value: 'hello', submit: true }])
     expect(result).toMatchObject({ typed: true, submitted: true })
+  })
+})
+
+function openConfirmDialog(_tabId: number): {
+  open: boolean
+  type: string
+  message: string
+  defaultPrompt: string
+  url: string | null
+  openedAt: string
+} {
+  return {
+    open: true,
+    type: 'confirm',
+    message: 'Continue?',
+    defaultPrompt: '',
+    url: 'https://example.com',
+    openedAt: new Date().toISOString(),
+  }
+}
+
+describe('command router modal blocking', () => {
+  test('blocks interactive commands with a MODAL_OPEN error when the target tab has an open dialog', async () => {
+    const { router, state } = createMinimalRouter()
+    state.session.dialogs.set(1, openConfirmDialog(1))
+
+    await expect(
+      router.handleCommand({ command: 'click', args: { tabId: 1, selector: '#ok' } }),
+    ).rejects.toMatchObject({
+      code: 'MODAL_OPEN',
+      message: 'page has an open confirm dialog: Continue?',
+      suggestedAction: expect.stringContaining("run 'dialog accept'"),
+      details: { type: 'confirm', message: 'Continue?' },
+    })
+  })
+
+  test('blocks goto/wait/type while a dialog is open', async () => {
+    const { router, state, navigateCalls } = createMinimalRouter()
+    state.session.dialogs.set(1, openConfirmDialog(1))
+
+    await expect(
+      router.handleCommand({ command: 'goto', args: { tabId: 1, url: 'https://example.com/x' } }),
+    ).rejects.toMatchObject({ code: 'MODAL_OPEN' })
+    await expect(
+      router.handleCommand({ command: 'wait', args: { tabId: 1, selector: '#done' } }),
+    ).rejects.toMatchObject({ code: 'MODAL_OPEN' })
+    await expect(
+      router.handleCommand({ command: 'type', args: { tabId: 1, selector: '#q', value: 'x' } }),
+    ).rejects.toMatchObject({ code: 'MODAL_OPEN' })
+    expect(navigateCalls).toHaveLength(0)
+  })
+
+  test('does not block dialog, query and snapshot commands while a dialog is open', async () => {
+    const { router, state, snapshotCalls } = createMinimalRouter()
+    state.session.dialogs.set(1, openConfirmDialog(1))
+
+    const status = await router.handleCommand({ command: 'dialog', args: { action: 'status' } })
+    expect(status).toEqual({ meta: TAB_META })
+
+    const handled = await router.handleCommand({
+      command: 'dialog',
+      args: { tabId: 1, accept: true, promptText: 'Continue?' },
+    })
+    expect(handled).toBeUndefined()
+
+    const consoleResult = await router.handleCommand({ command: 'console' })
+    expect(consoleResult).toEqual({ messages: [], meta: TAB_META })
+
+    const snapshot = await router.handleCommand({ command: 'snapshot', args: { tabId: 1 } })
+    expect(snapshot).toEqual(expect.objectContaining({ snapshotId: 'snapshot-1' }))
+    expect(snapshotCalls).toHaveLength(1)
+  })
+
+  test('routes search to the page observe domain while a dialog is open', async () => {
+    const { router, state, searchCalls } = createMinimalRouter()
+    state.session.dialogs.set(1, openConfirmDialog(1))
+
+    const result = await router.handleCommand({
+      command: 'search',
+      args: { tabId: 1, query: 'Sign in', context: 2, limit: 5 },
+    })
+
+    expect(searchCalls).toHaveLength(1)
+    expect(searchCalls[0]).toEqual({
+      tabId: 1,
+      options: { query: 'Sign in', context: 2, limit: 5 },
+      frameSelector: null,
+    })
+    expect(result).toEqual(
+      expect.objectContaining({
+        readyState: 'complete',
+        meta: TAB_META,
+      }),
+    )
+  })
+
+  test('blocks via getTargetTab fallback when no explicit target is given', async () => {
+    const { router, state } = createMinimalRouter()
+    state.session.dialogs.set(1, openConfirmDialog(1))
+
+    await expect(
+      router.handleCommand({ command: 'click', args: { selector: '#ok' } }),
+    ).rejects.toMatchObject({ code: 'MODAL_OPEN' })
+  })
+
+  test('blocks via getTargetTab fallback when only a handle is given', async () => {
+    const { router, state } = createMinimalRouter()
+    state.session.dialogs.set(1, openConfirmDialog(1))
+
+    // handle 未登记在 tabIdsByHandle 时，兜底走 getTargetTab 解析实际目标 tab
+    await expect(
+      router.handleCommand({ command: 'click', args: { handle: 't1', selector: '#ok' } }),
+    ).rejects.toMatchObject({ code: 'MODAL_OPEN' })
+  })
+
+  test('does not block when the dialog is on a different tab', async () => {
+    const { router, state } = createMinimalRouter()
+    state.session.dialogs.set(2, openConfirmDialog(2))
+
+    const result = await router.handleCommand({
+      command: 'click',
+      args: { tabId: 1, selector: '#ok' },
+    })
+    expect(result).toEqual({ found: true, selector: '#ok', meta: TAB_META })
+  })
+})
+
+describe('command router meta context', () => {
+  test('attaches target tab context to tab-target command results', async () => {
+    const { router } = createMinimalRouter()
+
+    const result = await router.handleCommand({
+      command: 'goto',
+      args: { tabId: 1, url: 'https://example.com' },
+    })
+
+    expect(result).toEqual({
+      navigated: true,
+      url: 'https://example.com',
+      meta: { ...TAB_META, url: 'https://example.com' },
+    })
+  })
+
+  test('attaches all-null meta to commands without page context', async () => {
+    const { router } = createMinimalRouter()
+
+    const status = await router.handleCommand({ command: 'status' })
+    expect(status).toEqual({ connected: true, tabs: [], meta: EMPTY_META })
+
+    const list = await router.handleCommand({ command: 'tab.list' })
+    expect(list).toEqual({ tabs: [], meta: EMPTY_META })
+  })
+
+  test('resolves effective frame selector into meta', async () => {
+    const { router } = createMinimalRouter()
+
+    // 'top' 归一化为 null
+    const top = await router.handleCommand({
+      command: 'snapshot',
+      args: { tabId: 1, frame: 'top' },
+    })
+    expect(top).toMatchObject({ meta: { frame: null } })
+  })
+
+  test('resolves selected frame into meta when no explicit frame is given', async () => {
+    const { router, state } = createMinimalRouter()
+    state.targeting.selectedFrames.set(1, '@f1')
+
+    const result = await router.handleCommand({
+      command: 'snapshot',
+      args: { tabId: 1 },
+    })
+    expect(result).toMatchObject({
+      meta: { tabHandle: 't1', tabId: 1, frame: '@f1', pageEpoch: 1 },
+    })
+  })
+
+  test('keeps a successful result even when target tab lookup fails', async () => {
+    const { router } = createMinimalRouter({
+      getTargetTab: async () => {
+        throw new Error('tab gone')
+      },
+    })
+
+    const result = await router.handleCommand({
+      command: 'goto',
+      args: { tabId: 1, url: 'https://example.com' },
+    })
+
+    expect(result).toEqual({
+      navigated: true,
+      url: 'https://example.com',
+      meta: { ...EMPTY_META, url: 'https://example.com' },
+    })
+  })
+
+  test('uses the fresh result url for meta when the tab snapshot is stale', async () => {
+    // 导航命令返回时 tabsGet 可能还没反映新 URL，buildCommandMeta 会拿到旧值；
+    // meta.url 必须以命令结果体里的 url 为准
+    const { router } = createMinimalRouter({
+      getTargetTab: async () => ({ id: 1, url: 'https://stale.example.com' }) as never,
+    })
+
+    const result = await router.handleCommand({
+      command: 'goto',
+      args: { tabId: 1, url: 'https://new.example.com' },
+    })
+
+    expect(result).toEqual({
+      navigated: true,
+      url: 'https://new.example.com',
+      meta: { ...TAB_META, url: 'https://new.example.com' },
+    })
   })
 })

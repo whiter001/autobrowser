@@ -6,12 +6,20 @@ import {
   windowsCreate,
   windowsUpdate,
 } from './chrome.js'
-import { getOrCreateTabHandle, rememberTargetTab, toTabSummary } from './targeting.js'
+import {
+  getOrCreateTabHandle,
+  getPageEpoch,
+  rememberTargetTab,
+  resolveEffectiveFrameSelector,
+  toTabSummary,
+} from './targeting.js'
 import { serializeCommandError, type SerializedCommandError } from './errors.js'
-import { validateCommandArgs } from '../../src/core/command-spec.js'
+import { commandSupportsTabTarget, validateCommandArgs } from '../../src/core/command-spec.js'
 import type {
   CommandArgs,
   CommandMessage,
+  CommandMeta,
+  DialogState,
   ExtensionState,
   FrameSelector,
   ErrorWithCode,
@@ -22,7 +30,47 @@ import type {
   TabWithId,
 } from './types.js'
 import type { FindSemanticTargetOptions, SemanticTargetResult } from './page-observe.js'
-import type { CollectFeedOptions, FeedCollectionResult } from './page-observe.js'
+import type {
+  CollectFeedOptions,
+  FeedCollectionResult,
+  SearchPageTextOptions,
+  SearchPageTextResult,
+  SnapshotTabOptions,
+} from './page-observe.js'
+
+/** 目标 tab 存在未处理 JS 对话框时需要拒绝的命令（交互/导航/读取类）。
+ *  查询类（console/errors/network/status）与 dialog 命令本身不受阻，
+ *  snapshot 放行到 snapshotTab，由其返回 modal 描述 */
+const DIALOG_BLOCKED_COMMANDS = new Set([
+  'goto',
+  'open',
+  'eval',
+  'feed',
+  'screenshot',
+  'click',
+  'dblclick',
+  'fill',
+  'find',
+  'type',
+  'hover',
+  'press',
+  'keyboard',
+  'focus',
+  'select',
+  'check',
+  'uncheck',
+  'scroll',
+  'scrollintoview',
+  'drag',
+  'upload',
+  'back',
+  'forward',
+  'reload',
+  'frame',
+  'is',
+  'get',
+  'wait',
+])
 
 interface PageInputDomain {
   navigateTo: (tabId: TabInput, url: string) => Promise<unknown>
@@ -127,7 +175,7 @@ interface PageObserveDomain {
   snapshotTab: (
     tabId: TabInput,
     frameSelector: FrameSelector,
-    targetSelector?: string,
+    options?: SnapshotTabOptions,
   ) => Promise<unknown>
   collectFeed: (
     tabId: TabInput,
@@ -144,6 +192,11 @@ interface PageObserveDomain {
     options: FindSemanticTargetOptions,
     frameSelector: FrameSelector,
   ) => Promise<SemanticTargetResult>
+  searchPageText: (
+    tabId: TabInput,
+    options: SearchPageTextOptions,
+    frameSelector: FrameSelector,
+  ) => Promise<SearchPageTextResult>
   waitWithTimeout: (tabId: TabInput, ms: number) => Promise<unknown>
   waitForSelectorState: (
     tabId: TabInput,
@@ -176,7 +229,7 @@ interface PageObserveDomain {
 }
 
 interface SessionDomain {
-  getDialogStatus: () => Record<string, unknown>
+  getDialogStatus: (tabId?: TabInput) => Record<string, unknown>
   handleDialog: (tabId: TabInput, accept: boolean, promptText?: string) => Promise<unknown>
   cookiesGet: (tabId: TabInput, filters?: { domain?: string; path?: string }) => Promise<unknown>
   cookiesSet: (tabId: TabInput, name: string, value: string, domain?: string) => Promise<unknown>
@@ -373,6 +426,52 @@ export function createCommandRouter({
     }
   }
 
+  function resolveDialogTabId(tabTarget: TabInput): number | null {
+    if (typeof tabTarget === 'number') {
+      return tabTarget
+    }
+    if (typeof tabTarget === 'string') {
+      return state.targeting.tabIdsByHandle.get(tabTarget) ?? null
+    }
+    return state.targeting.targetTabId
+  }
+
+  function createDialogBlockedError(dialog: DialogState): ErrorWithCode {
+    const error = new Error(
+      `page has an open ${dialog.type} dialog: ${dialog.message || '(no message)'}`,
+    ) as ErrorWithCode
+    error.code = 'MODAL_OPEN'
+    error.suggestedAction =
+      "Handle the dialog first: run 'dialog accept' to accept it, 'dialog dismiss' to dismiss it, or run 'dialog status' to inspect it."
+    error.details = {
+      type: dialog.type,
+      message: dialog.message,
+      defaultPrompt: dialog.defaultPrompt,
+    }
+    return error
+  }
+
+  async function assertNoOpenDialog(command: string, tabTarget: TabInput): Promise<void> {
+    if (!DIALOG_BLOCKED_COMMANDS.has(command)) {
+      return
+    }
+
+    let tabId = resolveDialogTabId(tabTarget)
+    if (tabId === null && (tabTarget == null || typeof tabTarget === 'string')) {
+      // 未显式指定目标或只给了 handle 时，按实际解析出的目标 tab 再查一次，
+      // 覆盖"活动 tab 有未处理对话框但 targetTabId 未记录"的情况
+      const tab = await getTargetTab(tabTarget)
+      tabId = typeof tab?.id === 'number' ? tab.id : null
+    }
+
+    if (tabId !== null) {
+      const dialog = state.session.dialogs.get(tabId)
+      if (dialog) {
+        throw createDialogBlockedError(dialog)
+      }
+    }
+  }
+
   async function createWindow() {
     const window = await windowsCreate({
       url: 'about:blank',
@@ -407,14 +506,22 @@ export function createCommandRouter({
       throw err
     }
     const actionValue = readStringArg(args, 'value')
+    const position = readStringArg(args, 'position').trim()
+    const candidatesCount = Math.floor(readNumberArg(args, 'candidates', 0))
     const findOptions: FindSemanticTargetOptions = {
       strategy: readStringArg(args, 'strategy').trim(),
       role: readStringArg(args, 'role').trim(),
       query: readStringArg(args, 'query').trim(),
       name: readStringArg(args, 'name').trim(),
       exact: args.exact === true,
+      ...(position ? { position } : {}),
+      ...(candidatesCount > 0 ? { candidates: candidatesCount } : {}),
     }
     const result = await pageObserve.findSemanticTarget(tabId, findOptions, frameSelector)
+    // 候选模式只返回候选列表，不执行动作（参数校验已保证 candidates 只搭配 locate）
+    if (findOptions.candidates && Array.isArray(result.candidates)) {
+      return result
+    }
     const ref = result.match?.ref
     if (!ref) {
       const err = new Error(result.reason || 'semantic target ref missing') as any
@@ -601,10 +708,21 @@ export function createCommandRouter({
     }
   }
 
+  interface BatchStepCondition {
+    step: string | number
+    path?: string
+    equals?: unknown
+    truthy?: boolean
+    exists?: boolean
+  }
+
   interface BatchCommandStep {
     command: string
     args: CommandArgs
     label: string | null
+    id?: string | null
+    when?: BatchStepCondition | null
+    skipRemainingOnFailure?: boolean
   }
 
   interface BatchCommandStepResult {
@@ -612,7 +730,10 @@ export function createCommandRouter({
     command: string
     args: CommandArgs
     label: string | null
-    response: { ok: true; result: unknown } | { ok: false; error: SerializedCommandError }
+    id?: string
+    skipped?: true
+    reason?: string
+    response?: { ok: true; result: unknown } | { ok: false; error: SerializedCommandError }
   }
 
   interface BatchCommandOptions {
@@ -626,14 +747,64 @@ export function createCommandRouter({
     completed: number
     succeeded: number
     failed: number
+    skippedCount: number
     retried: number
     continueOnError: boolean
     retries: number
     retryDelayMs: number
+    terminated?: true
   }
 
   function isRecord(value: unknown): value is Record<string, unknown> {
     return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
+  }
+
+  function normalizeBatchStepCondition(value: unknown, index: number): BatchStepCondition {
+    if (!isRecord(value)) {
+      throw new Error(`invalid batch step ${index + 1}: when must be an object`)
+    }
+
+    const stepRef = value.step
+    const isStringRef = typeof stepRef === 'string' && stepRef.trim().length > 0
+    const isIntegerRef = typeof stepRef === 'number' && Number.isInteger(stepRef) && stepRef >= 1
+    if (!isStringRef && !isIntegerRef) {
+      throw new Error(
+        `invalid batch step ${index + 1}: when.step must be a step id string or a positive integer`,
+      )
+    }
+
+    if (value.path !== undefined && typeof value.path !== 'string') {
+      throw new Error(`invalid batch step ${index + 1}: when.path must be a string`)
+    }
+
+    const declared = ['equals', 'truthy', 'exists'].filter((key) => key in value)
+    if (declared.length !== 1) {
+      throw new Error(
+        `invalid batch step ${index + 1}: when must declare exactly one of equals, truthy, or exists`,
+      )
+    }
+
+    if (value.truthy !== undefined && typeof value.truthy !== 'boolean') {
+      throw new Error(`invalid batch step ${index + 1}: when.truthy must be a boolean`)
+    }
+    if (value.exists !== undefined && typeof value.exists !== 'boolean') {
+      throw new Error(`invalid batch step ${index + 1}: when.exists must be a boolean`)
+    }
+
+    const condition: BatchStepCondition = { step: stepRef as string | number }
+    if (value.path !== undefined) {
+      condition.path = value.path
+    }
+    if (value.equals !== undefined) {
+      condition.equals = value.equals
+    }
+    if (value.truthy !== undefined) {
+      condition.truthy = value.truthy
+    }
+    if (value.exists !== undefined) {
+      condition.exists = value.exists
+    }
+    return condition
   }
 
   function normalizeBatchCommandStep(value: unknown, index: number): BatchCommandStep {
@@ -664,11 +835,31 @@ export function createCommandRouter({
       throw new Error(`invalid batch step ${index + 1}: args must be an object`)
     }
 
-    return {
+    const step: BatchCommandStep = {
       command,
       args,
       label: typeof value.label === 'string' && value.label.trim() ? value.label.trim() : null,
     }
+
+    if (value.id !== undefined && value.id !== null) {
+      if (typeof value.id !== 'string' || !value.id.trim()) {
+        throw new Error(`invalid batch step ${index + 1}: id must be a non-empty string`)
+      }
+      step.id = value.id.trim()
+    }
+
+    if (value.skipRemainingOnFailure !== undefined && value.skipRemainingOnFailure !== null) {
+      if (typeof value.skipRemainingOnFailure !== 'boolean') {
+        throw new Error(`invalid batch step ${index + 1}: skipRemainingOnFailure must be a boolean`)
+      }
+      step.skipRemainingOnFailure = value.skipRemainingOnFailure
+    }
+
+    if (value.when !== undefined && value.when !== null) {
+      step.when = normalizeBatchStepCondition(value.when, index)
+    }
+
+    return step
   }
 
   function readBatchCommandSteps(args: CommandArgs): BatchCommandStep[] {
@@ -718,18 +909,22 @@ export function createCommandRouter({
     completed: number,
     succeeded: number,
     failed: number,
+    skippedCount: number,
     retried: number,
     options: BatchCommandOptions,
+    terminated = false,
   ): BatchCommandSummary {
     return {
       total,
       completed,
       succeeded,
       failed,
+      skippedCount,
       retried,
       continueOnError: options.continueOnError,
       retries: options.retries,
       retryDelayMs: options.retryDelayMs,
+      ...(terminated ? { terminated: true as const } : {}),
     }
   }
 
@@ -759,6 +954,7 @@ export function createCommandRouter({
             command: step.command,
             args: step.args,
             label: step.label,
+            ...(step.id ? { id: step.id } : {}),
             response: createBatchStepResponse(result),
           },
           failed: false,
@@ -783,10 +979,148 @@ export function createCommandRouter({
         command: step.command,
         args: step.args,
         label: step.label,
+        ...(step.id ? { id: step.id } : {}),
         response: createBatchStepFailureResponse(lastError),
       },
       failed: true,
       retryCount,
+    }
+  }
+
+  function batchValuesEqual(a: unknown, b: unknown): boolean {
+    if (Object.is(a, b)) {
+      return true
+    }
+    if (typeof a !== typeof b) {
+      return false
+    }
+    if (Array.isArray(a) && Array.isArray(b)) {
+      return a.length === b.length && a.every((item, i) => batchValuesEqual(item, b[i]))
+    }
+    if (isRecord(a) && isRecord(b)) {
+      const aKeys = Object.keys(a)
+      const bKeys = Object.keys(b)
+      return (
+        aKeys.length === bKeys.length &&
+        aKeys.every(
+          (key) => Object.prototype.hasOwnProperty.call(b, key) && batchValuesEqual(a[key], b[key]),
+        )
+      )
+    }
+    return false
+  }
+
+  function getBatchStepResultValue(
+    container: unknown,
+    path: string | undefined,
+  ): { exists: boolean; value: unknown } {
+    if (!path) {
+      return { exists: true, value: container }
+    }
+
+    let current: unknown = container
+    for (const part of path.split('.')) {
+      if (current === null || current === undefined) {
+        return { exists: false, value: undefined }
+      }
+      if (Array.isArray(current)) {
+        if (!/^(0|[1-9]\d*)$/.test(part)) {
+          return { exists: false, value: undefined }
+        }
+        const arrayIndex = Number(part)
+        if (arrayIndex >= current.length) {
+          return { exists: false, value: undefined }
+        }
+        current = current[arrayIndex]
+        continue
+      }
+      if (typeof current === 'object') {
+        const record = current as Record<string, unknown>
+        if (!Object.prototype.hasOwnProperty.call(record, part)) {
+          return { exists: false, value: undefined }
+        }
+        current = record[part]
+        continue
+      }
+      return { exists: false, value: undefined }
+    }
+
+    return { exists: true, value: current }
+  }
+
+  function resolveBatchStepIndex(ref: string | number, steps: BatchCommandStep[]): number | null {
+    if (typeof ref === 'number') {
+      return ref >= 1 && ref <= steps.length ? ref - 1 : null
+    }
+    const matchedIndex = steps.findIndex((step) => step.id === ref)
+    return matchedIndex === -1 ? null : matchedIndex
+  }
+
+  /** 求值 when 条件：被引用的前置 step 必须已成功执行且未跳过，再按 path/谓词匹配其结果 */
+  function evaluateBatchStepCondition(
+    condition: BatchStepCondition,
+    steps: BatchCommandStep[],
+    results: BatchCommandStepResult[],
+    currentIndex: number,
+  ): boolean {
+    const referencedIndex = resolveBatchStepIndex(condition.step, steps)
+    if (
+      referencedIndex === null ||
+      referencedIndex >= currentIndex ||
+      referencedIndex >= results.length
+    ) {
+      return false
+    }
+
+    const referencedResult = results[referencedIndex]
+    if (referencedResult.skipped || referencedResult.response?.ok !== true) {
+      return false
+    }
+
+    const { exists, value } = getBatchStepResultValue(
+      referencedResult.response.result,
+      condition.path,
+    )
+
+    if (condition.exists !== undefined) {
+      return condition.exists === exists
+    }
+    if (condition.truthy !== undefined) {
+      return condition.truthy ? Boolean(value) : !value
+    }
+    if (condition.equals !== undefined) {
+      return exists && batchValuesEqual(condition.equals, value)
+    }
+    return false
+  }
+
+  function validateBatchWhenReferences(steps: BatchCommandStep[]): void {
+    for (const [index, step] of steps.entries()) {
+      if (!step.when) {
+        continue
+      }
+      const referencedIndex = resolveBatchStepIndex(step.when.step, steps)
+      if (referencedIndex === null || referencedIndex >= index) {
+        throw new Error(
+          `invalid batch step ${index + 1}: when.step must reference an earlier step (got ${JSON.stringify(step.when.step)})`,
+        )
+      }
+    }
+  }
+
+  function createSkippedBatchStepResult(
+    step: BatchCommandStep,
+    index: number,
+    reason: string,
+  ): BatchCommandStepResult {
+    return {
+      index: index + 1,
+      command: step.command,
+      args: step.args,
+      label: step.label,
+      ...(step.id ? { id: step.id } : {}),
+      skipped: true,
+      reason,
     }
   }
 
@@ -795,12 +1129,43 @@ export function createCommandRouter({
   ): Promise<{ steps: BatchCommandStepResult[]; summary: BatchCommandSummary }> {
     const steps = readBatchCommandSteps(args)
     const options = readBatchCommandOptions(args)
+    validateBatchWhenReferences(steps)
     const results: BatchCommandStepResult[] = []
     let succeeded = 0
     let failed = 0
     let retried = 0
+    let skippedCount = 0
+    let terminated = false
+    let terminatedAtIndex: number | null = null
 
     for (const [index, step] of steps.entries()) {
+      if (terminated) {
+        skippedCount += 1
+        results.push(
+          createSkippedBatchStepResult(
+            step,
+            index,
+            `terminated: step ${terminatedAtIndex} failed with skipRemainingOnFailure`,
+          ),
+        )
+        continue
+      }
+
+      if (step.when) {
+        const conditionMet = evaluateBatchStepCondition(step.when, steps, results, index)
+        if (!conditionMet) {
+          skippedCount += 1
+          results.push(
+            createSkippedBatchStepResult(
+              step,
+              index,
+              `skipped: when condition not met (references step ${String(step.when.step)})`,
+            ),
+          )
+          continue
+        }
+      }
+
       const stepExecution = await executeBatchStep(step, index, options)
       results.push(stepExecution.result)
 
@@ -808,30 +1173,30 @@ export function createCommandRouter({
         failed += 1
         retried += stepExecution.retryCount
 
-        const summary = createBatchSummary(
-          steps.length,
-          results.length,
-          succeeded,
-          failed,
-          retried,
-          options,
-        )
-        const failedStep = {
-          index: stepExecution.result.index,
-          command: stepExecution.result.command,
-          args: stepExecution.result.args,
-          label: stepExecution.result.label,
-          response: stepExecution.result.response,
+        // skipRemainingOnFailure 只在 continueOnError 下生效：失败时不继续执行后续步骤，而是显式终止。
+        if (step.skipRemainingOnFailure === true && options.continueOnError) {
+          terminated = true
+          terminatedAtIndex = index + 1
+          continue
         }
 
         if (!options.continueOnError) {
+          const summary = createBatchSummary(
+            steps.length,
+            results.length - skippedCount,
+            succeeded,
+            failed,
+            skippedCount,
+            retried,
+            options,
+          )
           const batchError = new Error(
             `batch step ${index + 1} failed: ${step.command}`,
           ) as ErrorWithCode
           batchError.code = 'BATCH_STEP_FAILED'
           batchError.details = {
             steps: results,
-            failedStep,
+            failedStep: stepExecution.result,
             summary,
           }
           throw batchError
@@ -848,13 +1213,68 @@ export function createCommandRouter({
       steps: results,
       summary: createBatchSummary(
         steps.length,
-        results.length,
+        results.length - skippedCount,
         succeeded,
         failed,
+        skippedCount,
         retried,
         options,
+        terminated,
       ),
     }
+  }
+
+  /** 无页面上下文的命令（status/tab.list/script/batch 等）返回的元数据全为 null */
+  function emptyCommandMeta(): CommandMeta {
+    return {
+      tabHandle: null,
+      tabId: null,
+      frame: null,
+      pageEpoch: null,
+      url: null,
+      title: null,
+    }
+  }
+
+  /** 构建命令实际目标 tab 的上下文元数据；取 tab 失败时回退为全 null，永不 throw */
+  async function buildCommandMeta(
+    command: string,
+    tabTarget: TabInput,
+    frameSelector: FrameSelector,
+  ): Promise<CommandMeta> {
+    if (!commandSupportsTabTarget(command)) {
+      return emptyCommandMeta()
+    }
+
+    let tab
+    try {
+      tab = await getTargetTab(tabTarget)
+    } catch {
+      return emptyCommandMeta()
+    }
+
+    if (!tab || typeof tab.id !== 'number') {
+      return emptyCommandMeta()
+    }
+
+    return {
+      tabHandle: getOrCreateTabHandle(state, tab.id),
+      tabId: tab.id,
+      frame: resolveEffectiveFrameSelector(state, { id: tab.id }, frameSelector),
+      pageEpoch: getPageEpoch(state, tab.id),
+      url: tab.url || null,
+      title: tab.title || null,
+    }
+  }
+
+  /** 只对对象结果增量附加 meta；原始值/数组保持原样透传 */
+  function attachCommandMeta(result: unknown, meta: CommandMeta): unknown {
+    if (!isRecord(result)) {
+      return result
+    }
+    // 导航类命令（goto/open）结果体里带新 url，覆盖 buildCommandMeta 从 tabsGet 拿到的旧值
+    const effectiveMeta = typeof result.url === 'string' ? { ...meta, url: result.url } : meta
+    return { ...result, meta: effectiveMeta }
   }
 
   async function executeCommand(command: string, args: CommandArgs = {}) {
@@ -867,6 +1287,8 @@ export function createCommandRouter({
     const url = readStringArg(args, 'url', 'about:blank')
     const script = readStringArg(args, 'script', 'document.title')
     const selector = readStringArg(args, 'selector')
+    const snapshotRoles = readStringArrayArg(args, 'roles')
+    const snapshotChanged = readBooleanArg(args, 'changed', false)
     const value = readStringArg(args, 'value')
     const key = readStringArg(args, 'key')
     const text = readStringArg(args, 'text')
@@ -904,301 +1326,326 @@ export function createCommandRouter({
     const feedMaxScrolls = readNumberArg(args, 'maxScrolls', 20)
     const feedPauseMs = readNumberArg(args, 'pauseMs', 900)
     const feedStallRounds = readNumberArg(args, 'stallRounds', 3)
+    const searchQuery = readStringArg(args, 'query')
+    const searchContext = readNumberArg(args, 'context', 3)
+    const searchLimit = readNumberArg(args, 'limit', 20)
     const tabTarget = handle || tabId
 
-    switch (command) {
-      case 'status':
-        return {
-          connected: true,
-          tabs: await listTabs(),
-        }
-      case 'tab.list':
-        return { tabs: await listTabs() }
-      case 'tab.select':
-        return await selectTab(tabTarget)
-      case 'tab.new': {
-        const tab = await tabsCreate({
-          url,
-        })
+    await assertNoOpenDialog(command, tabTarget)
 
-        if (tab && typeof tab.id === 'number') {
-          rememberTargetTab(state, tab.id)
-        }
-
-        return { tab: toTabSummary(state, tab || {}) }
-      }
-      case 'tab.close':
-        return await closeTab(tabTarget)
-      case 'goto':
-      case 'open':
-        return await pageInput.navigateTo(tabId, url)
-      case 'eval':
-        return await pageInput.evaluateScript(tabId, script, frameSelector)
-      case 'snapshot':
-        return await pageObserve.snapshotTab(tabId, frameSelector, selector.trim() || undefined)
-      case 'feed':
-        return await pageObserve.collectFeed(
-          tabId,
-          {
-            selector: feedSelector?.trim() || 'article',
-            limit: feedLimit,
-            dedupe: feedDedupe as CollectFeedOptions['dedupe'],
-            maxScrolls: feedMaxScrolls,
-            pauseMs: feedPauseMs,
-            stallRounds: feedStallRounds,
-          },
-          frameSelector,
-        )
-      case 'screenshot':
-        return await pageObserve.captureScreenshot(tabId, screenshotOptions, frameSelector)
-      case 'click':
-        return await pageInput.clickSelector(tabId, selector, frameSelector)
-      case 'dblclick':
-        return await pageInput.doubleClickSelector(tabId, selector, frameSelector)
-      case 'fill':
-        return await pageInput.fillSelector(tabId, selector, value, frameSelector)
-      case 'find':
-        return await handleFindCommand(tabId, args, frameSelector)
-      case 'type':
-        return await pageInput.typeIntoSelector(
-          tabId,
-          selector,
-          value,
-          frameSelector,
-          readBooleanArg(args, 'submit', false),
-        )
-      case 'hover':
-        return await pageInput.hoverElement(tabId, selector, frameSelector)
-      case 'press':
-        return await pageInput.pressKey(tabId, key)
-      case 'keyboard':
-        if (action === 'type') {
-          return await pageInput.insertTextSequentially(tabId, text)
-        }
-        if (action === 'inserttext') {
-          return await pageInput.insertTextOnce(tabId, text)
-        }
-        if (action === 'keydown') {
-          return await pageInput.keyDownOnly(tabId, text)
-        }
-        if (action === 'keyup') {
-          return await pageInput.keyUpOnly(tabId, text)
-        }
-        throw new Error(`unsupported keyboard action: ${action}`)
-      case 'focus':
-        return await pageInput.focusElement(tabId, selector, frameSelector)
-      case 'select':
-        return await pageInput.selectOption(tabId, selector, value, frameSelector)
-      case 'check':
-        return await pageInput.checkElement(tabId, selector, true, frameSelector)
-      case 'uncheck':
-        return await pageInput.checkElement(tabId, selector, false, frameSelector)
-      case 'scroll':
-        return await pageInput.scrollElement(tabId, scrollSelector, deltaX, deltaY, frameSelector)
-      case 'scrollintoview':
-        return await pageInput.scrollIntoViewSelector(tabId, selector, frameSelector)
-      case 'drag':
-        return await pageInput.dragElement(tabId, start, end, frameSelector)
-      case 'upload':
-        return await pageInput.uploadFiles(tabId, selector, files, frameSelector)
-      case 'back':
-        return await pageInput.navigateBack(tabId)
-      case 'forward':
-        return await pageInput.navigateForward(tabId)
-      case 'reload':
-        return await pageInput.reloadPage(tabId)
-      case 'close':
-        return await closeTabs(tabId, readBooleanArg(args, 'all', false))
-      case 'window':
-        if (action === 'new') {
-          return await createWindow()
-        }
-        throw new Error(`unsupported window action: ${action}`)
-      case 'frame':
-        return await pageInput.switchToFrame(tabId, selector)
-      case 'is':
-        return await pageInput.checkIsState(tabId, selector, stateName, frameSelector)
-      case 'get':
-        return await pageInput.getAttribute(tabId, selector, attr, frameSelector)
-      case 'dialog':
-        if (action === 'status') {
-          return session.getDialogStatus()
-        }
-        return await session.handleDialog(tabId, accept, promptText)
-      case 'wait':
-        return await handleWait(tabId, args, frameSelector)
-      case 'cookies':
-        if (action === 'get') {
-          return await session.cookiesGet(tabId, {
-            domain: readOptionalStringArg(args, 'domain'),
-            path: readOptionalStringArg(args, 'path'),
-          })
-        }
-        if (action === 'set') {
-          return await session.cookiesSet(tabId, name, value, domain)
-        }
-        if (action === 'clear') {
-          return await session.cookiesClear(tabId)
-        }
-        if (action === 'delete') {
-          if (!name || name === 'default') {
-            throw new Error('cookies delete requires a cookie name')
+    async function runCommand(): Promise<unknown> {
+      switch (command) {
+        case 'status':
+          return {
+            connected: true,
+            tabs: await listTabs(),
           }
-          return await session.cookiesDelete(tabId, name)
+        case 'tab.list':
+          return { tabs: await listTabs() }
+        case 'tab.select':
+          return await selectTab(tabTarget)
+        case 'tab.new': {
+          const tab = await tabsCreate({
+            url,
+          })
+
+          if (tab && typeof tab.id === 'number') {
+            rememberTargetTab(state, tab.id)
+          }
+
+          return { tab: toTabSummary(state, tab || {}) }
         }
-        throw new Error(`unsupported cookies action: ${action}`)
-      case 'storage': {
-        const sessionOnly = readBooleanArg(args, 'session', false)
-        if (action === 'get') {
-          return await session.storageGet(tabId, storageKey, frameSelector, sessionOnly)
-        }
-        if (action === 'set') {
-          return await session.storageSet(
+        case 'tab.close':
+          return await closeTab(tabTarget)
+        case 'goto':
+        case 'open':
+          return await pageInput.navigateTo(tabId, url)
+        case 'eval':
+          return await pageInput.evaluateScript(tabId, script, frameSelector)
+        case 'snapshot':
+          return await pageObserve.snapshotTab(tabId, frameSelector, {
+            selector: selector.trim() || undefined,
+            ...(snapshotRoles.length > 0 ? { roles: snapshotRoles } : {}),
+            ...(snapshotChanged ? { changed: true } : {}),
+          })
+        case 'feed':
+          return await pageObserve.collectFeed(
             tabId,
-            storageKey || '',
-            storageValue,
+            {
+              selector: feedSelector?.trim() || 'article',
+              limit: feedLimit,
+              dedupe: feedDedupe as CollectFeedOptions['dedupe'],
+              maxScrolls: feedMaxScrolls,
+              pauseMs: feedPauseMs,
+              stallRounds: feedStallRounds,
+            },
             frameSelector,
-            sessionOnly,
           )
-        }
-        if (action === 'delete') {
-          if (!storageKey) {
-            throw new Error('storage delete requires a key')
+        case 'search':
+          return await pageObserve.searchPageText(
+            tabId,
+            {
+              query: searchQuery,
+              context: searchContext,
+              limit: searchLimit,
+            },
+            frameSelector,
+          )
+        case 'screenshot':
+          return await pageObserve.captureScreenshot(tabId, screenshotOptions, frameSelector)
+        case 'click':
+          return await pageInput.clickSelector(tabId, selector, frameSelector)
+        case 'dblclick':
+          return await pageInput.doubleClickSelector(tabId, selector, frameSelector)
+        case 'fill':
+          return await pageInput.fillSelector(tabId, selector, value, frameSelector)
+        case 'find':
+          return await handleFindCommand(tabId, args, frameSelector)
+        case 'type':
+          return await pageInput.typeIntoSelector(
+            tabId,
+            selector,
+            value,
+            frameSelector,
+            readBooleanArg(args, 'submit', false),
+          )
+        case 'hover':
+          return await pageInput.hoverElement(tabId, selector, frameSelector)
+        case 'press':
+          return await pageInput.pressKey(tabId, key)
+        case 'keyboard':
+          if (action === 'type') {
+            return await pageInput.insertTextSequentially(tabId, text)
           }
-          return await session.storageDelete(tabId, storageKey, frameSelector, sessionOnly)
-        }
-        if (action === 'clear') {
-          return await session.storageClear(tabId, frameSelector, sessionOnly)
-        }
-        throw new Error(`unsupported storage action: ${action}`)
-      }
-      case 'console':
-        return { messages: state.session.consoleMessages }
-      case 'errors':
-        return { errors: state.session.pageErrors }
-      case 'batch':
-        return await handleBatchCommand(args)
-      case 'script':
-        if (action === 'add') {
-          return await initScripts.addScript(readStringArg(args, 'source'))
-        }
-        if (action === 'list') {
-          return initScripts.listScripts()
-        }
-        if (action === 'remove') {
-          if (readBooleanArg(args, 'all', false)) {
-            return await initScripts.removeAllScripts()
+          if (action === 'inserttext') {
+            return await pageInput.insertTextOnce(tabId, text)
           }
-          const scriptId = readStringArg(args, 'id')
-          if (!scriptId) {
-            throw new Error('script remove requires an id or --all')
+          if (action === 'keydown') {
+            return await pageInput.keyDownOnly(tabId, text)
           }
-          return await initScripts.removeScript(scriptId)
-        }
-        throw new Error(`unsupported script action: ${action}`)
-      case 'network':
-        if (action === 'route') {
-          if (subaction === 'list') {
-            return network.listRoutes()
+          if (action === 'keyup') {
+            return await pageInput.keyUpOnly(tabId, text)
           }
-          const removeHeaders = readStringArrayArg(args, 'removeHeaders')
-          return await network.routeRequest(tabId, url, {
-            abort: args.abort === true,
-            body: args.body,
-            status: typeof args.status === 'number' ? args.status : undefined,
-            contentType: readOptionalStringArg(args, 'contentType'),
-            headers: readObjectArg(args, 'headers') as Record<string, string> | undefined,
-            removeHeaders: removeHeaders.length > 0 ? removeHeaders : undefined,
-          })
-        }
-        if (action === 'unroute') {
-          return await network.unrouteRequest(tabId, readStringArg(args, 'url'))
-        }
-        if (action === 'requests') {
-          return network.listRequests(args)
-        }
-        if (action === 'request') {
-          return network.getRequestDetail(requestId)
-        }
-        if (action === 'har') {
-          if (subaction === 'start') {
-            return await network.startHar(tabId, {
-              maxRequests:
-                typeof args.maxRequests === 'number' || args.maxRequests === null
-                  ? (args.maxRequests as number | null)
-                  : undefined,
-              maxBodyBytes:
-                typeof args.maxBodyBytes === 'number' || args.maxBodyBytes === null
-                  ? (args.maxBodyBytes as number | null)
-                  : undefined,
+          throw new Error(`unsupported keyboard action: ${action}`)
+        case 'focus':
+          return await pageInput.focusElement(tabId, selector, frameSelector)
+        case 'select':
+          return await pageInput.selectOption(tabId, selector, value, frameSelector)
+        case 'check':
+          return await pageInput.checkElement(tabId, selector, true, frameSelector)
+        case 'uncheck':
+          return await pageInput.checkElement(tabId, selector, false, frameSelector)
+        case 'scroll':
+          return await pageInput.scrollElement(tabId, scrollSelector, deltaX, deltaY, frameSelector)
+        case 'scrollintoview':
+          return await pageInput.scrollIntoViewSelector(tabId, selector, frameSelector)
+        case 'drag':
+          return await pageInput.dragElement(tabId, start, end, frameSelector)
+        case 'upload':
+          return await pageInput.uploadFiles(tabId, selector, files, frameSelector)
+        case 'back':
+          return await pageInput.navigateBack(tabId)
+        case 'forward':
+          return await pageInput.navigateForward(tabId)
+        case 'reload':
+          return await pageInput.reloadPage(tabId)
+        case 'close':
+          return await closeTabs(tabId, readBooleanArg(args, 'all', false))
+        case 'window':
+          if (action === 'new') {
+            return await createWindow()
+          }
+          throw new Error(`unsupported window action: ${action}`)
+        case 'frame':
+          return await pageInput.switchToFrame(tabId, selector)
+        case 'is':
+          return await pageInput.checkIsState(tabId, selector, stateName, frameSelector)
+        case 'get':
+          return await pageInput.getAttribute(tabId, selector, attr, frameSelector)
+        case 'dialog':
+          if (action === 'status') {
+            return session.getDialogStatus(tabId)
+          }
+          return await session.handleDialog(tabId, accept, promptText)
+        case 'wait':
+          return await handleWait(tabId, args, frameSelector)
+        case 'cookies':
+          if (action === 'get') {
+            return await session.cookiesGet(tabId, {
+              domain: readOptionalStringArg(args, 'domain'),
+              path: readOptionalStringArg(args, 'path'),
             })
           }
-          if (subaction === 'stop') {
-            return await network.stopHar()
+          if (action === 'set') {
+            return await session.cookiesSet(tabId, name, value, domain)
           }
-          throw new Error(`unsupported network har action: ${subaction}`)
-        }
-        throw new Error(`unsupported network action: ${action}`)
-      case 'set':
-        if (readStringArg(args, 'type') === 'viewport') {
-          return await session.setViewport(
-            tabId,
-            viewportWidth,
-            viewportHeight,
-            deviceScaleFactor,
-            mobile,
-          )
-        }
-        if (readStringArg(args, 'type') === 'offline') {
-          return await session.setOffline(tabId, enabled)
-        }
-        if (readStringArg(args, 'type') === 'headers') {
-          return await session.setHeaders(tabId, headers)
-        }
-        if (readStringArg(args, 'type') === 'geo') {
-          return await session.setGeo(tabId, latitude, longitude, accuracy)
-        }
-        if (readStringArg(args, 'type') === 'media') {
-          return await session.setMedia(tabId, media)
-        }
-        if (readStringArg(args, 'type') === 'permission') {
-          return await session.setPermission(tabId, name, readBooleanArg(args, 'reset', false))
-        }
-        if (readStringArg(args, 'type') === 'ua') {
-          return await session.setUserAgent(tabId, value || null)
-        }
-        if (readStringArg(args, 'type') === 'timezone') {
-          return await session.setTimezone(tabId, value || null)
-        }
-        if (readStringArg(args, 'type') === 'locale') {
-          return await session.setLocale(tabId, value || null)
-        }
-        throw new Error(`unsupported set type: ${readStringArg(args, 'type')}`)
-      case 'pdf':
-        return await session.generatePdf(tabId)
-      case 'clipboard':
-        if (action === 'read') {
-          return await session.clipboardRead(tabId)
-        }
-        if (action === 'write') {
-          return await session.clipboardWrite(tabId, text)
-        }
-        throw new Error(`unsupported clipboard action: ${action}`)
-      case 'state':
-        if (action === 'save') {
-          return await session.saveState(tabId, name)
-        }
-        if (action === 'load') {
-          if (savedStateData) {
-            return await session.loadState(tabId, savedStateData)
+          if (action === 'clear') {
+            return await session.cookiesClear(tabId)
           }
+          if (action === 'delete') {
+            if (!name || name === 'default') {
+              throw new Error('cookies delete requires a cookie name')
+            }
+            return await session.cookiesDelete(tabId, name)
+          }
+          throw new Error(`unsupported cookies action: ${action}`)
+        case 'storage': {
+          const sessionOnly = readBooleanArg(args, 'session', false)
+          if (action === 'get') {
+            return await session.storageGet(tabId, storageKey, frameSelector, sessionOnly)
+          }
+          if (action === 'set') {
+            return await session.storageSet(
+              tabId,
+              storageKey || '',
+              storageValue,
+              frameSelector,
+              sessionOnly,
+            )
+          }
+          if (action === 'delete') {
+            if (!storageKey) {
+              throw new Error('storage delete requires a key')
+            }
+            return await session.storageDelete(tabId, storageKey, frameSelector, sessionOnly)
+          }
+          if (action === 'clear') {
+            return await session.storageClear(tabId, frameSelector, sessionOnly)
+          }
+          throw new Error(`unsupported storage action: ${action}`)
+        }
+        case 'console':
+          return { messages: state.session.consoleMessages }
+        case 'errors':
+          return { errors: state.session.pageErrors }
+        case 'batch':
+          return await handleBatchCommand(args)
+        case 'script':
+          if (action === 'add') {
+            return await initScripts.addScript(readStringArg(args, 'source'))
+          }
+          if (action === 'list') {
+            return initScripts.listScripts()
+          }
+          if (action === 'remove') {
+            if (readBooleanArg(args, 'all', false)) {
+              return await initScripts.removeAllScripts()
+            }
+            const scriptId = readStringArg(args, 'id')
+            if (!scriptId) {
+              throw new Error('script remove requires an id or --all')
+            }
+            return await initScripts.removeScript(scriptId)
+          }
+          throw new Error(`unsupported script action: ${action}`)
+        case 'network':
+          if (action === 'route') {
+            if (subaction === 'list') {
+              return network.listRoutes()
+            }
+            const removeHeaders = readStringArrayArg(args, 'removeHeaders')
+            return await network.routeRequest(tabId, url, {
+              abort: args.abort === true,
+              body: args.body,
+              status: typeof args.status === 'number' ? args.status : undefined,
+              contentType: readOptionalStringArg(args, 'contentType'),
+              headers: readObjectArg(args, 'headers') as Record<string, string> | undefined,
+              removeHeaders: removeHeaders.length > 0 ? removeHeaders : undefined,
+            })
+          }
+          if (action === 'unroute') {
+            return await network.unrouteRequest(tabId, readStringArg(args, 'url'))
+          }
+          if (action === 'requests') {
+            return network.listRequests(args)
+          }
+          if (action === 'request') {
+            return network.getRequestDetail(requestId)
+          }
+          if (action === 'har') {
+            if (subaction === 'start') {
+              return await network.startHar(tabId, {
+                maxRequests:
+                  typeof args.maxRequests === 'number' || args.maxRequests === null
+                    ? (args.maxRequests as number | null)
+                    : undefined,
+                maxBodyBytes:
+                  typeof args.maxBodyBytes === 'number' || args.maxBodyBytes === null
+                    ? (args.maxBodyBytes as number | null)
+                    : undefined,
+              })
+            }
+            if (subaction === 'stop') {
+              return await network.stopHar()
+            }
+            throw new Error(`unsupported network har action: ${subaction}`)
+          }
+          throw new Error(`unsupported network action: ${action}`)
+        case 'set':
+          if (readStringArg(args, 'type') === 'viewport') {
+            return await session.setViewport(
+              tabId,
+              viewportWidth,
+              viewportHeight,
+              deviceScaleFactor,
+              mobile,
+            )
+          }
+          if (readStringArg(args, 'type') === 'offline') {
+            return await session.setOffline(tabId, enabled)
+          }
+          if (readStringArg(args, 'type') === 'headers') {
+            return await session.setHeaders(tabId, headers)
+          }
+          if (readStringArg(args, 'type') === 'geo') {
+            return await session.setGeo(tabId, latitude, longitude, accuracy)
+          }
+          if (readStringArg(args, 'type') === 'media') {
+            return await session.setMedia(tabId, media)
+          }
+          if (readStringArg(args, 'type') === 'permission') {
+            return await session.setPermission(tabId, name, readBooleanArg(args, 'reset', false))
+          }
+          if (readStringArg(args, 'type') === 'ua') {
+            return await session.setUserAgent(tabId, value || null)
+          }
+          if (readStringArg(args, 'type') === 'timezone') {
+            return await session.setTimezone(tabId, value || null)
+          }
+          if (readStringArg(args, 'type') === 'locale') {
+            return await session.setLocale(tabId, value || null)
+          }
+          throw new Error(`unsupported set type: ${readStringArg(args, 'type')}`)
+        case 'pdf':
+          return await session.generatePdf(tabId)
+        case 'clipboard':
+          if (action === 'read') {
+            return await session.clipboardRead(tabId)
+          }
+          if (action === 'write') {
+            return await session.clipboardWrite(tabId, text)
+          }
+          throw new Error(`unsupported clipboard action: ${action}`)
+        case 'state':
+          if (action === 'save') {
+            return await session.saveState(tabId, name)
+          }
+          if (action === 'load') {
+            if (savedStateData) {
+              return await session.loadState(tabId, savedStateData)
+            }
 
-          return await session.loadStateByName(tabId, name)
-        }
-        throw new Error(`unsupported state action: ${action}`)
-      default:
-        throw new Error(`unsupported command: ${command}`)
+            return await session.loadStateByName(tabId, name)
+          }
+          throw new Error(`unsupported state action: ${action}`)
+        default:
+          throw new Error(`unsupported command: ${command}`)
+      }
     }
+
+    const result = await runCommand()
+    const meta = await buildCommandMeta(command, tabTarget, frameSelector)
+    return attachCommandMeta(result, meta)
   }
 
   async function handleCommand(message: CommandMessage) {

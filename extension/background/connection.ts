@@ -6,7 +6,13 @@ import {
   type ConnectionStatus,
   type DiagnosticsState,
 } from '../shared.js'
-import type { CommandMessage, ErrorWithCode, ExtensionState, TabSummary } from './types.js'
+import type {
+  CommandMessage,
+  DialogState,
+  ErrorWithCode,
+  ExtensionState,
+  TabSummary,
+} from './types.js'
 import { serializeCommandError } from './errors.js'
 import { getPageEpoch } from './targeting.js'
 
@@ -324,7 +330,8 @@ export function createConnectionRuntime({
           url?: string
         }
 
-        state.session.dialog = {
+        const tabId = typeof source?.tabId === 'number' ? source.tabId : null
+        const dialogState: DialogState = {
           open: true,
           type: String(dialogParams.type || ''),
           message: String(dialogParams.message || ''),
@@ -332,27 +339,64 @@ export function createConnectionRuntime({
           url: dialogParams.url ? String(dialogParams.url) : null,
           openedAt: new Date().toISOString(),
         }
+        if (tabId !== null) {
+          state.session.dialogs.set(tabId, dialogState)
+        }
 
-        if (
-          ['alert', 'beforeunload'].includes(state.session.dialog.type) &&
-          typeof source?.tabId === 'number'
-        ) {
-          void sendDebuggerCommand(source.tabId, 'Page.handleJavaScriptDialog', {
+        if (['alert', 'beforeunload'].includes(dialogState.type) && tabId !== null) {
+          void sendDebuggerCommand(tabId, 'Page.handleJavaScriptDialog', {
             accept: true,
           })
             .then(() => {
-              state.session.dialog = null
+              state.session.dialogs.delete(tabId)
+              state.session.lastDialog = {
+                tabId,
+                type: dialogState.type,
+                message: dialogState.message,
+                handledBy: 'auto-accept',
+                accepted: true,
+                openedAt: dialogState.openedAt,
+                handledAt: new Date().toISOString(),
+              }
             })
             .catch((error) => {
               // auto-accept 失败时同样清理 dialog，避免状态残留影响后续命令诊断
-              state.session.dialog = null
+              state.session.dialogs.delete(tabId)
+              state.session.lastDialog = {
+                tabId,
+                type: dialogState.type,
+                message: dialogState.message,
+                handledBy: 'auto-accept',
+                accepted: false,
+                openedAt: dialogState.openedAt,
+                handledAt: new Date().toISOString(),
+              }
               console.error('failed to auto accept dialog', error)
             })
         }
       }
 
       if (method === 'Page.javascriptDialogClosed') {
-        state.session.dialog = null
+        const tabId = typeof source?.tabId === 'number' ? source.tabId : null
+        if (tabId !== null) {
+          const openDialog = state.session.dialogs.get(tabId)
+          if (openDialog) {
+            // 未被自动 accept 或 dialog 命令处理时，把关闭事件记为 page-closed。
+            // auto-accept/dialog 命令的写入路径若后到会覆盖这里，最终记录保持一致
+            state.session.dialogs.delete(tabId)
+            state.session.lastDialog = {
+              tabId,
+              type: openDialog.type,
+              message: openDialog.message,
+              handledBy: 'page-closed',
+              accepted: false,
+              openedAt: openDialog.openedAt,
+              handledAt: new Date().toISOString(),
+            }
+          } else {
+            state.session.dialogs.delete(tabId)
+          }
+        }
       }
 
       if (method === 'Fetch.requestPaused') {

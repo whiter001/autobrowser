@@ -28,11 +28,14 @@
 当前命令面也已经补上了几项当初写草稿时还没有的实用能力：
 
 - 根级 `--tab` 和 `--frame` 标志，可用于兼容的命令
-- `batch`，用于 JSON 编码的多步序列，支持重试和 continue-on-error
+- `batch`，用于 JSON 编码的多步序列，支持重试、continue-on-error、条件分支（`when`）与失败跳过（`skipRemainingOnFailure`）
 - `status`、`config` 和 `replay`，用于运行时诊断与命令恢复
 - `snapshot export` / `snapshot extract` 以及 `network export`，用于更适合下游处理的 JSONL 输出
 - 对齐 Playwright 的一批页面能力：`screenshot --element`、`snapshot --target`、`wait --gone`、`type --submit`、`network route` 的 mock 参数扩展与 `route list`、`console --level`、`cookies delete` 与 `cookies get` 过滤、`storage --session`、`set permission/ua/timezone/locale`
 - `script add/list/remove`，用于管理每次导航后、页面自身脚本执行前注入的初始化脚本
+- 模态状态显式建模：JS 对话框（confirm/prompt）按 tab 跟踪，`snapshot` 会返回 modal 描述，交互类命令返回 `MODAL_OPEN` 错误码与 `suggestedAction`；alert/beforeunload 仍自动接受，但记录在 `lastDialog` 中供 agent 感知
+- 语义定位增强：`find` 扩展为 `role`/`text`/`label`/`placeholder`/`alt`/`title`/`test-id`/`exact-name` 八种策略，支持 `--position first|last|nth=N` 位置选择与 `--candidates <n>` Top-N 候选列表（精确匹配优先、可交互元素优先排序）
+- `search` 全文检索：对页面可见文本按行匹配并返回上下文窗口（支持 `/pattern/flags` 正则与 `--context`/`--limit`），只读、不定位元素，与 `find` 的定位语义互补
 
 当前架构仍然是扩展优先：
 
@@ -234,6 +237,8 @@ autobrowser find role button click --name "Submit" --tab t2
 - 按顺序执行一组已有命令
 - 可选地在第一次失败时停止
 - 返回每一步的结果以及最终目标上下文
+- 通过 `when` 引用前序步骤的结果做条件分支（`equals` / `truthy` / `exists` 谓词，支持点路径与数组下标）
+- 通过 `skipRemainingOnFailure` 在失败时终止剩余步骤（配合 `continueOnError` 使用）
 
 示例：
 
@@ -323,7 +328,7 @@ agent 用户需要的是一份统一的协议页面，而不是散落在 README 
 ## 待决问题
 
 - 下一步是否要让 tab label 由用户自定义，还是稳定生成的句柄就足够了？
-- `snapshot` 是否应该同时提供 compact 和 verbose 两种模式？
+- `snapshot` 是否应该同时提供 compact 和 verbose 两种模式？（`--role <a,b,c>` 过滤已提供一种 compact 形态；`--changed` 提供基于元素签名的增量快照）
 - 这个项目是否应该继续完全保持扩展优先，还是为以后可能受扩展限制的网站准备本地 CDP 执行路径？
 - `batch` 应该采用按行的 CLI 语法、JSON 输入，还是两者都支持？
 

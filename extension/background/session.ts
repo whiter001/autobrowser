@@ -490,7 +490,19 @@ export function createSessionDomain({
         accept,
         promptText: accept ? promptText || '' : undefined,
       })
-      state.session.dialog = null
+      const openDialog = state.session.dialogs.get(tab.id)
+      state.session.dialogs.delete(tab.id)
+      if (openDialog) {
+        state.session.lastDialog = {
+          tabId: tab.id,
+          type: openDialog.type,
+          message: openDialog.message,
+          handledBy: 'dialog-command',
+          accepted: accept,
+          openedAt: openDialog.openedAt,
+          handledAt: new Date().toISOString(),
+        }
+      }
       return { handled: true, accepted: accept }
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error)
@@ -502,8 +514,21 @@ export function createSessionDomain({
     }
   }
 
-  function getDialogStatus(): Record<string, unknown> {
-    if (!state.session.dialog) {
+  function resolveDialogTab(tabInput?: TabInput): number | null {
+    if (typeof tabInput === 'number') {
+      return tabInput
+    }
+    if (typeof tabInput === 'string') {
+      return state.targeting.tabIdsByHandle.get(tabInput) ?? null
+    }
+    return state.targeting.targetTabId
+  }
+
+  function getDialogStatus(tabInput?: TabInput): Record<string, unknown> {
+    const tabId = resolveDialogTab(tabInput)
+    const openDialog = tabId !== null ? state.session.dialogs.get(tabId) : undefined
+
+    if (!openDialog) {
       return {
         open: false,
         type: null,
@@ -511,11 +536,13 @@ export function createSessionDomain({
         defaultPrompt: null,
         url: null,
         openedAt: null,
+        lastDialog: state.session.lastDialog,
       }
     }
 
     return {
-      ...state.session.dialog,
+      ...openDialog,
+      lastDialog: state.session.lastDialog,
     }
   }
 

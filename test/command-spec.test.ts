@@ -129,6 +129,64 @@ describe('command specs', () => {
     expect(() => validateCommandArgs('goto', { url: 'https://example.com' })).not.toThrow()
   })
 
+  test('validates batch when conditions and step metadata', () => {
+    expect(() =>
+      validateCommandArgs('batch', {
+        steps: [{ command: 'snapshot', when: { step: 1 } }],
+      }),
+    ).toThrow(
+      'invalid command arguments for batch: step 1: when must declare exactly one of equals, truthy, or exists',
+    )
+    expect(() =>
+      validateCommandArgs('batch', {
+        steps: [{ command: 'snapshot', when: { step: 1, path: 5, truthy: true } }],
+      }),
+    ).toThrow('invalid command arguments for batch: step 1: when.path must be a string')
+    expect(() =>
+      validateCommandArgs('batch', {
+        steps: [{ command: 'snapshot', when: { step: 0, path: 'x', truthy: true } }],
+      }),
+    ).toThrow(
+      'invalid command arguments for batch: step 1: when.step must be a step id string or a positive integer',
+    )
+    expect(() =>
+      validateCommandArgs('batch', {
+        steps: [{ command: 'snapshot', when: { step: 1, truthy: 'yes' } }],
+      }),
+    ).toThrow('invalid command arguments for batch: step 1: when.truthy must be a boolean')
+    expect(() =>
+      validateCommandArgs('batch', {
+        steps: [{ command: 'snapshot', id: 123 }],
+      }),
+    ).toThrow('invalid command arguments for batch: step 1: id must be a non-empty string')
+    expect(() =>
+      validateCommandArgs('batch', {
+        steps: [{ command: 'snapshot', skipRemainingOnFailure: 'yes' }],
+      }),
+    ).toThrow(
+      'invalid command arguments for batch: step 1: skipRemainingOnFailure must be a boolean',
+    )
+    expect(() =>
+      validateCommandArgs('batch', {
+        steps: [
+          { command: 'snapshot' },
+          { command: 'snapshot' },
+          { command: 'snapshot', when: { step: 3, path: 'x', truthy: true } },
+        ],
+      }),
+    ).toThrow(
+      'invalid command arguments for batch: step 3: when.step must reference an earlier step: 3',
+    )
+    expect(() =>
+      validateCommandArgs('batch', {
+        steps: [
+          { command: 'snapshot', id: 'snap' },
+          { command: 'snapshot', when: { step: 'snap', path: 'snapshotId', truthy: true } },
+        ],
+      }),
+    ).not.toThrow()
+  })
+
   test('validates script command arguments', () => {
     expect(() =>
       validateCommandArgs('script', { action: 'add', source: 'window.x = 1' }),
@@ -174,5 +232,78 @@ describe('command specs', () => {
         value: 'ok',
       }),
     ).not.toThrow()
+  })
+
+  test('validates extended find strategies, position, and candidates', () => {
+    for (const strategy of ['placeholder', 'alt', 'title', 'test-id', 'exact-name']) {
+      expect(() => validateCommandArgs('find', { strategy, query: 'x' })).not.toThrow()
+    }
+
+    expect(() => validateCommandArgs('find', { strategy: 'foo', query: 'x' })).toThrow(
+      'invalid command arguments for find: strategy must be role, text, label, placeholder, alt, title, test-id, or exact-name',
+    )
+
+    expect(() =>
+      validateCommandArgs('find', { strategy: 'text', query: 'x', position: 'middle' }),
+    ).toThrow('invalid command arguments for find: position must be first, last, or nth=N')
+    expect(() =>
+      validateCommandArgs('find', { strategy: 'text', query: 'x', position: 'nth=0' }),
+    ).toThrow('invalid command arguments for find: position must be first, last, or nth=N')
+    expect(() =>
+      validateCommandArgs('find', { strategy: 'text', query: 'x', position: 'last' }),
+    ).not.toThrow()
+    expect(() =>
+      validateCommandArgs('find', { strategy: 'text', query: 'x', position: 'nth=2' }),
+    ).not.toThrow()
+
+    expect(() =>
+      validateCommandArgs('find', { strategy: 'text', query: 'x', candidates: 0 }),
+    ).toThrow('invalid command arguments for find: candidates must be a positive integer')
+    expect(() =>
+      validateCommandArgs('find', { strategy: 'text', query: 'x', candidates: 3 }),
+    ).not.toThrow()
+
+    expect(() =>
+      validateCommandArgs('find', {
+        strategy: 'text',
+        query: 'x',
+        candidates: 3,
+        position: 'last',
+      }),
+    ).toThrow('invalid command arguments for find: candidates cannot be combined with position')
+    expect(() =>
+      validateCommandArgs('find', {
+        strategy: 'text',
+        query: 'x',
+        candidates: 3,
+        action: 'click',
+      }),
+    ).toThrow('invalid command arguments for find: candidates only supports the locate action')
+    expect(() =>
+      validateCommandArgs('find', {
+        strategy: 'text',
+        query: 'x',
+        candidates: 3,
+        action: 'locate',
+      }),
+    ).not.toThrow()
+  })
+
+  test('validates search command arguments', () => {
+    expect(() => validateCommandArgs('search', {})).toThrow(
+      'invalid command arguments for search: query must be a non-empty string',
+    )
+    expect(() => validateCommandArgs('search', { query: 'Sign in' })).not.toThrow()
+    expect(() => validateCommandArgs('search', { query: 'Sign in', context: -1 })).toThrow(
+      'invalid command arguments for search: context must be a non-negative integer',
+    )
+    expect(() => validateCommandArgs('search', { query: 'Sign in', limit: 2.5 })).toThrow(
+      'invalid command arguments for search: limit must be a non-negative integer',
+    )
+    expect(() => validateCommandArgs('search', { query: 'Sign in', limit: 20 })).not.toThrow()
+    expect(() => validateCommandArgs('search', { query: '/foo[/' })).toThrow(
+      'invalid command arguments for search: invalid search regex: /foo[/',
+    )
+    expect(() => validateCommandArgs('search', { query: '/foo/i' })).not.toThrow()
   })
 })

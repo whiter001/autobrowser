@@ -1,4 +1,4 @@
-import type { ExtensionState } from './types.js'
+import type { DialogState, ExtensionState } from './types.js'
 
 export function createExtensionState(defaultRelayPort: number): ExtensionState {
   return {
@@ -30,7 +30,8 @@ export function createExtensionState(defaultRelayPort: number): ExtensionState {
       nextTabHandleIndex: 1,
     },
     session: {
-      dialog: null,
+      dialogs: new Map<number, DialogState>(),
+      lastDialog: null,
       consoleMessages: [],
       pageErrors: [],
     },

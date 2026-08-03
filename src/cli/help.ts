@@ -62,6 +62,11 @@ const HELP_ROOT = helpNode(
       'Open the extension connect page, starting the local server when needed.',
       'autobrowser connect [--relay-port <port>] [--ipc-port <port>] [--extension-id <id>] [--browser-command <command>] [--browser-arg <arg>]',
     ),
+    helpNode(
+      'mcp',
+      'Expose core autobrowser commands as an MCP server over stdio (for Claude Desktop and other MCP clients).',
+      'autobrowser mcp',
+    ),
     helpNode('tab', 'Manage tabs.', 'autobrowser tab <list|new|select|close>', undefined, [
       helpNode('list', 'List tabs.', 'autobrowser tab list'),
       helpNode('new', 'Open a new tab.', 'autobrowser tab new [url]'),
@@ -134,9 +139,9 @@ const HELP_ROOT = helpNode(
     helpNode('fill', 'Fill a selector with text.', 'autobrowser fill <selector> <value>'),
     helpNode(
       'find',
-      'Find elements by role, text, or label and optionally act on them.',
-      'autobrowser find <role|text|label> <query> [locate|click|fill|type|hover|focus|check|uncheck|text] [value]',
-      ['--name <name>', '--exact'],
+      'Find elements by role, text, label, or other attributes and optionally act on them.',
+      'autobrowser find <role|text|label|placeholder|alt|title|test-id|exact-name> <query> [locate|click|fill|type|hover|focus|check|uncheck|text] [value]',
+      ['--name <name>', '--exact', '--position <first|last|nth=N>', '--candidates <n>'],
     ),
     helpNode(
       'type',
@@ -387,8 +392,12 @@ const HELP_ROOT = helpNode(
     helpNode(
       'snapshot',
       'Capture or export a page snapshot.',
-      'autobrowser snapshot [selector|--target <selector|@eN>]',
-      ['--target <selector|@eN>  limit the snapshot to an element subtree'],
+      'autobrowser snapshot [selector|--target <selector|@eN>] [--role <a,b,c>] [--changed]',
+      [
+        '--target <selector|@eN>  limit the snapshot to an element subtree',
+        '--role <button,link,...>  only return elements with matching roles (refs are renumbered)',
+        '--changed  only return elements added or changed since the last snapshot; first run returns the full snapshot with full:true',
+      ],
       [
         helpNode(
           'export',
@@ -400,6 +409,15 @@ const HELP_ROOT = helpNode(
           'Extract field-oriented records from the snapshot as JSONL.',
           'autobrowser snapshot extract [output.jsonl] [--field <fieldPath>]...',
         ),
+      ],
+    ),
+    helpNode(
+      'search',
+      'Search the page visible text and return matching lines with context.',
+      'autobrowser search <query|/regex/flags> [--context <n>] [--limit <n>]',
+      [
+        '--context <n>  number of surrounding lines to include before and after each match (default 3)',
+        '--limit <n>  maximum number of match windows to return (default 20)',
       ],
     ),
   ],

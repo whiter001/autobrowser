@@ -1,4 +1,4 @@
-import { chmod, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
+import { chmod, mkdir, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises'
 import { createConnection } from 'node:net'
 import os from 'node:os'
 import path from 'node:path'
@@ -89,6 +89,58 @@ export function isValidPort(port: number): boolean {
  */
 export async function ensureStateDir(homeDir: string = getHomeDir()): Promise<void> {
   await mkdir(getStateDir(homeDir), { recursive: true })
+}
+
+/** 状态文件临时文件命名：<basename>.<pid>.<uuid>.tmp */
+const TEMP_FILE_NAME_PATTERN = /^(state\.json|token|config\.json)\.[^/]+\.tmp$/
+/** 启动清理时仅删除明显是上一次崩溃残留的临时文件（默认老于 5s），避免误删并发写入中的临时文件 */
+export const STALE_TEMP_FILE_MAX_AGE_MS = 5_000
+
+/**
+ * 清理状态目录中由崩溃中断（如 SIGKILL）残留的临时文件。
+ * writeJsonFile 先写 .tmp 再原子 rename；进程在两者之间被杀会留下 .tmp 残渣。
+ * 带年龄守卫：只删除超过 maxAgeMs 未修改的文件，避免误删正在进行的并发写入。
+ * @param homeDir 可选的家目录路径
+ * @param maxAgeMs 文件保留最大年龄，默认 5 秒
+ */
+export async function cleanupStaleTempFiles(
+  homeDir: string = getHomeDir(),
+  maxAgeMs: number = STALE_TEMP_FILE_MAX_AGE_MS,
+): Promise<void> {
+  let entries: string[]
+  try {
+    entries = await readdir(getStateDir(homeDir))
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+      return
+    }
+    throw error
+  }
+
+  const cutoff = Date.now() - maxAgeMs
+  const stalePaths: string[] = []
+
+  for (const entry of entries) {
+    if (!TEMP_FILE_NAME_PATTERN.test(entry)) {
+      continue
+    }
+
+    const filePath = path.join(getStateDir(homeDir), entry)
+    try {
+      const fileStats = await stat(filePath)
+      if (fileStats.mtimeMs < cutoff) {
+        stalePaths.push(filePath)
+      }
+    } catch {
+      // 文件可能已被并发清理，忽略
+    }
+  }
+
+  await Promise.all(
+    stalePaths.map(async (filePath) => {
+      await rm(filePath, { force: true }).catch(() => {})
+    }),
+  )
 }
 
 /**
