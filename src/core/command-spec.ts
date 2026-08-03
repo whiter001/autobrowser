@@ -810,6 +810,8 @@ export function validateCommandArgs(command: string, args: unknown): void {
         readStringField(normalizedArgs, 'method', command, { required: false })
         readStringField(normalizedArgs, 'status', command, { required: false })
         readStringField(normalizedArgs, 'resourceType', command, { required: false })
+        readOptionalNonNegativeIntegerField(normalizedArgs, 'pageIdx', command)
+        readOptionalNonNegativeIntegerField(normalizedArgs, 'pageSize', command)
       }
       return
     }
@@ -848,6 +850,9 @@ export function validateCommandArgs(command: string, args: unknown): void {
     case 'status':
     case 'console':
     case 'errors':
+      readOptionalNonNegativeIntegerField(normalizedArgs, 'pageIdx', command)
+      readOptionalNonNegativeIntegerField(normalizedArgs, 'pageSize', command)
+      return
     case 'pdf':
     case 'back':
     case 'forward':

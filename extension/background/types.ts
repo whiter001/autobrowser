@@ -161,6 +161,18 @@ export interface TargetingState {
   nextTabHandleIndex: number
 }
 
+/** 单 tab 生效中的仿真覆盖摘要：只记"设置了哪些"，不存完整值（headers 记键名列表） */
+export interface EmulationOverrides {
+  viewport?: true
+  offline?: true
+  geo?: true
+  ua?: true
+  locale?: true
+  timezone?: true
+  media?: true
+  headers?: string[]
+}
+
 /** 页面会话级别的可观测状态 */
 export interface SessionState {
   /** 当前打开的 JS 对话框，按 tab 记录 */
@@ -169,6 +181,8 @@ export interface SessionState {
   lastDialog: LastDialogRecord | null
   consoleMessages: ConsoleMessageRecord[]
   pageErrors: PageErrorRecord[]
+  /** 各 tab 生效中的仿真覆盖记录，meta 回显用；reset 命令会把对应键删除 */
+  emulation: Map<number, EmulationOverrides>
 }
 
 export interface ExtensionState {
@@ -229,6 +243,12 @@ export interface CommandMeta {
   pageEpoch: number | null
   url: string | null
   title: string | null
+  /** 目标 tab 当前有未处理 dialog 时的描述；没有则缺省不附 */
+  dialog?: { type: string; message: string; openedAt: string }
+  /** 目标 tab 生效中的仿真覆盖摘要（只含设置过的键）；无覆盖则缺省不附 */
+  emulation?: Record<string, unknown>
+  /** 目标 tab 解析结果；未显式指定且发生了兜底选择时附 note 说明 */
+  target?: { tabId: number; handle: string | null; explicit: boolean; note?: string }
 }
 
 export interface EvaluateInTabContextOptions extends Record<string, unknown> {

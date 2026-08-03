@@ -405,6 +405,54 @@ describe('cli helpers', () => {
     expect(result.stderr).toContain('unsupported network option: --filtter')
   })
 
+  test('forwards console and errors pagination flags to the extension', async () => {
+    const consoleResult = await runCli(['console', '--page-idx', '2', '--page-size', '10'])
+    expect(consoleResult.exitCode).toBe(0)
+    expect(consoleResult.fetchCalls[0].body).toEqual({
+      command: 'console',
+      args: { pageIdx: 2, pageSize: 10 },
+    })
+
+    const errorsResult = await runCli(['errors', '--page-idx', '0', '--page-size', '25'])
+    expect(errorsResult.exitCode).toBe(0)
+    expect(errorsResult.fetchCalls[0].body).toEqual({
+      command: 'errors',
+      args: { pageIdx: 0, pageSize: 25 },
+    })
+
+    // 不带分页参数时透传空 args
+    const bareErrors = await runCli(['errors'])
+    expect(bareErrors.fetchCalls[0].body).toEqual({ command: 'errors', args: {} })
+  })
+
+  test('forwards network requests pagination flags and rejects out-of-range values', async () => {
+    const result = await runCli([
+      'network',
+      'requests',
+      '--filter',
+      '/api/',
+      '--page-idx',
+      '1',
+      '--page-size',
+      '100',
+    ])
+    expect(result.exitCode).toBe(0)
+    expect(result.fetchCalls[0].body).toEqual({
+      command: 'network',
+      args: { action: 'requests', filter: '/api/', pageIdx: 1, pageSize: 100 },
+    })
+
+    const oversized = await runCli(['console', '--page-size', '201'])
+    expect(oversized.exitCode).toBe(1)
+    expect(oversized.fetchCalls).toHaveLength(0)
+    expect(oversized.stderr).toContain('invalid page size')
+
+    const negative = await runCli(['console', '--page-idx', '-1'])
+    expect(negative.exitCode).toBe(1)
+    expect(negative.fetchCalls).toHaveLength(0)
+    expect(negative.stderr).toContain('invalid page idx')
+  })
+
   test('routes HAR start limits to the extension', async () => {
     const result = await runCli(['network', 'har', 'start', '--har-unlimited'])
 

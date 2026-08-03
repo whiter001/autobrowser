@@ -16,6 +16,7 @@ import {
 } from './targeting.js'
 import { serializeCommandError, type SerializedCommandError } from './errors.js'
 import { createCommandQueue } from './command-queue.js'
+import { DEFAULT_PAGE_SIZE, paginateList } from './pagination.js'
 import { commandSupportsTabTarget, validateCommandArgs } from '../../src/core/command-spec.js'
 import type {
   CommandArgs,
@@ -1289,12 +1290,19 @@ export function createCommandRouter({
   /** 构建命令实际目标 tab 的上下文元数据；取 tab 失败时回退为全 null，永不 throw */
   async function buildCommandMeta(
     command: string,
+    args: CommandArgs,
     tabTarget: TabInput,
     frameSelector: FrameSelector,
   ): Promise<CommandMeta> {
     if (!commandSupportsTabTarget(command)) {
       return emptyCommandMeta()
     }
+
+    // 命令是否显式指定了 tabId/handle；未指定时 getTargetTab 内部可能走了兜底选择
+    const explicitTarget =
+      readTabInputArg(args, 'tabId') !== undefined || readTabInputArg(args, 'handle') !== undefined
+    // getTargetTab 成功后会 rememberTargetTab，必须在解析前记住旧值才能判断是否发生过 fallback
+    const preCommandTargetTabId = state.targeting.targetTabId
 
     let tab
     try {
@@ -1307,14 +1315,41 @@ export function createCommandRouter({
       return emptyCommandMeta()
     }
 
-    return {
-      tabHandle: getOrCreateTabHandle(state, tab.id),
+    const handle = getOrCreateTabHandle(state, tab.id)
+    const meta: CommandMeta = {
+      tabHandle: handle,
       tabId: tab.id,
       frame: resolveEffectiveFrameSelector(state, { id: tab.id }, frameSelector),
       pageEpoch: getPageEpoch(state, tab.id),
       url: tab.url || null,
       title: tab.title || null,
     }
+
+    const openDialog = state.session.dialogs.get(tab.id)
+    if (openDialog) {
+      meta.dialog = {
+        type: openDialog.type,
+        message: openDialog.message,
+        openedAt: openDialog.openedAt,
+      }
+    }
+
+    const emulationOverrides = state.session.emulation.get(tab.id)
+    if (emulationOverrides && Object.keys(emulationOverrides).length > 0) {
+      meta.emulation = { ...emulationOverrides }
+    }
+
+    const target: NonNullable<CommandMeta['target']> = {
+      tabId: tab.id,
+      handle,
+      explicit: explicitTarget,
+    }
+    if (!explicitTarget && preCommandTargetTabId !== tab.id) {
+      target.note = 'fell back to last non-active tab'
+    }
+    meta.target = target
+
+    return meta
   }
 
   /** 只对对象结果增量附加 meta；原始值/数组保持原样透传 */
@@ -1379,6 +1414,8 @@ export function createCommandRouter({
     const searchQuery = readStringArg(args, 'query')
     const searchContext = readNumberArg(args, 'context', 3)
     const searchLimit = readNumberArg(args, 'limit', 20)
+    const pageIdx = readNumberArg(args, 'pageIdx', 0)
+    const pageSize = readNumberArg(args, 'pageSize', DEFAULT_PAGE_SIZE)
     const tabTarget = handle || tabId
 
     await assertNoOpenDialog(command, tabTarget)
@@ -1583,7 +1620,13 @@ export function createCommandRouter({
             targetTabId === null
               ? state.session.consoleMessages
               : state.session.consoleMessages.filter((message) => message.tabId === targetTabId)
-          return { messages: foldConsoleMessages(messages) }
+          // 分页作用在 tabId 过滤 + 折叠之后的结果上，折叠逻辑本身不动
+          const { items, pagination } = paginateList(
+            foldConsoleMessages(messages),
+            pageIdx,
+            pageSize,
+          )
+          return { messages: items, pagination }
         }
         case 'errors': {
           const targetTabId = resolveEffectiveTargetTabId(tabTarget)
@@ -1591,7 +1634,8 @@ export function createCommandRouter({
             targetTabId === null
               ? state.session.pageErrors
               : state.session.pageErrors.filter((error) => error.tabId === targetTabId)
-          return { errors }
+          const { items, pagination } = paginateList(errors, pageIdx, pageSize)
+          return { errors: items, pagination }
         }
         case 'batch':
           return await handleBatchCommand(args)
@@ -1723,7 +1767,7 @@ export function createCommandRouter({
     const result = skipQueue
       ? await runCommand()
       : await commandQueue.enqueue(resolveCommandQueueKey(tabTarget), runCommand)
-    const meta = await buildCommandMeta(command, tabTarget, frameSelector)
+    const meta = await buildCommandMeta(command, args, tabTarget, frameSelector)
     return attachCommandMeta(result, meta)
   }
 

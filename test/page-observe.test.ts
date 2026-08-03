@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test'
 import {
   computeSearchPageTextMatches,
+  computeStableRefIndexes,
   createPageObserveDomain,
 } from '../extension/background/page-observe.js'
 import type { DialogState } from '../extension/background/types.js'
@@ -1050,5 +1051,255 @@ describe('page observe search', () => {
       'invalid search regex: /foo[/',
     )
     expect(evaluateCalls).toBe(0)
+  })
+})
+
+class MockRefNode {
+  private readonly attributes = new Map<string, string>()
+
+  constructor(private readonly id: string) {}
+
+  getAttribute(name: string): string | null {
+    return this.attributes.get(name) ?? null
+  }
+
+  setAttribute(name: string, value: string): void {
+    this.attributes.set(name, value)
+  }
+}
+
+const parseMockElementRef = (value: string | null): number | null => {
+  const match = /^e(\d+)$/.exec(String(value || '').trim())
+  return match ? Number(match[1]) : null
+}
+
+describe('page observe stable ref allocation', () => {
+  test('reuses existing refs across snapshot passes and never rewrites them', () => {
+    const first = new MockRefNode('first')
+    const second = new MockRefNode('second')
+    first.setAttribute('data-autobrowser-ref', 'e1')
+    second.setAttribute('data-autobrowser-ref', 'e2')
+
+    const firstPass = computeStableRefIndexes(
+      [first, second],
+      [first, second],
+      'data-autobrowser-ref',
+      'e',
+      parseMockElementRef,
+    )
+    const secondPass = computeStableRefIndexes(
+      [first, second],
+      [first, second],
+      'data-autobrowser-ref',
+      'e',
+      parseMockElementRef,
+    )
+
+    // 同 epoch 两次 snapshot：同元素同 ref，属性未被重写
+    expect(firstPass.get(first)).toBe(1)
+    expect(firstPass.get(second)).toBe(2)
+    expect(secondPass.get(first)).toBe(1)
+    expect(secondPass.get(second)).toBe(2)
+    expect(first.getAttribute('data-autobrowser-ref')).toBe('e1')
+    expect(second.getAttribute('data-autobrowser-ref')).toBe('e2')
+  })
+
+  test('assigns new elements from the page-wide max index + 1', () => {
+    const existing = new MockRefNode('existing')
+    existing.setAttribute('data-autobrowser-ref', 'e5')
+    const fresh = new MockRefNode('fresh')
+
+    const indexes = computeStableRefIndexes(
+      [existing],
+      [fresh],
+      'data-autobrowser-ref',
+      'e',
+      parseMockElementRef,
+    )
+
+    expect(indexes.get(fresh)).toBe(6)
+    expect(fresh.getAttribute('data-autobrowser-ref')).toBe('e6')
+  })
+
+  test('leaves role-filtered-out elements untouched while their refs still count for numbering', () => {
+    const kept = new MockRefNode('kept')
+    const filteredOut = new MockRefNode('filteredOut')
+    kept.setAttribute('data-autobrowser-ref', 'e1')
+    filteredOut.setAttribute('data-autobrowser-ref', 'e2')
+    const fresh = new MockRefNode('fresh')
+
+    // filteredOut 只在 refNodes（全页带 ref 的节点）里、不在候选里，模拟角色过滤未入选
+    const indexes = computeStableRefIndexes(
+      [kept, filteredOut],
+      [kept, fresh],
+      'data-autobrowser-ref',
+      'e',
+      parseMockElementRef,
+    )
+
+    expect(indexes.get(kept)).toBe(1)
+    expect(indexes.get(fresh)).toBe(3)
+    expect(indexes.has(filteredOut)).toBe(false)
+    // 未入选元素的旧 ref 属性保留不动
+    expect(filteredOut.getAttribute('data-autobrowser-ref')).toBe('e2')
+  })
+
+  test('does not reuse the number of a removed element while higher refs remain', () => {
+    const kept = new MockRefNode('kept')
+    const removed = new MockRefNode('removed')
+    const higher = new MockRefNode('higher')
+    const fresh = new MockRefNode('fresh')
+    kept.setAttribute('data-autobrowser-ref', 'e1')
+    removed.setAttribute('data-autobrowser-ref', 'e2')
+    higher.setAttribute('data-autobrowser-ref', 'e3')
+
+    // removed 从 DOM 消失（不再出现在 refNodes / 候选里），e2 编号不被回收
+    const indexes = computeStableRefIndexes(
+      [kept, higher],
+      [kept, higher, fresh],
+      'data-autobrowser-ref',
+      'e',
+      parseMockElementRef,
+    )
+
+    // 新元素从现存最大编号 +1 起编（e3 + 1），被删元素的 e2 不复用
+    expect(indexes.get(fresh)).toBe(4)
+    expect(fresh.getAttribute('data-autobrowser-ref')).toBe('e4')
+  })
+
+  test('assigns frame refs with the f prefix under the same rules', () => {
+    const existingFrame = new MockRefNode('existingFrame')
+    existingFrame.setAttribute('data-autobrowser-frame', 'f1')
+    const newFrame = new MockRefNode('newFrame')
+    const parseFrameRef = (value: string | null): number | null => {
+      const match = /^f(\d+)$/.exec(String(value || '').trim())
+      return match ? Number(match[1]) : null
+    }
+
+    const indexes = computeStableRefIndexes(
+      [existingFrame],
+      [existingFrame, newFrame],
+      'data-autobrowser-frame',
+      'f',
+      parseFrameRef,
+    )
+
+    expect(indexes.get(existingFrame)).toBe(1)
+    expect(indexes.get(newFrame)).toBe(2)
+    expect(newFrame.getAttribute('data-autobrowser-frame')).toBe('f2')
+  })
+
+  test('injects the stable ref allocator instead of the page-wide cleanup', async () => {
+    const expressions: string[] = []
+    const pageObserve = createPageObserveDomain({
+      state: createObserveState(),
+      getTargetTab: async () => ({ id: 1 }) as never,
+      resolveElementSelectorForTab: async () => {
+        throw new Error('not used')
+      },
+      resolveFrameTarget: async () => {
+        throw new Error('not used')
+      },
+      evaluateInTabContext: async (_tabId: unknown, expression: string) => {
+        expressions.push(expression)
+        return {
+          tab: { id: 1 } as never,
+          response: { result: {} },
+          value: { pageEpoch: 1, elements: [], signatures: [] },
+        }
+      },
+      sendDebuggerCommand: async () => undefined as never,
+    } as never)
+
+    await pageObserve.snapshotTab(1, null)
+
+    expect(expressions).toHaveLength(1)
+    // 新逻辑：全页最大编号扫描 + 复用/续号，不再整页 removeAttribute 清理重编号
+    expect(expressions[0]).toContain('computeStableRefIndexes(')
+    expect(expressions[0]).toContain("deepQuerySelectorAll(document, '[' + refAttribute + ']')")
+    expect(expressions[0]).not.toContain('removeAttribute(refAttribute)')
+    expect(expressions[0]).not.toContain('element.removeAttribute')
+  })
+})
+
+describe('page observe snapshot byte cap', () => {
+  test('truncates oversized snapshots from the elements tail with counts', async () => {
+    const bigElements = Array.from({ length: 60 }, (_, index) => ({
+      ref: `@e${index + 1}#p1`,
+      tag: 'button',
+      role: 'button',
+      text: 'x'.repeat(4000),
+      name: 'x'.repeat(4000),
+    }))
+
+    const pageObserve = createPageObserveDomain({
+      state: createObserveState(),
+      getTargetTab: async () => ({ id: 1 }) as never,
+      resolveElementSelectorForTab: async () => {
+        throw new Error('not used')
+      },
+      resolveFrameTarget: async () => {
+        throw new Error('not used')
+      },
+      evaluateInTabContext: async () =>
+        ({
+          tab: { id: 1 },
+          response: { result: {} },
+          value: {
+            pageEpoch: 1,
+            title: '',
+            url: '',
+            readyState: 'complete',
+            text: '',
+            elements: bigElements,
+            signatures: [],
+          },
+        }) as never,
+      sendDebuggerCommand: async () => undefined as never,
+    } as never)
+
+    const result = (await pageObserve.snapshotTab(1, null)) as {
+      truncated: boolean
+      totalElements: number
+      returnedElements: number
+      elements: unknown[]
+    }
+
+    expect(result.truncated).toBe(true)
+    expect(result.totalElements).toBe(60)
+    expect(result.returnedElements).toBeLessThan(60)
+    expect(result.elements).toHaveLength(result.returnedElements)
+    // 截断后整包仍必须不超过字节上限
+    expect(JSON.stringify(result).length).toBeLessThanOrEqual(200_000)
+  })
+
+  test('does not attach truncation fields when the snapshot fits', async () => {
+    const pageObserve = createPageObserveDomain({
+      state: createObserveState(),
+      getTargetTab: async () => ({ id: 1 }) as never,
+      resolveElementSelectorForTab: async () => {
+        throw new Error('not used')
+      },
+      resolveFrameTarget: async () => {
+        throw new Error('not used')
+      },
+      evaluateInTabContext: async () =>
+        ({
+          tab: { id: 1 },
+          response: { result: {} },
+          value: {
+            pageEpoch: 1,
+            elements: [{ ref: '@e1#p1', role: 'button', text: 'Save', name: 'Save' }],
+            signatures: [],
+          },
+        }) as never,
+      sendDebuggerCommand: async () => undefined as never,
+    } as never)
+
+    const result = (await pageObserve.snapshotTab(1, null)) as Record<string, unknown>
+
+    expect(result).not.toHaveProperty('truncated')
+    expect(result).not.toHaveProperty('totalElements')
+    expect(result).not.toHaveProperty('returnedElements')
   })
 })

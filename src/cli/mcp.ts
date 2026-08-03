@@ -3,10 +3,16 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js'
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js'
 import type { CallToolResult, Tool } from '@modelcontextprotocol/sdk/types.js'
+import { mkdir, writeFile } from 'node:fs/promises'
+import path from 'node:path'
 import { commandSupportsFrameTarget, commandSupportsTabTarget } from '../core/command-spec.js'
+import { getHomeDir } from '../core/protocol.js'
 import { isRecord, type CommandResponse } from './client.js'
 import { helpRequested } from './commands/shared.js'
 import type { CommandContext } from './commands/types.js'
+
+// 超过该体积的截图 base64 不再内联进 MCP 响应（会爆模型上下文），改为落盘后回文本路径
+const SCREENSHOT_MAX_INLINE_BYTES = 2 * 1024 * 1024
 
 interface McpToolDefinition {
   name: string
@@ -533,7 +539,7 @@ function toSuccessResult(result: unknown): CallToolResult {
   }
 }
 
-function toScreenshotResult(result: Record<string, unknown>): CallToolResult {
+function toScreenshotResult(result: Record<string, unknown>): Promise<CallToolResult> {
   const { data, mimeType } = extractScreenshotData(result)
   const summary: Record<string, unknown> = { mimeType }
   for (const [key, value] of Object.entries(result)) {
@@ -545,12 +551,42 @@ function toScreenshotResult(result: Record<string, unknown>): CallToolResult {
     typeof result.width === 'number' && typeof result.height === 'number'
       ? ` (${result.width}x${result.height})`
       : ''
-  return {
+  const byteLength = Buffer.from(data, 'base64').length
+  if (byteLength > SCREENSHOT_MAX_INLINE_BYTES) {
+    return writeOversizedScreenshot(result, summary, data, mimeType, byteLength)
+  }
+  return Promise.resolve({
     content: [
       { type: 'image', data, mimeType },
       { type: 'text', text: `Screenshot captured as ${mimeType}${dimensions}.` },
     ],
     structuredContent: summary,
+  })
+}
+
+/** 超过 2MB 的截图落盘到 ~/.autobrowser/screenshots/，只回文本路径，避免 base64 进模型上下文 */
+async function writeOversizedScreenshot(
+  result: Record<string, unknown>,
+  summary: Record<string, unknown>,
+  data: string,
+  mimeType: string,
+  byteLength: number,
+): Promise<CallToolResult> {
+  const extension = mimeType === 'image/jpeg' ? 'jpeg' : 'png'
+  const directory = path.join(getHomeDir(), '.autobrowser', 'screenshots')
+  await mkdir(directory, { recursive: true })
+  const filePath = path.join(directory, `autobrowser-${Date.now()}.${extension}`)
+  await writeFile(filePath, data, 'base64')
+
+  const sizeMb = (byteLength / (1024 * 1024)).toFixed(1)
+  const sizeText =
+    typeof result.width === 'number' && typeof result.height === 'number'
+      ? `${result.width}x${result.height} pixels`
+      : `${byteLength} bytes`
+  const text = `screenshot saved to ${filePath} (${sizeText}, ${sizeMb} MB, too large to inline)`
+  return {
+    content: [{ type: 'text', text }],
+    structuredContent: { ...summary, path: filePath },
   }
 }
 

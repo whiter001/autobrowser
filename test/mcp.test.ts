@@ -1,4 +1,7 @@
 import { describe, expect, test } from 'bun:test'
+import { mkdtemp, rm, stat } from 'node:fs/promises'
+import os from 'node:os'
+import path from 'node:path'
 import { PassThrough } from 'node:stream'
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import type { CommandResponse } from '../src/cli/client.js'
@@ -202,6 +205,72 @@ describe('AutobrowserMcpServer.callTool', () => {
       width: 800,
       height: 600,
     })
+  })
+
+  test('writes screenshots over 2MB to disk instead of inlining base64', async () => {
+    const tempHome = await mkdtemp(path.join(os.tmpdir(), 'autobrowser-mcp-home-'))
+    const previousHome = process.env.AUTOBROWSER_HOME
+    process.env.AUTOBROWSER_HOME = tempHome
+    try {
+      // ~3MB 的 base64（解码后约 2.25MB）超过 2MB 阈值
+      const bigBase64 = 'A'.repeat(3_000_000)
+      const mock = recordingRequestCommand(
+        okResult({
+          data: bigBase64,
+          mimeType: 'image/png',
+          width: 1920,
+          height: 1080,
+        }),
+      )
+      const server = new AutobrowserMcpServer({ requestCommand: mock })
+
+      const result = await server.callTool('screenshot', { full: true })
+
+      expect(result.isError).toBeFalsy()
+      // 不再回 image content，改回文本路径
+      expect(result.content).toHaveLength(1)
+      expect(result.content[0].type).toBe('text')
+      const text = (result.content[0] as { text: string }).text
+      expect(text).toContain('screenshot saved to ')
+      expect(text).toContain('(1920x1080 pixels')
+      expect(text).toContain('too large to inline')
+
+      const savedPath = (result.structuredContent as { path: string }).path
+      expect(savedPath).toContain(path.join(tempHome, '.autobrowser', 'screenshots'))
+      const stats = await stat(savedPath)
+      expect(stats.size).toBeGreaterThan(2 * 1024 * 1024)
+    } finally {
+      if (previousHome === undefined) {
+        delete process.env.AUTOBROWSER_HOME
+      } else {
+        process.env.AUTOBROWSER_HOME = previousHome
+      }
+      await rm(tempHome, { recursive: true, force: true })
+    }
+  })
+
+  test('keeps inlining screenshots that fit within the 2MB threshold', async () => {
+    const tempHome = await mkdtemp(path.join(os.tmpdir(), 'autobrowser-mcp-home-'))
+    const previousHome = process.env.AUTOBROWSER_HOME
+    process.env.AUTOBROWSER_HOME = tempHome
+    try {
+      const mock = recordingRequestCommand(
+        okResult({ data: 'aGVsbG8gd29ybGQ=', mimeType: 'image/png', width: 800, height: 600 }),
+      )
+      const server = new AutobrowserMcpServer({ requestCommand: mock })
+
+      const result = await server.callTool('screenshot', {})
+
+      expect(result.content.some((block) => block.type === 'image')).toBe(true)
+      expect(result.content.some((block) => block.type === 'text')).toBe(true)
+    } finally {
+      if (previousHome === undefined) {
+        delete process.env.AUTOBROWSER_HOME
+      } else {
+        process.env.AUTOBROWSER_HOME = previousHome
+      }
+      await rm(tempHome, { recursive: true, force: true })
+    }
   })
 
   test('unknown tool returns an isError result with a suggestion', async () => {

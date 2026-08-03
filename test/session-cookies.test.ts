@@ -11,7 +11,10 @@ interface DebuggerCall {
 function createCookiesClearHarness(tabUrl: string, cookies: unknown[]) {
   const debuggerCalls: DebuggerCall[] = []
   const session = createSessionDomain({
-    state: {} as ExtensionState,
+    // 只给 session.emulation 最小结构：set 系列命令会记录覆盖摘要
+    state: {
+      session: { emulation: new Map<number, Record<string, unknown>>() },
+    } as unknown as ExtensionState,
     getTargetTab: async () => ({ id: 7, url: tabUrl }) as TabWithId,
     evaluateInTabContext: async () => {
       throw new Error('not used in this test')
@@ -136,7 +139,10 @@ function createSessionEvalHarness(options: SessionEvalHarnessOptions = {}) {
   const evalCalls: Array<{ tabId: unknown; expression: string }> = []
   const debuggerCalls: DebuggerCall[] = []
   const session = createSessionDomain({
-    state: {} as ExtensionState,
+    // 只给 session.emulation 最小结构：set 系列命令会记录覆盖摘要
+    state: {
+      session: { emulation: new Map<number, Record<string, unknown>>() },
+    } as unknown as ExtensionState,
     getTargetTab: async () =>
       ({ id: 7, url: options.tabUrl || 'https://app.example.com/' }) as TabWithId,
     evaluateInTabContext: async <TValue = unknown>(
@@ -248,5 +254,69 @@ describe('session set permission/ua/timezone/locale', () => {
     expect(timezoneCall?.params).toEqual({ timezoneId: 'Asia/Shanghai' })
     expect(localeCalls[0]?.params).toEqual({ locale: 'zh-CN' })
     expect(localeCalls[1]?.params).toEqual({ locale: '' })
+  })
+})
+
+function createEmulationHarness() {
+  const state = {
+    session: { emulation: new Map<number, Record<string, unknown>>() },
+  } as unknown as ExtensionState
+  const session = createSessionDomain({
+    state,
+    getTargetTab: async () => ({ id: 7 }) as TabWithId,
+    evaluateInTabContext: async () =>
+      ({ tab: { id: 7 } as TabWithId, response: { result: null }, value: null }) as never,
+    sendDebuggerCommand: async <TResult>(): Promise<TResult> => ({}) as TResult,
+    storageLocalGet: async () => ({}) as never,
+    storageLocalSet: async () => {},
+  })
+  return { session, state }
+}
+
+describe('session emulation overrides tracking', () => {
+  test('records the keys that are actively overridden', async () => {
+    const { session, state } = createEmulationHarness()
+
+    await session.setViewport(7, 1280, 720)
+    await session.setOffline(7, true)
+    await session.setGeo(7, 31.2, 121.5)
+    await session.setUserAgent(7, 'My Agent 1.0')
+    await session.setHeaders(7, { 'x-api-key': 'secret' })
+    await session.setMedia(7, 'dark')
+    await session.setTimezone(7, 'Asia/Shanghai')
+    await session.setLocale(7, 'zh-CN')
+
+    expect(state.session.emulation.get(7)).toEqual({
+      viewport: true,
+      offline: true,
+      geo: true,
+      ua: true,
+      headers: ['x-api-key'],
+      media: true,
+      timezone: true,
+      locale: true,
+    })
+  })
+
+  test('reset values remove their override keys and empty records are dropped', async () => {
+    const { session, state } = createEmulationHarness()
+
+    await session.setUserAgent(7, 'My Agent 1.0')
+    await session.setLocale(7, 'zh-CN')
+    await session.setTimezone(7, 'Asia/Shanghai')
+    await session.setMedia(7, 'dark')
+    await session.setOffline(7, true)
+    await session.setHeaders(7, { 'x-api-key': 'secret' })
+
+    // 空值/恢复默认：对应键从覆盖摘要里删除
+    await session.setUserAgent(7, null)
+    await session.setLocale(7, '')
+    await session.setTimezone(7, null)
+    await session.setMedia(7, null)
+    await session.setOffline(7, false)
+    await session.setHeaders(7, {})
+
+    // 全部恢复默认后整条记录删除，meta 不再回显 emulation
+    expect(state.session.emulation.get(7)).toBeUndefined()
   })
 })

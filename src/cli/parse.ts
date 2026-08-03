@@ -178,6 +178,22 @@ export function parseNetworkRequestsArgs(rest: string[]): Record<string, unknown
       continue
     }
 
+    if (value === '--page-idx') {
+      result.pageIdx = parseNumberArg(rest[index + 1], 'page idx', { min: 0, integer: true })
+      index += 1
+      continue
+    }
+
+    if (value === '--page-size') {
+      result.pageSize = parseNumberArg(rest[index + 1], 'page size', {
+        min: 1,
+        max: 200,
+        integer: true,
+      })
+      index += 1
+      continue
+    }
+
     if (value.startsWith('--')) {
       throw new Error(`unsupported network option: ${value}`)
     }
@@ -348,8 +364,14 @@ export function parseNetworkRouteArgs(rest: string[]): NetworkRouteArgs {
 export const CONSOLE_LEVELS = ['error', 'warning', 'info', 'debug'] as const
 export type ConsoleLevel = (typeof CONSOLE_LEVELS)[number]
 
-export function parseConsoleArgs(rest: string[]): { level: ConsoleLevel | null } {
+export function parseConsoleArgs(rest: string[]): {
+  level: ConsoleLevel | null
+  pageIdx?: number
+  pageSize?: number
+} {
   let level: ConsoleLevel | null = null
+  let pageIdx: number | undefined
+  let pageSize: number | undefined
 
   for (let index = 0; index < rest.length; index += 1) {
     const value = rest[index]
@@ -371,6 +393,22 @@ export function parseConsoleArgs(rest: string[]): { level: ConsoleLevel | null }
       continue
     }
 
+    if (value === '--page-idx') {
+      pageIdx = parseNumberArg(rest[index + 1], 'page idx', { min: 0, integer: true })
+      index += 1
+      continue
+    }
+
+    if (value === '--page-size') {
+      pageSize = parseNumberArg(rest[index + 1], 'page size', {
+        min: 1,
+        max: 200,
+        integer: true,
+      })
+      index += 1
+      continue
+    }
+
     if (value.startsWith('--')) {
       throw new Error(`unsupported console option: ${value}`)
     }
@@ -378,7 +416,11 @@ export function parseConsoleArgs(rest: string[]): { level: ConsoleLevel | null }
     throw new Error(`unexpected extra console argument: ${value}`)
   }
 
-  return { level }
+  return {
+    level,
+    ...(pageIdx !== undefined ? { pageIdx } : {}),
+    ...(pageSize !== undefined ? { pageSize } : {}),
+  }
 }
 
 export function parseWaitArgs(rest: string[]): WaitArgs {

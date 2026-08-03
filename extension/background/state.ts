@@ -1,4 +1,4 @@
-import type { DialogState, ExtensionState } from './types.js'
+import type { DialogState, EmulationOverrides, ExtensionState } from './types.js'
 
 export function createExtensionState(defaultRelayPort: number): ExtensionState {
   return {
@@ -34,6 +34,7 @@ export function createExtensionState(defaultRelayPort: number): ExtensionState {
       lastDialog: null,
       consoleMessages: [],
       pageErrors: [],
+      emulation: new Map<number, EmulationOverrides>(),
     },
     network: {
       routes: [],

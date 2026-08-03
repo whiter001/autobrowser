@@ -1,5 +1,6 @@
 import { withFrameSelectorOptions } from './targeting.js'
 import type {
+  EmulationOverrides,
   EvaluateInTabContextOptions,
   ExtensionState,
   FrameSelector,
@@ -55,6 +56,21 @@ function cookieMatchesHostname(cookieDomain: string, hostname: string): boolean 
       hostname.endsWith(`.${normalizedDomain}`) ||
       normalizedDomain.endsWith(`.${hostname}`)),
   )
+}
+
+/** 记录/清除单 tab 的仿真覆盖摘要：更新后为空则整条删除，避免残留空记录 */
+function updateEmulation(
+  state: ExtensionState,
+  tabId: number,
+  update: (overrides: EmulationOverrides) => void,
+): void {
+  const overrides = state.session.emulation.get(tabId) ?? {}
+  update(overrides)
+  if (Object.keys(overrides).length === 0) {
+    state.session.emulation.delete(tabId)
+  } else {
+    state.session.emulation.set(tabId, overrides)
+  }
 }
 
 export function createSessionDomain({
@@ -267,6 +283,9 @@ export function createSessionDomain({
       deviceScaleFactor: Number(deviceScaleFactor),
       mobile,
     })
+    updateEmulation(state, tab.id, (overrides) => {
+      overrides.viewport = true
+    })
     return { viewport: { width, height, deviceScaleFactor, mobile } }
   }
 
@@ -277,6 +296,14 @@ export function createSessionDomain({
       latency: 0,
       downloadThroughput: -1,
       uploadThroughput: -1,
+    })
+    // offline:false 即恢复联网默认值，不再视为生效中的覆盖
+    updateEmulation(state, tab.id, (overrides) => {
+      if (enabled) {
+        overrides.offline = true
+      } else {
+        delete overrides.offline
+      }
     })
     return { offline: enabled }
   }
@@ -301,6 +328,14 @@ export function createSessionDomain({
     await sendDebuggerCommand(tab.id, 'Network.setExtraHTTPHeaders', {
       headers: normalizedHeaders,
     })
+    updateEmulation(state, tab.id, (overrides) => {
+      if (Object.keys(normalizedHeaders).length > 0) {
+        // headers 只回显键名列表，不暴露值
+        overrides.headers = Object.keys(normalizedHeaders)
+      } else {
+        delete overrides.headers
+      }
+    })
     return { headers: normalizedHeaders }
   }
 
@@ -311,6 +346,9 @@ export function createSessionDomain({
       longitude: Number(longitude),
       accuracy: Number(accuracy),
     })
+    updateEmulation(state, tab.id, (overrides) => {
+      overrides.geo = true
+    })
     return { geo: { latitude, longitude, accuracy } }
   }
 
@@ -318,6 +356,14 @@ export function createSessionDomain({
     const tab = await getTargetTab(tabId)
     await sendDebuggerCommand(tab.id, 'Emulation.setEmulatedMedia', {
       features: media ? [{ name: 'prefers-color-scheme', value: media }] : [],
+    })
+    // 空值恢复默认配色方案，不再视为生效中的覆盖
+    updateEmulation(state, tab.id, (overrides) => {
+      if (media) {
+        overrides.media = true
+      } else {
+        delete overrides.media
+      }
     })
     return { media }
   }
@@ -346,6 +392,13 @@ export function createSessionDomain({
     await sendDebuggerCommand(tab.id, 'Emulation.setUserAgentOverride', {
       userAgent: userAgent || '',
     })
+    updateEmulation(state, tab.id, (overrides) => {
+      if (userAgent) {
+        overrides.ua = true
+      } else {
+        delete overrides.ua
+      }
+    })
     return { userAgent: userAgent || null }
   }
 
@@ -354,6 +407,13 @@ export function createSessionDomain({
     await sendDebuggerCommand(tab.id, 'Emulation.setTimezoneOverride', {
       timezoneId: timezone || '',
     })
+    updateEmulation(state, tab.id, (overrides) => {
+      if (timezone) {
+        overrides.timezone = true
+      } else {
+        delete overrides.timezone
+      }
+    })
     return { timezone: timezone || null }
   }
 
@@ -361,6 +421,13 @@ export function createSessionDomain({
     const tab = await getTargetTab(tabId)
     await sendDebuggerCommand(tab.id, 'Emulation.setLocaleOverride', {
       locale: locale || '',
+    })
+    updateEmulation(state, tab.id, (overrides) => {
+      if (locale) {
+        overrides.locale = true
+      } else {
+        delete overrides.locale
+      }
     })
     return { locale: locale || null }
   }

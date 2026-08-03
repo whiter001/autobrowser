@@ -6,6 +6,7 @@ import type {
   TabWithId,
 } from './types.js'
 import { buildHarPayload, compareHarRecords } from '../../src/core/har.js'
+import { paginateList } from './pagination.js'
 
 type SendDebuggerCommand = <TResult = unknown>(
   tabId: number,
@@ -831,9 +832,17 @@ export function createNetworkDomain({
     const requests = state.network.requests.filter((record) =>
       matchesNetworkRequestFilters(record, filters),
     )
+    const summarized = requests.map((record) => summarizeNetworkRequest(record))
+    // 分页作用在过滤/摘要之后；越界 pageIdx 回退第一页并带 invalidPage 标记
+    const { items, pagination } = paginateList(
+      summarized,
+      filters.pageIdx as number | undefined,
+      filters.pageSize as number | undefined,
+    )
     return {
       total: requests.length,
-      requests: requests.map((record) => summarizeNetworkRequest(record)),
+      requests: items,
+      pagination,
     }
   }
 

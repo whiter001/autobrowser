@@ -442,3 +442,112 @@ describe('network domain routes', () => {
     expect(continued?.params?.headers).toBeUndefined()
   })
 })
+
+describe('network domain request list pagination', () => {
+  function createListHarness() {
+    const state = createExtensionState(57978)
+    state.network.requests = [
+      {
+        id: '1:r1',
+        requestId: 'r1',
+        tabId: 1,
+        url: 'https://example.com/api/a',
+        method: 'GET',
+        status: 200,
+        resourceType: 'xhr',
+      },
+      {
+        id: '1:r2',
+        requestId: 'r2',
+        tabId: 1,
+        url: 'https://example.com/api/b',
+        method: 'GET',
+        status: 404,
+        resourceType: 'xhr',
+      },
+      {
+        id: '1:r3',
+        requestId: 'r3',
+        tabId: 1,
+        url: 'https://example.com/static/c.css',
+        method: 'GET',
+        status: 200,
+        resourceType: 'stylesheet',
+      },
+      {
+        id: '2:r4',
+        requestId: 'r4',
+        tabId: 2,
+        url: 'https://other.com/api/d',
+        method: 'POST',
+        status: 201,
+        resourceType: 'fetch',
+      },
+    ]
+    const network = createNetworkDomain({
+      state,
+      getTargetTab: async () => {
+        throw new Error('not used in this test')
+      },
+      sendRawDebuggerCommand: async <TResult = unknown>(): Promise<TResult> => ({}) as TResult,
+      sendDebuggerCommand: async <TResult = unknown>(): Promise<TResult> => ({}) as TResult,
+    })
+    return { network }
+  }
+
+  test('paginates after filters with pageIdx/pageSize and reports hasNextPage', () => {
+    const { network } = createListHarness()
+
+    const result = network.listRequests({ filter: '/api/', pageSize: 1, pageIdx: 1 }) as {
+      total: number
+      requests: Array<{ id: string }>
+      pagination: Record<string, unknown>
+    }
+
+    // 过滤先于分页：/api/ 只命中 r1/r2/r4 三条，第二页是 r2
+    expect(result.total).toBe(3)
+    expect(result.requests.map((request) => request.id)).toEqual(['1:r2'])
+    expect(result.pagination).toEqual({
+      currentPage: 1,
+      totalPages: 3,
+      hasNextPage: true,
+      hasPreviousPage: true,
+      startIndex: 1,
+      endIndex: 2,
+      invalidPage: false,
+    })
+  })
+
+  test('falls back to the first page with invalidPage for an out-of-range pageIdx', () => {
+    const { network } = createListHarness()
+
+    const result = network.listRequests({ filter: '/api/', pageSize: 1, pageIdx: 9 }) as {
+      requests: Array<{ id: string }>
+      pagination: Record<string, unknown>
+    }
+
+    expect(result.requests.map((request) => request.id)).toEqual(['1:r1'])
+    expect(result.pagination).toMatchObject({
+      currentPage: 0,
+      invalidPage: true,
+    })
+  })
+
+  test('defaults to the first page with the default page size', () => {
+    const { network } = createListHarness()
+
+    const result = network.listRequests({}) as {
+      total: number
+      requests: Array<{ id: string }>
+      pagination: Record<string, unknown>
+    }
+
+    expect(result.total).toBe(4)
+    expect(result.requests).toHaveLength(4)
+    expect(result.pagination).toMatchObject({
+      currentPage: 0,
+      totalPages: 1,
+      invalidPage: false,
+    })
+  })
+})

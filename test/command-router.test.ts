@@ -21,6 +21,43 @@ const EMPTY_META = {
   title: null,
 }
 
+// meta 现在总是带 target 解析结果，按命令是否显式指定 tabId/handle 与是否发生兜底选择区分：
+// explicit=true 显式指定；explicit=false 且首次 fallback 时带 note
+function metaWithTarget(
+  target: { tabId: number; handle: string; explicit: boolean; note?: string },
+  extra: Record<string, unknown> = {},
+): Record<string, unknown> {
+  return { ...TAB_META, target, ...extra }
+}
+
+function explicitTabMeta(extra: Record<string, unknown> = {}): Record<string, unknown> {
+  return metaWithTarget({ tabId: 1, handle: 't1', explicit: true }, extra)
+}
+
+function fallbackTabMeta(extra: Record<string, unknown> = {}): Record<string, unknown> {
+  return metaWithTarget(
+    { tabId: 1, handle: 't1', explicit: false, note: 'fell back to last non-active tab' },
+    extra,
+  )
+}
+
+function ambientTabMeta(extra: Record<string, unknown> = {}): Record<string, unknown> {
+  return metaWithTarget({ tabId: 1, handle: 't1', explicit: false }, extra)
+}
+
+// 单页内完整返回时的分页信息（console/errors/network requests 响应的固定字段）
+function singlePageInfo(count: number): Record<string, unknown> {
+  return {
+    currentPage: 0,
+    totalPages: 1,
+    hasNextPage: false,
+    hasPreviousPage: false,
+    startIndex: 0,
+    endIndex: count,
+    invalidPage: false,
+  }
+}
+
 function createMinimalRouter(overrides?: {
   getTargetTab?: () => Promise<{ id: number }>
   snapshotTab?: (tabId: unknown, frameSelector: unknown, options?: unknown) => Promise<unknown>
@@ -56,6 +93,7 @@ function createMinimalRouter(overrides?: {
       lastDialog: null as Record<string, unknown> | null,
       consoleMessages: [] as unknown[],
       pageErrors: [] as unknown[],
+      emulation: new Map<number, Record<string, unknown>>(),
     },
   }
 
@@ -283,7 +321,7 @@ describe('command router batch handling', () => {
           label: null,
           response: {
             ok: true,
-            result: { snapshotId: 'snapshot-1', meta: TAB_META },
+            result: { snapshotId: 'snapshot-1', meta: fallbackTabMeta() },
           },
         },
         {
@@ -296,7 +334,7 @@ describe('command router batch handling', () => {
             result: {
               navigated: true,
               url: 'https://example.com',
-              meta: { ...TAB_META, url: 'https://example.com' },
+              meta: fallbackTabMeta({ url: 'https://example.com' }),
             },
           },
         },
@@ -349,7 +387,7 @@ describe('command router batch handling', () => {
       stopReason: 'stalled',
       count: 0,
       items: [],
-      meta: TAB_META,
+      meta: explicitTabMeta(),
     })
   })
 
@@ -370,7 +408,7 @@ describe('command router batch handling', () => {
       condition: 'selector-stable',
       selector: 'article',
       state: 'stable',
-      meta: TAB_META,
+      meta: fallbackTabMeta(),
     })
   })
 
@@ -470,7 +508,7 @@ describe('command router batch handling', () => {
           label: null,
           response: {
             ok: true,
-            result: { snapshotId: 'snapshot-1', meta: TAB_META },
+            result: { snapshotId: 'snapshot-1', meta: fallbackTabMeta() },
           },
         },
       ],
@@ -544,7 +582,7 @@ describe('command router batch handling', () => {
           label: null,
           response: {
             ok: true,
-            result: { snapshotId: 'snapshot-1', meta: TAB_META },
+            result: { snapshotId: 'snapshot-1', meta: fallbackTabMeta() },
           },
         },
         {
@@ -554,7 +592,7 @@ describe('command router batch handling', () => {
           label: null,
           response: {
             ok: true,
-            result: { found: true, selector: '#btn', meta: TAB_META },
+            result: { found: true, selector: '#btn', meta: fallbackTabMeta() },
           },
         },
       ],
@@ -598,7 +636,7 @@ describe('command router batch handling', () => {
           label: null,
           response: {
             ok: true,
-            result: { snapshotId: 'snapshot-1', meta: TAB_META },
+            result: { snapshotId: 'snapshot-1', meta: fallbackTabMeta() },
           },
         },
         {
@@ -931,7 +969,7 @@ describe('command router network/session extensions', () => {
 
     expect(result).toEqual({
       routes: [{ id: 'route_1', pattern: '**/api/*', abort: true }],
-      meta: TAB_META,
+      meta: fallbackTabMeta(),
     })
   })
 
@@ -978,7 +1016,7 @@ describe('command router network/session extensions', () => {
       command: 'cookies',
       args: { action: 'delete', name: 'session' },
     })
-    expect(result).toEqual({ deleted: 1, name: 'session', meta: TAB_META })
+    expect(result).toEqual({ deleted: 1, name: 'session', meta: fallbackTabMeta() })
 
     await expect(
       router.handleCommand({ command: 'cookies', args: { action: 'delete' } }),
@@ -993,7 +1031,7 @@ describe('command router network/session extensions', () => {
       args: { action: 'delete', key: 'draft', session: true },
     })
 
-    expect(result).toEqual({ key: 'draft', deleted: true, session: true, meta: TAB_META })
+    expect(result).toEqual({ key: 'draft', deleted: true, session: true, meta: fallbackTabMeta() })
   })
 
   test('routes set permission/ua/timezone/locale to the session domain', async () => {
@@ -1004,26 +1042,26 @@ describe('command router network/session extensions', () => {
         command: 'set',
         args: { type: 'permission', name: 'geolocation' },
       }),
-    ).resolves.toEqual({ permission: 'geolocation', setting: 'granted', meta: TAB_META })
+    ).resolves.toEqual({ permission: 'geolocation', setting: 'granted', meta: fallbackTabMeta() })
 
     await expect(
       router.handleCommand({
         command: 'set',
         args: { type: 'permission', name: 'geolocation', reset: true },
       }),
-    ).resolves.toEqual({ permission: 'geolocation', setting: 'default', meta: TAB_META })
+    ).resolves.toEqual({ permission: 'geolocation', setting: 'default', meta: fallbackTabMeta() })
 
     await expect(
       router.handleCommand({ command: 'set', args: { type: 'ua', value: 'My Agent 1.0' } }),
-    ).resolves.toEqual({ userAgent: 'My Agent 1.0', meta: TAB_META })
+    ).resolves.toEqual({ userAgent: 'My Agent 1.0', meta: fallbackTabMeta() })
 
     await expect(
       router.handleCommand({ command: 'set', args: { type: 'timezone', value: 'Asia/Shanghai' } }),
-    ).resolves.toEqual({ timezone: 'Asia/Shanghai', meta: TAB_META })
+    ).resolves.toEqual({ timezone: 'Asia/Shanghai', meta: fallbackTabMeta() })
 
     await expect(
       router.handleCommand({ command: 'set', args: { type: 'locale', value: '' } }),
-    ).resolves.toEqual({ locale: null, meta: TAB_META })
+    ).resolves.toEqual({ locale: null, meta: fallbackTabMeta() })
   })
 })
 
@@ -1125,7 +1163,7 @@ describe('command router playwright parity commands', () => {
     expect(result).toEqual(
       expect.objectContaining({
         readyState: 'complete',
-        meta: TAB_META,
+        meta: explicitTabMeta(),
       }),
     )
   })
@@ -1167,7 +1205,7 @@ describe('command router playwright parity commands', () => {
       waited: true,
       condition: 'text-gone',
       text: 'Loading',
-      meta: TAB_META,
+      meta: fallbackTabMeta(),
     })
   })
 
@@ -1246,10 +1284,15 @@ describe('command router modal blocking', () => {
 
   test('does not block dialog, query and snapshot commands while a dialog is open', async () => {
     const { router, state, snapshotCalls } = createMinimalRouter()
-    state.session.dialogs.set(1, openConfirmDialog(1))
+    const dialog = openConfirmDialog(1)
+    state.session.dialogs.set(1, dialog)
 
     const status = await router.handleCommand({ command: 'dialog', args: { action: 'status' } })
-    expect(status).toEqual({ meta: TAB_META })
+    expect(status).toEqual({
+      meta: fallbackTabMeta({
+        dialog: { type: dialog.type, message: dialog.message, openedAt: dialog.openedAt },
+      }),
+    })
 
     const handled = await router.handleCommand({
       command: 'dialog',
@@ -1258,7 +1301,13 @@ describe('command router modal blocking', () => {
     expect(handled).toBeUndefined()
 
     const consoleResult = await router.handleCommand({ command: 'console' })
-    expect(consoleResult).toEqual({ messages: [], meta: TAB_META })
+    expect(consoleResult).toEqual({
+      messages: [],
+      pagination: singlePageInfo(0),
+      meta: fallbackTabMeta({
+        dialog: { type: dialog.type, message: dialog.message, openedAt: dialog.openedAt },
+      }),
+    })
 
     const snapshot = await router.handleCommand({ command: 'snapshot', args: { tabId: 1 } })
     expect(snapshot).toEqual(expect.objectContaining({ snapshotId: 'snapshot-1' }))
@@ -1267,7 +1316,8 @@ describe('command router modal blocking', () => {
 
   test('routes search to the page observe domain while a dialog is open', async () => {
     const { router, state, searchCalls } = createMinimalRouter()
-    state.session.dialogs.set(1, openConfirmDialog(1))
+    const dialog = openConfirmDialog(1)
+    state.session.dialogs.set(1, dialog)
 
     const result = await router.handleCommand({
       command: 'search',
@@ -1283,7 +1333,9 @@ describe('command router modal blocking', () => {
     expect(result).toEqual(
       expect.objectContaining({
         readyState: 'complete',
-        meta: TAB_META,
+        meta: explicitTabMeta({
+          dialog: { type: dialog.type, message: dialog.message, openedAt: dialog.openedAt },
+        }),
       }),
     )
   })
@@ -1315,7 +1367,7 @@ describe('command router modal blocking', () => {
       command: 'click',
       args: { tabId: 1, selector: '#ok' },
     })
-    expect(result).toEqual({ found: true, selector: '#ok', meta: TAB_META })
+    expect(result).toEqual({ found: true, selector: '#ok', meta: explicitTabMeta() })
   })
 })
 
@@ -1331,7 +1383,7 @@ describe('command router meta context', () => {
     expect(result).toEqual({
       navigated: true,
       url: 'https://example.com',
-      meta: { ...TAB_META, url: 'https://example.com' },
+      meta: explicitTabMeta({ url: 'https://example.com' }),
     })
   })
 
@@ -1403,7 +1455,7 @@ describe('command router meta context', () => {
     expect(result).toEqual({
       navigated: true,
       url: 'https://new.example.com',
-      meta: { ...TAB_META, url: 'https://new.example.com' },
+      meta: explicitTabMeta({ url: 'https://new.example.com' }),
     })
   })
 })
@@ -1425,7 +1477,8 @@ describe('command router console/errors tab isolation', () => {
         { type: 'error', text: 'from tab 2', timestamp: 2, tabId: 2 },
         { type: 'warn', text: 'no tab', timestamp: 3, tabId: null },
       ],
-      meta: TAB_META,
+      pagination: singlePageInfo(3),
+      meta: fallbackTabMeta(),
     })
   })
 
@@ -1440,7 +1493,8 @@ describe('command router console/errors tab isolation', () => {
 
     expect(result).toEqual({
       messages: [{ type: 'log', text: 'tab2 msg', timestamp: 2, tabId: 2 }],
-      meta: TAB_META,
+      pagination: singlePageInfo(1),
+      meta: explicitTabMeta(),
     })
   })
 
@@ -1456,7 +1510,8 @@ describe('command router console/errors tab isolation', () => {
 
     expect(result).toEqual({
       messages: [{ type: 'log', text: 'tab7 msg', timestamp: 1, tabId: 7 }],
-      meta: TAB_META,
+      pagination: singlePageInfo(1),
+      meta: explicitTabMeta(),
     })
   })
 
@@ -1478,7 +1533,8 @@ describe('command router console/errors tab isolation', () => {
         { type: 'log', text: 'other', timestamp: 4, tabId: 1 },
         { type: 'log', text: 'same', timestamp: 5, tabId: 1 },
       ],
-      meta: TAB_META,
+      pagination: singlePageInfo(3),
+      meta: explicitTabMeta(),
     })
     // 折叠不改动原始数组，只影响返回快照
     expect(state.session.consoleMessages).toHaveLength(5)
@@ -1499,7 +1555,185 @@ describe('command router console/errors tab isolation', () => {
         { error: 'boom', url: 'https://a', timestamp: 1, tabId: 1 },
         { error: 'boom', url: 'https://a', timestamp: 2, tabId: 1 },
       ],
-      meta: TAB_META,
+      pagination: singlePageInfo(2),
+      meta: explicitTabMeta(),
     })
+  })
+})
+
+describe('command router list pagination', () => {
+  test('console paginates after tab filtering with hasNextPage flags', async () => {
+    const { router, state } = createMinimalRouter()
+    for (let index = 1; index <= 5; index += 1) {
+      state.session.consoleMessages.push({
+        type: 'log',
+        text: `msg ${index}`,
+        timestamp: index,
+        tabId: 1,
+      })
+    }
+
+    const first = (await router.handleCommand({
+      command: 'console',
+      args: { tabId: 1, pageSize: 2, pageIdx: 0 },
+    })) as { messages: unknown[]; pagination: Record<string, unknown> }
+
+    expect(first.messages.map((message) => (message as { text: string }).text)).toEqual([
+      'msg 1',
+      'msg 2',
+    ])
+    expect(first.pagination).toEqual({
+      currentPage: 0,
+      totalPages: 3,
+      hasNextPage: true,
+      hasPreviousPage: false,
+      startIndex: 0,
+      endIndex: 2,
+      invalidPage: false,
+    })
+
+    const middle = (await router.handleCommand({
+      command: 'console',
+      args: { tabId: 1, pageSize: 2, pageIdx: 1 },
+    })) as { messages: unknown[]; pagination: Record<string, unknown> }
+    expect(middle.messages.map((message) => (message as { text: string }).text)).toEqual([
+      'msg 3',
+      'msg 4',
+    ])
+    expect(middle.pagination).toMatchObject({
+      currentPage: 1,
+      hasNextPage: true,
+      hasPreviousPage: true,
+      startIndex: 2,
+      endIndex: 4,
+      invalidPage: false,
+    })
+  })
+
+  test('console falls back to the first page with invalidPage for an out-of-range pageIdx', async () => {
+    const { router, state } = createMinimalRouter()
+    state.session.consoleMessages.push(
+      { type: 'log', text: 'only msg', timestamp: 1, tabId: 1 },
+      { type: 'log', text: 'other tab', timestamp: 2, tabId: 2 },
+    )
+
+    const result = (await router.handleCommand({
+      command: 'console',
+      args: { tabId: 1, pageSize: 1, pageIdx: 9 },
+    })) as { messages: unknown[]; pagination: Record<string, unknown> }
+
+    // 越界不报错：回退第一页，只含 tabId=1 过滤后的消息
+    expect(result.messages.map((message) => (message as { text: string }).text)).toEqual([
+      'only msg',
+    ])
+    expect(result.pagination).toEqual({
+      currentPage: 0,
+      totalPages: 1,
+      hasNextPage: false,
+      hasPreviousPage: false,
+      startIndex: 0,
+      endIndex: 1,
+      invalidPage: true,
+    })
+  })
+
+  test('errors paginate after the tabId filter', async () => {
+    const { router, state } = createMinimalRouter()
+    state.session.pageErrors.push(
+      { error: 'tab1 a', url: null, timestamp: 1, tabId: 1 },
+      { error: 'tab2 x', url: null, timestamp: 2, tabId: 2 },
+      { error: 'tab1 b', url: null, timestamp: 3, tabId: 1 },
+    )
+
+    const result = (await router.handleCommand({
+      command: 'errors',
+      args: { tabId: 1, pageSize: 1, pageIdx: 1 },
+    })) as { errors: unknown[]; pagination: Record<string, unknown> }
+
+    expect(result.errors.map((error) => (error as { error: string }).error)).toEqual(['tab1 b'])
+    expect(result.pagination).toEqual({
+      currentPage: 1,
+      totalPages: 2,
+      hasNextPage: false,
+      hasPreviousPage: true,
+      startIndex: 1,
+      endIndex: 2,
+      invalidPage: false,
+    })
+  })
+})
+
+describe('command router meta dialog/emulation/target', () => {
+  test('echoes an open dialog in meta', async () => {
+    const { router, state } = createMinimalRouter()
+    const dialog = openConfirmDialog(1)
+    state.session.dialogs.set(1, dialog)
+
+    const result = (await router.handleCommand({ command: 'console' })) as {
+      meta: Record<string, unknown>
+    }
+
+    expect(result.meta.dialog).toEqual({
+      type: dialog.type,
+      message: dialog.message,
+      openedAt: dialog.openedAt,
+    })
+  })
+
+  test('does not attach a dialog field when no dialog is open', async () => {
+    const { router } = createMinimalRouter()
+
+    const result = (await router.handleCommand({ command: 'console' })) as {
+      meta: Record<string, unknown>
+    }
+
+    expect(result.meta).not.toHaveProperty('dialog')
+  })
+
+  test('echoes active emulation overrides in meta', async () => {
+    const { router, state } = createMinimalRouter()
+    state.session.emulation.set(1, { viewport: true, offline: true, headers: ['x-api-key'] })
+
+    const result = (await router.handleCommand({ command: 'snapshot', args: { tabId: 1 } })) as {
+      meta: Record<string, unknown>
+    }
+
+    expect(result.meta.emulation).toEqual({
+      viewport: true,
+      offline: true,
+      headers: ['x-api-key'],
+    })
+  })
+
+  test('does not attach an emulation field without active overrides', async () => {
+    const { router } = createMinimalRouter()
+
+    const result = (await router.handleCommand({ command: 'snapshot', args: { tabId: 1 } })) as {
+      meta: Record<string, unknown>
+    }
+
+    expect(result.meta).not.toHaveProperty('emulation')
+  })
+
+  test('target is explicit when tabId is given and omits the note', async () => {
+    const { router } = createMinimalRouter()
+
+    const result = (await router.handleCommand({ command: 'snapshot', args: { tabId: 1 } })) as {
+      meta: Record<string, unknown>
+    }
+
+    expect(result.meta.target).toEqual({ tabId: 1, handle: 't1', explicit: true })
+  })
+
+  test('target omits the note when the ambient target already matches', async () => {
+    const { router, state } = createMinimalRouter()
+    // 无显式指定，但当前 targetTabId 与解析结果一致：不是兜底选择
+    state.targeting.targetTabId = 1
+
+    const result = (await router.handleCommand({ command: 'snapshot' })) as {
+      meta: Record<string, unknown>
+    }
+
+    expect(result.meta).toEqual(ambientTabMeta())
   })
 })

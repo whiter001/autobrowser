@@ -384,23 +384,52 @@ async function handleNetwork(rest: string[], context: CommandContext): Promise<n
     const outputPath = rest[1] && !rest[1].startsWith('--') ? rest[1] : null
     const filterArgs = outputPath ? rest.slice(2) : rest.slice(1)
     const filters = parseNetworkRequestsArgs(filterArgs)
-    const payload = await context.requestCommand(context.flags.server, 'network', {
-      action: 'requests',
-      ...filters,
-    })
 
-    if (payload.ok === false) {
-      context.writeResult(payload)
-      return 1
+    // requests 列表默认分页（pageSize 上限 200），导出要拉全量：逐页翻到 hasNextPage=false
+    const allRequests: unknown[] = []
+    let total = 0
+    let pageIdx = 0
+    let pageSize = 200
+    for (;;) {
+      const payload = await context.requestCommand(context.flags.server, 'network', {
+        action: 'requests',
+        ...filters,
+        pageIdx,
+        pageSize,
+      })
+
+      if (payload.ok === false) {
+        context.writeResult(payload)
+        return 1
+      }
+
+      const result = isRecord(payload.result) ? (payload.result as Record<string, unknown>) : null
+      if (!result) {
+        process.stderr.write('network export requires a structured request list\n')
+        return 1
+      }
+
+      const page = Array.isArray(result.requests) ? (result.requests as unknown[]) : []
+      allRequests.push(...page)
+      total =
+        typeof result.total === 'number' && Number.isFinite(result.total)
+          ? Math.floor(result.total)
+          : allRequests.length
+
+      const pagination = isRecord(result.pagination) ? result.pagination : null
+      const hasNext = pagination?.hasNextPage === true
+
+      // 正常由 hasNextPage 终止；无分页字段（旧版扩展）时用"短页"兜底终止
+      if (!hasNext || page.length === 0 || page.length < pageSize) {
+        break
+      }
+      pageIdx += 1
     }
 
-    const result = isRecord(payload.result) ? (payload.result as Record<string, unknown>) : null
-    if (!result) {
-      process.stderr.write('network export requires a structured request list\n')
-      return 1
-    }
-
-    const { content, recordCount } = buildNetworkRequestsJsonl(result, filters)
+    const { content, recordCount } = buildNetworkRequestsJsonl(
+      { total, requests: allRequests },
+      filters,
+    )
     const tempDir = outputPath
       ? null
       : await mkdtemp(path.join(os.tmpdir(), 'autobrowser-network-'))

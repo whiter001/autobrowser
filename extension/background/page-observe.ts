@@ -27,6 +27,7 @@ import type {
 const SCREENSHOT_ANNOTATION_OVERLAY_ID = 'autobrowser-screenshot-annotations'
 const SCREENSHOT_ANNOTATION_MAX_ELEMENTS = 200
 const AGENT_SNAPSHOT_MAX_ELEMENTS = 200
+const SNAPSHOT_MAX_JSON_BYTES = 200_000
 const FEED_MAX_ITEMS = 200
 const FEED_MAX_SCROLLS = 40
 const SEARCH_LINE_MAX_LENGTH = 240
@@ -42,6 +43,41 @@ function normalizeFeedCount(value: number | undefined, fallback: number): number
   return Math.max(0, Math.floor(value))
 }
 
+/**
+ * 整包字节上限：超过阈值时从 elements 尾部逐步移除直到 JSON 体积达标。
+ * frames/headings/buttons 是轻量摘要不参与裁剪，只动 elements。
+ */
+function truncateSnapshotToByteLimit(result: Record<string, unknown>): Record<string, unknown> {
+  const elements = Array.isArray(result.elements) ? (result.elements as unknown[]) : []
+  if (JSON.stringify(result).length <= SNAPSHOT_MAX_JSON_BYTES) {
+    return result
+  }
+
+  const totalElements = elements.length
+  let kept = totalElements
+  while (kept > 0) {
+    kept -= 1
+    const candidate = { ...result, elements: elements.slice(0, kept) }
+    if (JSON.stringify(candidate).length <= SNAPSHOT_MAX_JSON_BYTES) {
+      return {
+        ...candidate,
+        truncated: true,
+        totalElements,
+        returnedElements: kept,
+      }
+    }
+  }
+
+  // elements 全删仍超限（如 text 字段单条过大）：保留其余字段，elements 置空
+  return {
+    ...result,
+    elements: [],
+    truncated: true,
+    totalElements,
+    returnedElements: 0,
+  }
+}
+
 const PAGE_CONTEXT_TEXT_HELPERS_SOURCE = [
   collapseWhitespace.toString(),
   splitWhitespaceTokens.toString(),
@@ -53,6 +89,55 @@ const PAGE_CONTEXT_FIND_HELPERS_SOURCE = [
   PAGE_CONTEXT_TEXT_HELPERS_SOURCE,
   PAGE_CONTEXT_DEEP_DOM_HELPERS_SOURCE,
   parsePageContextElementRefIndex.toString(),
+].join('\n')
+
+/**
+ * 稳定 ref 分配（纯函数，通过 toString() 嵌入页面上下文执行，不能引用模块级闭包变量）。
+ * 已带 ref 的候选沿用原编号；未带的从 refNodes（全页所有带 ref 属性的节点，
+ * 含角色过滤未入选与子树外节点）的最大编号 +1 起编。只增不重排，保证同 pageEpoch 内 ref 全页唯一。
+ */
+export function computeStableRefIndexes<
+  TNode extends {
+    getAttribute(name: string): string | null
+    setAttribute(name: string, value: string): void
+  },
+>(
+  refNodes: TNode[],
+  candidates: TNode[],
+  attribute: string,
+  prefix: string,
+  parseIndex: (value: string | null) => number | null,
+): Map<TNode, number> {
+  let nextIndex = 0
+  for (const node of refNodes) {
+    const parsed = parseIndex(node.getAttribute(attribute))
+    if (parsed !== null) {
+      nextIndex = Math.max(nextIndex, parsed)
+    }
+  }
+
+  const indexes = new Map<TNode, number>()
+  for (const node of candidates) {
+    const existing = parseIndex(node.getAttribute(attribute))
+    if (existing !== null) {
+      indexes.set(node, existing)
+      continue
+    }
+
+    nextIndex += 1
+    node.setAttribute(attribute, prefix + nextIndex)
+    indexes.set(node, nextIndex)
+  }
+
+  return indexes
+}
+
+// snapshot 需要读现有 ref 的最大编号（复用/续号），把 ref 分配器与索引解析器一并注入
+const PAGE_CONTEXT_SNAPSHOT_HELPERS_SOURCE = [
+  PAGE_CONTEXT_TEXT_HELPERS_SOURCE,
+  PAGE_CONTEXT_DEEP_DOM_HELPERS_SOURCE,
+  parsePageContextElementRefIndex.toString(),
+  computeStableRefIndexes.toString(),
 ].join('\n')
 
 export interface SearchMatchLine {
@@ -690,8 +775,7 @@ ${PAGE_CONTEXT_DEEP_DOM_HELPERS_SOURCE}
         const changedMode = ${changedMode};
         const previousSignatures = ${JSON.stringify(previousSignatures)};
 
-${PAGE_CONTEXT_TEXT_HELPERS_SOURCE}
-${PAGE_CONTEXT_DEEP_DOM_HELPERS_SOURCE}
+${PAGE_CONTEXT_SNAPSHOT_HELPERS_SOURCE}
 
         const scope = targetRootSelector ? deepQuerySelector(document, targetRootSelector) : document;
         if (!scope) {
@@ -780,12 +864,9 @@ ${PAGE_CONTEXT_DEEP_DOM_HELPERS_SOURCE}
             : null,
         });
 
-        // 两种 ref 属性合并成一趟遍历清理，减少全 DOM 扫描次数。
-        // 子树截取时仍整页清理：refs 在子树内重新编号，不清理子树外的旧 ref 会造成同号冲突
-        for (const element of deepQuerySelectorAll(document, '[' + refAttribute + '],[' + frameAttribute + ']')) {
-          element.removeAttribute(refAttribute);
-          element.removeAttribute(frameAttribute);
-        }
+        // ref 跨快照复用：不再整页清理重编号。已有 ref 的元素沿用原编号，
+        // 新元素从"全页现有最大编号 +1"起编，只增不重排，保证同 pageEpoch 内 ref 唯一稳定。
+        // 被删除元素的 ref 随元素消失，编号不复用；子树截取也不清理子树外 ref（重编号取消后无同号冲突）
 
         const selectors = [
           'a[href]',
@@ -806,13 +887,14 @@ ${PAGE_CONTEXT_DEEP_DOM_HELPERS_SOURCE}
           candidates.unshift(scope);
         }
 
-        const elements = [];
+        // 第一趟：筛选可见且通过 role 过滤的候选。未入选的元素保留旧 ref 属性不动
+        const selectedElements = [];
         for (const element of candidates) {
           if (!(element instanceof HTMLElement)) {
             continue;
           }
 
-          if (elements.length >= ${AGENT_SNAPSHOT_MAX_ELEMENTS}) {
+          if (selectedElements.length >= ${AGENT_SNAPSHOT_MAX_ELEMENTS}) {
             break;
           }
 
@@ -829,14 +911,28 @@ ${PAGE_CONTEXT_DEEP_DOM_HELPERS_SOURCE}
             continue;
           }
 
-          // role 过滤在可见性检查之后、ref 编号之前：ref 按过滤后的集合重新编号
+          // role 过滤在可见性检查之后、ref 分配之前：未入选的元素保留旧 ref 不动
           const role = inferRole(element);
           if (roles.length > 0 && (!role || !roles.includes(role))) {
             continue;
           }
 
-          const refValue = 'e' + (elements.length + 1);
-          element.setAttribute(refAttribute, refValue);
+          selectedElements.push({ element, rect, role });
+        }
+
+        // 第二趟：稳定 ref 分配（已有沿用，新的从全页最大编号 +1 续号），再组装元素条目
+        const elementRefIndexes = computeStableRefIndexes(
+          deepQuerySelectorAll(document, '[' + refAttribute + ']'),
+          selectedElements.map((item) => item.element),
+          refAttribute,
+          'e',
+          parsePageContextElementRefIndex,
+        );
+
+        const elements = [];
+        for (const { element, rect, role } of selectedElements) {
+          const refIndex = elementRefIndexes.get(element);
+          const refValue = 'e' + refIndex;
 
           const text = readText(element).slice(0, 240);
           const name = getName(element).slice(0, 240);
@@ -859,13 +955,14 @@ ${PAGE_CONTEXT_DEEP_DOM_HELPERS_SOURCE}
           });
         }
 
-        const frames = [];
+        // frame ref 与元素 ref 同规则：已有沿用，新 iframe 从全页最大编号 +1 续号
+        const selectedFrames = [];
         for (const frameElement of deepQuerySelectorAll(scope, 'iframe')) {
           if (!(frameElement instanceof HTMLIFrameElement)) {
             continue;
           }
 
-          if (frames.length >= ${AGENT_SNAPSHOT_MAX_ELEMENTS}) {
+          if (selectedFrames.length >= ${AGENT_SNAPSHOT_MAX_ELEMENTS}) {
             break;
           }
 
@@ -882,10 +979,26 @@ ${PAGE_CONTEXT_DEEP_DOM_HELPERS_SOURCE}
             continue;
           }
 
-          const refValue = 'f' + (frames.length + 1);
-          frameElement.setAttribute(frameAttribute, refValue);
+          selectedFrames.push({ frameElement, rect });
+        }
+
+        const parseFrameRefIndex = (value) => {
+          const match = /^f(\\d+)$/.exec(String(value || '').trim());
+          return match ? Number(match[1]) : null;
+        };
+        const frameRefIndexes = computeStableRefIndexes(
+          deepQuerySelectorAll(document, '[' + frameAttribute + ']'),
+          selectedFrames.map((item) => item.frameElement),
+          frameAttribute,
+          'f',
+          parseFrameRefIndex,
+        );
+
+        const frames = [];
+        for (const { frameElement, rect } of selectedFrames) {
+          const frameIndex = frameRefIndexes.get(frameElement);
           frames.push({
-            ref: frameRefPrefix + (frames.length + 1) + '#p' + pageEpoch,
+            ref: frameRefPrefix + frameIndex + '#p' + pageEpoch,
             name: frameElement.name || null,
             title: frameElement.title || null,
             src: frameElement.src || frameElement.getAttribute('src') || null,
@@ -943,13 +1056,14 @@ ${PAGE_CONTEXT_DEEP_DOM_HELPERS_SOURCE}
       })
     }
 
-    // signatures 是内部透传字段，剥掉后再返回，避免泄漏进 JSONL export 与 meta 包络
+    // signatures 是内部透传字段，剥掉后再返回，避免泄漏进 JSONL export 与 meta 包络；
+    // 字节上限截断作用在最终结果上（含 changed 过滤后的 elements）
     if (value && typeof value === 'object') {
       const { signatures: _omitted, ...result } = value as { signatures?: unknown } & Record<
         string,
         unknown
       >
-      return result
+      return truncateSnapshotToByteLimit(result)
     }
 
     return value

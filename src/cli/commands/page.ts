@@ -618,7 +618,10 @@ const handleConsole: CommandHandler = async (rest, context) => {
     return 1
   }
 
-  const payload = await context.requestCommand(context.flags.server, 'console', {})
+  const payload = await context.requestCommand(context.flags.server, 'console', {
+    ...(consoleArgs.pageIdx !== undefined ? { pageIdx: consoleArgs.pageIdx } : {}),
+    ...(consoleArgs.pageSize !== undefined ? { pageSize: consoleArgs.pageSize } : {}),
+  })
   // --level 语义与 Playwright 一致：每个级别包含更严重的消息（error < warning < info < debug）
   if (consoleArgs.level && payload.ok && isRecord(payload.result)) {
     const maxRank = CONSOLE_LEVEL_ORDER.indexOf(consoleArgs.level)
@@ -639,7 +642,22 @@ const handleConsole: CommandHandler = async (rest, context) => {
   return 0
 }
 
-const handleErrors = createNoArgRequestCommand({ helpPath: ['errors'], command: 'errors' })
+const handleErrors: CommandHandler = async (rest, context) => {
+  if (helpRequested(rest[0], context, ['errors'])) {
+    return 0
+  }
+
+  const errorsArgs = parseOrWriteError(() => parseConsoleArgs(rest))
+  if (!errorsArgs) {
+    return 1
+  }
+
+  await requestAndWrite(context, 'errors', {
+    ...(errorsArgs.pageIdx !== undefined ? { pageIdx: errorsArgs.pageIdx } : {}),
+    ...(errorsArgs.pageSize !== undefined ? { pageSize: errorsArgs.pageSize } : {}),
+  })
+  return 0
+}
 
 const handlePdf = createNoArgRequestCommand({ helpPath: ['pdf'], command: 'pdf' })
 
