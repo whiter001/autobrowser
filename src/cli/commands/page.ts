@@ -4,6 +4,7 @@ import path from 'node:path'
 import { isRecord } from '../client.js'
 import {
   parseConsoleArgs,
+  parseNumberArg,
   parseScreenshotArgs,
   parseSearchArgs,
   parseSnapshotArgs,
@@ -212,13 +213,36 @@ function parseSnapshotFieldSelectors(rest: string[]): {
   return { outputPath, selection }
 }
 
+// 从 eval 参数里抽走 --timeout-ms，其余原样交给 resolveEvalScript 当脚本内容
+function extractEvalTimeoutMs(rest: string[]): { scriptRest: string[]; timeoutMs?: number } {
+  const scriptRest: string[] = []
+  let timeoutMs: number | undefined
+
+  for (let index = 0; index < rest.length; index += 1) {
+    const value = rest[index]
+    if (value === '--timeout-ms') {
+      timeoutMs = parseNumberArg(rest[index + 1], 'timeout ms', { min: 1, integer: true })
+      index += 1
+      continue
+    }
+    scriptRest.push(value)
+  }
+
+  return { scriptRest, timeoutMs }
+}
+
 async function handleEval(rest: string[], context: CommandContext): Promise<number | void> {
   if (helpRequested(rest[0], context, ['eval'])) {
     return 0
   }
 
-  const script = await context.resolveEvalScript(rest)
-  const payload = await context.requestCommand(context.flags.server, 'eval', { script })
+  const { scriptRest, timeoutMs } = extractEvalTimeoutMs(rest)
+  const script = await context.resolveEvalScript(scriptRest)
+  const args: Record<string, unknown> = { script }
+  if (timeoutMs !== undefined) {
+    args.timeoutMs = timeoutMs
+  }
+  const payload = await context.requestCommand(context.flags.server, 'eval', args)
   context.writeResult(payload)
   return 0
 }

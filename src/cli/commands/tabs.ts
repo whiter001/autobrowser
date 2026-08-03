@@ -1,5 +1,6 @@
 import { shouldOpenInNewTab } from '../client.js'
-import { helpRequested, readRequiredArg } from './shared.js'
+import { parseNumberArg } from '../parse.js'
+import { helpRequested, parseOrWriteError, readRequiredArg } from './shared.js'
 import type { CommandContext, CommandRegistry } from './types.js'
 
 async function handleTab(rest: string[], context: CommandContext): Promise<number | void> {
@@ -62,17 +63,70 @@ async function handleTab(rest: string[], context: CommandContext): Promise<numbe
   return context.writeHelp(['tab'])
 }
 
+function parseGotoArgs(rest: string[]): {
+  url?: string
+  timeoutMs?: number
+  wait?: boolean
+} {
+  const parsed: { url?: string; timeoutMs?: number; wait?: boolean } = {}
+
+  for (let index = 0; index < rest.length; index += 1) {
+    const value = rest[index]
+
+    if (value === '--timeout-ms') {
+      parsed.timeoutMs = parseNumberArg(rest[index + 1], 'timeout ms', { min: 1, integer: true })
+      index += 1
+      continue
+    }
+
+    if (value === '--wait' || value === '--no-wait') {
+      parsed.wait = value === '--wait'
+      continue
+    }
+
+    if (value.startsWith('--')) {
+      throw new Error(`unsupported goto option: ${value}`)
+    }
+
+    if (parsed.url === undefined) {
+      parsed.url = value
+      continue
+    }
+
+    throw new Error(`unexpected extra argument for goto: ${value}`)
+  }
+
+  return parsed
+}
+
 async function handleOpenOrGoto(
   command: 'open' | 'goto',
   rest: string[],
   context: CommandContext,
 ): Promise<number | void> {
-  const url = readRequiredArg(rest[0], context, [command])
+  if (helpRequested(rest[0], context, [command])) {
+    return 0
+  }
+
+  const parsedArgs = parseOrWriteError(() => parseGotoArgs(rest))
+  if (!parsedArgs) {
+    return 1
+  }
+
+  const url = readRequiredArg(parsedArgs.url, context, [command])
   if (!url) {
     return 0
   }
 
-  const payload = await context.requestCommand(context.flags.server, 'goto', { url })
+  const args: Record<string, unknown> = { url }
+  if (parsedArgs.timeoutMs !== undefined) {
+    args.timeoutMs = parsedArgs.timeoutMs
+  }
+  if (parsedArgs.wait !== undefined) {
+    args.wait = parsedArgs.wait
+  }
+
+  const payload = await context.requestCommand(context.flags.server, 'goto', args)
 
   if (shouldOpenInNewTab(payload)) {
     const fallbackPayload = await context.requestCommand(context.flags.server, 'tab.new', { url })

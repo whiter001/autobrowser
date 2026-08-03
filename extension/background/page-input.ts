@@ -67,6 +67,8 @@ interface PageInputDependencies {
 }
 
 const PAGE_CONTEXT_DEEP_DOM_HELPERS_SOURCE = buildDeepDomTraversalHelpersSource()
+// 导航类命令（goto/open/back/forward/reload）等待"导航发生 + 页面稳定"的默认总预算
+const DEFAULT_NAVIGATION_WAIT_TIMEOUT_MS = 10000
 
 export function createPageInputDomain({
   state,
@@ -87,6 +89,150 @@ export function createPageInputDomain({
       `${PAGE_CONTEXT_DEEP_DOM_HELPERS_SOURCE}\n${expression}`,
       options,
     )
+  }
+
+  function sleep(ms: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, ms))
+  }
+
+  // 页面内 MutationObserver 表达式：documentElement 连续 100ms 无变更即 settled。
+  // 页面持续变更时由 hardCapMs 硬上限兜底 resolve（settled:false），
+  // 实测 CDP Runtime.evaluate 的 timeout 无法中断 awaitPromise 的挂起等待，
+  // 必须靠页面内定时器自兜底，扩展侧只负责等 evaluate 返回
+  function buildMutationQuietExpression(hardCapMs: number): string {
+    return `(async () => {
+      return await new Promise((resolve) => {
+        const deadline = Date.now() + ${Math.max(0, Math.floor(hardCapMs))};
+        let settled = false;
+        let timer = null;
+        let observer = null;
+        const finish = (isSettled, reason) => {
+          if (settled) return;
+          settled = true;
+          if (timer) clearTimeout(timer);
+          if (observer) observer.disconnect();
+          resolve({ settled: isSettled, reason });
+        };
+        const quietDone = () => finish(true, null);
+        const capDone = () => finish(false, 'still-changing');
+        try {
+          observer = new MutationObserver(() => {
+            clearTimeout(timer);
+            timer = setTimeout(quietDone, 100);
+          });
+          observer.observe(document.documentElement, { childList: true, subtree: true, attributes: true });
+          timer = setTimeout(quietDone, 100);
+          setTimeout(capDone, Math.max(0, deadline - Date.now()));
+        } catch (error) {
+          finish(false, 'observer-unavailable');
+        }
+      });
+    })()`
+  }
+
+  interface WaitForPageSettledOptions {
+    timeoutMs?: number
+  }
+
+  async function waitForPageSettled(
+    tabId: number,
+    options: WaitForPageSettledOptions = {},
+  ): Promise<{ settled: boolean; settleReason?: string; settledInMs?: number }> {
+    const timeoutMs = options.timeoutMs ?? 10000
+    const startedAt = Date.now()
+    const remaining = () => timeoutMs - (Date.now() - startedAt)
+
+    while (remaining() > 0) {
+      // 阶段一：等 readyState 至少到 interactive。导航后旧 document 可能短暂存活，
+      // evaluate 也可能因上下文销毁失败，轮询重试即可
+      let readyState: string | null = null
+      while (remaining() > 0) {
+        try {
+          const { value } = await evaluateInTabContextBase<string>(tabId, 'document.readyState', {
+            timeoutMs: 2000,
+          })
+          if (value === 'interactive' || value === 'complete') {
+            readyState = value
+            break
+          }
+        } catch {
+          // 导航中的上下文销毁/瞬时失败，继续轮询
+        }
+        await sleep(100)
+      }
+      if (!readyState) {
+        return {
+          settled: false,
+          settleReason: `page never reached interactive within ${timeoutMs}ms`,
+        }
+      }
+
+      // 阶段二：MutationObserver 连续 100ms 无变更视为稳定。
+      // 期间页面再次导航（上下文销毁）则回到阶段一重试
+      try {
+        const { value } = await evaluateInTabContextBase<{
+          settled: boolean
+          reason?: string
+        }>(tabId, buildMutationQuietExpression(remaining()), { timeoutMs: remaining() + 5000 })
+        if (value?.settled) {
+          return { settled: true, settledInMs: Date.now() - startedAt }
+        }
+        return { settled: false, settleReason: value?.reason || 'page kept changing' }
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error)
+        if (!/context was destroyed|cannot find context/i.test(message)) {
+          return { settled: false, settleReason: message }
+        }
+      }
+    }
+
+    return { settled: false, settleReason: `timeout after ${timeoutMs}ms` }
+  }
+
+  // 等导航实际发生（pageEpoch 递增）。导航命令发出后旧 document 可能仍存活且
+  // readyState=complete，必须先等 main-frame commit / same-document 导航事件
+  // （connection.ts 监听 frameNavigated / navigatedWithinDocument 递增 epoch），
+  // 再进 waitForPageSettled，否则会把旧文档的稳定误判成新页面已加载。
+  // 只读 state 内的 epoch，不依赖 tab 查询，tab 关闭等异常天然容忍到超时
+  async function waitForNavigationCommit(
+    tabId: number,
+    baselineEpoch: number,
+    budgetMs: number,
+  ): Promise<boolean> {
+    const deadline = Date.now() + budgetMs
+    while (Date.now() < deadline) {
+      if (getPageEpoch(state, tabId) !== baselineEpoch) {
+        return true
+      }
+      await sleep(100)
+    }
+    return false
+  }
+
+  // 点击后 500ms 窗口内轮询 pageEpoch / tab.url 是否变化，判断是否触发了导航
+  async function detectNavigationAfterClick(
+    tabId: number,
+    beforeEpoch: number,
+    beforeUrl: string | undefined,
+  ): Promise<boolean> {
+    const deadline = Date.now() + 500
+    while (Date.now() < deadline) {
+      if (getPageEpoch(state, tabId) !== beforeEpoch) {
+        return true
+      }
+      if (beforeUrl) {
+        try {
+          const tab = await getTargetTab(tabId)
+          if (tab.url && tab.url !== beforeUrl) {
+            return true
+          }
+        } catch {
+          // tab 关闭等瞬时错误，继续轮询
+        }
+      }
+      await sleep(100)
+    }
+    return false
   }
 
   function parseKeyboardKey(key: string): { key: string; modifiers: number } {
@@ -198,27 +344,67 @@ export function createPageInputDomain({
     return await dispatchInsertText(tabId, text)
   }
 
-  async function evaluateScript(tabId: TabInput, script: string, frameSelector: FrameSelector) {
+  async function evaluateScript(
+    tabId: TabInput,
+    script: string,
+    frameSelector: FrameSelector,
+    timeoutMs?: number,
+  ) {
     const { value } = await evaluateInTabContext(
       tabId,
       script,
       withFrameSelectorOptions(frameSelector, {
         userGesture: true,
+        ...(typeof timeoutMs === 'number' ? { timeoutMs } : {}),
       }),
     )
     return value
   }
 
-  async function navigateTo(tabId: TabInput, url: string) {
+  async function navigateTo(
+    tabId: TabInput,
+    url: string,
+    options: { timeoutMs?: number; wait?: boolean } = {},
+  ) {
     const tab = await getTargetTab(tabId)
     invalidatePageRefs(state, tab.id)
+    // 基线必须在 invalidatePageRefs（已让 epoch +1）之后取：
+    // 导航 commit 时 connection.ts 再 +1，轮询 epoch !== 基线即代表导航真正发生
+    const baselineEpoch = getPageEpoch(state, tab.id)
     await sendDebuggerCommand(tab.id, 'Page.enable', {})
     await sendDebuggerCommand(tab.id, 'Page.navigate', { url })
-    return { tabId: tab.id, url }
+    // --wait false 恢复旧的"发完即返回"行为
+    if (options.wait === false) {
+      return { tabId: tab.id, url }
+    }
+
+    const timeoutMs = options.timeoutMs ?? DEFAULT_NAVIGATION_WAIT_TIMEOUT_MS
+    const startedAt = Date.now()
+    // 先等导航 commit 再判稳定，避免旧 document 存活期间把旧页误判成新页面已加载
+    const commit = await waitForNavigationCommit(tab.id, baselineEpoch, timeoutMs)
+    if (!commit) {
+      return { tabId: tab.id, url, settled: false, settleReason: 'navigation never committed' }
+    }
+    const settle = await waitForPageSettled(tab.id, {
+      timeoutMs: Math.max(0, timeoutMs - (Date.now() - startedAt)),
+    })
+    return {
+      tabId: tab.id,
+      url,
+      settled: settle.settled,
+      ...(settle.settled ? {} : { settleReason: settle.settleReason || 'page did not settle' }),
+    }
   }
 
-  async function clickSelector(tabId: TabInput, selector: string, frameSelector: FrameSelector) {
+  async function clickSelector(
+    tabId: TabInput,
+    selector: string,
+    frameSelector: FrameSelector,
+    timeoutMs = 10000,
+  ) {
     const { tab, resolvedSelector } = await resolveElementSelectorForTab(tabId, selector)
+    const beforeEpoch = getPageEpoch(state, tab.id)
+    const beforeUrl = tab.url
     const { value: result } = await evaluateInTabContext<ElementActionResult>(
       tab.id,
       `(() => {
@@ -232,6 +418,24 @@ export function createPageInputDomain({
     )
 
     if (result?.found) {
+      // 点击可能触发导航（链接/表单提交），检测到变化后等待页面稳定，并回显新 URL
+      const navigated = await detectNavigationAfterClick(tab.id, beforeEpoch, beforeUrl)
+      if (navigated) {
+        const settle = await waitForPageSettled(tab.id, { timeoutMs })
+        let currentUrl: string | null = null
+        try {
+          const currentTab = await getTargetTab(tab.id)
+          currentUrl = currentTab.url || null
+        } catch {
+          // 点击后 tab 被关闭（如 window.open + 原页关闭），保持 null
+        }
+        return {
+          ...result,
+          navigatedToUrl: currentUrl,
+          settled: settle.settled,
+          ...(settle.settled ? {} : { settleReason: settle.settleReason || 'page did not settle' }),
+        }
+      }
       return result
     }
 
@@ -290,8 +494,21 @@ export function createPageInputDomain({
     const { key: keyName, modifiers } = parseKeyboardKey(key)
     const tab = await getTargetTab(tabId)
 
-    await dispatchKeyEvent(tab.id, keyName, modifiers, 'keyDown')
-    await dispatchKeyEvent(tab.id, keyName, modifiers, 'keyUp')
+    // keyDown 成功后必须补 keyUp，否则页面逻辑上键会一直按着；
+    // keyUp 失败不掩盖原始错误，只在原始无错时才抛出
+    let keyUpError: unknown = null
+    try {
+      await dispatchKeyEvent(tab.id, keyName, modifiers, 'keyDown')
+    } finally {
+      try {
+        await dispatchKeyEvent(tab.id, keyName, modifiers, 'keyUp')
+      } catch (error) {
+        keyUpError = error
+      }
+    }
+    if (keyUpError !== null) {
+      throw keyUpError
+    }
 
     return { key, pressed: true }
   }
@@ -523,6 +740,7 @@ export function createPageInputDomain({
   async function navigateBack(tabId: TabInput) {
     const tab = await getTargetTab(tabId)
     invalidatePageRefs(state, tab.id)
+    const baselineEpoch = getPageEpoch(state, tab.id)
     const history = await sendDebuggerCommand<{
       entries?: Array<{ id: number }>
       currentIndex?: number
@@ -537,7 +755,30 @@ export function createPageInputDomain({
         await sendDebuggerCommand(tab.id, 'Page.navigateToHistoryEntry', {
           entryId: targetEntry.id,
         })
-        return { navigated: true, back: true }
+        const startedAt = Date.now()
+        // 与 navigateTo 同理：先等导航 commit（epoch 变化）再判稳定，避免旧文档误判
+        const commit = await waitForNavigationCommit(
+          tab.id,
+          baselineEpoch,
+          DEFAULT_NAVIGATION_WAIT_TIMEOUT_MS,
+        )
+        if (!commit) {
+          return {
+            navigated: true,
+            back: true,
+            settled: false,
+            settleReason: 'navigation never committed',
+          }
+        }
+        const settle = await waitForPageSettled(tab.id, {
+          timeoutMs: Math.max(0, DEFAULT_NAVIGATION_WAIT_TIMEOUT_MS - (Date.now() - startedAt)),
+        })
+        return {
+          navigated: true,
+          back: true,
+          settled: settle.settled,
+          ...(settle.settled ? {} : { settleReason: settle.settleReason || 'page did not settle' }),
+        }
       }
     }
     return { navigated: false, reason: 'no back history' }
@@ -546,6 +787,7 @@ export function createPageInputDomain({
   async function navigateForward(tabId: TabInput) {
     const tab = await getTargetTab(tabId)
     invalidatePageRefs(state, tab.id)
+    const baselineEpoch = getPageEpoch(state, tab.id)
     const history = await sendDebuggerCommand<{
       entries?: Array<{ id: number }>
       currentIndex?: number
@@ -560,7 +802,30 @@ export function createPageInputDomain({
         await sendDebuggerCommand(tab.id, 'Page.navigateToHistoryEntry', {
           entryId: targetEntry.id,
         })
-        return { navigated: true, forward: true }
+        const startedAt = Date.now()
+        // 与 navigateTo 同理：先等导航 commit（epoch 变化）再判稳定，避免旧文档误判
+        const commit = await waitForNavigationCommit(
+          tab.id,
+          baselineEpoch,
+          DEFAULT_NAVIGATION_WAIT_TIMEOUT_MS,
+        )
+        if (!commit) {
+          return {
+            navigated: true,
+            forward: true,
+            settled: false,
+            settleReason: 'navigation never committed',
+          }
+        }
+        const settle = await waitForPageSettled(tab.id, {
+          timeoutMs: Math.max(0, DEFAULT_NAVIGATION_WAIT_TIMEOUT_MS - (Date.now() - startedAt)),
+        })
+        return {
+          navigated: true,
+          forward: true,
+          settled: settle.settled,
+          ...(settle.settled ? {} : { settleReason: settle.settleReason || 'page did not settle' }),
+        }
       }
     }
     return { navigated: false, reason: 'no forward history' }
@@ -569,8 +834,26 @@ export function createPageInputDomain({
   async function reloadPage(tabId: TabInput) {
     const tab = await getTargetTab(tabId)
     invalidatePageRefs(state, tab.id)
+    const baselineEpoch = getPageEpoch(state, tab.id)
     await sendDebuggerCommand(tab.id, 'Page.reload', {})
-    return { reloaded: true }
+    const startedAt = Date.now()
+    // 与 navigateTo 同理：先等导航 commit（epoch 变化）再判稳定，避免旧文档误判
+    const commit = await waitForNavigationCommit(
+      tab.id,
+      baselineEpoch,
+      DEFAULT_NAVIGATION_WAIT_TIMEOUT_MS,
+    )
+    if (!commit) {
+      return { reloaded: true, settled: false, settleReason: 'navigation never committed' }
+    }
+    const settle = await waitForPageSettled(tab.id, {
+      timeoutMs: Math.max(0, DEFAULT_NAVIGATION_WAIT_TIMEOUT_MS - (Date.now() - startedAt)),
+    })
+    return {
+      reloaded: true,
+      settled: settle.settled,
+      ...(settle.settled ? {} : { settleReason: settle.settleReason || 'page did not settle' }),
+    }
   }
 
   async function switchToFrame(tabId: TabInput, selector: string) {

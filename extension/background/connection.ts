@@ -290,6 +290,7 @@ export function createConnectionRuntime({
             type: String(consoleParams.type || ''),
             text: messageText,
             timestamp: Date.now(),
+            tabId: typeof source?.tabId === 'number' ? source.tabId : null,
           },
           500,
         )
@@ -317,6 +318,7 @@ export function createConnectionRuntime({
             line: exceptionParams.exceptionDetails?.lineNumber,
             column: exceptionParams.exceptionDetails?.columnNumber,
             timestamp: Date.now(),
+            tabId: typeof source?.tabId === 'number' ? source.tabId : null,
           },
           100,
         )

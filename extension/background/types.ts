@@ -115,6 +115,8 @@ export interface ConsoleMessageRecord {
   type: string
   text: string
   timestamp: number
+  /** 消息来源 tab；source 里没带 tabId 时（罕见）为 null */
+  tabId: number | null
 }
 
 export interface PageErrorRecord {
@@ -123,6 +125,8 @@ export interface PageErrorRecord {
   line?: number
   column?: number
   timestamp: number
+  /** 消息来源 tab；source 里没带 tabId 时（罕见）为 null */
+  tabId: number | null
 }
 
 /** WebSocket 连接生命周期与诊断信息 */
@@ -229,6 +233,8 @@ export interface CommandMeta {
 
 export interface EvaluateInTabContextOptions extends Record<string, unknown> {
   frameSelector?: string
+  /** Runtime.evaluate 的执行超时（毫秒），缺省 25000（小于 server 的命令超时 30s） */
+  timeoutMs?: number
 }
 
 export interface FrameExecutionContext {

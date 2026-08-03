@@ -1407,3 +1407,99 @@ describe('command router meta context', () => {
     })
   })
 })
+
+describe('command router console/errors tab isolation', () => {
+  test('console returns all messages when no tab target is resolved', async () => {
+    const { router, state } = createMinimalRouter()
+    state.session.consoleMessages.push(
+      { type: 'log', text: 'from tab 1', timestamp: 1, tabId: 1 },
+      { type: 'error', text: 'from tab 2', timestamp: 2, tabId: 2 },
+      { type: 'warn', text: 'no tab', timestamp: 3, tabId: null },
+    )
+
+    const result = await router.handleCommand({ command: 'console' })
+
+    expect(result).toEqual({
+      messages: [
+        { type: 'log', text: 'from tab 1', timestamp: 1, tabId: 1 },
+        { type: 'error', text: 'from tab 2', timestamp: 2, tabId: 2 },
+        { type: 'warn', text: 'no tab', timestamp: 3, tabId: null },
+      ],
+      meta: TAB_META,
+    })
+  })
+
+  test('console filters messages by explicit tabId', async () => {
+    const { router, state } = createMinimalRouter()
+    state.session.consoleMessages.push(
+      { type: 'log', text: 'tab1 msg', timestamp: 1, tabId: 1 },
+      { type: 'log', text: 'tab2 msg', timestamp: 2, tabId: 2 },
+    )
+
+    const result = await router.handleCommand({ command: 'console', args: { tabId: 2 } })
+
+    expect(result).toEqual({
+      messages: [{ type: 'log', text: 'tab2 msg', timestamp: 2, tabId: 2 }],
+      meta: TAB_META,
+    })
+  })
+
+  test('console resolves handle to its tab id for filtering', async () => {
+    const { router, state } = createMinimalRouter()
+    state.targeting.tabIdsByHandle.set('t7', 7)
+    state.session.consoleMessages.push(
+      { type: 'log', text: 'tab7 msg', timestamp: 1, tabId: 7 },
+      { type: 'log', text: 'tab1 msg', timestamp: 2, tabId: 1 },
+    )
+
+    const result = await router.handleCommand({ command: 'console', args: { handle: 't7' } })
+
+    expect(result).toEqual({
+      messages: [{ type: 'log', text: 'tab7 msg', timestamp: 1, tabId: 7 }],
+      meta: TAB_META,
+    })
+  })
+
+  test('console folds consecutive identical messages with repeatCount', async () => {
+    const { router, state } = createMinimalRouter()
+    state.session.consoleMessages.push(
+      { type: 'log', text: 'same', timestamp: 1, tabId: 1 },
+      { type: 'log', text: 'same', timestamp: 2, tabId: 1 },
+      { type: 'log', text: 'same', timestamp: 3, tabId: 1 },
+      { type: 'log', text: 'other', timestamp: 4, tabId: 1 },
+      { type: 'log', text: 'same', timestamp: 5, tabId: 1 },
+    )
+
+    const result = await router.handleCommand({ command: 'console', args: { tabId: 1 } })
+
+    expect(result).toEqual({
+      messages: [
+        { type: 'log', text: 'same', timestamp: 3, tabId: 1, repeatCount: 3 },
+        { type: 'log', text: 'other', timestamp: 4, tabId: 1 },
+        { type: 'log', text: 'same', timestamp: 5, tabId: 1 },
+      ],
+      meta: TAB_META,
+    })
+    // 折叠不改动原始数组，只影响返回快照
+    expect(state.session.consoleMessages).toHaveLength(5)
+  })
+
+  test('errors are filtered by tab and not folded', async () => {
+    const { router, state } = createMinimalRouter()
+    state.session.pageErrors.push(
+      { error: 'boom', url: 'https://a', timestamp: 1, tabId: 1 },
+      { error: 'boom', url: 'https://a', timestamp: 2, tabId: 1 },
+      { error: 'boom', url: 'https://b', timestamp: 3, tabId: 2 },
+    )
+
+    const result = await router.handleCommand({ command: 'errors', args: { tabId: 1 } })
+
+    expect(result).toEqual({
+      errors: [
+        { error: 'boom', url: 'https://a', timestamp: 1, tabId: 1 },
+        { error: 'boom', url: 'https://a', timestamp: 2, tabId: 1 },
+      ],
+      meta: TAB_META,
+    })
+  })
+})

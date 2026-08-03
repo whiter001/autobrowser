@@ -1677,7 +1677,8 @@ ${PAGE_CONTEXT_DEEP_DOM_HELPERS_SOURCE}
           items,
         };
       })()`,
-      withFrameSelectorOptions(frameSelector),
+      // 滚动采集可能远超默认 25s（maxScrolls * pauseMs），显式放宽 evaluate 上限避免被掐断
+      withFrameSelectorOptions(frameSelector, { timeoutMs: maxScrolls * pauseMs + 60_000 }),
     )
 
     // evaluate 抛异常时上层已 throw；这里只对空结果做结构兜底
@@ -1949,7 +1950,9 @@ ${PAGE_CONTEXT_DEEP_DOM_HELPERS_SOURCE}
               return false;
             }
           })())`,
-          withFrameSelectorOptions(frameSelector),
+          // 单次 poll 的 evaluate 上限比 wait 自身超时更长：长 wait 不会被默认 25s 掐断，
+          // 整体超时由 pollUntil 自己兜底并给出明确的 wait timeout 错误
+          withFrameSelectorOptions(frameSelector, { timeoutMs: timeout + 5000 }),
         )
 
         return value === true ? { waited: true, condition: 'fn', expression } : null

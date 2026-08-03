@@ -11,14 +11,17 @@ import {
   getPageEpoch,
   rememberTargetTab,
   resolveEffectiveFrameSelector,
+  resolveTabInput,
   toTabSummary,
 } from './targeting.js'
 import { serializeCommandError, type SerializedCommandError } from './errors.js'
+import { createCommandQueue } from './command-queue.js'
 import { commandSupportsTabTarget, validateCommandArgs } from '../../src/core/command-spec.js'
 import type {
   CommandArgs,
   CommandMessage,
   CommandMeta,
+  ConsoleMessageRecord,
   DialogState,
   ExtensionState,
   FrameSelector,
@@ -73,16 +76,22 @@ const DIALOG_BLOCKED_COMMANDS = new Set([
 ])
 
 interface PageInputDomain {
-  navigateTo: (tabId: TabInput, url: string) => Promise<unknown>
+  navigateTo: (
+    tabId: TabInput,
+    url: string,
+    options?: { timeoutMs?: number; wait?: boolean },
+  ) => Promise<unknown>
   evaluateScript: (
     tabId: TabInput,
     script: string,
     frameSelector: FrameSelector,
+    timeoutMs?: number,
   ) => Promise<unknown>
   clickSelector: (
     tabId: TabInput,
     selector: string,
     frameSelector: FrameSelector,
+    timeoutMs?: number,
   ) => Promise<unknown>
   doubleClickSelector: (
     tabId: TabInput,
@@ -344,6 +353,9 @@ export function createCommandRouter({
   listTabs,
   getTargetTab,
 }: CommandRouterDependencies) {
+  // 同一 tab 的 chrome.debugger.sendCommand 互斥，多 CLI 并发时必须按 tab 串行执行
+  const commandQueue = createCommandQueue()
+
   function readStringArg(args: CommandArgs, key: string, fallback = ''): string {
     const value = args[key]
     return typeof value === 'string' ? value : fallback
@@ -357,6 +369,11 @@ export function createCommandRouter({
   function readNumberArg(args: CommandArgs, key: string, fallback = 0): number {
     const value = args[key]
     return typeof value === 'number' && Number.isFinite(value) ? value : fallback
+  }
+
+  function readOptionalNumberArg(args: CommandArgs, key: string): number | undefined {
+    const value = args[key]
+    return typeof value === 'number' && Number.isFinite(value) ? value : undefined
   }
 
   function readBooleanArg(args: CommandArgs, key: string, fallback = false): boolean {
@@ -434,6 +451,21 @@ export function createCommandRouter({
       return state.targeting.tabIdsByHandle.get(tabTarget) ?? null
     }
     return state.targeting.targetTabId
+  }
+
+  /** 解析命令的有效目标 tab id：显式 tabId/handle → 数字 tabId，否则用当前 targetTabId */
+  function resolveEffectiveTargetTabId(tabTarget: TabInput): number | null {
+    const resolved = resolveTabInput(state, tabTarget)
+    if (resolved !== null) {
+      return resolved
+    }
+    return state.targeting.targetTabId
+  }
+
+  /** 命令串行化队列的 key：同 tab 的命令共用同一 key，无 tab 目标的命令落到 'default' */
+  function resolveCommandQueueKey(tabTarget: TabInput): string {
+    const tabId = resolveEffectiveTargetTabId(tabTarget)
+    return typeof tabId === 'number' ? `tab:${tabId}` : 'default'
   }
 
   function createDialogBlockedError(dialog: DialogState): ErrorWithCode {
@@ -759,6 +791,23 @@ export function createCommandRouter({
     return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
   }
 
+  type FoldedConsoleMessage = ConsoleMessageRecord & { repeatCount?: number }
+
+  /** 连续相同（type+text）的 console 消息折叠成一条，折叠结果带 repeatCount；不改动原始数组 */
+  function foldConsoleMessages(messages: ConsoleMessageRecord[]): FoldedConsoleMessage[] {
+    const folded: FoldedConsoleMessage[] = []
+    for (const message of messages) {
+      const previous = folded[folded.length - 1]
+      if (previous && previous.type === message.type && previous.text === message.text) {
+        // 用最后一条的时间戳，计数累加
+        folded[folded.length - 1] = { ...message, repeatCount: (previous.repeatCount ?? 1) + 1 }
+      } else {
+        folded.push({ ...message })
+      }
+    }
+    return folded
+  }
+
   function normalizeBatchStepCondition(value: unknown, index: number): BatchStepCondition {
     if (!isRecord(value)) {
       throw new Error(`invalid batch step ${index + 1}: when must be an object`)
@@ -947,7 +996,8 @@ export function createCommandRouter({
 
     while (attempt <= maxRetries) {
       try {
-        const result = await executeCommand(step.command, step.args)
+        // batch 已在自身队列槽内执行，子步骤再进队列会死锁，直接执行
+        const result = await executeCommand(step.command, step.args, true)
         return {
           result: {
             index: index + 1,
@@ -1277,7 +1327,7 @@ export function createCommandRouter({
     return { ...result, meta: effectiveMeta }
   }
 
-  async function executeCommand(command: string, args: CommandArgs = {}) {
+  async function executeCommand(command: string, args: CommandArgs = {}, skipQueue = false) {
     validateCommandArgs(command, args)
 
     const tabId = readTabInputArg(args, 'tabId')
@@ -1359,9 +1409,17 @@ export function createCommandRouter({
           return await closeTab(tabTarget)
         case 'goto':
         case 'open':
-          return await pageInput.navigateTo(tabId, url)
+          return await pageInput.navigateTo(tabId, url, {
+            timeoutMs: readNumberArg(args, 'timeoutMs', 10000),
+            wait: readBooleanArg(args, 'wait', true),
+          })
         case 'eval':
-          return await pageInput.evaluateScript(tabId, script, frameSelector)
+          return await pageInput.evaluateScript(
+            tabId,
+            script,
+            frameSelector,
+            readOptionalNumberArg(args, 'timeoutMs'),
+          )
         case 'snapshot':
           return await pageObserve.snapshotTab(tabId, frameSelector, {
             selector: selector.trim() || undefined,
@@ -1394,7 +1452,12 @@ export function createCommandRouter({
         case 'screenshot':
           return await pageObserve.captureScreenshot(tabId, screenshotOptions, frameSelector)
         case 'click':
-          return await pageInput.clickSelector(tabId, selector, frameSelector)
+          return await pageInput.clickSelector(
+            tabId,
+            selector,
+            frameSelector,
+            readNumberArg(args, 'timeoutMs', 10000),
+          )
         case 'dblclick':
           return await pageInput.doubleClickSelector(tabId, selector, frameSelector)
         case 'fill':
@@ -1514,10 +1577,22 @@ export function createCommandRouter({
           }
           throw new Error(`unsupported storage action: ${action}`)
         }
-        case 'console':
-          return { messages: state.session.consoleMessages }
-        case 'errors':
-          return { errors: state.session.pageErrors }
+        case 'console': {
+          const targetTabId = resolveEffectiveTargetTabId(tabTarget)
+          const messages =
+            targetTabId === null
+              ? state.session.consoleMessages
+              : state.session.consoleMessages.filter((message) => message.tabId === targetTabId)
+          return { messages: foldConsoleMessages(messages) }
+        }
+        case 'errors': {
+          const targetTabId = resolveEffectiveTargetTabId(tabTarget)
+          const errors =
+            targetTabId === null
+              ? state.session.pageErrors
+              : state.session.pageErrors.filter((error) => error.tabId === targetTabId)
+          return { errors }
+        }
         case 'batch':
           return await handleBatchCommand(args)
         case 'script':
@@ -1643,7 +1718,11 @@ export function createCommandRouter({
       }
     }
 
-    const result = await runCommand()
+    // 按 tab 串行执行，避免同一 tab 的 chrome.debugger.sendCommand 并发冲突；
+    // batch 子步骤（skipQueue）在 batch 自己的队列槽内执行，重入队列会死锁
+    const result = skipQueue
+      ? await runCommand()
+      : await commandQueue.enqueue(resolveCommandQueueKey(tabTarget), runCommand)
     const meta = await buildCommandMeta(command, tabTarget, frameSelector)
     return attachCommandMeta(result, meta)
   }

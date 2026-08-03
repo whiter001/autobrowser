@@ -28,6 +28,7 @@ import {
   toTabSummary,
 } from './background/targeting.js'
 import type {
+  ErrorWithCode,
   EvaluateInTabContextOptions,
   FrameExecutionContext,
   FrameSelector,
@@ -47,6 +48,8 @@ import { clearRemovedTabId, pickLastNonActiveTab } from '../src/core/tab-selecti
 
 const DEFAULT_SERVER_PORT = DEFAULT_RELAY_PORT
 const FRAME_WORLD_NAME = 'autobrowser-frame'
+// 页面脚本挂起时先于 server 30s 命令超时把 evaluate 掐掉，避免长等
+const DEFAULT_EVALUATE_TIMEOUT_MS = 25_000
 // 按 (tabId, frameId) 缓存 isolated world 的 executionContextId，epoch 不匹配即视为导航后失效。
 // 否则带 frameSelector 的每次 evaluate 都 createIsolatedWorld，world 会持续累积到导航才释放
 const frameWorldContextCache = new Map<string, { epoch: number; contextId: number }>()
@@ -385,6 +388,21 @@ function isStaleWorldContextError(error: unknown): boolean {
   return /cannot find context/i.test(message)
 }
 
+// CDP 超时中断 evaluate 的报错文案不统一（同步挂起是 "Execution was terminated"，
+// 部分版本是 "Script execution timed out"），两种都要识别
+function isEvaluationTimeoutError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error)
+  return /timed\s*out|execution was terminated|execution terminated/i.test(message)
+}
+
+function createEvaluationTimeoutError(timeoutMs: number): ErrorWithCode {
+  const error = new Error(`page evaluation timed out after ${timeoutMs}ms`) as ErrorWithCode
+  error.code = 'EVALUATION_TIMEOUT'
+  error.suggestedAction =
+    'Increase the timeout with --timeout-ms <ms> (eval command) or the timeoutMs argument for long-running scripts.'
+  return error
+}
+
 async function evaluateInTabContext<TValue = unknown>(
   tabId: TabInput,
   expression: string,
@@ -395,7 +413,11 @@ async function evaluateInTabContext<TValue = unknown>(
   value: TValue | null
 }> {
   const runtimeConfig = options
-  const { frameSelector, ...runtimeOptions } = runtimeConfig
+  const {
+    frameSelector,
+    timeoutMs = DEFAULT_EVALUATE_TIMEOUT_MS,
+    ...runtimeOptions
+  } = runtimeConfig
   const context = await getFrameExecutionContext(tabId, frameSelector)
   let { tab, executionContextId } = context
 
@@ -410,6 +432,7 @@ async function evaluateInTabContext<TValue = unknown>(
       expression,
       awaitPromise: true,
       returnByValue: true,
+      timeout: Math.max(1, Math.floor(timeoutMs)),
       ...(contextId ? { contextId } : {}),
       ...runtimeOptions,
     })
@@ -418,6 +441,9 @@ async function evaluateInTabContext<TValue = unknown>(
   try {
     response = await evaluate(executionContextId)
   } catch (error) {
+    if (isEvaluationTimeoutError(error)) {
+      throw createEvaluationTimeoutError(timeoutMs)
+    }
     // 只有命中缓存的 world 才可能是缓存失效，清掉重建一次，再失败就原样抛出
     if (!context.worldFromCache || !context.worldCacheKey || !isStaleWorldContextError(error)) {
       throw error
@@ -432,9 +458,11 @@ async function evaluateInTabContext<TValue = unknown>(
   // 否则 description 字符串会被当成正常结果继续传递
   if (response.exceptionDetails) {
     const details = response.exceptionDetails
-    throw new Error(
-      `page evaluation failed: ${details.exception?.description || details.text || 'unknown error'}`,
-    )
+    const description = details.exception?.description || details.text || 'unknown error'
+    if (isEvaluationTimeoutError(description)) {
+      throw createEvaluationTimeoutError(timeoutMs)
+    }
+    throw new Error(`page evaluation failed: ${description}`)
   }
   return {
     tab,

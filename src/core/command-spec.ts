@@ -492,6 +492,10 @@ export function validateCommandArgs(command: string, args: unknown): void {
     case 'open':
     case 'tab.new':
       readStringField(normalizedArgs, 'url', command, { required: command !== 'tab.new' })
+      if (command !== 'tab.new') {
+        readOptionalNonNegativeNumberField(normalizedArgs, 'timeoutMs', command)
+        readBooleanField(normalizedArgs, 'wait', command)
+      }
       return
     case 'click':
     case 'dblclick':
@@ -502,6 +506,9 @@ export function validateCommandArgs(command: string, args: unknown): void {
     case 'check':
     case 'uncheck':
       readStringField(normalizedArgs, 'selector', command)
+      if (command === 'click') {
+        readOptionalNonNegativeNumberField(normalizedArgs, 'timeoutMs', command)
+      }
       return
     case 'scroll':
       readStringField(normalizedArgs, 'selector', command, { required: false })
@@ -534,6 +541,7 @@ export function validateCommandArgs(command: string, args: unknown): void {
       return
     case 'eval':
       readStringField(normalizedArgs, 'script', command)
+      readOptionalNonNegativeNumberField(normalizedArgs, 'timeoutMs', command)
       return
     case 'feed': {
       readStringField(normalizedArgs, 'selector', command, { required: false })
