@@ -29,6 +29,8 @@ autobrowser 是一个面向 Chrome/Edge 的浏览器自动化 CLI，通过本地
 - `open <url>` / `goto <url>`
 - `back` / `forward` / `reload`
 - `tab list` / `tab new <url>` / `tab select <tN>` / `tab close [tN]`
+- `target show` / `target set <tN>` / `target active` / `target clear`
+- `command list` / `command cancel <id>` / `command reset`
 - `window new`
 - `frame <@fN|selector|top>`
 - `click` / `dblclick` / `fill` / `find` / `type` / `press` / `keyboard` / `hover` / `focus` / `select` / `check` / `uncheck` / `scroll` / `scrollintoview` / `drag` / `upload`
@@ -46,7 +48,7 @@ autobrowser 是一个面向 Chrome/Edge 的浏览器自动化 CLI，通过本地
 - `pdf`
 - `clipboard`
 - `state`
-- `network route` / `network unroute` / `network requests` / `network request` / `network har start` / `network har stop`
+- `network route` / `network unroute` / `network requests` / `network request` / `network har start` / `network har stop` / `network har status` / `network har recover`
 
 ## 可靠流程
 
@@ -75,6 +77,10 @@ autobrowser 是一个面向 Chrome/Edge 的浏览器自动化 CLI，通过本地
 - `snapshot` 返回的 `@eN` / `@fN` 引用比脆弱的 CSS 选择器更适合后续操作。
 - `find role`、`find text`、`find label` 适合先语义定位，再点击、读取或填写。
 - `tab list` 返回稳定句柄如 `t1`、`t2`，优先用 `tab select tN`，不要依赖原始 tab id。
+- 页面命令超时后先运行 `status` 和 `command list`。标签页控制走独立控制面，可继续用 `tab list`、`target clear`、`tab close <tN>` 恢复；不要连续重试并堆积命令。
+- `goto/open/reload` 可用 `--wait-until none|commit|domcontentloaded|interactive|load|networkidle|domquiet` 选择等待阶段。
+- `network requests` 默认只看目标 tab 的当前页面 epoch；跨 tab 或跨页面历史必须显式使用 `--all-tabs` / `--all-epochs`，headers/body 用 `network request <id>` 或 `--include-details` 获取。
+- HAR 中断后先用 `network har status` 检查 checkpoint，再用 `network har recover [output.har]` 导出。
 - 在旧扩展上，`network har stop` 可能只返回元数据；CLI 会自动兜底重建 HAR。
 - 如果页面看起来空白或不对，先确认是不是登录页、验证码页，或者虚拟滚动列表。
 - 对于类似 x.com 的 SPA 列表页，优先从 `article` 等可见节点读取内容，不要直接相信 `get text body`。
@@ -83,7 +89,7 @@ autobrowser 是一个面向 Chrome/Edge 的浏览器自动化 CLI，通过本地
 
 - ❗ **当 autobrowser 命令失败（如超时、找不到元素、被弹窗拦截、引用过期）时，明确禁止去尝试编写 Python/Selenium/Puppeteer 等其他框架脚本作为替代方案。**
 - 失败通常意味着当前持有的页面状态已陈旧、网络缓慢或存在未处理的各类弹窗。应该仔细阅读报错和执行建议。
-- 遇到错误时，必须通过 `snapshot` 或 `status` 重新获取最新上下文，调整目标后继续使用 autobrowser。
+- 遇到错误时，先通过 `status` 获取控制面状态；页面仍可响应时再运行 `snapshot`。页面卡死时用 `command list`、`tab list` 和 `target clear` 恢复目标后继续使用 autobrowser。
 
 ## 更新约定
 
