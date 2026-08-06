@@ -43,7 +43,7 @@ const SET_ACTIONS = [
 const CLIPBOARD_ACTIONS = ['read', 'write'] as const
 const STATE_ACTIONS = ['save', 'load'] as const
 const NETWORK_ACTIONS = ['route', 'unroute', 'requests', 'export', 'request', 'har'] as const
-const NETWORK_HAR_ACTIONS = ['start', 'stop'] as const
+const NETWORK_HAR_ACTIONS = ['start', 'stop', 'status', 'recover'] as const
 
 const handleCookies = createActionCommand({
   helpPath: ['cookies'],
@@ -394,6 +394,7 @@ async function handleNetwork(rest: string[], context: CommandContext): Promise<n
       const payload = await context.requestCommand(context.flags.server, 'network', {
         action: 'requests',
         ...filters,
+        includeDetails: true,
         pageIdx,
         pageSize,
       })
@@ -488,10 +489,15 @@ async function handleNetwork(rest: string[], context: CommandContext): Promise<n
       return 0
     }
 
-    if (subaction === 'stop') {
+    if (subaction === 'status') {
+      await requestAndWrite(context, 'network', { action: 'har', subaction: 'status' })
+      return 0
+    }
+
+    if (subaction === 'stop' || subaction === 'recover') {
       const payload = await context.requestCommand(context.flags.server, 'network', {
         action: 'har',
-        subaction: 'stop',
+        subaction,
       })
 
       if (payload.ok === false) {

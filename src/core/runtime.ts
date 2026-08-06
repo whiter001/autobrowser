@@ -72,6 +72,7 @@ interface ExtensionMetadata {
 interface ErrorWithCode extends Error {
   code?: string
   details?: unknown
+  suggestedAction?: string
 }
 
 function rejectPendingRequests(
@@ -297,7 +298,7 @@ export async function createRuntime(options: RuntimeOptions = {}): Promise<Runti
   // token 从不在运行期变化，只在首次写盘或值变化时落盘，避免心跳等高频 persist 反复 chmod
   let lastPersistedToken: string | null = null
 
-  async function persist(): Promise<void> {
+  async function persistNow(): Promise<void> {
     await writeJsonFile(getStatePath(homeDir), {
       token: runtime.token,
       relayPort,
@@ -315,10 +316,15 @@ export async function createRuntime(options: RuntimeOptions = {}): Promise<Runti
 
   function schedulePersist(): void {
     persistChain = persistChain
-      .then(() => persist())
+      .then(() => persistNow())
       .catch((err) => {
         console.error('[autobrowser] state persist failed:', err)
       })
+  }
+
+  async function persist(): Promise<void> {
+    persistChain = persistChain.then(() => persistNow())
+    await persistChain
   }
 
   function resolveConnectionWaiters(socket: Bun.ServerWebSocket<ExtensionMetadata>): void {
@@ -410,7 +416,7 @@ export async function createRuntime(options: RuntimeOptions = {}): Promise<Runti
     })
   }
 
-  await persist()
+  await persistNow()
 
   function setError(message: string): void {
     snapshot.lastError = {
@@ -593,6 +599,7 @@ export async function createRuntime(options: RuntimeOptions = {}): Promise<Runti
     command: string
     args: Record<string, unknown>
     requestedAt: string
+    deadlineAt: string
   }
 
   async function dispatchCommand(
@@ -606,24 +613,33 @@ export async function createRuntime(options: RuntimeOptions = {}): Promise<Runti
     const socket = await waitForExtensionConnection(connectionTimeoutMs)
 
     const id = createId('cmd')
+    const deadlineAt = new Date(Date.now() + requestTimeoutMs).toISOString()
     const payload: CommandPayload = {
       type: 'command',
       id,
       command,
       args,
       requestedAt: new Date().toISOString(),
+      deadlineAt,
     }
 
     return await new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         pendingRequests.delete(id)
-        reject(
-          new Error(
-            `command timed out after ${requestTimeoutMs}ms: ${command}. ` +
-              'The extension did not respond in time. Check that the browser extension is still connected ' +
-              "(e.g. run 'status'), or that the page is not stuck on a long-running task, then retry the command.",
-          ),
-        )
+        try {
+          socket.send(JSON.stringify({ type: 'cancel', id, reason: 'relay timeout' }))
+        } catch {
+          // socket 断开时 detachExtension 会负责清理 pending；取消消息属于尽力而为。
+        }
+        const timeoutError = new Error(
+          `command timed out after ${requestTimeoutMs}ms: ${command}. ` +
+            'The relay cancelled the queued command; a running browser operation may still be finishing.',
+        ) as ErrorWithCode
+        timeoutError.code = 'COMMAND_TIMEOUT'
+        timeoutError.details = { commandId: id, command, deadlineAt }
+        timeoutError.suggestedAction =
+          "Run 'status', then 'command list'. Tab control remains available; use 'tab list', 'target clear', or 'tab close <tN>' to recover before retrying."
+        reject(timeoutError)
       }, requestTimeoutMs)
 
       pendingRequests.set(id, { resolve, reject, timer })
@@ -661,7 +677,7 @@ export async function createRuntime(options: RuntimeOptions = {}): Promise<Runti
       startedAt: runtime.startedAt,
       snapshot,
     }
-    await writeJsonFile(getStatePath(homeDir), state)
+    await persist()
     return state
   }
 

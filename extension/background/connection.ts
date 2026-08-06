@@ -26,6 +26,7 @@ interface ConnectionRuntimeDependencies {
   network: NetworkDomain
   listTabs: () => Promise<TabSummary[]>
   handleCommand: (message: CommandMessage) => Promise<unknown>
+  cancelCommand?: (id: string) => boolean
   sendDebuggerCommand: <TResult = unknown>(
     tabId: number,
     method: string,
@@ -45,6 +46,7 @@ export function createConnectionRuntime({
   network,
   listTabs,
   handleCommand,
+  cancelCommand = () => false,
   sendDebuggerCommand,
   storageLocalGet,
   storageLocalSet,
@@ -132,21 +134,19 @@ export function createConnectionRuntime({
   }
 
   function persistDiagnostics(): void {
-    chrome.storage.local
-      .set({
-        [CONNECTION_DIAGNOSTICS_STORAGE_KEY]: {
-          status: state.connection.status,
-          connectionError: state.connection.error,
-          lastSocketClose: state.connection.lastSocketClose,
-          lastCommandError: state.connection.lastCommandError,
-          lastHeartbeatAt: state.connection.lastHeartbeatAt,
-          lastHeartbeatSentAt: state.connection.lastHeartbeatSentAt,
-          updatedAt: new Date().toISOString(),
-        } satisfies DiagnosticsState,
-      })
-      .catch((error: Error) => {
-        console.error('failed to persist plugin diagnostics', error)
-      })
+    void storageLocalSet({
+      [CONNECTION_DIAGNOSTICS_STORAGE_KEY]: {
+        status: state.connection.status,
+        connectionError: state.connection.error,
+        lastSocketClose: state.connection.lastSocketClose,
+        lastCommandError: state.connection.lastCommandError,
+        lastHeartbeatAt: state.connection.lastHeartbeatAt,
+        lastHeartbeatSentAt: state.connection.lastHeartbeatSentAt,
+        updatedAt: new Date().toISOString(),
+      } satisfies DiagnosticsState,
+    }).catch((error: Error) => {
+      console.error('failed to persist plugin diagnostics', error)
+    })
   }
 
   function setConnectionError(message: string, code?: string): void {
@@ -291,6 +291,7 @@ export function createConnectionRuntime({
             text: messageText,
             timestamp: Date.now(),
             tabId: typeof source?.tabId === 'number' ? source.tabId : null,
+            pageEpoch: typeof source?.tabId === 'number' ? getPageEpoch(state, source.tabId) : null,
           },
           500,
         )
@@ -319,6 +320,7 @@ export function createConnectionRuntime({
             column: exceptionParams.exceptionDetails?.columnNumber,
             timestamp: Date.now(),
             tabId: typeof source?.tabId === 'number' ? source.tabId : null,
+            pageEpoch: typeof source?.tabId === 'number' ? getPageEpoch(state, source.tabId) : null,
           },
           100,
         )
@@ -469,6 +471,9 @@ export function createConnectionRuntime({
   }
 
   async function connect() {
+    if (typeof chrome === 'undefined' || !chrome.runtime) {
+      return
+    }
     if (
       state.connection.connecting ||
       (state.connection.socket &&
@@ -554,6 +559,11 @@ export function createConnectionRuntime({
           console.warn(
             `autobrowser: connection displaced by another extension instance${typeof message.reason === 'string' && message.reason ? `: ${message.reason}` : ''}`,
           )
+          return
+        }
+
+        if (message?.type === 'cancel' && typeof message.id === 'string') {
+          cancelCommand(message.id)
           return
         }
 

@@ -7,6 +7,7 @@ import type {
 } from './types.js'
 import { buildHarPayload, compareHarRecords } from '../../src/core/har.js'
 import { paginateList } from './pagination.js'
+import { getPageEpoch } from './targeting.js'
 
 type SendDebuggerCommand = <TResult = unknown>(
   tabId: number,
@@ -19,6 +20,8 @@ interface NetworkDomainDependencies {
   getTargetTab: (tabId: TabInput) => Promise<TabWithId>
   sendRawDebuggerCommand: SendDebuggerCommand
   sendDebuggerCommand: SendDebuggerCommand
+  storageLocalGet?: (key: string) => Promise<Record<string, unknown>>
+  storageLocalSet?: (items: Record<string, unknown>) => Promise<void>
 }
 
 interface NetworkDebuggerSource {
@@ -143,6 +146,7 @@ const DEFAULT_HAR_MAX_REQUESTS = 1000
 const DEFAULT_HAR_MAX_BODY_BYTES = 256 * 1024
 /** 全局请求列表的绝对上限，与 HAR 配置无关，防止长时间运行时内存无界增长 */
 const GLOBAL_REQUEST_HARD_CAP = 10_000
+const HAR_CHECKPOINT_STORAGE_KEY = 'autobrowser.harCheckpoint'
 
 function estimateTextByteLength(text: string): number {
   return new TextEncoder().encode(text).length
@@ -297,28 +301,38 @@ function upsertNetworkRequest(
 function getNetworkRequestById(
   state: ExtensionState,
   requestId: string,
+  tabId?: number | null,
 ): NetworkRequestRecord | null {
   if (!requestId) {
     return null
   }
 
   const exact = state.network.requestMap.get(requestId)
-  if (exact) {
+  if (exact && (typeof tabId !== 'number' || exact.tabId === tabId)) {
     return exact
   }
-
-  return (
-    state.network.requests.find(
-      (item) => item?.requestId === requestId || item?.id === requestId,
-    ) || null
+  const matches = state.network.requests.filter(
+    (item) =>
+      (item?.requestId === requestId || item?.id === requestId) &&
+      (typeof tabId !== 'number' || item.tabId === tabId),
   )
+  if (matches.length > 1) {
+    throw new Error(
+      `network request id is ambiguous across tabs: ${requestId}; use the full tabId:requestId id`,
+    )
+  }
+  return matches[0] || null
 }
 
-function summarizeNetworkRequest(record: NetworkRequestRecord): Record<string, unknown> {
-  return {
+function summarizeNetworkRequest(
+  record: NetworkRequestRecord,
+  includeDetails = false,
+): Record<string, unknown> {
+  const summary: Record<string, unknown> = {
     id: record.id,
     requestId: record.requestId,
     tabId: record.tabId,
+    pageEpoch: record.pageEpoch ?? null,
     url: record.url,
     method: record.method,
     resourceType: record.resourceType,
@@ -330,16 +344,19 @@ function summarizeNetworkRequest(record: NetworkRequestRecord): Record<string, u
     startedAt: record.startedAt ?? null,
     durationMs: record.durationMs ?? null,
     errorText: record.errorText ?? null,
-    requestHeaders: record.requestHeaders ?? null,
-    responseHeaders: record.responseHeaders ?? null,
-    requestBody: typeof record.postData === 'string' ? record.postData : null,
     requestBodyTruncated: Boolean(record.postDataTruncated),
     requestBodyBytes: record.postDataBytes ?? null,
-    responseBody: typeof record.responseBody === 'string' ? record.responseBody : null,
     responseBodyTruncated: Boolean(record.responseBodyTruncated),
     responseBodyBytes: record.responseBodyBytes ?? null,
     responseMimeType: record.responseMimeType ?? null,
   }
+  if (includeDetails) {
+    summary.requestHeaders = record.requestHeaders ?? null
+    summary.responseHeaders = record.responseHeaders ?? null
+    summary.requestBody = typeof record.postData === 'string' ? record.postData : null
+    summary.responseBody = typeof record.responseBody === 'string' ? record.responseBody : null
+  }
+  return summary
 }
 
 /** 从 URL 解析 query 参数数组（HAR queryString 字段），无 query 时返回空数组 */
@@ -539,6 +556,16 @@ function matchesNetworkRequestFilters(
     .trim()
     .toUpperCase()
   const statusMatches = parseNetworkStatusFilter(String(filters.status || ''))
+  if (typeof filters.tabId === 'number' && record.tabId !== filters.tabId) return false
+  if (typeof filters.pageEpoch === 'number' && record.pageEpoch !== filters.pageEpoch) return false
+  if (
+    filters.currentEpochs &&
+    typeof filters.currentEpochs === 'object' &&
+    typeof record.tabId === 'number'
+  ) {
+    const currentEpoch = (filters.currentEpochs as Record<number, number>)[record.tabId]
+    if (typeof currentEpoch === 'number' && record.pageEpoch !== currentEpoch) return false
+  }
 
   if (filterText) {
     const haystack = [
@@ -583,7 +610,59 @@ export function createNetworkDomain({
   getTargetTab,
   sendRawDebuggerCommand,
   sendDebuggerCommand,
+  storageLocalGet = async (key) =>
+    typeof chrome === 'undefined' || !chrome.storage?.local
+      ? {}
+      : await chrome.storage.local.get(key),
+  storageLocalSet = async (items) => {
+    if (typeof chrome !== 'undefined' && chrome.storage?.local) {
+      await chrome.storage.local.set(items)
+    }
+  },
 }: NetworkDomainDependencies) {
+  let checkpointTimer: ReturnType<typeof setTimeout> | null = null
+
+  function checkpointPayload(
+    recording = state.network.harRecording,
+    startedAt = state.network.harStartedAt,
+  ): Record<string, unknown> {
+    const requests = state.network.requests.filter(
+      (record) => !startedAt || String(record.startedAt || '') >= startedAt,
+    )
+    return {
+      recording,
+      startedAt,
+      maxRequests: state.network.harMaxRequests,
+      maxBodyBytes: state.network.harMaxBodyBytes,
+      updatedAt: new Date().toISOString(),
+      requests,
+    }
+  }
+
+  async function writeHarCheckpoint(
+    recording = state.network.harRecording,
+    startedAt = state.network.harStartedAt,
+  ): Promise<void> {
+    await storageLocalSet({
+      [HAR_CHECKPOINT_STORAGE_KEY]: checkpointPayload(recording, startedAt),
+    })
+  }
+
+  function scheduleHarCheckpoint(): void {
+    if (!state.network.harRecording || checkpointTimer) return
+    checkpointTimer = setTimeout(() => {
+      checkpointTimer = null
+      void writeHarCheckpoint().catch((error) => console.error('failed to checkpoint HAR', error))
+    }, 500)
+  }
+
+  async function readHarCheckpoint(): Promise<Record<string, unknown> | null> {
+    const result = await storageLocalGet(HAR_CHECKPOINT_STORAGE_KEY)
+    const checkpoint = result?.[HAR_CHECKPOINT_STORAGE_KEY]
+    return checkpoint && typeof checkpoint === 'object'
+      ? (checkpoint as Record<string, unknown>)
+      : null
+  }
   async function refreshInterceptors(): Promise<void> {
     await Promise.allSettled(
       Array.from(state.targeting.attachedTabs).map(async (tabId) => {
@@ -619,6 +698,7 @@ export function createNetworkDomain({
         id: key,
         requestId,
         tabId,
+        pageEpoch: getPageEpoch(state, tabId),
         url: String(request.url || ''),
         method: String(request.method || 'GET'),
         resourceType: String(payload.resourceType || payload.requestStage || ''),
@@ -762,6 +842,10 @@ export function createNetworkDomain({
       if (!requestId) {
         return
       }
+      const inFlight = state.network.inFlightByTab.get(tabId) || new Set<string>()
+      inFlight.add(requestId)
+      state.network.inFlightByTab.set(tabId, inFlight)
+      state.network.lastActivityByTab.set(tabId, Date.now())
 
       const requestBodySummary =
         typeof payload.request?.postData === 'string'
@@ -772,6 +856,7 @@ export function createNetworkDomain({
         id: createNetworkRequestKey(tabId, requestId),
         requestId,
         tabId,
+        pageEpoch: getPageEpoch(state, tabId),
         url: String(payload.request?.url || ''),
         method: String(payload.request?.method || 'GET'),
         resourceType: String(payload.type || ''),
@@ -816,6 +901,8 @@ export function createNetworkDomain({
       if (!requestId) {
         return
       }
+      state.network.inFlightByTab.get(tabId)?.delete(requestId)
+      state.network.lastActivityByTab.set(tabId, Date.now())
 
       const key = createNetworkRequestKey(tabId, requestId)
       const record = getNetworkRequestById(state, key)
@@ -855,6 +942,7 @@ export function createNetworkDomain({
       void bodyFetch.finally(() => {
         state.network.pendingBodyFetches.delete(bodyFetch)
       })
+      scheduleHarCheckpoint()
       return
     }
 
@@ -863,6 +951,8 @@ export function createNetworkDomain({
       if (!requestId) {
         return
       }
+      state.network.inFlightByTab.get(tabId)?.delete(requestId)
+      state.network.lastActivityByTab.set(tabId, Date.now())
 
       upsertNetworkRequest(state, {
         id: createNetworkRequestKey(tabId, requestId),
@@ -872,6 +962,7 @@ export function createNetworkDomain({
         canceled: Boolean(payload.canceled),
         finishedAt: new Date().toISOString(),
       })
+      scheduleHarCheckpoint()
     }
   }
 
@@ -937,7 +1028,9 @@ export function createNetworkDomain({
     const requests = state.network.requests.filter((record) =>
       matchesNetworkRequestFilters(record, filters),
     )
-    const summarized = requests.map((record) => summarizeNetworkRequest(record))
+    const summarized = requests.map((record) =>
+      summarizeNetworkRequest(record, filters.includeDetails === true),
+    )
     // 分页作用在过滤/摘要之后；越界 pageIdx 回退第一页并带 invalidPage 标记
     const { items, pagination } = paginateList(
       summarized,
@@ -951,8 +1044,8 @@ export function createNetworkDomain({
     }
   }
 
-  function getRequestDetail(requestId: string): Record<string, unknown> {
-    const record = getNetworkRequestById(state, String(requestId || ''))
+  function getRequestDetail(requestId: string, tabId?: number | null): Record<string, unknown> {
+    const record = getNetworkRequestById(state, String(requestId || ''), tabId)
     if (!record) {
       throw new Error(`network request not found: ${requestId}`)
     }
@@ -976,6 +1069,7 @@ export function createNetworkDomain({
       options.maxRequests === undefined ? DEFAULT_HAR_MAX_REQUESTS : options.maxRequests
     state.network.harMaxBodyBytes =
       options.maxBodyBytes === undefined ? DEFAULT_HAR_MAX_BODY_BYTES : options.maxBodyBytes
+    await writeHarCheckpoint()
     return {
       recording: true,
       startedAt: state.network.harStartedAt,
@@ -1007,6 +1101,7 @@ export function createNetworkDomain({
     })
 
     const harRequests = [...requests].sort((left, right) => compareHarRecords(left, right))
+    await writeHarCheckpoint(false, startedAt)
 
     return {
       recording: false,
@@ -1015,6 +1110,42 @@ export function createNetworkDomain({
       requestCount: requests.length,
       // 直接在扩展侧生成 HAR，避免 CLI 为了导出再逐条回拉 request detail，形成 N+1 往返。
       har: buildHar(harRequests),
+    }
+  }
+
+  async function getHarStatus(): Promise<Record<string, unknown>> {
+    const checkpoint = await readHarCheckpoint()
+    return {
+      recording: state.network.harRecording,
+      startedAt: state.network.harStartedAt,
+      requestCount: state.network.requests.length,
+      checkpoint: checkpoint
+        ? {
+            available: true,
+            recording: checkpoint.recording === true,
+            startedAt: checkpoint.startedAt ?? null,
+            updatedAt: checkpoint.updatedAt ?? null,
+            requestCount: Array.isArray(checkpoint.requests) ? checkpoint.requests.length : 0,
+          }
+        : { available: false },
+    }
+  }
+
+  async function recoverHar(): Promise<Record<string, unknown>> {
+    const checkpoint = await readHarCheckpoint()
+    const requests = Array.isArray(checkpoint?.requests)
+      ? (checkpoint.requests as NetworkRequestRecord[])
+      : []
+    if (!checkpoint || requests.length === 0) {
+      throw new Error('no HAR checkpoint is available')
+    }
+    return {
+      recording: checkpoint.recording === true,
+      recovered: true,
+      startedAt: checkpoint.startedAt ?? null,
+      stoppedAt: checkpoint.updatedAt ?? null,
+      requestCount: requests.length,
+      har: buildHar([...requests].sort((left, right) => compareHarRecords(left, right))),
     }
   }
 
@@ -1029,5 +1160,7 @@ export function createNetworkDomain({
     getRequestDetail,
     startHar,
     stopHar,
+    getHarStatus,
+    recoverHar,
   }
 }

@@ -473,7 +473,24 @@ const handleBack = createNoArgRequestCommand({ helpPath: ['back'], command: 'bac
 
 const handleForward = createNoArgRequestCommand({ helpPath: ['forward'], command: 'forward' })
 
-const handleReload = createNoArgRequestCommand({ helpPath: ['reload'], command: 'reload' })
+const handleReload: CommandHandler = async (rest, context) => {
+  if (helpRequested(rest[0], context, ['reload'])) return 0
+  const args: Record<string, unknown> = {}
+  for (let index = 0; index < rest.length; index += 1) {
+    const value = rest[index]
+    if (value === '--wait-until') {
+      args.waitUntil = rest[++index]
+      continue
+    }
+    if (value === '--timeout-ms') {
+      args.timeoutMs = parseNumberArg(rest[++index], 'timeout ms', { min: 1, integer: true })
+      continue
+    }
+    return writeCommandError(`unsupported reload option: ${value}`)
+  }
+  await requestAndWrite(context, 'reload', args)
+  return 0
+}
 
 async function handleClose(rest: string[], context: CommandContext): Promise<number | void> {
   if (helpRequested(rest[0], context, ['close'])) {
@@ -667,6 +684,9 @@ const handleConsole: CommandHandler = async (rest, context) => {
   }
 
   const payload = await context.requestCommand(context.flags.server, 'console', {
+    action: consoleArgs.action || 'list',
+    ...(consoleArgs.since !== undefined ? { since: consoleArgs.since } : {}),
+    ...(consoleArgs.allEpochs ? { allEpochs: true } : {}),
     ...(consoleArgs.pageIdx !== undefined ? { pageIdx: consoleArgs.pageIdx } : {}),
     ...(consoleArgs.pageSize !== undefined ? { pageSize: consoleArgs.pageSize } : {}),
   })
@@ -701,6 +721,9 @@ const handleErrors: CommandHandler = async (rest, context) => {
   }
 
   await requestAndWrite(context, 'errors', {
+    action: errorsArgs.action || 'list',
+    ...(errorsArgs.since !== undefined ? { since: errorsArgs.since } : {}),
+    ...(errorsArgs.allEpochs ? { allEpochs: true } : {}),
     ...(errorsArgs.pageIdx !== undefined ? { pageIdx: errorsArgs.pageIdx } : {}),
     ...(errorsArgs.pageSize !== undefined ? { pageSize: errorsArgs.pageSize } : {}),
   })

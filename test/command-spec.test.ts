@@ -18,6 +18,8 @@ const NON_AMBIENT_ROUTER_COMMANDS = new Set([
   'tab.new',
   'tab.select',
   'downloads',
+  'target',
+  'command',
 ])
 
 function uniqueSorted(values: Iterable<string>): string[] {

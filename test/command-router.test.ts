@@ -62,6 +62,8 @@ function singlePageInfo(count: number): Record<string, unknown> {
 function createMinimalRouter(overrides?: {
   getTargetTab?: () => Promise<{ id: number }>
   snapshotTab?: (tabId: unknown, frameSelector: unknown, options?: unknown) => Promise<unknown>
+  navigateTo?: (tabId: unknown, url: string) => Promise<unknown>
+  listTabs?: () => Promise<unknown[]>
 }) {
   const snapshotCalls: Array<{ tabId: unknown; frameSelector: unknown; options?: unknown }> = []
   const feedCalls: Array<{
@@ -102,17 +104,19 @@ function createMinimalRouter(overrides?: {
   const router = createCommandRouter({
     state,
     pageInput: {
-      navigateTo: async (tabId: unknown, url: string) => {
-        navigateCalls.push({ tabId, url })
-        if (url.startsWith('chrome://')) {
-          const error = new Error('cannot access chrome:// and edge:// urls') as Error & {
-            code?: string
+      navigateTo:
+        overrides?.navigateTo ??
+        (async (tabId: unknown, url: string) => {
+          navigateCalls.push({ tabId, url })
+          if (url.startsWith('chrome://')) {
+            const error = new Error('cannot access chrome:// and edge:// urls') as Error & {
+              code?: string
+            }
+            error.code = 'EXTENSION_COMMAND_ERROR'
+            throw error
           }
-          error.code = 'EXTENSION_COMMAND_ERROR'
-          throw error
-        }
-        return { navigated: true, url }
-      },
+          return { navigated: true, url }
+        }),
       evaluateScript: async () => undefined,
       clickSelector: async (_tabId: unknown, selector: unknown) => {
         // 模拟元素缺失时带引导字段的错误，验证 batch 错误序列化不丢字段
@@ -307,7 +311,7 @@ function createMinimalRouter(overrides?: {
       removeScript: async (id: string) => ({ removed: id, scripts: [] }),
       removeAllScripts: async () => ({ removed: ['script_1'], scripts: [] }),
     } as never,
-    listTabs: async () => [],
+    listTabs: (overrides?.listTabs ?? (async () => [])) as never,
     getTargetTab: (overrides?.getTargetTab ?? (async () => ({ id: 1 }))) as never,
   } as never)
 
@@ -1462,7 +1466,12 @@ describe('command router meta context', () => {
     expect(status).toEqual({ connected: true, tabs: [], meta: EMPTY_META })
 
     const list = await router.handleCommand({ command: 'tab.list' })
-    expect(list).toEqual({ tabs: [], meta: EMPTY_META })
+    expect(list).toEqual({
+      tabs: [],
+      total: 0,
+      pagination: singlePageInfo(0),
+      meta: EMPTY_META,
+    })
   })
 
   test('resolves effective frame selector into meta', async () => {
@@ -1525,6 +1534,38 @@ describe('command router meta context', () => {
       url: 'https://new.example.com',
       meta: explicitTabMeta({ url: 'https://new.example.com' }),
     })
+  })
+})
+
+describe('command router recovery control plane', () => {
+  test('tab control remains available while a page command is stuck', async () => {
+    const { router, state } = createMinimalRouter({
+      navigateTo: async () => new Promise(() => {}),
+      listTabs: async () => [
+        {
+          id: 2,
+          handle: 't2',
+          title: 'healthy',
+          url: 'https://example.com',
+          active: true,
+          pinned: false,
+          status: 'complete',
+          windowId: 1,
+        },
+      ],
+    })
+    state.targeting.targetTabId = 1
+    void router
+      .handleCommand({ command: 'goto', id: 'stuck', args: { url: 'https://stuck' } })
+      .catch(() => {})
+
+    const result = await router.handleCommand({ command: 'tab.list' })
+    expect(result).toMatchObject({ total: 1, tabs: [{ handle: 't2' }] })
+    const cancelled = await router.handleCommand({
+      command: 'command',
+      args: { action: 'cancel', commandId: 'stuck' },
+    })
+    expect(cancelled).toMatchObject({ commandId: 'stuck', cancelled: true })
   })
 })
 

@@ -213,6 +213,8 @@ interface RelaySocketData {
 
 interface ErrorWithCode extends Error {
   code?: string
+  details?: unknown
+  suggestedAction?: string
 }
 
 function readBearerToken(request: Request): string {
@@ -361,6 +363,8 @@ export async function startServers(options: ServerOptions = {}): Promise<StartSe
                     error: {
                       message: err.message,
                       code: err.code || 'COMMAND_FAILED',
+                      details: err.details,
+                      suggestedAction: err.suggestedAction,
                     },
                   },
                   { status: 500 },

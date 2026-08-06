@@ -82,4 +82,39 @@ describe('command queue', () => {
     )
     await expect(queue.enqueue('k', async () => 'after')).resolves.toBe('after')
   })
+
+  test('cancels a stuck running task and starts the next task', async () => {
+    const queue = createCommandQueue()
+    const stuck = queue.enqueue('tab:1', () => new Promise(() => {}), { id: 'stuck' })
+    const next = queue.enqueue('tab:1', async () => 'recovered', { id: 'next' })
+
+    expect(queue.list()).toEqual([
+      expect.objectContaining({ id: 'stuck', state: 'running' }),
+      expect.objectContaining({ id: 'next', state: 'queued' }),
+    ])
+    expect(queue.cancel('stuck')).toBe(true)
+    await expect(stuck).rejects.toMatchObject({ code: 'COMMAND_CANCELLED' })
+    await expect(next).resolves.toBe('recovered')
+    expect(queue.list()).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: 'stuck', state: 'cancelled' }),
+        expect.objectContaining({ id: 'next', state: 'completed' }),
+      ]),
+    )
+  })
+
+  test('does not start a queued command after its deadline', async () => {
+    const queue = createCommandQueue()
+    let ran = false
+    await expect(
+      queue.enqueue(
+        'tab:1',
+        async () => {
+          ran = true
+        },
+        { id: 'expired', deadlineAt: new Date(Date.now() - 1).toISOString() },
+      ),
+    ).rejects.toMatchObject({ code: 'COMMAND_CANCELLED' })
+    expect(ran).toBe(false)
+  })
 })

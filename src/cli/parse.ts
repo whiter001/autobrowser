@@ -178,9 +178,14 @@ export function parseNetworkRequestsArgs(rest: string[]): Record<string, unknown
       continue
     }
 
-    if (value === '--page-idx') {
+    if (value === '--page-idx' || value === '--page') {
       result.pageIdx = parseNumberArg(rest[index + 1], 'page idx', { min: 0, integer: true })
       index += 1
+      continue
+    }
+
+    if (value === '--all-tabs' || value === '--all-epochs' || value === '--include-details') {
+      result[value.slice(2).replace(/-([a-z])/g, (_match, letter) => letter.toUpperCase())] = true
       continue
     }
 
@@ -368,13 +373,24 @@ export function parseConsoleArgs(rest: string[]): {
   level: ConsoleLevel | null
   pageIdx?: number
   pageSize?: number
+  action?: 'list' | 'clear'
+  since?: number
+  allEpochs?: boolean
 } {
   let level: ConsoleLevel | null = null
   let pageIdx: number | undefined
   let pageSize: number | undefined
+  let action: 'list' | 'clear' | undefined
+  let since: number | undefined
+  let allEpochs = false
 
   for (let index = 0; index < rest.length; index += 1) {
     const value = rest[index]
+
+    if (value === 'clear' && index === 0) {
+      action = 'clear'
+      continue
+    }
 
     if (value === '--level') {
       const rawLevel = rest[index + 1]
@@ -393,9 +409,20 @@ export function parseConsoleArgs(rest: string[]): {
       continue
     }
 
-    if (value === '--page-idx') {
+    if (value === '--page-idx' || value === '--page') {
       pageIdx = parseNumberArg(rest[index + 1], 'page idx', { min: 0, integer: true })
       index += 1
+      continue
+    }
+
+    if (value === '--since') {
+      since = parseNumberArg(rest[index + 1], 'since', { min: 0 })
+      index += 1
+      continue
+    }
+
+    if (value === '--all-epochs') {
+      allEpochs = true
       continue
     }
 
@@ -418,6 +445,9 @@ export function parseConsoleArgs(rest: string[]): {
 
   return {
     level,
+    ...(action ? { action } : {}),
+    ...(since !== undefined ? { since } : {}),
+    ...(allEpochs ? { allEpochs: true } : {}),
     ...(pageIdx !== undefined ? { pageIdx } : {}),
     ...(pageSize !== undefined ? { pageSize } : {}),
   }

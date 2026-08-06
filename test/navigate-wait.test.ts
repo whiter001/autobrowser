@@ -60,7 +60,14 @@ describe('navigation wait for commit', () => {
 
     const result = await pageInput.navigateTo(1, 'https://new.example.com', { timeoutMs: 5000 })
 
-    expect(result).toMatchObject({ tabId: 1, url: 'https://new.example.com', settled: true })
+    expect(result).toMatchObject({
+      tabId: 1,
+      url: 'https://new.example.com',
+      requestedUrl: 'https://new.example.com',
+      outcome: 'completed',
+      phase: 'settle',
+      settled: true,
+    })
     expect(evaluateCalls.length).toBeGreaterThan(0)
     // 所有稳定判定（readyState / MutationObserver）都发生在导航 commit 之后
     expect(evaluateCalls.every((call) => call.afterCommit)).toBe(true)
@@ -71,9 +78,13 @@ describe('navigation wait for commit', () => {
 
     const result = await pageInput.navigateTo(1, 'https://new.example.com', { timeoutMs: 200 })
 
-    expect(result).toEqual({
+    expect(result).toMatchObject({
       tabId: 1,
       url: 'https://new.example.com',
+      requestedUrl: 'https://new.example.com',
+      observedUrl: 'https://example.com',
+      outcome: 'partial',
+      phase: 'commit',
       settled: false,
       settleReason: 'navigation never committed',
     })
@@ -86,7 +97,13 @@ describe('navigation wait for commit', () => {
 
     const result = await pageInput.navigateTo(1, 'https://new.example.com', { wait: false })
 
-    expect(result).toEqual({ tabId: 1, url: 'https://new.example.com' })
+    expect(result).toEqual({
+      tabId: 1,
+      url: 'https://new.example.com',
+      requestedUrl: 'https://new.example.com',
+      outcome: 'dispatched',
+      phase: 'dispatch',
+    })
     expect(debuggerCalls).toEqual(['Page.enable', 'Page.navigate'])
     expect(evaluateCalls).toHaveLength(0)
   })

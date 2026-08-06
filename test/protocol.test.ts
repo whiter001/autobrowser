@@ -35,6 +35,20 @@ describe('protocol file helpers', () => {
     }
   })
 
+  test('replaces an existing JSON file repeatedly on Windows-compatible paths', async () => {
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), 'autobrowser-protocol-replace-'))
+    tempDirs.push(tempDir)
+    const filePath = path.join(tempDir, 'state.json')
+
+    await writeJsonFile(filePath, { version: 1 })
+    await writeJsonFile(filePath, { version: 2 })
+    await writeJsonFile(filePath, { version: 3 })
+
+    await expect(readJsonFile<{ version: number } | null>(filePath, null)).resolves.toEqual({
+      version: 3,
+    })
+  })
+
   test('returns the fallback when JSON content is corrupted', async () => {
     const tempDir = await mkdtemp(path.join(os.tmpdir(), 'autobrowser-protocol-test-'))
     tempDirs.push(tempDir)

@@ -179,21 +179,26 @@ export async function readJsonFile<T>(
  */
 export async function writeJsonFile(filePath: string, value: unknown): Promise<void> {
   await mkdir(path.dirname(filePath), { recursive: true })
+  const content = `${JSON.stringify(value, null, 2)}\n`
+  if (process.platform === 'win32') {
+    // Bun/Windows 的 rename/copy 覆盖会间歇性 EPERM/EBUSY。直接覆盖不会留下文件缺失窗口；
+    // 进程中断造成截断时由 readJsonFile 的损坏回退处理。
+    await writeFile(filePath, content, 'utf8')
+    return
+  }
   // 临时文件名带进程号和随机后缀，避免并发写同一路径时互相覆盖
   const tempPath = `${filePath}.${process.pid}.${crypto.randomUUID()}.tmp`
-  await writeFile(tempPath, `${JSON.stringify(value, null, 2)}\n`, 'utf8')
+  await writeFile(tempPath, content, 'utf8')
   try {
-    if (process.platform !== 'win32') {
-      // 本地状态文件可能包含连接 token；权限收紧失败时直接报错，避免留下可被其他用户读取的凭据。
-      // 必须在 rename 之前收紧临时文件权限，避免目标文件出现权限窗口期。
-      try {
-        await chmod(tempPath, 0o600)
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error)
-        throw new Error(`failed to set private file permissions for ${filePath}: ${message}`, {
-          cause: error,
-        })
-      }
+    // 本地状态文件可能包含连接 token；权限收紧失败时直接报错，避免留下可被其他用户读取的凭据。
+    // 必须在 rename 之前收紧临时文件权限，避免目标文件出现权限窗口期。
+    try {
+      await chmod(tempPath, 0o600)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      throw new Error(`failed to set private file permissions for ${filePath}: ${message}`, {
+        cause: error,
+      })
     }
     await rename(tempPath, filePath)
   } catch (error) {

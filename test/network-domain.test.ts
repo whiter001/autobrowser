@@ -3,6 +3,53 @@ import { createNetworkDomain } from '../extension/background/network.js'
 import { createExtensionState } from '../extension/background/state.js'
 
 describe('network domain HAR export', () => {
+  test('recovers a checkpoint after the network domain is recreated', async () => {
+    const stored: Record<string, unknown> = {}
+    const storage = {
+      storageLocalSet: async (items: Record<string, unknown>) => {
+        Object.assign(stored, items)
+      },
+      storageLocalGet: async (key: string) => ({ [key]: stored[key] }),
+    }
+    const state = createExtensionState(57978)
+    state.network.requests.push({
+      id: '1:old',
+      requestId: 'old',
+      tabId: 1,
+      url: 'https://example.com/old',
+      startedAt: '2000-01-01T00:00:00.000Z',
+    })
+    const network = createNetworkDomain({
+      state,
+      getTargetTab: async () => ({ id: 1 }) as never,
+      sendRawDebuggerCommand: async () => ({}) as never,
+      sendDebuggerCommand: async () => ({}) as never,
+      ...storage,
+    })
+    await network.startHar(1)
+    state.network.requests.push({
+      id: '1:r1',
+      requestId: 'r1',
+      tabId: 1,
+      url: 'https://example.com/api',
+      method: 'GET',
+      status: 200,
+      startedAt: new Date().toISOString(),
+    })
+    await network.stopHar()
+
+    const recovered = await createNetworkDomain({
+      state: createExtensionState(57978),
+      getTargetTab: async () => ({ id: 1 }) as never,
+      sendRawDebuggerCommand: async () => ({}) as never,
+      sendDebuggerCommand: async () => ({}) as never,
+      ...storage,
+    }).recoverHar()
+    expect(recovered).toMatchObject({ recovered: true, requestCount: 1 })
+    expect(recovered.startedAt).toBeString()
+    expect(recovered.har).toBeObject()
+  })
+
   test('stopHar returns a complete HAR payload without extra round trips', async () => {
     const state = createExtensionState(57978)
     state.network.harRecording = true
@@ -549,6 +596,18 @@ describe('network domain request list pagination', () => {
       totalPages: 1,
       invalidPage: false,
     })
+  })
+
+  test('filters request lists by target tab and keeps details opt-in', () => {
+    const { network } = createListHarness()
+    const filtered = network.listRequests({ tabId: 2 }) as {
+      total: number
+      requests: Array<Record<string, unknown>>
+    }
+    expect(filtered.total).toBe(1)
+    expect(filtered.requests[0]).toMatchObject({ id: '2:r4', tabId: 2 })
+    expect(filtered.requests[0]).not.toHaveProperty('requestHeaders')
+    expect(filtered.requests[0]).not.toHaveProperty('responseBody')
   })
 })
 

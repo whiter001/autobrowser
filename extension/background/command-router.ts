@@ -81,7 +81,13 @@ interface PageInputDomain {
   navigateTo: (
     tabId: TabInput,
     url: string,
-    options?: { timeoutMs?: number; wait?: boolean },
+    options?: {
+      timeoutMs?: number
+      wait?: boolean
+      waitUntil?: string
+      settleTimeoutMs?: number
+      domQuietMs?: number
+    },
   ) => Promise<unknown>
   evaluateScript: (
     tabId: TabInput,
@@ -171,7 +177,10 @@ interface PageInputDomain {
   ) => Promise<unknown>
   navigateBack: (tabId: TabInput) => Promise<unknown>
   navigateForward: (tabId: TabInput) => Promise<unknown>
-  reloadPage: (tabId: TabInput) => Promise<unknown>
+  reloadPage: (
+    tabId: TabInput,
+    options?: { timeoutMs?: number; waitUntil?: string },
+  ) => Promise<unknown>
   switchToFrame: (tabId: TabInput, selector: string) => Promise<unknown>
   checkIsState: (
     tabId: TabInput,
@@ -326,12 +335,14 @@ interface NetworkDomain {
   unrouteRequest: (tabId: TabInput, url: string) => Promise<unknown>
   listRoutes: () => unknown
   listRequests: (args: CommandArgs) => unknown
-  getRequestDetail: (requestId: string) => unknown
+  getRequestDetail: (requestId: string, tabId?: number | null) => unknown
   startHar: (
     tabId: TabInput,
     options?: { maxRequests?: number | null; maxBodyBytes?: number | null },
   ) => Promise<unknown>
   stopHar: () => Promise<unknown>
+  getHarStatus: () => Promise<unknown>
+  recoverHar: () => Promise<unknown>
 }
 
 interface InitScriptDomain {
@@ -1393,11 +1404,32 @@ export function createCommandRouter({
       return result
     }
     // 导航类命令（goto/open）结果体里带新 url，覆盖 buildCommandMeta 从 tabsGet 拿到的旧值
-    const effectiveMeta = typeof result.url === 'string' ? { ...meta, url: result.url } : meta
+    const effectiveUrl =
+      typeof result.observedUrl === 'string'
+        ? result.observedUrl
+        : typeof result.url === 'string'
+          ? result.url
+          : null
+    const effectiveMeta = effectiveUrl ? { ...meta, url: effectiveUrl } : meta
     return { ...result, meta: effectiveMeta }
   }
 
-  async function executeCommand(command: string, args: CommandArgs = {}, skipQueue = false) {
+  const CONTROL_COMMANDS = new Set([
+    'status',
+    'tab.list',
+    'tab.select',
+    'tab.new',
+    'tab.close',
+    'target',
+    'command',
+  ])
+
+  async function executeCommand(
+    command: string,
+    args: CommandArgs = {},
+    skipQueue = false,
+    request?: { id?: string; deadlineAt?: string },
+  ) {
     validateCommandArgs(command, args)
 
     const tabId = readTabInputArg(args, 'tabId')
@@ -1462,8 +1494,25 @@ export function createCommandRouter({
             connected: true,
             tabs: await listTabs(),
           }
-        case 'tab.list':
-          return { tabs: await listTabs() }
+        case 'tab.list': {
+          let tabs = await listTabs()
+          const filter = readStringArg(args, 'filter').toLowerCase()
+          if (args.active === true) tabs = tabs.filter((tab) => tab.active)
+          if (args.currentWindow === true) {
+            const targetId = resolveEffectiveTargetTabId(tabTarget)
+            const currentWindowId = tabs.find((tab) => tab.id === targetId)?.windowId
+            if (typeof currentWindowId === 'number') {
+              tabs = tabs.filter((tab) => tab.windowId === currentWindowId)
+            }
+          }
+          if (filter) {
+            tabs = tabs.filter((tab) =>
+              `${tab.handle || ''} ${tab.title} ${tab.url}`.toLowerCase().includes(filter),
+            )
+          }
+          const { items, pagination } = paginateList(tabs, pageIdx, pageSize)
+          return { tabs: items, total: tabs.length, pagination }
+        }
         case 'tab.select':
           return await selectTab(tabTarget)
         case 'tab.new': {
@@ -1479,11 +1528,51 @@ export function createCommandRouter({
         }
         case 'tab.close':
           return await closeTab(tabTarget)
+        case 'target': {
+          if (action === 'show') {
+            return { targetTabId: state.targeting.targetTabId }
+          }
+          if (action === 'clear') {
+            rememberTargetTab(state, null)
+            return { targetTabId: null }
+          }
+          if (action === 'active') {
+            const tabs = await listTabs()
+            const activeTab = tabs.find((tab) => tab.active && typeof tab.id === 'number')
+            rememberTargetTab(state, activeTab?.id ?? null)
+            return { target: activeTab || null }
+          }
+          if (action === 'set') {
+            return await selectTab(tabTarget)
+          }
+          throw new Error(`unsupported target action: ${action}`)
+        }
+        case 'command': {
+          if (action === 'list' || action === 'status') {
+            const commandId = readOptionalStringArg(args, 'commandId')
+            const commands = commandQueue.list()
+            return {
+              commands: commandId ? commands.filter((entry) => entry.id === commandId) : commands,
+            }
+          }
+          if (action === 'cancel') {
+            const commandId = readStringArg(args, 'commandId')
+            return { commandId, cancelled: commandQueue.cancel(commandId) }
+          }
+          if (action === 'reset') {
+            const key = readOptionalStringArg(args, 'queueKey') || resolveCommandQueueKey(tabTarget)
+            return { queueKey: key, cancelled: commandQueue.reset(key) }
+          }
+          throw new Error(`unsupported command action: ${action}`)
+        }
         case 'goto':
         case 'open':
           return await pageInput.navigateTo(tabId, url, {
             timeoutMs: readNumberArg(args, 'timeoutMs', 10000),
             wait: readBooleanArg(args, 'wait', true),
+            waitUntil: readStringArg(args, 'waitUntil', 'domquiet'),
+            settleTimeoutMs: readOptionalNumberArg(args, 'settleTimeoutMs'),
+            domQuietMs: readOptionalNumberArg(args, 'domQuietMs'),
           })
         case 'eval':
           return await pageInput.evaluateScript(
@@ -1585,7 +1674,10 @@ export function createCommandRouter({
         case 'forward':
           return await pageInput.navigateForward(tabId)
         case 'reload':
-          return await pageInput.reloadPage(tabId)
+          return await pageInput.reloadPage(tabId, {
+            timeoutMs: readOptionalNumberArg(args, 'timeoutMs'),
+            waitUntil: readOptionalStringArg(args, 'waitUntil'),
+          })
         case 'close':
           return await closeTabs(tabId, readBooleanArg(args, 'all', false))
         case 'window':
@@ -1669,10 +1761,27 @@ export function createCommandRouter({
         }
         case 'console': {
           const targetTabId = resolveEffectiveTargetTabId(tabTarget)
-          const messages =
+          if (action === 'clear') {
+            const before = state.session.consoleMessages.length
+            state.session.consoleMessages = state.session.consoleMessages.filter(
+              (message) => targetTabId !== null && message.tabId !== targetTabId,
+            )
+            return { cleared: before - state.session.consoleMessages.length }
+          }
+          const since = readNumberArg(args, 'since', 0)
+          const currentEpoch = targetTabId === null ? null : getPageEpoch(state, targetTabId)
+          const messages = (
             targetTabId === null
               ? state.session.consoleMessages
               : state.session.consoleMessages.filter((message) => message.tabId === targetTabId)
+          ).filter(
+            (message) =>
+              message.timestamp >= since &&
+              (args.allEpochs === true ||
+                currentEpoch === null ||
+                message.pageEpoch == null ||
+                message.pageEpoch === currentEpoch),
+          )
           // 分页作用在 tabId 过滤 + 折叠之后的结果上，折叠逻辑本身不动
           const { items, pagination } = paginateList(
             foldConsoleMessages(messages),
@@ -1683,10 +1792,27 @@ export function createCommandRouter({
         }
         case 'errors': {
           const targetTabId = resolveEffectiveTargetTabId(tabTarget)
-          const errors =
+          if (action === 'clear') {
+            const before = state.session.pageErrors.length
+            state.session.pageErrors = state.session.pageErrors.filter(
+              (error) => targetTabId !== null && error.tabId !== targetTabId,
+            )
+            return { cleared: before - state.session.pageErrors.length }
+          }
+          const since = readNumberArg(args, 'since', 0)
+          const currentEpoch = targetTabId === null ? null : getPageEpoch(state, targetTabId)
+          const errors = (
             targetTabId === null
               ? state.session.pageErrors
               : state.session.pageErrors.filter((error) => error.tabId === targetTabId)
+          ).filter(
+            (error) =>
+              error.timestamp >= since &&
+              (args.allEpochs === true ||
+                currentEpoch === null ||
+                error.pageEpoch == null ||
+                error.pageEpoch === currentEpoch),
+          )
           const { items, pagination } = paginateList(errors, pageIdx, pageSize)
           return { errors: items, pagination }
         }
@@ -1729,10 +1855,21 @@ export function createCommandRouter({
             return await network.unrouteRequest(tabId, readStringArg(args, 'url'))
           }
           if (action === 'requests') {
-            return network.listRequests(args)
+            const targetTabId = resolveEffectiveTargetTabId(tabTarget)
+            return network.listRequests({
+              ...args,
+              ...(args.allTabs === true || targetTabId === null ? {} : { tabId: targetTabId }),
+              ...(args.allEpochs === true
+                ? {}
+                : args.allTabs === true
+                  ? { currentEpochs: Object.fromEntries(state.targeting.pageEpochs) }
+                  : targetTabId === null
+                    ? {}
+                    : { pageEpoch: getPageEpoch(state, targetTabId) }),
+            })
           }
           if (action === 'request') {
-            return network.getRequestDetail(requestId)
+            return network.getRequestDetail(requestId, resolveEffectiveTargetTabId(tabTarget))
           }
           if (action === 'har') {
             if (subaction === 'start') {
@@ -1749,6 +1886,12 @@ export function createCommandRouter({
             }
             if (subaction === 'stop') {
               return await network.stopHar()
+            }
+            if (subaction === 'status') {
+              return await network.getHarStatus()
+            }
+            if (subaction === 'recover') {
+              return await network.recoverHar()
             }
             throw new Error(`unsupported network har action: ${subaction}`)
           }
@@ -1817,18 +1960,29 @@ export function createCommandRouter({
 
     // 按 tab 串行执行，避免同一 tab 的 chrome.debugger.sendCommand 并发冲突；
     // batch 子步骤（skipQueue）在 batch 自己的队列槽内执行，重入队列会死锁
-    const result = skipQueue
-      ? await runCommand()
-      : await commandQueue.enqueue(resolveCommandQueueKey(tabTarget), runCommand)
+    const networkControl =
+      command === 'network' && action === 'har' && ['stop', 'status', 'recover'].includes(subaction)
+    const result =
+      skipQueue || CONTROL_COMMANDS.has(command) || networkControl
+        ? await runCommand()
+        : await commandQueue.enqueue(resolveCommandQueueKey(tabTarget), runCommand, request)
     const meta = await buildCommandMeta(command, args, tabTarget, frameSelector)
     return attachCommandMeta(result, meta)
   }
 
   async function handleCommand(message: CommandMessage) {
-    return await executeCommand(String(message.command || ''), message.args || {})
+    return await executeCommand(String(message.command || ''), message.args || {}, false, {
+      ...(typeof message.id === 'string' ? { id: message.id } : {}),
+      ...(typeof message.deadlineAt === 'string' ? { deadlineAt: message.deadlineAt } : {}),
+    })
+  }
+
+  function cancelCommand(id: string): boolean {
+    return commandQueue.cancel(id)
   }
 
   return {
     handleCommand,
+    cancelCommand,
   }
 }

@@ -129,6 +129,7 @@ const connection = createConnectionRuntime({
   network,
   listTabs,
   handleCommand: commandRouter.handleCommand,
+  cancelCommand: commandRouter.cancelCommand,
   sendDebuggerCommand,
   storageLocalGet,
   storageLocalSet,

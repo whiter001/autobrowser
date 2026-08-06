@@ -63,6 +63,7 @@ export interface NetworkRequestRecord {
   id?: string
   requestId?: string
   tabId?: number | null
+  pageEpoch?: number | null
   url?: string
   method?: string
   resourceType?: string
@@ -109,6 +110,8 @@ export interface NetworkState {
   requestIndex: Map<string, number>
   /** 进行中的响应体抓取（Network.getResponseBody），stopHar 收集前需等待其 settle，避免 HAR 丢 body */
   pendingBodyFetches: Set<Promise<unknown>>
+  inFlightByTab: Map<number, Set<string>>
+  lastActivityByTab: Map<number, number>
   harRecording: boolean
   harStartedAt: string | null
   harMaxRequests: number | null
@@ -121,6 +124,7 @@ export interface ConsoleMessageRecord {
   timestamp: number
   /** 消息来源 tab；source 里没带 tabId 时（罕见）为 null */
   tabId: number | null
+  pageEpoch?: number | null
 }
 
 export interface PageErrorRecord {
@@ -131,6 +135,7 @@ export interface PageErrorRecord {
   timestamp: number
   /** 消息来源 tab；source 里没带 tabId 时（罕见）为 null */
   tabId: number | null
+  pageEpoch?: number | null
 }
 
 /** WebSocket 连接生命周期与诊断信息 */
@@ -247,6 +252,7 @@ export interface CommandMessage {
   args?: CommandArgs
   id?: unknown
   type?: string
+  deadlineAt?: string
 }
 
 export interface TabSummary {

@@ -68,7 +68,11 @@ const HELP_ROOT = helpNode(
       'autobrowser mcp',
     ),
     helpNode('tab', 'Manage tabs.', 'autobrowser tab <list|new|select|close>', undefined, [
-      helpNode('list', 'List tabs.', 'autobrowser tab list'),
+      helpNode(
+        'list',
+        'List tabs.',
+        'autobrowser tab list [--active] [--current-window] [--filter <text>] [--page <n>] [--page-size <n>]',
+      ),
       helpNode('new', 'Open a new tab.', 'autobrowser tab new [url]'),
       helpNode('select', 'Select a tab by handle.', 'autobrowser tab select <tN>'),
       helpNode(
@@ -77,8 +81,44 @@ const HELP_ROOT = helpNode(
         'autobrowser tab close [tN]',
       ),
     ]),
-    helpNode('open', 'Navigate to a URL.', 'autobrowser open <url>'),
-    helpNode('goto', 'Navigate to a URL.', 'autobrowser goto <url>'),
+    helpNode(
+      'target',
+      'Inspect or change the persistent target tab.',
+      'autobrowser target <show|set|active|clear>',
+      undefined,
+      [
+        helpNode('show', 'Show the persistent target.', 'autobrowser target show'),
+        helpNode('set', 'Set the target by stable handle.', 'autobrowser target set <tN>'),
+        helpNode('active', 'Use the active browser tab as target.', 'autobrowser target active'),
+        helpNode('clear', 'Clear the persistent target.', 'autobrowser target clear'),
+      ],
+    ),
+    helpNode(
+      'command',
+      'Inspect or cancel extension commands.',
+      'autobrowser command <list|status|cancel|reset>',
+      undefined,
+      [
+        helpNode('list', 'List queued and running commands.', 'autobrowser command list'),
+        helpNode(
+          'status',
+          'Show all commands or one command by id.',
+          'autobrowser command status [id]',
+        ),
+        helpNode('cancel', 'Cancel a command by id.', 'autobrowser command cancel <id>'),
+        helpNode('reset', 'Reset the target queue.', 'autobrowser command reset [--tab <tN>]'),
+      ],
+    ),
+    helpNode(
+      'open',
+      'Navigate to a URL.',
+      'autobrowser open <url> [--wait-until <mode>] [--settle-timeout <ms>] [--dom-quiet-ms <ms>]',
+    ),
+    helpNode(
+      'goto',
+      'Navigate to a URL.',
+      'autobrowser goto <url> [--wait-until <mode>] [--settle-timeout <ms>] [--dom-quiet-ms <ms>]',
+    ),
     helpNode(
       'close',
       'Close tabs in the current window (aliases: quit, exit).',
@@ -87,7 +127,11 @@ const HELP_ROOT = helpNode(
     ),
     helpNode('back', 'Go back in browser history.', 'autobrowser back'),
     helpNode('forward', 'Go forward in browser history.', 'autobrowser forward'),
-    helpNode('reload', 'Reload the current page.', 'autobrowser reload'),
+    helpNode(
+      'reload',
+      'Reload the current page.',
+      'autobrowser reload [--wait-until <mode>] [--timeout-ms <ms>]',
+    ),
     helpNode('window', 'Manage browser windows.', 'autobrowser window <new>', undefined, [
       helpNode('new', 'Open a new window.', 'autobrowser window new'),
     ]),
@@ -284,10 +328,20 @@ const HELP_ROOT = helpNode(
     helpNode(
       'console',
       'Read console output.',
-      'autobrowser console [--level error|warning|info|debug]',
-      ['--level <error|warning|info|debug> each level includes more severe messages'],
+      'autobrowser console [clear] [--level error|warning|info|debug] [--page <n>] [--page-size <n>] [--since <timestamp>] [--all-epochs]',
+      [
+        '--level <error|warning|info|debug> each level includes more severe messages',
+        '--page <n>',
+        '--page-size <n>',
+        '--since <timestamp>',
+        '--all-epochs',
+      ],
     ),
-    helpNode('errors', 'Read page errors.', 'autobrowser errors'),
+    helpNode(
+      'errors',
+      'Read page errors.',
+      'autobrowser errors [clear] [--page <n>] [--page-size <n>] [--since <timestamp>] [--all-epochs]',
+    ),
     helpNode(
       'set',
       'Adjust browser state.',
@@ -381,8 +435,18 @@ const HELP_ROOT = helpNode(
         helpNode(
           'requests',
           'List captured requests.',
-          'autobrowser network requests [--filter <text>] [--type <xhr,fetch>] [--method <POST>] [--status <2xx>]',
-          ['--filter <text>', '--type <xhr,fetch>', '--method <POST>', '--status <2xx>'],
+          'autobrowser network requests [--filter <text>] [--type <xhr,fetch>] [--method <POST>] [--status <2xx>] [--all-tabs] [--all-epochs] [--include-details]',
+          [
+            '--filter <text>',
+            '--type <xhr,fetch>',
+            '--method <POST>',
+            '--status <2xx>',
+            '--page <n>',
+            '--page-size <n>',
+            '--all-tabs',
+            '--all-epochs',
+            '--include-details',
+          ],
         ),
         helpNode(
           'export',
@@ -394,7 +458,7 @@ const HELP_ROOT = helpNode(
         helpNode(
           'har',
           'Record or stop HAR capture.',
-          'autobrowser network har <start|stop>',
+          'autobrowser network har <start|stop|status|recover>',
           undefined,
           [
             helpNode(
@@ -402,6 +466,16 @@ const HELP_ROOT = helpNode(
               'Start HAR capture with configurable limits.',
               'autobrowser network har start [--har-max-requests <n>] [--har-max-body-bytes <n>] [--har-unlimited]',
               ['--har-max-requests <n>', '--har-max-body-bytes <n>', '--har-unlimited'],
+            ),
+            helpNode(
+              'status',
+              'Show live and checkpoint HAR state.',
+              'autobrowser network har status',
+            ),
+            helpNode(
+              'recover',
+              'Recover a HAR checkpoint and save it.',
+              'autobrowser network har recover [output.har]',
             ),
             helpNode(
               'stop',

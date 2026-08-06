@@ -410,19 +410,45 @@ describe('cli helpers', () => {
     expect(consoleResult.exitCode).toBe(0)
     expect(consoleResult.fetchCalls[0].body).toEqual({
       command: 'console',
-      args: { pageIdx: 2, pageSize: 10 },
+      args: { action: 'list', pageIdx: 2, pageSize: 10 },
     })
 
     const errorsResult = await runCli(['errors', '--page-idx', '0', '--page-size', '25'])
     expect(errorsResult.exitCode).toBe(0)
     expect(errorsResult.fetchCalls[0].body).toEqual({
       command: 'errors',
-      args: { pageIdx: 0, pageSize: 25 },
+      args: { action: 'list', pageIdx: 0, pageSize: 25 },
     })
 
-    // 不带分页参数时透传空 args
+    // 不带分页参数时仍显式传 list，便于扩展区分 clear
     const bareErrors = await runCli(['errors'])
-    expect(bareErrors.fetchCalls[0].body).toEqual({ command: 'errors', args: {} })
+    expect(bareErrors.fetchCalls[0].body).toEqual({ command: 'errors', args: { action: 'list' } })
+  })
+
+  test('accepts the page alias and routes current-epoch log clearing', async () => {
+    const paged = await runCli(['console', '--page', '3', '--all-epochs'])
+    expect(paged.fetchCalls[0].body).toEqual({
+      command: 'console',
+      args: { action: 'list', pageIdx: 3, allEpochs: true },
+    })
+    const cleared = await runCli(['errors', 'clear'])
+    expect(cleared.fetchCalls[0].body).toEqual({
+      command: 'errors',
+      args: { action: 'clear' },
+    })
+  })
+
+  test('routes explicit recovery controls without page commands', async () => {
+    const target = await runCli(['target', 'clear'])
+    expect(target.fetchCalls[0].body).toEqual({
+      command: 'target',
+      args: { action: 'clear' },
+    })
+    const cancel = await runCli(['command', 'cancel', 'cmd_1'])
+    expect(cancel.fetchCalls[0].body).toEqual({
+      command: 'command',
+      args: { action: 'cancel', commandId: 'cmd_1' },
+    })
   })
 
   test('forwards network requests pagination flags and rejects out-of-range values', async () => {
@@ -683,6 +709,28 @@ describe('cli command routing', () => {
       command: 'tab.close',
       args: {
         handle: 't4',
+      },
+    })
+  })
+
+  test('routes configurable navigation settlement options', async () => {
+    const result = await runCli([
+      'goto',
+      'https://example.com/app#route',
+      '--wait-until',
+      'networkidle',
+      '--settle-timeout',
+      '5000',
+      '--dom-quiet-ms',
+      '250',
+    ])
+    expect(result.fetchCalls[0].body).toEqual({
+      command: 'goto',
+      args: {
+        url: 'https://example.com/app#route',
+        waitUntil: 'networkidle',
+        settleTimeoutMs: 5000,
+        domQuietMs: 250,
       },
     })
   })

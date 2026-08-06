@@ -45,6 +45,8 @@ export function createExtensionState(defaultRelayPort: number): ExtensionState {
       requestMap: new Map(),
       requestIndex: new Map(),
       pendingBodyFetches: new Set(),
+      inFlightByTab: new Map(),
+      lastActivityByTab: new Map(),
       harRecording: false,
       harStartedAt: null,
       harMaxRequests: 1000,

@@ -391,9 +391,13 @@ describe('runtime snapshot', () => {
 
     const runtime = await createRuntime({ homeDir, requestTimeoutMs: 150 })
 
+    const sent: string[] = []
     const socket = {
       readyState: WebSocket.OPEN,
-      send: () => 1,
+      send: (message: string) => {
+        sent.push(message)
+        return 1
+      },
     } as unknown as Bun.ServerWebSocket<{ extensionId?: string | null; userAgent?: string | null }>
 
     runtime.attachExtension(socket)
@@ -401,6 +405,10 @@ describe('runtime snapshot', () => {
     await expect(runtime.dispatchCommand('goto', { url: 'https://example.com' })).rejects.toThrow(
       /command timed out after 150ms: goto/,
     )
+    const messages = sent.map((message) => JSON.parse(message))
+    const command = messages.find((message) => message.type === 'command')
+    expect(command.deadlineAt).toBeString()
+    expect(messages).toContainEqual({ type: 'cancel', id: command.id, reason: 'relay timeout' })
   })
 
   test('detaches the extension when heartbeats stop arriving', async () => {

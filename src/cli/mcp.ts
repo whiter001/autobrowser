@@ -66,10 +66,32 @@ const MCP_TOOLS: McpToolDefinition[] = [
       type: 'object',
       properties: {
         url: { type: 'string', description: 'The URL to navigate to.' },
+        waitUntil: {
+          type: 'string',
+          enum: [
+            'none',
+            'commit',
+            'domcontentloaded',
+            'interactive',
+            'load',
+            'networkidle',
+            'domquiet',
+          ],
+          description: 'Navigation phase to wait for (default domquiet).',
+        },
+        timeoutMs: { type: 'number', description: 'Total navigation timeout in milliseconds.' },
+        settleTimeoutMs: {
+          type: 'number',
+          description: 'Maximum settle phase time in milliseconds.',
+        },
+        domQuietMs: { type: 'number', description: 'Required DOM quiet interval in milliseconds.' },
       },
       required: ['url'],
     },
-    toArgs: (args) => ({ url: args.url }),
+    toArgs: (args) => ({
+      url: args.url,
+      ...onlyDefined(args, ['waitUntil', 'timeoutMs', 'settleTimeoutMs', 'domQuietMs']),
+    }),
   },
   {
     name: 'snapshot',
@@ -363,8 +385,48 @@ const MCP_TOOLS: McpToolDefinition[] = [
     name: 'tab_list',
     description: 'List open tabs with their stable handles (tN), titles, and URLs.',
     command: 'tab.list',
-    inputSchema: { type: 'object', properties: {} },
-    toArgs: () => ({}),
+    inputSchema: {
+      type: 'object',
+      properties: {
+        active: { type: 'boolean', description: 'Only return active tabs.' },
+        currentWindow: { type: 'boolean', description: 'Only return tabs in the target window.' },
+        filter: { type: 'string', description: 'Match handle, title, or URL.' },
+        pageIdx: { type: 'number', description: 'Zero-based page index.' },
+        pageSize: { type: 'number', description: 'Tabs per page.' },
+      },
+    },
+    toArgs: (args) =>
+      onlyDefined(args, ['active', 'currentWindow', 'filter', 'pageIdx', 'pageSize']),
+  },
+  {
+    name: 'target',
+    description: 'Inspect, set, clear, or replace the persistent target tab with the active tab.',
+    command: 'target',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        action: { type: 'string', enum: ['show', 'set', 'active', 'clear'] },
+        handle: { type: 'string', description: 'Stable tN handle required by set.' },
+      },
+      required: ['action'],
+    },
+    toArgs: (args) => ({ action: args.action, ...onlyDefined(args, ['handle']) }),
+  },
+  {
+    name: 'command_control',
+    description:
+      'Inspect or cancel queued/running extension commands; reset detaches a stuck target queue.',
+    command: 'command',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        action: { type: 'string', enum: ['list', 'status', 'cancel', 'reset'] },
+        commandId: { type: 'string', description: 'Command id required by cancel.' },
+        handle: { type: 'string', description: 'Target queue handle for reset.' },
+      },
+      required: ['action'],
+    },
+    toArgs: (args) => ({ action: args.action, ...onlyDefined(args, ['commandId', 'handle']) }),
   },
   {
     name: 'tab_new',
@@ -431,9 +493,15 @@ const MCP_TOOLS: McpToolDefinition[] = [
       properties: {
         pageIdx: { type: 'number', description: 'Zero-based page index (default 0).' },
         pageSize: { type: 'number', description: 'Messages per page (default 50, max 200).' },
+        action: { type: 'string', enum: ['list', 'clear'] },
+        since: {
+          type: 'number',
+          description: 'Only records at or after this Unix millisecond timestamp.',
+        },
+        allEpochs: { type: 'boolean', description: 'Include prior page epochs in the target tab.' },
       },
     },
-    toArgs: (args) => onlyDefined(args, ['pageIdx', 'pageSize']),
+    toArgs: (args) => onlyDefined(args, ['action', 'pageIdx', 'pageSize', 'since', 'allEpochs']),
   },
   {
     name: 'errors',
@@ -445,9 +513,15 @@ const MCP_TOOLS: McpToolDefinition[] = [
       properties: {
         pageIdx: { type: 'number', description: 'Zero-based page index (default 0).' },
         pageSize: { type: 'number', description: 'Errors per page (default 50, max 200).' },
+        action: { type: 'string', enum: ['list', 'clear'] },
+        since: {
+          type: 'number',
+          description: 'Only records at or after this Unix millisecond timestamp.',
+        },
+        allEpochs: { type: 'boolean', description: 'Include prior page epochs in the target tab.' },
       },
     },
-    toArgs: (args) => onlyDefined(args, ['pageIdx', 'pageSize']),
+    toArgs: (args) => onlyDefined(args, ['action', 'pageIdx', 'pageSize', 'since', 'allEpochs']),
   },
   {
     name: 'network_requests',
@@ -459,9 +533,34 @@ const MCP_TOOLS: McpToolDefinition[] = [
       properties: {
         pageIdx: { type: 'number', description: 'Zero-based page index (default 0).' },
         pageSize: { type: 'number', description: 'Requests per page (default 50, max 200).' },
+        allTabs: { type: 'boolean', description: 'Include all tabs instead of the target tab.' },
+        allEpochs: { type: 'boolean', description: 'Include prior page epochs.' },
+        includeDetails: { type: 'boolean', description: 'Include headers and bodies inline.' },
       },
     },
-    toArgs: (args) => ({ action: 'requests', ...onlyDefined(args, ['pageIdx', 'pageSize']) }),
+    toArgs: (args) => ({
+      action: 'requests',
+      ...onlyDefined(args, ['pageIdx', 'pageSize', 'allTabs', 'allEpochs', 'includeDetails']),
+    }),
+  },
+  {
+    name: 'network_har',
+    description: 'Start, stop, inspect, or recover checkpointed HAR capture.',
+    command: 'network',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        action: { type: 'string', enum: ['start', 'stop', 'status', 'recover'] },
+        maxRequests: { type: 'number' },
+        maxBodyBytes: { type: 'number' },
+      },
+      required: ['action'],
+    },
+    toArgs: (args) => ({
+      action: 'har',
+      subaction: args.action,
+      ...onlyDefined(args, ['maxRequests', 'maxBodyBytes']),
+    }),
   },
   {
     name: 'dialog',

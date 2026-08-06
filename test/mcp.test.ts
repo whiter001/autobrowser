@@ -23,6 +23,8 @@ const KNOWN_TOOL_NAMES = [
   'wait',
   'screenshot',
   'tab_list',
+  'target',
+  'command_control',
   'tab_new',
   'tab_select',
   'tab_close',
@@ -30,6 +32,7 @@ const KNOWN_TOOL_NAMES = [
   'console',
   'errors',
   'network_requests',
+  'network_har',
   'dialog',
   'cookies',
   'storage',
@@ -61,7 +64,7 @@ function okResult(result: unknown): CommandResponse {
 }
 
 describe('AutobrowserMcpServer.listTools', () => {
-  test('exposes all 26 tools with object-typed input schemas', () => {
+  test('exposes all 29 tools with object-typed input schemas', () => {
     const server = new AutobrowserMcpServer({ requestCommand: async () => okResult({}) })
     const tools = server.listTools()
 
@@ -187,6 +190,19 @@ describe('AutobrowserMcpServer.callTool', () => {
     expect(mock.calls).toEqual([{ command: 'tab.select', args: { handle: 't3' } }])
   })
 
+  test('recovery control tools map target and command actions', async () => {
+    const mock = recordingRequestCommand(okResult({}))
+    const server = new AutobrowserMcpServer({ requestCommand: mock })
+
+    await server.callTool('target', { action: 'clear' })
+    await server.callTool('command_control', { action: 'cancel', commandId: 'cmd_1' })
+
+    expect(mock.calls).toEqual([
+      { command: 'target', args: { action: 'clear' } },
+      { command: 'command', args: { action: 'cancel', commandId: 'cmd_1' } },
+    ])
+  })
+
   test('console/errors forward pagination and inject the tab target', async () => {
     const mock = recordingRequestCommand(okResult({ messages: [], pagination: {} }))
     const server = new AutobrowserMcpServer({ requestCommand: mock })
@@ -211,6 +227,17 @@ describe('AutobrowserMcpServer.callTool', () => {
         command: 'network',
         args: { action: 'requests', pageIdx: 1, pageSize: 5, tabId: 't4' },
       },
+    ])
+  })
+
+  test('network_har maps checkpoint recovery actions', async () => {
+    const mock = recordingRequestCommand(okResult({ recovered: true }))
+    const server = new AutobrowserMcpServer({ requestCommand: mock })
+
+    await server.callTool('network_har', { action: 'recover' })
+
+    expect(mock.calls).toEqual([
+      { command: 'network', args: { action: 'har', subaction: 'recover' } },
     ])
   })
 

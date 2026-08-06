@@ -541,6 +541,9 @@ export function validateCommandArgs(command: string, args: unknown): void {
       if (command !== 'tab.new') {
         readOptionalNonNegativeNumberField(normalizedArgs, 'timeoutMs', command)
         readBooleanField(normalizedArgs, 'wait', command)
+        readStringField(normalizedArgs, 'waitUntil', command, { required: false })
+        readOptionalNonNegativeIntegerField(normalizedArgs, 'settleTimeoutMs', command)
+        readOptionalNonNegativeIntegerField(normalizedArgs, 'domQuietMs', command)
       }
       return
     case 'click':
@@ -867,6 +870,9 @@ export function validateCommandArgs(command: string, args: unknown): void {
         readStringField(normalizedArgs, 'resourceType', command, { required: false })
         readOptionalNonNegativeIntegerField(normalizedArgs, 'pageIdx', command)
         readOptionalNonNegativeIntegerField(normalizedArgs, 'pageSize', command)
+        readBooleanField(normalizedArgs, 'allTabs', command)
+        readBooleanField(normalizedArgs, 'allEpochs', command)
+        readBooleanField(normalizedArgs, 'includeDetails', command)
       }
       return
     }
@@ -902,16 +908,34 @@ export function validateCommandArgs(command: string, args: unknown): void {
       readTabInputField(normalizedArgs, 'handle', command)
       return
     case 'tab.list':
+      readStringField(normalizedArgs, 'filter', command, { required: false })
+      readBooleanField(normalizedArgs, 'active', command)
+      readBooleanField(normalizedArgs, 'currentWindow', command)
     case 'status':
     case 'console':
     case 'errors':
       readOptionalNonNegativeIntegerField(normalizedArgs, 'pageIdx', command)
       readOptionalNonNegativeIntegerField(normalizedArgs, 'pageSize', command)
+      readOptionalNonNegativeIntegerField(normalizedArgs, 'since', command)
+      readBooleanField(normalizedArgs, 'allEpochs', command)
+      readStringField(normalizedArgs, 'action', command, { required: false })
+      return
+    case 'target':
+      readStringField(normalizedArgs, 'action', command)
+      readTabInputField(normalizedArgs, 'handle', command)
+      return
+    case 'command':
+      readStringField(normalizedArgs, 'action', command)
+      readStringField(normalizedArgs, 'commandId', command, { required: false })
+      readStringField(normalizedArgs, 'queueKey', command, { required: false })
+      readTabInputField(normalizedArgs, 'handle', command)
       return
     case 'pdf':
     case 'back':
     case 'forward':
     case 'reload':
+      readOptionalNonNegativeNumberField(normalizedArgs, 'timeoutMs', command)
+      readStringField(normalizedArgs, 'waitUntil', command, { required: false })
       return
     default:
       return
