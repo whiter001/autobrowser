@@ -204,19 +204,25 @@ async function ensureBackgroundServer(
     return null
   }
 
+  const readyAbortController = new AbortController()
   const readyResult = backgroundProcess.waitForExit
     ? await Promise.race([
-        waitForServerStatus(controlBaseUrl, context.flags.relayPort, context.flags.ipcPort).then(
-          (status) => ({
-            kind: 'ready' as const,
-            status,
-          }),
-        ),
+        waitForServerStatus(
+          controlBaseUrl,
+          context.flags.relayPort,
+          context.flags.ipcPort,
+          undefined,
+          undefined,
+          readyAbortController.signal,
+        ).then((status) => ({
+          kind: 'ready' as const,
+          status,
+        })),
         backgroundProcess.waitForExit().then((exitInfo) => ({
           kind: 'exit' as const,
           exitInfo,
         })),
-      ])
+      ]).finally(() => readyAbortController.abort())
     : {
         kind: 'ready' as const,
         status: await waitForServerStatus(

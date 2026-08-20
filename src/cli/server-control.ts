@@ -246,10 +246,11 @@ export async function waitForServerStatus(
   ipcPort: number,
   timeoutMs: number = 5000,
   intervalMs: number = 100,
+  signal?: AbortSignal,
 ): Promise<ServerSnapshotStatus | null> {
   const deadline = Date.now() + timeoutMs
 
-  while (Date.now() <= deadline) {
+  while (Date.now() <= deadline && !signal?.aborted) {
     try {
       const status = await getStatus(baseUrl)
       if (isServerSnapshotOnPorts(status, relayPort, ipcPort)) {
@@ -259,7 +260,25 @@ export async function waitForServerStatus(
       // keep polling until the server becomes available or the timeout elapses
     }
 
-    await new Promise((resolve) => setTimeout(resolve, intervalMs))
+    await new Promise<void>((resolve) => {
+      const cleanup = (): void => {
+        clearTimeout(timer)
+        signal?.removeEventListener('abort', onAbort)
+      }
+      const finish = (): void => {
+        cleanup()
+        resolve()
+      }
+      const timer = setTimeout(finish, intervalMs)
+      const onAbort = (): void => {
+        finish()
+      }
+
+      signal?.addEventListener('abort', onAbort, { once: true })
+      if (signal?.aborted) {
+        onAbort()
+      }
+    })
   }
 
   return null

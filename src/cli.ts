@@ -932,9 +932,17 @@ async function runMain(
       return null
     }
 
+    const readyAbortController = new AbortController()
     const readyResult = backgroundProcess.waitForExit
       ? await Promise.race([
-          waitForServerStatus(controlBaseUrl, flags.relayPort, flags.ipcPort).then((status) => ({
+          waitForServerStatus(
+            controlBaseUrl,
+            flags.relayPort,
+            flags.ipcPort,
+            undefined,
+            undefined,
+            readyAbortController.signal,
+          ).then((status) => ({
             kind: 'ready' as const,
             status,
           })),
@@ -942,7 +950,7 @@ async function runMain(
             kind: 'exit' as const,
             exitInfo,
           })),
-        ])
+        ]).finally(() => readyAbortController.abort())
       : {
           kind: 'ready' as const,
           status: await waitForServerStatus(controlBaseUrl, flags.relayPort, flags.ipcPort),
