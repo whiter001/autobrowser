@@ -486,6 +486,20 @@ const handleReload: CommandHandler = async (rest, context) => {
       args.timeoutMs = parseNumberArg(rest[++index], 'timeout ms', { min: 1, integer: true })
       continue
     }
+    if (value === '--wait-for') {
+      const waitFor = rest[index + 1]
+      const waitValue = rest[index + 2]
+      if (waitFor !== 'url' && waitFor !== 'selector') {
+        return writeCommandError('reload --wait-for must be url or selector')
+      }
+      if (waitValue === undefined) {
+        return writeCommandError(`missing reload --wait-for ${waitFor} value`)
+      }
+      args.waitFor = waitFor
+      args[waitFor] = waitValue
+      index += 2
+      continue
+    }
     return writeCommandError(`unsupported reload option: ${value}`)
   }
   await requestAndWrite(context, 'reload', args)

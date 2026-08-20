@@ -27,7 +27,7 @@ interface NetworkHarStopResult {
   stoppedAt?: string
 }
 
-const COOKIE_ACTIONS = ['get', 'set', 'clear', 'delete'] as const
+const COOKIE_ACTIONS = ['list', 'get', 'set', 'clear', 'delete'] as const
 const STORAGE_ACTIONS = ['get', 'set', 'clear', 'delete'] as const
 const SET_ACTIONS = [
   'viewport',
@@ -49,7 +49,7 @@ const handleCookies = createActionCommand({
   helpPath: ['cookies'],
   allowed: COOKIE_ACTIONS,
   handle: async (rest, context, action) => {
-    if (action === 'get') {
+    if (action === 'list' || action === 'get') {
       const filters: Record<string, string> = {}
       for (let index = 0; index < rest.length; index += 1) {
         const value = rest[index]
@@ -62,10 +62,10 @@ const handleCookies = createActionCommand({
           index += 1
           continue
         }
-        return writeCommandError(`unexpected cookies get argument: ${value}`)
+        return writeCommandError(`unexpected cookies ${action} argument: ${value}`)
       }
 
-      await requestAndWrite(context, 'cookies', { action, ...filters })
+      await requestAndWrite(context, 'cookies', { action: 'get', ...filters })
       return 0
     }
 

@@ -1673,11 +1673,41 @@ export function createCommandRouter({
           return await pageInput.navigateBack(tabId)
         case 'forward':
           return await pageInput.navigateForward(tabId)
-        case 'reload':
-          return await pageInput.reloadPage(tabId, {
+        case 'reload': {
+          const reloadResult = await pageInput.reloadPage(tabId, {
             timeoutMs: readOptionalNumberArg(args, 'timeoutMs'),
             waitUntil: readOptionalStringArg(args, 'waitUntil'),
           })
+          const waitFor = readOptionalStringArg(args, 'waitFor')
+          const timeout = readNumberArg(args, 'timeoutMs', 30000)
+          if (waitFor === 'url') {
+            return {
+              ...(reloadResult as Record<string, unknown>),
+              wait: await pageObserve.waitForUrl(
+                tabId,
+                readStringArg(args, 'url'),
+                timeout,
+                frameSelector,
+              ),
+            }
+          }
+          if (waitFor === 'selector') {
+            return {
+              ...(reloadResult as Record<string, unknown>),
+              wait: await pageObserve.waitForSelectorState(
+                tabId,
+                readStringArg(args, 'selector'),
+                'visible',
+                timeout,
+                frameSelector,
+              ),
+            }
+          }
+          if (waitFor) {
+            throw new Error('reload waitFor must be url or selector')
+          }
+          return reloadResult
+        }
         case 'close':
           return await closeTabs(tabId, readBooleanArg(args, 'all', false))
         case 'window':
@@ -1715,7 +1745,7 @@ export function createCommandRouter({
         case 'wait':
           return await handleWait(tabId, args, frameSelector)
         case 'cookies':
-          if (action === 'get') {
+          if (action === 'list' || action === 'get') {
             return await session.cookiesGet(tabId, {
               domain: readOptionalStringArg(args, 'domain'),
               path: readOptionalStringArg(args, 'path'),

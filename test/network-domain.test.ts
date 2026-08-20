@@ -208,6 +208,114 @@ describe('network domain HAR export', () => {
     expect(state.network.pendingBodyFetches.size).toBe(0)
   })
 
+  test('stopHar checkpoints active capture limits before resetting them', async () => {
+    const stored: Record<string, unknown> = {}
+    const state = createExtensionState(57978)
+    state.network.harRecording = true
+    state.network.harStartedAt = '2026-04-20T15:00:00.000Z'
+    state.network.harMaxRequests = null
+    state.network.harMaxBodyBytes = null
+
+    const network = createNetworkDomain({
+      state,
+      getTargetTab: async () => ({ id: 1 }) as never,
+      sendRawDebuggerCommand: async <TResult = unknown>(): Promise<TResult> => ({}) as TResult,
+      sendDebuggerCommand: async <TResult = unknown>(): Promise<TResult> => ({}) as TResult,
+      storageLocalSet: async (items: Record<string, unknown>) => {
+        Object.assign(stored, items)
+      },
+      storageLocalGet: async (key: string) => ({ [key]: stored[key] }),
+    })
+
+    await network.stopHar()
+
+    const checkpoint = stored['autobrowser.harCheckpoint'] as {
+      recording: boolean
+      maxRequests: number | null
+      maxBodyBytes: number | null
+    }
+    expect(checkpoint).toMatchObject({
+      recording: false,
+      maxRequests: null,
+      maxBodyBytes: null,
+    })
+    expect(state.network.harMaxRequests as number | null).toBe(1000)
+    expect(state.network.harMaxBodyBytes as number | null).toBe(256 * 1024)
+  })
+
+  test('stopHar still exports HAR when checkpoint storage fails', async () => {
+    const state = createExtensionState(57978)
+    state.network.harRecording = true
+    state.network.harStartedAt = '2026-04-20T15:00:00.000Z'
+    const network = createNetworkDomain({
+      state,
+      getTargetTab: async () => ({ id: 1 }) as never,
+      sendRawDebuggerCommand: async <TResult = unknown>(): Promise<TResult> => ({}) as TResult,
+      sendDebuggerCommand: async <TResult = unknown>(): Promise<TResult> => ({}) as TResult,
+      storageLocalSet: async () => {
+        throw new Error('Resource::kQuotaBytes quota exceeded')
+      },
+    })
+
+    const result = (await network.stopHar()) as {
+      har?: unknown
+      checkpoint?: { saved?: boolean; error?: string }
+      suggestedAction?: string
+    }
+
+    expect(result.har).toBeTruthy()
+    expect(result.checkpoint).toMatchObject({
+      saved: false,
+      error: 'Resource::kQuotaBytes quota exceeded',
+    })
+    expect(result.suggestedAction).toContain('HAR export succeeded')
+    expect(state.network.harRecording).toBe(false)
+    expect(state.network.harMaxRequests).toBe(1000)
+    expect(state.network.harMaxBodyBytes).toBe(256 * 1024)
+  })
+
+  test('stopHar exports HAR with a body error comment when CDP body fetch exceeds quota', async () => {
+    const state = createExtensionState(57978)
+    state.network.harRecording = true
+    state.network.harStartedAt = '2026-04-20T15:00:00.000Z'
+
+    const network = createNetworkDomain({
+      state,
+      getTargetTab: async () => ({ id: 1 }) as never,
+      sendRawDebuggerCommand: async <TResult = unknown>(
+        _tabId: number,
+        method: string,
+      ): Promise<TResult> => {
+        if (method === 'Network.getResponseBody') {
+          throw new Error('Resource::kQuotaBytes quota exceeded')
+        }
+        return {} as TResult
+      },
+      sendDebuggerCommand: async <TResult = unknown>(): Promise<TResult> => ({}) as TResult,
+    })
+
+    await network.handleEvent({ tabId: 1 }, 'Network.requestWillBeSent', {
+      requestId: 'req-quota',
+      request: { url: 'https://example.com/big.js', method: 'GET', headers: {} },
+      type: 'Script',
+      timestamp: 100,
+      wallTime: 100,
+    })
+    await network.handleEvent({ tabId: 1 }, 'Network.loadingFinished', {
+      requestId: 'req-quota',
+      timestamp: 101,
+      encodedDataLength: 300000,
+    })
+
+    const result = (await network.stopHar()) as {
+      har: { log: { entries: Array<{ response: { content: { comment?: string } } }> } }
+    }
+
+    expect(result.har.log.entries[0]?.response.content.comment).toContain(
+      'Resource::kQuotaBytes quota exceeded',
+    )
+  })
+
   test('respects unlimited HAR limits during capture', async () => {
     const state = createExtensionState(57978)
     const bigText = 'x'.repeat(300_000)
@@ -596,6 +704,27 @@ describe('network domain request list pagination', () => {
       totalPages: 1,
       invalidPage: false,
     })
+  })
+
+  test('suggests all-tabs and all-epochs when the default request list is empty', () => {
+    const state = createExtensionState(57978)
+    const network = createNetworkDomain({
+      state,
+      getTargetTab: async () => {
+        throw new Error('not used in this test')
+      },
+      sendRawDebuggerCommand: async <TResult = unknown>(): Promise<TResult> => ({}) as TResult,
+      sendDebuggerCommand: async <TResult = unknown>(): Promise<TResult> => ({}) as TResult,
+    })
+
+    const result = network.listRequests({}) as {
+      total: number
+      meta?: { suggestedAction?: string }
+    }
+
+    expect(result.total).toBe(0)
+    expect(result.meta?.suggestedAction).toContain('--all-tabs --all-epochs')
+    expect(network.listRequests({ allTabs: true })).not.toHaveProperty('meta')
   })
 
   test('filters request lists by target tab and keeps details opt-in', () => {

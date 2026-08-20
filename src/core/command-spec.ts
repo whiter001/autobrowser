@@ -936,6 +936,9 @@ export function validateCommandArgs(command: string, args: unknown): void {
     case 'reload':
       readOptionalNonNegativeNumberField(normalizedArgs, 'timeoutMs', command)
       readStringField(normalizedArgs, 'waitUntil', command, { required: false })
+      readStringField(normalizedArgs, 'waitFor', command, { required: false })
+      readStringField(normalizedArgs, 'url', command, { required: false })
+      readStringField(normalizedArgs, 'selector', command, { required: false })
       return
     default:
       return

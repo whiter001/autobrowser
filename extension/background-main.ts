@@ -419,7 +419,7 @@ function createPageEvaluationExceptionError(description: string): ErrorWithCode 
   const error = new Error(`page evaluation failed: ${description}`) as ErrorWithCode
   error.code = 'PAGE_EVALUATION_EXCEPTION'
   error.suggestedAction =
-    'Check the original script, diagnose page state with snapshot, console, or status, then retry around the original task goal.'
+    'Check the original script, pass complex or multiline source with eval --file <path> or eval --stdin to avoid shell escaping issues, diagnose page state with snapshot, console, or status, then retry around the original task goal.'
   return error
 }
 

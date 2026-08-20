@@ -130,7 +130,7 @@ const HELP_ROOT = helpNode(
     helpNode(
       'reload',
       'Reload the current page.',
-      'autobrowser reload [--wait-until <mode>] [--timeout-ms <ms>]',
+      'autobrowser reload [--wait-until <mode>] [--timeout-ms <ms>] [--wait-for url <pattern>|selector <sel>]',
     ),
     helpNode('window', 'Manage browser windows.', 'autobrowser window <new>', undefined, [
       helpNode('new', 'Open a new window.', 'autobrowser window new'),
@@ -297,9 +297,15 @@ const HELP_ROOT = helpNode(
     helpNode(
       'cookies',
       'Inspect or update cookies.',
-      'autobrowser cookies <get|set|clear|delete>',
+      'autobrowser cookies <list|get|set|clear|delete>',
       undefined,
       [
+        helpNode(
+          'list',
+          'List cookies, optionally filtered by domain and path.',
+          'autobrowser cookies list [--domain <domain>] [--path <path>]',
+          ['alias of cookies get', '--domain <domain>', '--path <path>'],
+        ),
         helpNode(
           'get',
           'List cookies, optionally filtered by domain and path.',

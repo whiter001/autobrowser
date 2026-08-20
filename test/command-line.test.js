@@ -749,6 +749,30 @@ describe('cli command routing', () => {
     })
   })
 
+  test('routes reload result waits to the extension', async () => {
+    const result = await runCli([
+      'reload',
+      '--wait-until',
+      'none',
+      '--wait-for',
+      'url',
+      '#/outNet',
+      '--timeout-ms',
+      '5000',
+    ])
+
+    expect(result.fetchCalls[0].body).toEqual({
+      command: 'reload',
+      args: { waitUntil: 'none', waitFor: 'url', url: '#/outNet', timeoutMs: 5000 },
+    })
+
+    const selector = await runCli(['reload', '--wait-for', 'selector', '#app'])
+    expect(selector.fetchCalls[0].body).toEqual({
+      command: 'reload',
+      args: { waitFor: 'selector', selector: '#app' },
+    })
+  })
+
   test('open falls back to a new tab when goto hits a restricted page', async () => {
     const result = await runCli(
       ['open', 'https://www.baidu.com'],
@@ -3403,6 +3427,12 @@ describe('cli network/session command forwarding', () => {
     expect(filtered.fetchCalls[0].body).toEqual({
       command: 'cookies',
       args: { action: 'get', domain: 'example.com', path: '/' },
+    })
+
+    const listed = await runCli(['cookies', 'list', '--domain', 'example.com'])
+    expect(listed.fetchCalls[0].body).toEqual({
+      command: 'cookies',
+      args: { action: 'get', domain: 'example.com' },
     })
 
     const deleted = await runCli(['cookies', 'delete', 'sid'])

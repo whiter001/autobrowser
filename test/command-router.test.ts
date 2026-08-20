@@ -73,9 +73,12 @@ function createMinimalRouter(overrides?: {
   }> = []
   const navigateCalls: Array<{ tabId: unknown; url: string }> = []
   const waitTimeoutCalls: number[] = []
+  const waitUrlCalls: Array<{ url: unknown; timeout: unknown }> = []
+  const waitSelectorCalls: Array<{ selector: unknown; state: unknown; timeout: unknown }> = []
   const screenshotCalls: Array<{ tabId: unknown; options: unknown }> = []
   const waitTextCalls: Array<{ text: unknown; gone?: unknown }> = []
   const typeCalls: Array<{ selector: unknown; value: unknown; submit?: unknown }> = []
+  const cookieGetCalls: Array<{ tabId: unknown; filters: unknown }> = []
   const searchCalls: Array<{
     tabId: unknown
     options: unknown
@@ -219,13 +222,24 @@ function createMinimalRouter(overrides?: {
       waitWithTimeout: async (_tabId: unknown, ms: number) => {
         waitTimeoutCalls.push(ms)
       },
-      waitForSelectorState: async (_tabId: unknown, selector: unknown, state: unknown) => ({
-        waited: true,
-        condition: 'selector-stable',
-        selector,
-        state,
-      }),
-      waitForUrl: async () => undefined,
+      waitForSelectorState: async (
+        _tabId: unknown,
+        selector: unknown,
+        state: unknown,
+        timeout: unknown,
+      ) => {
+        waitSelectorCalls.push({ selector, state, timeout })
+        return {
+          waited: true,
+          condition: 'selector-stable',
+          selector,
+          state,
+        }
+      },
+      waitForUrl: async (_tabId: unknown, url: unknown, timeout: unknown) => {
+        waitUrlCalls.push({ url, timeout })
+        return { waited: true, condition: 'url', url }
+      },
       waitForText: async (
         _tabId: unknown,
         text: unknown,
@@ -245,7 +259,9 @@ function createMinimalRouter(overrides?: {
       getDialogAutoAccept: () => true,
       setDialogAutoAccept: (enabled: boolean) => ({ autoAccept: enabled }),
       handleDialog: async () => undefined,
-      cookiesGet: async () => undefined,
+      cookiesGet: async (tabId: unknown, filters: unknown) => {
+        cookieGetCalls.push({ tabId, filters })
+      },
       cookiesSet: async () => undefined,
       cookiesClear: async () => undefined,
       cookiesDelete: async (_tabId: unknown, name: string) => ({ deleted: 1, name }),
@@ -322,9 +338,12 @@ function createMinimalRouter(overrides?: {
     feedCalls,
     navigateCalls,
     waitTimeoutCalls,
+    waitUrlCalls,
+    waitSelectorCalls,
     screenshotCalls,
     waitTextCalls,
     typeCalls,
+    cookieGetCalls,
     searchCalls,
     downloadsCalls,
   }
@@ -987,6 +1006,21 @@ describe('command router batch handling', () => {
 
     expect(waitTimeoutCalls).toEqual([50])
   })
+
+  test('reload can wait for a resulting url pattern', async () => {
+    const { router, waitUrlCalls } = createMinimalRouter()
+
+    const result = await router.handleCommand({
+      command: 'reload',
+      args: { waitUntil: 'none', waitFor: 'url', url: '#/outNet', timeoutMs: 5000 },
+    })
+
+    expect(result).toEqual({
+      wait: { waited: true, condition: 'url', url: '#/outNet' },
+      meta: fallbackTabMeta(),
+    })
+    expect(waitUrlCalls).toEqual([{ url: '#/outNet', timeout: 5000 }])
+  })
 })
 
 describe('command router network/session extensions', () => {
@@ -1052,6 +1086,19 @@ describe('command router network/session extensions', () => {
     await expect(
       router.handleCommand({ command: 'cookies', args: { action: 'delete' } }),
     ).rejects.toThrow('cookies delete requires a cookie name')
+  })
+
+  test('routes cookies list as a get alias', async () => {
+    const { router, cookieGetCalls } = createMinimalRouter()
+
+    await router.handleCommand({
+      command: 'cookies',
+      args: { action: 'list', domain: 'example.com' },
+    })
+
+    expect(cookieGetCalls).toEqual([
+      { tabId: undefined, filters: { domain: 'example.com', path: undefined } },
+    ])
   })
 
   test('routes storage delete with the session flag', async () => {

@@ -27,7 +27,7 @@ autobrowser 是一个面向 Chrome/Edge 的浏览器自动化 CLI，通过本地
 - `status`
 - `connect`
 - `open <url>` / `goto <url>`
-- `back` / `forward` / `reload`
+- `back` / `forward` / `reload [--wait-for url <pattern>|selector <sel>]`
 - `tab list` / `tab new <url>` / `tab select <tN>` / `tab close [tN]`
 - `target show` / `target set <tN>` / `target active` / `target clear`
 - `command list` / `command cancel <id>` / `command reset`
@@ -62,6 +62,7 @@ autobrowser 是一个面向 Chrome/Edge 的浏览器自动化 CLI，通过本地
   - `--har-max-body-bytes <n>`
   - `--har-unlimited`
 - `network har stop [output.har]` 会返回完整 HAR；CLI 只会在面对较旧扩展时回退到重新组装网络请求。
+- `--har-unlimited` 不限制 autobrowser 自身保存的 body 大小；若浏览器 CDP 对 `Network.getResponseBody` 触发配额错误，HAR 仍会导出，并在对应 entry 的 `response.content.comment` 标明 body 获取失败原因。
 
 ## 等待语义
 
@@ -85,7 +86,8 @@ autobrowser 是一个面向 Chrome/Edge 的浏览器自动化 CLI，通过本地
 - `find role`、`find text`、`find label` 适合先语义定位，再点击、读取或填写。
 - `tab list` 返回稳定句柄如 `t1`、`t2`，优先用 `tab select tN`，不要依赖原始 tab id。
 - 页面命令超时后先运行 `status` 和 `command list`。标签页控制走独立控制面，可继续用 `tab list`、`target clear`、`tab close <tN>` 恢复；不要连续重试并堆积命令。
-- `goto/open/reload` 可用 `--wait-until none|commit|domcontentloaded|interactive|load|networkidle|domquiet` 选择等待阶段。
+- `goto/open/reload` 可用 `--wait-until none|commit|domcontentloaded|interactive|load|networkidle|domquiet` 选择等待阶段；`reload` 还可追加 `--wait-for url <pattern>` 或 `--wait-for selector <sel>` 等待最终页面结果，适合 hash 路由 SPA 和验证后重定向页面。
+- `cookies list` 是 `cookies get` 的别名，支持同样的 `--domain` / `--path` 过滤。
 - `network requests` 默认只看目标 tab 的当前页面 epoch；跨 tab 或跨页面历史必须显式使用 `--all-tabs` / `--all-epochs`，headers/body 用 `network request <id>` 或 `--include-details` 获取。
 - HAR 中断后先用 `network har status` 检查 checkpoint，再用 `network har recover [output.har]` 导出。
 - 在旧扩展上，`network har stop` 可能只返回元数据；CLI 会自动兜底重建 HAR。

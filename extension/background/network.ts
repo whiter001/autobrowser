@@ -469,6 +469,8 @@ function buildHarEntry(record: NetworkRequestRecord): Record<string, unknown> {
   const responseBody = typeof record.responseBody === 'string' ? record.responseBody : ''
   const responseBodyBase64 = Boolean(record.responseBodyBase64)
   const responseBodyTruncated = Boolean(record.responseBodyTruncated)
+  const responseBodyError =
+    typeof record.responseBodyError === 'string' ? record.responseBodyError : ''
   const responseBodyBytes =
     typeof record.responseBodyBytes === 'number'
       ? record.responseBodyBytes
@@ -481,7 +483,9 @@ function buildHarEntry(record: NetworkRequestRecord): Record<string, unknown> {
     mimeType: responseMimeType,
   }
 
-  if (responseBodyTruncated) {
+  if (responseBodyError) {
+    responseContent.comment = `body unavailable: ${responseBodyError}`
+  } else if (responseBodyTruncated) {
     responseContent.comment = 'body truncated by autobrowser'
   }
 
@@ -820,8 +824,14 @@ export function createNetworkDomain({
       if (!bodyRecord.responseMimeType) {
         bodyRecord.responseMimeType = 'application/octet-stream'
       }
-    } catch {
-      // Best effort only.
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      upsertNetworkRequest(state, {
+        ...record,
+        responseBody: '',
+        responseBodyTruncated: false,
+        responseBodyError: message || 'Network.getResponseBody failed',
+      })
     }
   }
 
@@ -1037,11 +1047,18 @@ export function createNetworkDomain({
       filters.pageIdx as number | undefined,
       filters.pageSize as number | undefined,
     )
-    return {
+    const result: Record<string, unknown> = {
       total: requests.length,
       requests: items,
       pagination,
     }
+    if (requests.length === 0 && filters.allTabs !== true && filters.allEpochs !== true) {
+      result.meta = {
+        suggestedAction:
+          'No requests matched the current tab/current page epoch. Run network requests --all-tabs --all-epochs to inspect historical or cross-tab requests.',
+      }
+    }
+    return result
   }
 
   function getRequestDetail(requestId: string, tabId?: number | null): Record<string, unknown> {
@@ -1085,31 +1102,51 @@ export function createNetworkDomain({
     const stoppedAt = new Date().toISOString()
     state.network.harRecording = false
     state.network.harStartedAt = null
-    state.network.harMaxRequests = DEFAULT_HAR_MAX_REQUESTS
-    state.network.harMaxBodyBytes = DEFAULT_HAR_MAX_BODY_BYTES
-
-    if (state.network.pendingBodyFetches.size > 0) {
-      await Promise.allSettled(state.network.pendingBodyFetches)
+    if (checkpointTimer) {
+      clearTimeout(checkpointTimer)
+      checkpointTimer = null
     }
 
-    const requests = state.network.requests.filter((record) => {
-      if (!startedAt) {
-        return true
+    try {
+      if (state.network.pendingBodyFetches.size > 0) {
+        await Promise.allSettled(state.network.pendingBodyFetches)
       }
 
-      return String(record.startedAt || '') >= startedAt
-    })
+      const requests = state.network.requests.filter((record) => {
+        if (!startedAt) {
+          return true
+        }
 
-    const harRequests = [...requests].sort((left, right) => compareHarRecords(left, right))
-    await writeHarCheckpoint(false, startedAt)
+        return String(record.startedAt || '') >= startedAt
+      })
 
-    return {
-      recording: false,
-      startedAt,
-      stoppedAt,
-      requestCount: requests.length,
-      // 直接在扩展侧生成 HAR，避免 CLI 为了导出再逐条回拉 request detail，形成 N+1 往返。
-      har: buildHar(harRequests),
+      const harRequests = [...requests].sort((left, right) => compareHarRecords(left, right))
+      let checkpointError: string | null = null
+      try {
+        await writeHarCheckpoint(false, startedAt)
+      } catch (error) {
+        checkpointError = error instanceof Error ? error.message : String(error)
+      }
+      const har = buildHar(harRequests)
+
+      return {
+        recording: false,
+        startedAt,
+        stoppedAt,
+        requestCount: requests.length,
+        // 直接在扩展侧生成 HAR，避免 CLI 为了导出再逐条回拉 request detail，形成 N+1 往返。
+        har,
+        ...(checkpointError
+          ? {
+              checkpoint: { saved: false, error: checkpointError },
+              suggestedAction:
+                'HAR export succeeded, but the checkpoint could not be saved. Use the returned HAR from this stop result; for long captures, restart with lower --har-max-body-bytes/--har-max-requests instead of --har-unlimited.',
+            }
+          : {}),
+      }
+    } finally {
+      state.network.harMaxRequests = DEFAULT_HAR_MAX_REQUESTS
+      state.network.harMaxBodyBytes = DEFAULT_HAR_MAX_BODY_BYTES
     }
   }
 

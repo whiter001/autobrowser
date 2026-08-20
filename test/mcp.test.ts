@@ -280,12 +280,14 @@ describe('AutobrowserMcpServer.callTool', () => {
       tab: 't1',
     })
     await server.callTool('cookies', { action: 'get' })
+    await server.callTool('cookies', { action: 'list' })
 
     expect(mock.calls).toEqual([
       {
         command: 'cookies',
         args: { action: 'set', name: 'sid', value: 'abc', domain: '.example.com', tabId: 't1' },
       },
+      { command: 'cookies', args: { action: 'get' } },
       { command: 'cookies', args: { action: 'get' } },
     ])
   })

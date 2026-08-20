@@ -82,6 +82,7 @@ export interface NetworkRequestRecord {
   responseBodyBase64?: boolean
   responseBodyTruncated?: boolean
   responseBodyBytes?: number
+  responseBodyError?: string
   responseMimeType?: string
   /** Network.responseReceived 的 protocol 字段（如 h2 / http/1.1），HAR httpVersion 用 */
   protocol?: string

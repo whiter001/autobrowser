@@ -599,7 +599,7 @@ const MCP_TOOLS: McpToolDefinition[] = [
   {
     name: 'cookies',
     description:
-      'Inspect or modify cookies for the target tab. get lists cookies (optionally filtered by domain), set stores a cookie by name/value/domain, delete removes a cookie by name, clear removes all cookies for the current site.',
+      'Inspect or modify cookies for the target tab. list/get lists cookies (optionally filtered by domain), set stores a cookie by name/value/domain, delete removes a cookie by name, clear removes all cookies for the current site.',
     command: 'cookies',
     inputSchema: {
       type: 'object',
@@ -607,7 +607,7 @@ const MCP_TOOLS: McpToolDefinition[] = [
         action: {
           type: 'string',
           description: 'What to do with cookies.',
-          enum: ['get', 'set', 'delete', 'clear'],
+          enum: ['list', 'get', 'set', 'delete', 'clear'],
         },
         name: { type: 'string', description: 'Cookie name (set/delete).' },
         value: { type: 'string', description: 'Cookie value (set).' },
@@ -615,7 +615,10 @@ const MCP_TOOLS: McpToolDefinition[] = [
       },
       required: ['action'],
     },
-    toArgs: (args) => ({ action: args.action, ...onlyDefined(args, ['name', 'value', 'domain']) }),
+    toArgs: (args) => ({
+      action: args.action === 'list' ? 'get' : args.action,
+      ...onlyDefined(args, ['name', 'value', 'domain']),
+    }),
   },
   {
     name: 'storage',
