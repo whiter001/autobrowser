@@ -270,6 +270,20 @@ describe('cli helpers', () => {
     expect(result.stdout).toContain('--limit <n>')
   })
 
+  test('documents eval help for timeout and complex script input', async () => {
+    const result = await runCli(['help', 'eval'])
+
+    expect(result.exitCode).toBe(0)
+    expect(result.fetchCalls).toHaveLength(0)
+    expect(result.stdout).toContain(
+      'autobrowser eval [--stdin|--file <path>|--base64] [--timeout-ms <ms>] <script>',
+    )
+    expect(result.stdout).toContain('--timeout-ms <ms>')
+    expect(result.stdout).toContain('--file <path>  read complex or multiline script source')
+    expect(result.stdout).toContain('--stdin  read complex or multiline script source')
+    expect(result.stdout).toContain('split work into smaller browser commands or script steps')
+  })
+
   test('documents configurable HAR limits in help output', async () => {
     const result = await runCli(['help', 'network', 'har', 'start'])
 

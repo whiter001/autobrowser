@@ -411,7 +411,15 @@ function createEvaluationTimeoutError(timeoutMs: number): ErrorWithCode {
   const error = new Error(`page evaluation timed out after ${timeoutMs}ms`) as ErrorWithCode
   error.code = 'EVALUATION_TIMEOUT'
   error.suggestedAction =
-    'Increase the timeout with --timeout-ms <ms> (eval command) or the timeoutMs argument for long-running scripts.'
+    'Keep the original task goal, split complex eval into smaller steps, and pass complex source with --file or --stdin. Increase --timeout-ms only after confirming this is a long-running page task.'
+  return error
+}
+
+function createPageEvaluationExceptionError(description: string): ErrorWithCode {
+  const error = new Error(`page evaluation failed: ${description}`) as ErrorWithCode
+  error.code = 'PAGE_EVALUATION_EXCEPTION'
+  error.suggestedAction =
+    'Check the original script, diagnose page state with snapshot, console, or status, then retry around the original task goal.'
   return error
 }
 
@@ -474,7 +482,7 @@ async function evaluateInTabContext<TValue = unknown>(
     if (isEvaluationTimeoutError(description)) {
       throw createEvaluationTimeoutError(timeoutMs)
     }
-    throw new Error(`page evaluation failed: ${description}`)
+    throw createPageEvaluationExceptionError(description)
   }
   return {
     tab,

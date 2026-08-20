@@ -70,6 +70,13 @@ autobrowser 是一个面向 Chrome/Edge 的浏览器自动化 CLI，通过本地
 - `--timeout <ms>` 也是毫秒。
 - 如果页面仍在加载，优先使用 `open <url>` 后再配合短等待，或直接用 `wait --load networkidle`。
 
+## eval 使用边界
+
+- `eval` 适合执行小段页面上下文 JS，用于只读提取、状态检查或轻量验证。
+- 复杂或多行源码优先通过 `eval --file <path>` 或 `eval --stdin` 传入，避免命令行转义干扰判断。
+- `--timeout-ms <ms>` 只在确认脚本本身是长任务时使用；不要把它作为复杂流程失败后的默认处理。
+- 复杂交互优先拆成更小的 autobrowser 命令或脚本步骤，保留原任务目标逐步推进。
+
 ## 常见回退策略
 
 - `connect` 之后如果连接页自动关闭，优先用 `status` 检查连接结果，不要反复等待页面。
@@ -84,6 +91,7 @@ autobrowser 是一个面向 Chrome/Edge 的浏览器自动化 CLI，通过本地
 - 在旧扩展上，`network har stop` 可能只返回元数据；CLI 会自动兜底重建 HAR。
 - 如果页面看起来空白或不对，先确认是不是登录页、验证码页，或者虚拟滚动列表。
 - 对于类似 x.com 的 SPA 列表页，优先从 `article` 等可见节点读取内容，不要直接相信 `get text body`。
+- `eval` 超时或页面内异常时保持原任务目标，不要换方案；先用 `status`、`snapshot`、`console`、`errors` 诊断页面状态和脚本问题，再围绕原任务重试。
 
 ## AI 专属原则 (AI-Agent Exclusives)
 
