@@ -1,9 +1,12 @@
 import { resolveAgentSelector } from '../../src/core/agent-selectors.js'
+import { resolveAgentFrameSelector } from '../../src/core/agent-handles.js'
 import { buildDeepDomTraversalHelpersSource } from './deep-dom.js'
 import {
+  assertFreshFrameRef,
   clearSelectedFrame,
   getPageEpoch,
   invalidatePageRefs,
+  resolveEffectiveFrameSelector,
   withFrameSelectorOptions,
 } from './targeting.js'
 import type {
@@ -84,7 +87,7 @@ export interface FillFormField {
 // - SELECT：按 option 文本（trim 后）或 option.value 匹配；未命中时列出前 10 个
 //   可选项文本，让 AI 能根据真实选项自我纠正；
 // - checkbox/radio：只接受 true/false（大小写不敏感），其它值直接报错；
-// - 其余元素：仅当拥有 value 属性时赋值。
+// - contenteditable：按纯文本写入；其余元素仅当拥有 value 属性时赋值。
 // 返回 { found, ... }；found:false + reason 由调用方转成带 selector 的 throw。
 // 用 tagName/type 而非 instanceof，避免跨 iframe realm 的实例判断失效。
 function applyFillValue(
@@ -130,6 +133,14 @@ function applyFillValue(
     node.dispatchEvent(new Event('input', { bubbles: true }))
     node.dispatchEvent(new Event('change', { bubbles: true }))
     return { found: true, checked: node.checked }
+  }
+
+  if (node.isContentEditable && tagName !== 'INPUT' && tagName !== 'TEXTAREA') {
+    node.focus()
+    node.textContent = value
+    node.dispatchEvent(new Event('input', { bubbles: true }))
+    node.dispatchEvent(new Event('change', { bubbles: true }))
+    return { found: true }
   }
 
   if (!('value' in node)) {
@@ -401,14 +412,39 @@ export function createPageInputDomain({
     })
   }
 
-  async function getElementBox(tabId: TabInput, selector: string, frameSelector: FrameSelector) {
+  async function getElementBox(
+    tabId: TabInput,
+    selector: string,
+    frameSelector: FrameSelector,
+    scrollIntoView: boolean | 'none' = false,
+  ) {
     const { tab, resolvedSelector } = await resolveElementSelectorForTab(tabId, selector)
+    const effectiveFrame = resolveEffectiveFrameSelector(state, tab, frameSelector)
+    const frameExpression = effectiveFrame
+      ? `const root = deepQuerySelector(document, ${JSON.stringify(resolveAgentFrameSelector(effectiveFrame))});
+         const frame = root && (root.tagName === 'IFRAME' ? root : deepQuerySelector(root, 'iframe'));
+         if (!frame) throw new Error('frame not found');`
+      : ''
+    if (effectiveFrame) assertFreshFrameRef(state, tab.id, effectiveFrame)
+    if (effectiveFrame && scrollIntoView !== 'none') {
+      // 必须先滚动父页，否则屏幕外 iframe 的 CDP frame 解析可能命中错误位置。
+      await evaluateInTabContext(
+        tab.id,
+        `(() => {
+          ${frameExpression}
+          frame.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
+        })()`,
+        { frameSelector: 'top' },
+      )
+    }
     const { value } = await evaluateInTabContext<ElementBox>(
       tab.id,
       `(() => {
         const node = deepQuerySelector(document, ${JSON.stringify(resolvedSelector)});
         if (!node) return null;
+        ${scrollIntoView !== 'none' && (scrollIntoView || effectiveFrame) ? "node.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });" : ''}
         const rect = node.getBoundingClientRect();
+        ${scrollIntoView === true ? 'if (rect.width === 0 && rect.height === 0) return null;' : ''}
         return {
           x: rect.x + rect.width / 2,
           y: rect.y + rect.height / 2,
@@ -416,9 +452,22 @@ export function createPageInputDomain({
           height: rect.height
         };
       })()`,
-      withFrameSelectorOptions(frameSelector),
+      withFrameSelectorOptions(effectiveFrame || 'top'),
     )
-    return value
+    if (!value || !effectiveFrame) return value
+
+    // 子页滚动可能连带移动父页；重新取 frame 位置，并补上内容视口的边框偏移。
+    const frame = await resolveFrameTarget(tab.id, effectiveFrame)
+    const { value: border } = await evaluateInTabContext<{ left: number; top: number }>(
+      tab.id,
+      `(() => {
+        ${frameExpression}
+        return { left: frame.clientLeft, top: frame.clientTop };
+      })()`,
+      { frameSelector: 'top' },
+    )
+    if (!border) throw new Error(`frame not found: ${effectiveFrame}`)
+    return { ...value, x: value.x + frame.left + border.left, y: value.y + frame.top + border.top }
   }
 
   async function dispatchInsertText(tabId: TabInput, text: string) {
@@ -565,23 +614,7 @@ export function createPageInputDomain({
 
     // CDP 优先：先 scrollIntoView 并取元素中心坐标，走 trusted 的 Input.dispatchMouseEvent；
     // 依赖 isTrusted 的页面（表单校验/统计埋点等）必须由真实输入事件触发
-    const { value: boxResult } = await evaluateInTabContext<ElementBox | null>(
-      tab.id,
-      `(() => {
-        const node = deepQuerySelector(document, ${JSON.stringify(resolvedSelector)});
-        if (!node) return null;
-        node.scrollIntoView({ block: 'center', inline: 'center' });
-        const rect = node.getBoundingClientRect();
-        if (rect.width === 0 && rect.height === 0) return null;
-        return {
-          x: rect.x + rect.width / 2,
-          y: rect.y + rect.height / 2,
-          width: rect.width,
-          height: rect.height
-        };
-      })()`,
-      withFrameSelectorOptions(frameSelector),
-    )
+    const boxResult = await getElementBox(tab.id, selector, frameSelector, true)
 
     if (boxResult) {
       await dispatchMouseClick(tab.id, boxResult, 1)
@@ -806,7 +839,7 @@ export function createPageInputDomain({
     endSelector: string,
     frameSelector: FrameSelector,
   ) {
-    const startBox = await getElementBox(tabId, startSelector, frameSelector)
+    let startBox = await getElementBox(tabId, startSelector, frameSelector)
     if (!startBox) {
       throw new Error(`start element not found: ${startSelector}`)
     }
@@ -816,6 +849,12 @@ export function createPageInputDomain({
       const resolvedEndBox = await getElementBox(tabId, endSelector, frameSelector)
       if (!resolvedEndBox) {
         throw new Error(`end element not found: ${endSelector}`)
+      }
+      const tab = await getTargetTab(tabId)
+      if (resolveEffectiveFrameSelector(state, tab, frameSelector)) {
+        // 终点滚动后起点坐标也可能变化；只重新测量，避免再次滚动使终点失效。
+        startBox = await getElementBox(tab.id, startSelector, frameSelector, 'none')
+        if (!startBox) throw new Error(`start element not found: ${startSelector}`)
       }
       endBox = resolvedEndBox
     } else {

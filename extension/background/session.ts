@@ -516,13 +516,54 @@ export function createSessionDomain({
 
     if (stateData.cookies && stateData.cookies.length > 0) {
       for (const cookie of stateData.cookies) {
-        await sendDebuggerCommand(tab.id, 'Network.setCookie', {
-          name: cookie.name,
-          value: cookie.value,
-          domain: cookie.domain,
-          path: cookie.path,
-          secure: cookie.secure,
-        })
+        if (cookie.partitionKeyOpaque) {
+          throw new Error(
+            `cannot restore cookie ${cookie.name}: opaque partition key cannot be reconstructed`,
+          )
+        }
+        const params: Record<string, unknown> = { name: cookie.name, value: cookie.value }
+        for (const field of [
+          'path',
+          'secure',
+          'httpOnly',
+          'sameSite',
+          'priority',
+          'sameParty',
+          'sourceScheme',
+          'sourcePort',
+          'partitionKey',
+        ] as const) {
+          if (cookie[field] !== undefined) params[field] = cookie[field]
+        }
+        if (cookie.domain?.startsWith('.')) {
+          params.domain = cookie.domain
+          if (cookie.url) params.url = cookie.url
+        } else if (cookie.url) {
+          params.url = cookie.url
+        } else if (cookie.domain) {
+          // 不传 domain 才能保留 host-only 作用域；IPv6 URL 必须带方括号。
+          const host =
+            cookie.domain.includes(':') && !cookie.domain.startsWith('[')
+              ? `[${cookie.domain}]`
+              : cookie.domain
+          const url = new URL(`${cookie.secure ? 'https' : 'http'}://${host}`)
+          url.pathname = cookie.path || '/'
+          params.url = url.href
+        }
+        if (cookie.session !== true && typeof cookie.expires === 'number' && cookie.expires > 0) {
+          params.expires = cookie.expires
+        }
+        try {
+          const result = await sendDebuggerCommand<{ success?: boolean }>(
+            tab.id,
+            'Network.setCookie',
+            params,
+          )
+          if (result?.success === false) throw new Error('Network.setCookie returned success:false')
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error)
+          throw new Error(`cannot restore cookie ${cookie.name}: ${message}`)
+        }
       }
     }
 

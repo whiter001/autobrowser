@@ -26,6 +26,7 @@ import {
   createStaleTabHandleError,
   getPageEpoch,
   rememberTargetTab,
+  resolveEffectiveFrameSelector,
   resolveTabInput,
   toTabSummary,
 } from './background/targeting.js'
@@ -350,10 +351,7 @@ async function getFrameExecutionContext(
   frameSelector: FrameSelector,
 ): Promise<FrameExecutionContext> {
   const tab = await getTargetTab(tabId)
-  const selector =
-    typeof frameSelector === 'string' && frameSelector.trim()
-      ? frameSelector.trim()
-      : state.targeting.selectedFrames.get(tab.id)
+  const selector = resolveEffectiveFrameSelector(state, tab, frameSelector)
   if (!selector) {
     return { tab, executionContextId: null }
   }

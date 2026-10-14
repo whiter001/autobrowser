@@ -320,3 +320,140 @@ describe('session emulation overrides tracking', () => {
     expect(state.session.emulation.get(7)).toBeUndefined()
   })
 })
+
+describe('saved state cookie restoration', () => {
+  test('restores legacy host-only/domain cookies and IPv6 URL scope', async () => {
+    const { session, debuggerCalls } = createSessionEvalHarness()
+    await session.loadState(7, {
+      name: 'legacy',
+      storage: {},
+      cookies: [
+        { name: 'host', value: 'v', domain: 'app.example.com', path: '/app', secure: true },
+        { name: 'domain', value: 'v', domain: '.example.com', path: '/', secure: false },
+        { name: 'ipv6', value: 'v', domain: '::1', path: '/', secure: false },
+        { name: 'bracketed', value: 'v', domain: '[::1]', path: '/', secure: true },
+        { name: 'url', value: 'v', domain: 'example.com', url: 'https://example.com:8443/x' },
+      ],
+    })
+    expect(debuggerCalls.map((call) => call.params)).toEqual([
+      { name: 'host', value: 'v', url: 'https://app.example.com/app', path: '/app', secure: true },
+      { name: 'domain', value: 'v', domain: '.example.com', path: '/', secure: false },
+      { name: 'ipv6', value: 'v', url: 'http://[::1]/', path: '/', secure: false },
+      { name: 'bracketed', value: 'v', url: 'https://[::1]/', path: '/', secure: true },
+      { name: 'url', value: 'v', url: 'https://example.com:8443/x' },
+    ])
+  })
+
+  test('omits expiry for session cookies and nonpositive expiries', async () => {
+    const { session, debuggerCalls } = createSessionEvalHarness()
+    await session.loadState(7, {
+      name: 'expiry',
+      storage: {},
+      cookies: [
+        { name: 'session', value: 'v', session: true, expires: 1900000000 },
+        { name: 'negative', value: 'v', expires: -1 },
+        { name: 'zero', value: 'v', expires: 0 },
+        { name: 'persistent', value: 'v', session: false, expires: 1900000000 },
+      ],
+    })
+    expect(debuggerCalls.map((call) => call.params?.expires)).toEqual([
+      undefined,
+      undefined,
+      undefined,
+      1900000000,
+    ])
+    for (const call of debuggerCalls) expect(call.params).not.toHaveProperty('session')
+  })
+
+  function savedCookieHarness(cookies: unknown[], failure?: 'false' | 'unsupported') {
+    const stored: Record<string, unknown> = {}
+    const calls: DebuggerCall[] = []
+    const session = createSessionDomain({
+      state: {} as ExtensionState,
+      getTargetTab: async () => ({ id: 7 }) as TabWithId,
+      evaluateInTabContext: async () =>
+        ({ tab: { id: 7 }, response: { result: null }, value: null }) as never,
+      storageLocalGet: async () => stored as never,
+      storageLocalSet: async (items) => {
+        Object.assign(stored, items)
+      },
+      sendDebuggerCommand: async <TResult>(
+        tabId: number,
+        method: string,
+        params?: Record<string, unknown>,
+      ): Promise<TResult> => {
+        calls.push({ tabId, method, params })
+        if (method === 'Network.getCookies') return { cookies } as TResult
+        if (failure === 'unsupported') throw new Error('unsupported partitionKey')
+        return { success: failure !== 'false' } as TResult
+      },
+    })
+    return { session, calls }
+  }
+
+  test('save/load roundtrip preserves security, partition, expiry and source fields through a whitelist', async () => {
+    const cookie = {
+      name: 'auth',
+      value: 'secret',
+      domain: 'example.com',
+      path: '/',
+      secure: true,
+      httpOnly: true,
+      sameSite: 'None' as const,
+      expires: 1900000000,
+      session: false,
+      partitionKey: { topLevelSite: 'https://top.example', hasCrossSiteAncestor: true },
+      partitionKeyOpaque: false,
+      priority: 'High' as const,
+      sameParty: false,
+      sourceScheme: 'Secure' as const,
+      sourcePort: 443,
+      size: 42,
+    }
+    const { session, calls } = savedCookieHarness([cookie])
+    expect((await session.saveState(7, 'auth')).cookies).toEqual([cookie])
+    expect(await session.loadStateByName(7, 'auth')).toEqual({ loaded: true, name: 'auth' })
+    const params = calls.find((call) => call.method === 'Network.setCookie')?.params
+    const {
+      domain: _domain,
+      session: _session,
+      partitionKeyOpaque: _opaque,
+      size: _size,
+      ...rest
+    } = cookie
+    expect(params).toEqual({ ...rest, url: 'https://example.com/' })
+  })
+
+  test('opaque partitions fail explicitly before setting a cookie', async () => {
+    const { session, debuggerCalls } = createSessionEvalHarness()
+    await expect(
+      session.loadState(7, {
+        name: 'opaque',
+        storage: {},
+        cookies: [{ name: 'auth', value: 'v', partitionKeyOpaque: true }],
+      }),
+    ).rejects.toThrow('opaque partition key cannot be reconstructed')
+    expect(debuggerCalls).toHaveLength(0)
+  })
+
+  for (const failure of ['false', 'unsupported'] as const) {
+    test(`does not report loaded or retry unpartitioned when setCookie returns ${failure}`, async () => {
+      const { session, calls } = savedCookieHarness([], failure)
+      await expect(
+        session.loadState(7, {
+          name: 'failed',
+          storage: {},
+          cookies: [
+            {
+              name: 'auth',
+              value: 'v',
+              partitionKey: { topLevelSite: 'https://top.example', hasCrossSiteAncestor: false },
+            },
+          ],
+        }),
+      ).rejects.toThrow(failure === 'false' ? 'success:false' : 'unsupported partitionKey')
+      expect(calls).toHaveLength(1)
+      expect(calls[0]?.params).toHaveProperty('partitionKey')
+    })
+  }
+})

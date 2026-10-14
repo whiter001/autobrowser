@@ -4,7 +4,7 @@ import { createExtensionState } from '../extension/background/state.js'
 
 function createPageInput(evaluateValue: unknown) {
   return createPageInputDomain({
-    state: { connection: { token: 'token', relayPort: 1 } } as never,
+    state: createExtensionState(1),
     getTargetTab: async () => ({ id: 1 }) as never,
     resolveElementSelectorForTab: async (tabId: unknown, selector: unknown) =>
       ({ tab: { id: 1 }, resolvedSelector: selector }) as never,
@@ -88,7 +88,7 @@ describe('page input type with submit', () => {
     }>,
   ) {
     return createPageInputDomain({
-      state: { connection: { token: 'token', relayPort: 1 } } as never,
+      state: createExtensionState(1),
       getTargetTab: async () => ({ id: 1 }) as never,
       resolveElementSelectorForTab: async (_tabId: unknown, selector: unknown) =>
         ({ tab: { id: 1 }, resolvedSelector: selector }) as never,
@@ -148,7 +148,7 @@ describe('page input insertText chunking', () => {
   function createDebuggerInput() {
     const debuggerCalls: Array<{ method: string; params?: Record<string, unknown> }> = []
     const pageInput = createPageInputDomain({
-      state: { connection: { token: 'token', relayPort: 1 } } as never,
+      state: createExtensionState(1),
       getTargetTab: async () => ({ id: 1 }) as never,
       resolveElementSelectorForTab: async (_tabId: unknown, selector: unknown) =>
         ({ tab: { id: 1 }, resolvedSelector: selector }) as never,
@@ -200,6 +200,7 @@ describe('page input insertText chunking', () => {
 describe('page input fill by element type', () => {
   interface FakeFillElement {
     tagName: string
+    isContentEditable?: boolean
     type?: string
     value?: string
     checked?: boolean
@@ -236,7 +237,7 @@ describe('page input fill by element type', () => {
   ): Promise<{ found?: boolean; reason?: string; checked?: boolean }> {
     let capturedExpression = ''
     const pageInput = createPageInputDomain({
-      state: { connection: { token: 'token', relayPort: 1 } } as never,
+      state: createExtensionState(1),
       getTargetTab: async () => ({ id: 1 }) as never,
       resolveElementSelectorForTab: async (_tabId: unknown, selector: unknown) =>
         ({ tab: { id: 1 }, resolvedSelector: selector }) as never,
@@ -252,15 +253,10 @@ describe('page input fill by element type', () => {
     await pageInput.fillSelector(1, '#f', fillValue, null).catch(() => undefined)
     expect(capturedExpression).toContain('applyFillValue')
 
-    // evaluateInTabContext 会注入 deep-dom helpers 前缀，真正的 fill 表达式是
-    // 唯一的 IIFE（helpers 源码里没有 `(() => {`），从最后一个 IIFE 起始截取
-    const fillExpression = capturedExpression.slice(capturedExpression.lastIndexOf('(() => {'))
-
-    // 表达式里的 deepQuerySelector 和 document 是自由变量，由外层函数提供
-    const evaluator = (0, eval)(
-      `(function (deepQuerySelector) { const document = null; return ${fillExpression}; })`,
-    ) as (stub: () => FakeFillElement) => unknown
-    const raw = evaluator(() => element) as {
+    Object.assign(element, { matches: (selector: string) => selector === '#f' })
+    const raw = executePageExpression(capturedExpression, {
+      querySelectorAll: () => [element],
+    }) as {
       found?: boolean
       reason?: string
       checked?: boolean
@@ -372,9 +368,10 @@ describe('page input fill by element type', () => {
     expect(result).toEqual({ found: true, checked: true })
   })
 
-  test('fill keeps the plain value assignment for regular inputs', async () => {
+  test('fill keeps value assignment for inputs even inside editable content', async () => {
     const { node, events } = createFakeFillElement({
       tagName: 'INPUT',
+      isContentEditable: true,
       type: 'text',
       value: 'old',
     })
@@ -399,7 +396,7 @@ describe('page input fill by element type', () => {
 describe('page input fillFields batch', () => {
   function createSequencePageInput(values: unknown[]) {
     const pageInput = createPageInputDomain({
-      state: { connection: { token: 'token', relayPort: 1 } } as never,
+      state: createExtensionState(1),
       getTargetTab: async () => ({ id: 1 }) as never,
       resolveElementSelectorForTab: async (_tabId: unknown, selector: unknown) =>
         ({ tab: { id: 1 }, resolvedSelector: selector }) as never,
@@ -626,5 +623,257 @@ describe('page input click CDP-first priority', () => {
     expect(result).toEqual({ found: true, selector: '#btn' })
     // 无导航时不进 waitForPageSettled，没有多余的页面判定
     expect(evaluateCalls).toHaveLength(1)
+  })
+})
+
+function executePageExpression(expression: string, document: unknown) {
+  return new Function(
+    'document',
+    'MouseEvent',
+    'PointerEvent',
+    'expression',
+    'return eval(expression)',
+  )(
+    document,
+    class {
+      constructor(
+        public type: string,
+        options: object,
+      ) {
+        Object.assign(this, options)
+      }
+    },
+    class {
+      constructor(
+        public type: string,
+        options: object,
+      ) {
+        Object.assign(this, options)
+      }
+    },
+    expression,
+  )
+}
+
+function createExpressionInputHarness() {
+  const state = createExtensionState(9222)
+  const trace: string[] = []
+  const mouseEvents: Record<string, unknown>[] = []
+  const jsEvents: Array<{ type: string; clientX?: number; clientY?: number }> = []
+  let frameLeft = 800
+  let frameTop = 1200
+  let hideOnHover = false
+  const childRect = { x: 300, y: 400, left: 300, top: 400, width: 40, height: 20 }
+  const child = {
+    matches: (selector: string) => selector === '#btn',
+    ownerDocument: { defaultView: {} },
+    scrollIntoView() {
+      trace.push('child-scroll')
+      Object.assign(childRect, { x: 10, left: 10, y: 20, top: 20 })
+      frameLeft = 90
+      frameTop = 190
+    },
+    getBoundingClientRect: () => childRect,
+    dispatchEvent(event: { type: string; clientX?: number; clientY?: number }) {
+      jsEvents.push(event)
+      return true
+    },
+  }
+  const end = {
+    ...child,
+    matches: (selector: string) => selector === '#end',
+    scrollIntoView() {
+      child.scrollIntoView()
+      Object.assign(childRect, { x: 15, left: 15, y: 25, top: 25 })
+    },
+    getBoundingClientRect: () => ({ x: 60, y: 70, left: 60, top: 70, width: 20, height: 20 }),
+  }
+  const topNode = {
+    ...child,
+    scrollIntoView: () => trace.push('top-scroll'),
+    getBoundingClientRect: () => ({ x: 5, y: 6, left: 5, top: 6, width: 20, height: 10 }),
+  }
+  const frame = {
+    tagName: 'IFRAME',
+    clientLeft: 3,
+    clientTop: 5,
+    matches: (selector: string) => selector === '#frame',
+    scrollIntoView() {
+      trace.push('frame-scroll')
+      frameLeft = 100
+      frameTop = 200
+    },
+    get contentDocument(): never {
+      throw new Error('cross-origin document access is forbidden')
+    },
+  }
+  const topDocument = { querySelectorAll: () => [frame, topNode] }
+  const childDocument = { querySelectorAll: () => [child, end] }
+  const pageInput = createPageInputDomain({
+    state,
+    getTargetTab: async () => ({ id: 1 }) as never,
+    resolveElementSelectorForTab: async (_tabId, selector) =>
+      ({ tab: { id: 1 }, resolvedSelector: selector }) as never,
+    resolveFrameTarget: async (_tabId, selector) => {
+      expect(selector).toBe('#frame')
+      trace.push('resolve-frame')
+      return { left: frameLeft, top: frameTop } as never
+    },
+    getFrameExecutionContext: async () => ({}) as never,
+    evaluateInTabContext: async (_tabId, expression, options) => {
+      const requested = options?.frameSelector?.trim().toLowerCase()
+      const selected = requested || state.targeting.selectedFrames.get(1)
+      const inFrame = selected === '#frame'
+      const document = inFrame ? childDocument : topDocument
+      if (hideOnHover && expression.includes("new PointerEvent('pointerover'")) {
+        const saved = document.querySelectorAll
+        document.querySelectorAll = () => []
+        try {
+          return { value: executePageExpression(expression, document) } as never
+        } finally {
+          document.querySelectorAll = saved
+        }
+      }
+      return { value: executePageExpression(expression, document) } as never
+    },
+    sendDebuggerCommand: async (_tabId, method, params) => {
+      expect(method).toBe('Input.dispatchMouseEvent')
+      mouseEvents.push(params || {})
+      return undefined as never
+    },
+  })
+  return {
+    pageInput,
+    state,
+    trace,
+    mouseEvents,
+    jsEvents,
+    forceHoverFallback: () => {
+      hideOnHover = true
+    },
+  }
+}
+
+describe('page input frame coordinates with executed expressions', () => {
+  for (const mode of ['explicit', 'selected'] as const) {
+    for (const action of ['click', 'doubleclick', 'drag', 'hover'] as const) {
+      test(`${action} translates ${mode} frame coordinates including borders after scrolling`, async () => {
+        const h = createExpressionInputHarness()
+        if (mode === 'selected') h.state.targeting.selectedFrames.set(1, '#frame')
+        const frame = mode === 'explicit' ? '#frame' : null
+        if (action === 'click') await h.pageInput.clickSelector(1, '#btn', frame)
+        if (action === 'doubleclick') await h.pageInput.doubleClickSelector(1, '#btn', frame)
+        if (action === 'drag') await h.pageInput.dragElement(1, '#btn', '#end', frame)
+        if (action === 'hover') {
+          h.forceHoverFallback()
+          await h.pageInput.hoverElement(1, '#btn', frame)
+        }
+        expect(h.trace.slice(0, 3)).toEqual(['frame-scroll', 'child-scroll', 'resolve-frame'])
+        expect(h.mouseEvents[0]).toMatchObject(
+          action === 'drag' ? { x: 128, y: 230 } : { x: 123, y: 225 },
+        )
+        if (action === 'doubleclick') expect(h.mouseEvents[0]?.clickCount).toBe(2)
+        if (action === 'drag') {
+          expect(h.mouseEvents).toHaveLength(12)
+          expect(h.mouseEvents.at(-1)).toMatchObject({ type: 'mouseReleased', x: 163, y: 275 })
+        }
+      })
+    }
+  }
+
+  test('JS hover keeps child viewport coordinates', async () => {
+    const h = createExpressionInputHarness()
+    await h.pageInput.hoverElement(1, '#btn', '#frame')
+    expect(h.mouseEvents).toEqual([])
+    expect(h.jsEvents).toHaveLength(5)
+    for (const event of h.jsEvents) expect(event).toMatchObject({ clientX: 30, clientY: 30 })
+  })
+
+  for (const frame of [null, 'top', 'main', 'default', ' TOP ']) {
+    test(`main-frame coordinates remain local with ${String(frame)} override`, async () => {
+      const h = createExpressionInputHarness()
+      if (frame) h.state.targeting.selectedFrames.set(1, '#frame')
+      await h.pageInput.clickSelector(1, '#btn', frame)
+      await h.pageInput.doubleClickSelector(1, '#btn', frame)
+      await h.pageInput.dragElement(1, '#btn', '', frame)
+      expect(h.trace).toEqual(['top-scroll'])
+      expect(h.mouseEvents[0]).toMatchObject({ x: 15, y: 11 })
+      expect(h.mouseEvents[2]).toMatchObject({ x: 15, y: 11, clickCount: 2 })
+      expect(h.mouseEvents[4]).toMatchObject({ x: 15, y: 11 })
+      expect(h.mouseEvents.at(-1)).toMatchObject({ x: 15, y: 111 })
+      if (frame) expect(h.state.targeting.selectedFrames.get(1)).toBe('#frame')
+    })
+  }
+})
+
+describe('contenteditable fill with complete executed expressions', () => {
+  function createEditableHarness() {
+    const events: string[] = []
+    const editable = {
+      tagName: 'DIV',
+      isContentEditable: true,
+      textContent: 'old',
+      matches: (selector: string) => selector === '#editor',
+      focus: () => events.push('focus'),
+      dispatchEvent: (event: Event) => {
+        expect(event.bubbles).toBe(true)
+        events.push(event.type)
+        return true
+      },
+      set innerHTML(_value: string) {
+        throw new Error('must not parse HTML')
+      },
+    }
+    const textarea = {
+      ...editable,
+      tagName: 'TEXTAREA',
+      isContentEditable: false,
+      value: 'old',
+      matches: (selector: string) => selector === '#textarea',
+    }
+    const document = { querySelectorAll: () => [editable, textarea] }
+    const pageInput = createPageInputDomain({
+      state: createExtensionState(9222),
+      getTargetTab: async () => ({ id: 1 }) as never,
+      resolveElementSelectorForTab: async (_tabId, selector) =>
+        ({ tab: { id: 1 }, resolvedSelector: selector }) as never,
+      resolveFrameTarget: async () => ({}) as never,
+      getFrameExecutionContext: async () => ({}) as never,
+      evaluateInTabContext: async (_tabId, expression) =>
+        ({ value: executePageExpression(expression, document) }) as never,
+      sendDebuggerCommand: async () => undefined as never,
+    })
+    return { pageInput, editable, textarea, events }
+  }
+
+  test('fill writes literal text to an editable element without a value property', async () => {
+    const h = createEditableHarness()
+    const text = '<img src=x onerror=alert(1)>\nplain & text'
+    expect(h.editable).not.toHaveProperty('value')
+    await expect(h.pageInput.fillSelector(1, '#editor', text, null)).resolves.toMatchObject({
+      found: true,
+    })
+    expect(h.editable.textContent).toBe(text)
+    expect(h.events).toEqual(['focus', 'input', 'change'])
+    await h.pageInput.fillSelector(1, '#editor', '', null)
+    expect(h.editable.textContent).toBe('')
+  })
+
+  test('fillFields handles editable and textarea while reporting missing fields', async () => {
+    const h = createEditableHarness()
+    const result = await h.pageInput.fillFields(
+      1,
+      [
+        { selector: '#editor', value: '<b>literal</b>' },
+        { selector: '#missing', value: 'missing' },
+        { selector: '#textarea', value: 'typed' },
+      ],
+      null,
+    )
+    expect(result).toMatchObject({ succeeded: 2, failed: 1 })
+    expect(result.results.map((field) => field.ok)).toEqual([true, false, true])
+    expect(h.editable.textContent).toBe('<b>literal</b>')
+    expect(h.textarea.value).toBe('typed')
+    expect(h.events).toEqual(['focus', 'input', 'change', 'focus', 'input', 'change'])
   })
 })

@@ -30,8 +30,19 @@ async function waitForStateFile<T>(
 
 describe('runtime snapshot', () => {
   const tempDirs: string[] = []
+  const runtimes: Array<Awaited<ReturnType<typeof createRuntime>>> = []
+
+  async function createTestRuntime(options: Parameters<typeof createRuntime>[0]) {
+    const runtime = await createRuntime(options)
+    runtimes.push(runtime)
+    return runtime
+  }
 
   afterEach(async () => {
+    for (const runtime of runtimes.splice(0)) {
+      runtime.detachExtension()
+      await runtime.persist()
+    }
     await Promise.all(
       tempDirs.splice(0).map(async (dir) => {
         await rm(dir, { recursive: true, force: true })
@@ -43,7 +54,7 @@ describe('runtime snapshot', () => {
     const homeDir = await mkdtemp(path.join(os.tmpdir(), 'autobrowser-runtime-test-'))
     tempDirs.push(homeDir)
 
-    const runtime = await createRuntime({ homeDir })
+    const runtime = await createTestRuntime({ homeDir })
     runtime.handleExtensionMessage(
       JSON.stringify({
         type: 'state',
@@ -105,7 +116,7 @@ describe('runtime snapshot', () => {
     const homeDir = await mkdtemp(path.join(os.tmpdir(), 'autobrowser-runtime-test-'))
     tempDirs.push(homeDir)
 
-    const runtime = await createRuntime({ homeDir, requestTimeoutMs: 200 })
+    const runtime = await createTestRuntime({ homeDir, requestTimeoutMs: 200 })
     const sentMessages: Array<Record<string, unknown>> = []
 
     const socket = {
@@ -156,7 +167,7 @@ describe('runtime snapshot', () => {
     const homeDir = await mkdtemp(path.join(os.tmpdir(), 'autobrowser-runtime-test-'))
     tempDirs.push(homeDir)
 
-    const runtime = await createRuntime({ homeDir, requestTimeoutMs: 200 })
+    const runtime = await createTestRuntime({ homeDir, requestTimeoutMs: 200 })
 
     await expect(runtime.dispatchCommand('goto', { url: 123 as never })).rejects.toMatchObject({
       code: 'INVALID_COMMAND_ARGS',
@@ -167,7 +178,7 @@ describe('runtime snapshot', () => {
     const homeDir = await mkdtemp(path.join(os.tmpdir(), 'autobrowser-runtime-test-'))
     tempDirs.push(homeDir)
 
-    const runtime = await createRuntime({ homeDir })
+    const runtime = await createTestRuntime({ homeDir })
     const sentMessages: string[] = []
 
     const socket = {
@@ -207,7 +218,7 @@ describe('runtime snapshot', () => {
     const homeDir = await mkdtemp(path.join(os.tmpdir(), 'autobrowser-runtime-test-'))
     tempDirs.push(homeDir)
 
-    const runtime = await createRuntime({ homeDir })
+    const runtime = await createTestRuntime({ homeDir })
 
     runtime.setLastCommand('fill', { selector: '#password', value: 'secret-password' })
     expect(runtime.snapshot().snapshot.lastCommand?.args).toEqual({
@@ -239,6 +250,72 @@ describe('runtime snapshot', () => {
     })
   })
 
+  test('redacts nested batches and fillform fields without changing their inputs', async () => {
+    const homeDir = await mkdtemp(path.join(os.tmpdir(), 'autobrowser-runtime-test-'))
+    tempDirs.push(homeDir)
+    const runtime = await createTestRuntime({ homeDir })
+    const args = {
+      steps: [
+        { id: 'password', command: 'fill', args: { selector: '#password', value: 'fill-secret' } },
+        {
+          id: 'nested',
+          command: 'batch',
+          args: {
+            steps: [
+              { command: 'eval', args: { script: 'eval-secret' } },
+              {
+                command: 'fillform',
+                args: { fields: [{ selector: '#email', value: 'form-secret' }] },
+              },
+              { command: 'click', args: { selector: '#submit' } },
+            ],
+          },
+        },
+      ],
+    }
+    const original = structuredClone(args)
+    const expected = {
+      steps: [
+        { id: 'password', command: 'fill', args: { selector: '#password', value: '[redacted]' } },
+        {
+          id: 'nested',
+          command: 'batch',
+          args: {
+            steps: [
+              { command: 'eval', args: { script: '[redacted]' } },
+              {
+                command: 'fillform',
+                args: { fields: [{ selector: '#email', value: '[redacted]' }] },
+              },
+              { command: 'click', args: { selector: '#submit' } },
+            ],
+          },
+        },
+      ],
+    }
+    runtime.setLastCommand('batch', args)
+    expect(args).toEqual(original)
+    expect(runtime.snapshot().snapshot.lastCommand?.args).toEqual(expected)
+    await runtime.persist()
+    const statePath = path.join(homeDir, '.autobrowser', 'state.json')
+    const persisted = JSON.parse(await readFile(statePath, 'utf8'))
+    expect(persisted.snapshot.lastCommand.args).toEqual(expected)
+
+    persisted.snapshot.lastCommand.args = original
+    await writeFile(statePath, JSON.stringify(persisted))
+    const restored = await createTestRuntime({ homeDir })
+    expect(restored.snapshot().snapshot.lastCommand?.args).toEqual(expected)
+    expect(JSON.parse(await readFile(statePath, 'utf8')).snapshot.lastCommand.args).toEqual(
+      expected,
+    )
+
+    runtime.setLastCommand('fillform', { fields: [{ selector: '#name', value: 'direct-secret' }] })
+    expect(runtime.snapshot().snapshot.lastCommand?.args).toEqual({
+      fields: [{ selector: '#name', value: '[redacted]' }],
+    })
+    await runtime.persist()
+  })
+
   test('falls back when persisted state JSON is corrupted', async () => {
     const homeDir = await mkdtemp(path.join(os.tmpdir(), 'autobrowser-runtime-test-'))
     tempDirs.push(homeDir)
@@ -248,7 +325,7 @@ describe('runtime snapshot', () => {
       await Bun.write(path.join(stateDir, 'state.json'), '{bad json')
     })
 
-    const runtime = await createRuntime({ homeDir })
+    const runtime = await createTestRuntime({ homeDir })
 
     expect(runtime.snapshot().snapshot).toMatchObject({
       tabs: [],
@@ -271,7 +348,7 @@ describe('runtime snapshot', () => {
     const hourAgo = new Date(Date.now() - 3_600_000)
     await utimes(staleTemp, hourAgo, hourAgo)
 
-    await createRuntime({ homeDir })
+    await createTestRuntime({ homeDir })
 
     await expect(access(staleTemp)).rejects.toThrow()
   })
@@ -280,7 +357,7 @@ describe('runtime snapshot', () => {
     const homeDir = await mkdtemp(path.join(os.tmpdir(), 'autobrowser-runtime-test-'))
     tempDirs.push(homeDir)
 
-    const runtime = await createRuntime({ homeDir })
+    const runtime = await createTestRuntime({ homeDir })
 
     let oldSocketClosed = false
     const oldSocket = {
@@ -315,7 +392,7 @@ describe('runtime snapshot', () => {
     const homeDir = await mkdtemp(path.join(os.tmpdir(), 'autobrowser-runtime-test-'))
     tempDirs.push(homeDir)
 
-    const runtime = await createRuntime({ homeDir })
+    const runtime = await createTestRuntime({ homeDir })
 
     const sentPayloads: string[] = []
     const oldSocket = {
@@ -349,7 +426,7 @@ describe('runtime snapshot', () => {
     const homeDir = await mkdtemp(path.join(os.tmpdir(), 'autobrowser-runtime-test-'))
     tempDirs.push(homeDir)
 
-    const runtime = await createRuntime({ homeDir, requestTimeoutMs: 5_000 })
+    const runtime = await createTestRuntime({ homeDir, requestTimeoutMs: 5_000 })
 
     const commandPromise = runtime.dispatchCommand('goto', { url: 'https://example.com' })
 
@@ -367,7 +444,7 @@ describe('runtime snapshot', () => {
     const homeDir = await mkdtemp(path.join(os.tmpdir(), 'autobrowser-runtime-test-'))
     tempDirs.push(homeDir)
 
-    const runtime = await createRuntime({ homeDir, requestTimeoutMs: 5_000 })
+    const runtime = await createTestRuntime({ homeDir, requestTimeoutMs: 5_000 })
 
     // 模拟已半关闭的 socket：readyState 仍为 OPEN，但 send 返回 0（Bun 不抛异常）
     const socket = {
@@ -389,7 +466,7 @@ describe('runtime snapshot', () => {
     const homeDir = await mkdtemp(path.join(os.tmpdir(), 'autobrowser-runtime-test-'))
     tempDirs.push(homeDir)
 
-    const runtime = await createRuntime({ homeDir, requestTimeoutMs: 150 })
+    const runtime = await createTestRuntime({ homeDir, requestTimeoutMs: 150 })
 
     const sent: string[] = []
     const socket = {
@@ -415,7 +492,7 @@ describe('runtime snapshot', () => {
     const homeDir = await mkdtemp(path.join(os.tmpdir(), 'autobrowser-runtime-test-'))
     tempDirs.push(homeDir)
 
-    const runtime = await createRuntime({ homeDir, heartbeatTimeoutMs: 50 })
+    const runtime = await createTestRuntime({ homeDir, heartbeatTimeoutMs: 50 })
 
     const socket = {
       readyState: WebSocket.OPEN,
@@ -438,7 +515,7 @@ describe('runtime snapshot', () => {
     const homeDir = await mkdtemp(path.join(os.tmpdir(), 'autobrowser-runtime-test-'))
     tempDirs.push(homeDir)
 
-    const runtime = await createRuntime({ homeDir, heartbeatTimeoutMs: 60 })
+    const runtime = await createTestRuntime({ homeDir, heartbeatTimeoutMs: 60 })
 
     const socket = {
       readyState: WebSocket.OPEN,
@@ -471,7 +548,7 @@ describe('runtime snapshot', () => {
     const homeDir = await mkdtemp(path.join(os.tmpdir(), 'autobrowser-runtime-test-'))
     tempDirs.push(homeDir)
 
-    const runtime = await createRuntime({
+    const runtime = await createTestRuntime({
       homeDir,
       requestTimeoutMs: 5_000,
       heartbeatTimeoutMs: 60,

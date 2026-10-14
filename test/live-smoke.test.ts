@@ -27,7 +27,18 @@ const SMOKE_PAGE_HTML = `<!doctype html>
     <p id="counter">0</p>
     <button id="increment">Increment</button>
     <input id="name-input" type="text" placeholder="enter name" />
+    <button id="regression-click" onclick="this.dataset.clicks = String(Number(this.dataset.clicks || 0) + 1)">Top click</button>
+    <div id="editable" contenteditable="true"></div>
+    <input id="form-input" type="text" />
+    <iframe id="offset-frame" style="display:block; margin:45px 0 0 170px; border:13px solid black; width:340px; height:150px"
+      srcdoc="<!doctype html><html><body style='margin:20px'><button id='regression-click' data-clicks='0' onclick='this.dataset.clicks = String(Number(this.dataset.clicks) + 1)'>Frame click</button></body></html>"></iframe>
     <script>
+      const editable = document.getElementById('editable');
+      editable.dataset.inputs = '0';
+      editable.addEventListener('input', () => {
+        editable.dataset.inputs = String(Number(editable.dataset.inputs) + 1);
+        editable.dataset.lastInputText = editable.textContent;
+      });
       const counter = document.getElementById('counter');
       const button = document.getElementById('increment');
       let count = 0;
@@ -357,6 +368,27 @@ suite('live browser smoke test', () => {
     return await requestCommandRaw(baseUrl, commandName, args, { token: LIVE_TOKEN })
   }
 
+  async function checkedCommand<T = unknown>(
+    commandName: string,
+    args: Record<string, unknown> = {},
+  ): Promise<T> {
+    const response = await command(commandName, args)
+    expect(response.error).toBeUndefined()
+    expect(response.ok).toBe(true)
+    // 对象型结果附带路由 meta，数据断言只剥离该协议字段，保留所有实际返回字段。
+    if (response.result && typeof response.result === 'object' && !Array.isArray(response.result)) {
+      const { meta: _meta, ...result } = response.result as Record<string, unknown>
+      return result as T
+    }
+    return response.result as T
+  }
+
+  async function loadSmokePage(url = pageUrl): Promise<void> {
+    await checkedCommand('frame', { selector: 'top' })
+    await checkedCommand('goto', { url })
+    await checkedCommand('wait', { type: 'selector', selector: '#increment', timeout: 15_000 })
+  }
+
   beforeAll(async () => {
     homeDir = await mkdtemp(path.join(os.tmpdir(), 'autobrowser-live-home-'))
     const relayPort = await getFreePort()
@@ -369,7 +401,24 @@ suite('live browser smoke test', () => {
     })
     baseUrl = `http://127.0.0.1:${ipcPort}`
 
-    httpServer = createHttpServer((_request, response) => {
+    httpServer = createHttpServer((request, response) => {
+      const pathname = new URL(request.url || '/', 'http://127.0.0.1').pathname
+      if (pathname === '/redirect-start' || pathname === '/redirect-middle') {
+        response.writeHead(pathname === '/redirect-start' ? 301 : 302, {
+          location: pathname === '/redirect-start' ? '/redirect-middle' : '/redirect-final',
+          'cache-control': 'no-store',
+        })
+        response.end()
+        return
+      }
+      if (pathname === '/redirect-final') {
+        response.writeHead(200, {
+          'content-type': 'text/plain; charset=utf-8',
+          'cache-control': 'no-store',
+        })
+        response.end('synthetic redirect final body')
+        return
+      }
       response.writeHead(200, { 'content-type': 'text/html; charset=utf-8' })
       response.end(SMOKE_PAGE_HTML)
     })
@@ -607,4 +656,286 @@ suite('live browser smoke test', () => {
     const changedResult = changedResponse.result as { elements?: Array<unknown> }
     expect(Array.isArray(changedResult.elements)).toBe(true)
   }, 30_000)
+
+  test('click translates bordered iframe coordinates and honors explicit/default/top frames', async () => {
+    await loadSmokePage()
+    try {
+      await checkedCommand('wait', {
+        type: 'selector',
+        selector: '#regression-click',
+        frame: '#offset-frame',
+        timeout: 15_000,
+      })
+      const geometry = await checkedCommand<{ left: number; top: number; border: number }>('eval', {
+        frame: 'top',
+        script: `(() => {
+          const frame = document.getElementById('offset-frame');
+          const rect = frame.getBoundingClientRect();
+          return { left: rect.left, top: rect.top, border: frame.clientLeft };
+        })()`,
+      })
+      expect(geometry.left).toBeGreaterThan(150)
+      expect(geometry.top).toBeGreaterThan(100)
+      expect(geometry.border).toBe(13)
+
+      await checkedCommand('click', { selector: '#regression-click', frame: '#offset-frame' })
+      expect(
+        await checkedCommand<string>('eval', {
+          frame: '#offset-frame',
+          script: 'document.getElementById("regression-click").dataset.clicks',
+        }),
+      ).toBe('1')
+
+      await checkedCommand('frame', { selector: '#offset-frame' })
+      await checkedCommand('click', { selector: '#regression-click' })
+      expect(
+        await checkedCommand<string>('eval', {
+          script: 'document.getElementById("regression-click").dataset.clicks',
+        }),
+      ).toBe('2')
+
+      // 两层使用相同 selector，确保显式 top 覆盖默认 frame，而非仅返回 found。
+      await checkedCommand('click', { selector: '#regression-click', frame: 'top' })
+      expect(
+        await checkedCommand<string>('eval', {
+          frame: 'top',
+          script: 'document.getElementById("regression-click").dataset.clicks',
+        }),
+      ).toBe('1')
+      expect(
+        await checkedCommand<string>('eval', {
+          script: 'document.getElementById("regression-click").dataset.clicks',
+        }),
+      ).toBe('2')
+
+      await checkedCommand('frame', { selector: 'top' })
+      await checkedCommand('click', { selector: '#regression-click' })
+      expect(
+        await checkedCommand<string>('eval', {
+          script: 'document.getElementById("regression-click").dataset.clicks',
+        }),
+      ).toBe('2')
+    } finally {
+      await loadSmokePage()
+    }
+  }, 60_000)
+
+  test('fill and fillform write contenteditable as plain text and dispatch input after mutation', async () => {
+    await loadSmokePage()
+    const readEditable = () =>
+      checkedCommand('eval', {
+        script: `(() => {
+        const node = document.getElementById('editable');
+        return { text: node.textContent, children: node.childElementCount,
+          inputs: Number(node.dataset.inputs), lastInputText: node.dataset.lastInputText,
+          formValue: document.getElementById('form-input').value };
+      })()`,
+      })
+    try {
+      const first = '<b data-synthetic="true">not markup</b> & <img src="synthetic">'
+      await checkedCommand('fill', { selector: '#editable', value: first })
+      expect(await readEditable()).toEqual({
+        text: first,
+        children: 0,
+        inputs: 1,
+        lastInputText: first,
+        formValue: '',
+      })
+      const second = '<em>batch plain text</em> & replacement'
+      const batch = await checkedCommand('fillform', {
+        fields: [
+          { selector: '#editable', value: second },
+          { selector: '#form-input', value: 'synthetic batch input' },
+        ],
+      })
+      expect(batch).toEqual({
+        succeeded: 2,
+        failed: 0,
+        results: [
+          { selector: '#editable', ok: true },
+          { selector: '#form-input', ok: true },
+        ],
+      })
+      expect(await readEditable()).toEqual({
+        text: second,
+        children: 0,
+        inputs: 2,
+        lastInputText: second,
+        formValue: 'synthetic batch input',
+      })
+    } finally {
+      await loadSmokePage()
+    }
+  }, 60_000)
+
+  test('state save/load restores synthetic host-only and domain cookie attributes on a random port', async () => {
+    interface Cookie {
+      name: string
+      value: string
+      domain: string
+      path: string
+      httpOnly: boolean
+      secure: boolean
+      sameSite: string
+      session: boolean
+      expires: number
+      sourceScheme: string
+      sourcePort: number
+    }
+    const expires = Math.floor(Date.now() / 1000) + 3600
+    const port = Number(new URL(pageUrl).port)
+    // IP 和单段 localhost 域名会被 Chrome 归一化；*.localhost 始终解析至本机回环。
+    const scopes = [
+      { url: pageUrl, domain: '127.0.0.1', prefix: 'synthetic_host', domainCookie: false },
+      {
+        url: pageUrl.replace('127.0.0.1', 'smoke.localhost'),
+        domain: '.smoke.localhost',
+        prefix: 'synthetic_domain',
+        domainCookie: true,
+      },
+    ]
+    try {
+      for (const scope of scopes) {
+        await loadSmokePage(scope.url)
+        const cookies = [
+          {
+            name: `${scope.prefix}_persistent`,
+            value: 'synthetic-persistent',
+            httpOnly: true,
+            sameSite: 'Strict',
+            expires,
+          },
+          {
+            name: `${scope.prefix}_session`,
+            value: 'synthetic-session',
+            httpOnly: false,
+            sameSite: 'Lax',
+          },
+        ].map((cookie) => ({
+          ...cookie,
+          url: scope.url,
+          ...(scope.domainCookie ? { domain: scope.domain } : {}),
+          path: '/',
+          secure: false,
+          sourceScheme: 'NonSecure',
+          sourcePort: port,
+        }))
+        await cdp!.send('Storage.setCookies', { cookies })
+        const name = `${scope.prefix}_state`
+        const saved = await checkedCommand<{ saved: boolean; cookies: Cookie[] }>('state', {
+          action: 'save',
+          name,
+        })
+        expect(saved.saved).toBe(true)
+        const synthetic = saved.cookies.filter((cookie) => cookie.name.startsWith(scope.prefix))
+        expect(synthetic).toHaveLength(2)
+        for (const cookie of synthetic) {
+          const persistent = cookie.name.endsWith('_persistent')
+          expect(cookie).toMatchObject({
+            value: persistent ? 'synthetic-persistent' : 'synthetic-session',
+            domain: scope.domain,
+            path: '/',
+            secure: false,
+            httpOnly: persistent,
+            sameSite: persistent ? 'Strict' : 'Lax',
+            session: !persistent,
+            sourceScheme: 'NonSecure',
+            sourcePort: port,
+          })
+          expect(cookie.expires).toBe(persistent ? expires : -1)
+          const deleted = await checkedCommand<{ deleted: number }>('cookies', {
+            action: 'delete',
+            name: cookie.name,
+          })
+          expect(deleted.deleted).toBe(1)
+        }
+        const empty = await checkedCommand<{ cookies: Cookie[] }>('cookies', { action: 'get' })
+        expect(empty.cookies.filter((cookie) => cookie.name.startsWith(scope.prefix))).toHaveLength(
+          0,
+        )
+        expect(await checkedCommand('state', { action: 'load', name })).toMatchObject({
+          loaded: true,
+          name,
+        })
+        const restored = await checkedCommand<{ cookies: Cookie[] }>('cookies', { action: 'get' })
+        const roundtrip = restored.cookies.filter((cookie) => cookie.name.startsWith(scope.prefix))
+        expect(roundtrip).toHaveLength(2)
+        for (const cookie of synthetic) {
+          expect(roundtrip.find((candidate) => candidate.name === cookie.name)).toEqual(cookie)
+        }
+        const visible = await checkedCommand<string>('eval', { script: 'document.cookie' })
+        expect(visible).toContain(`${scope.prefix}_session=synthetic-session`)
+        expect(visible).not.toContain(`${scope.prefix}_persistent=`)
+        for (const cookie of synthetic) {
+          await checkedCommand('cookies', { action: 'delete', name: cookie.name })
+        }
+      }
+    } finally {
+      // 仅删除测试创建的 cookie；无论断言在哪一步失败都恢复原始页面和 top。
+      for (const scope of scopes) {
+        await loadSmokePage(scope.url)
+        for (const suffix of ['persistent', 'session']) {
+          await checkedCommand('cookies', { action: 'delete', name: `${scope.prefix}_${suffix}` })
+        }
+      }
+      await loadSmokePage()
+    }
+  }, 90_000)
+
+  test('HAR records real HTTP redirects in hop order with statuses, Location and final body', async () => {
+    await loadSmokePage()
+    let recording = false
+    try {
+      await checkedCommand('network', { action: 'har', subaction: 'start' })
+      recording = true
+      expect(
+        await checkedCommand<{ status: number; url: string; body: string }>('eval', {
+          script:
+            '(async () => { const response = await fetch("/redirect-start", { cache: "no-store" }); return { status: response.status, url: response.url, body: await response.text() }; })()',
+        }),
+      ).toEqual({
+        status: 200,
+        url: new URL('/redirect-final', pageUrl).href,
+        body: 'synthetic redirect final body',
+      })
+      const stopped = await checkedCommand<{
+        recording: boolean
+        har: {
+          log: {
+            entries: Array<{
+              request: { url: string }
+              response: {
+                status: number
+                redirectURL: string
+                headers: Array<{ name: string; value: string }>
+                content: { text?: string }
+              }
+            }>
+          }
+        }
+      }>('network', { action: 'har', subaction: 'stop' })
+      recording = false
+      expect(stopped.recording).toBe(false)
+      const hops = stopped.har.log.entries.filter((entry) =>
+        new URL(entry.request.url).pathname.startsWith('/redirect-'),
+      )
+      expect(hops.map((entry) => entry.request.url)).toEqual([
+        new URL('/redirect-start', pageUrl).href,
+        new URL('/redirect-middle', pageUrl).href,
+        new URL('/redirect-final', pageUrl).href,
+      ])
+      expect(hops.map((entry) => entry.response.status)).toEqual([301, 302, 200])
+      for (const [index, location] of ['/redirect-middle', '/redirect-final'].entries()) {
+        const response = hops[index]!.response
+        expect(
+          response.headers.find((header) => header.name.toLowerCase() === 'location')?.value,
+        ).toBe(location)
+        expect(response.redirectURL).toBe(location)
+      }
+      expect(hops[2]!.response.content.text).toBe('synthetic redirect final body')
+    } finally {
+      if (recording) await checkedCommand('network', { action: 'har', subaction: 'stop' })
+      await loadSmokePage()
+    }
+  }, 60_000)
 })

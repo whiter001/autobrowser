@@ -63,7 +63,10 @@ export async function requestCommandRaw(
   return (await response.json()) as CommandResponse
 }
 
-export async function getStatus(baseUrl: string): Promise<Record<string, unknown>> {
-  const response = await fetch(`${baseUrl}/status`)
+export async function getStatus(
+  baseUrl: string,
+  signal?: AbortSignal,
+): Promise<Record<string, unknown>> {
+  const response = await fetch(`${baseUrl}/status`, { signal })
   return (await response.json()) as Record<string, unknown>
 }

@@ -878,3 +878,253 @@ describe('network domain HAR field completion', () => {
     })
   })
 })
+
+describe('network redirect hops', () => {
+  function harness(maxRequests: number | null = null, deferredBody = false) {
+    const state = createExtensionState(57978)
+    state.network.harMaxRequests = maxRequests
+    let resolveBody!: (body: { body: string }) => void
+    const body = new Promise<{ body: string }>((resolve) => {
+      resolveBody = resolve
+    })
+    const network = createNetworkDomain({
+      state,
+      getTargetTab: async () => ({ id: 1 }) as never,
+      sendDebuggerCommand: async () => ({}) as never,
+      sendRawDebuggerCommand: async () =>
+        (deferredBody ? await body : { body: 'final body' }) as never,
+    })
+    const request = async (
+      url: string,
+      timestamp: number,
+      redirectResponse?: Record<string, unknown>,
+      tabId = 1,
+    ) => {
+      await network.handleEvent({ tabId }, 'Network.requestWillBeSent', {
+        requestId: 'chain',
+        timestamp,
+        request: {
+          url,
+          method: redirectResponse ? 'GET' : 'POST',
+          ...(redirectResponse ? {} : { postData: 'original=body' }),
+        },
+        redirectResponse,
+      })
+    }
+    const checkIndexes = () => {
+      expect(state.network.requestMap.size).toBe(state.network.requests.length)
+      expect(state.network.requestIndex.size).toBe(state.network.requests.length)
+      state.network.requests.forEach((record, index) => {
+        expect(state.network.requestMap.get(record.id!)).toBe(record)
+        expect(state.network.requestIndex.get(record.id!)).toBe(index)
+      })
+    }
+    return { state, network, request, resolveBody, checkIndexes }
+  }
+
+  const moved = {
+    status: 301,
+    statusText: 'Moved Permanently',
+    headers: { Location: '/middle' },
+    mimeType: 'text/html',
+    protocol: 'h2',
+    timing: { sendStart: 1, sendEnd: 1.01, receiveHeadersEnd: 1.1 },
+  }
+  const found = {
+    status: 302,
+    statusText: 'Found',
+    headers: { location: '/start' },
+    mimeType: 'text/plain',
+    protocol: 'http/1.1',
+  }
+
+  test('archives 301 -> 302 -> 200 including repeated URLs, fresh GET state and complete HAR', async () => {
+    const { state, network, request, resolveBody, checkIndexes } = harness(null, true)
+    await network.startHar(1, { maxRequests: null })
+    await request('https://example.com/start', 100)
+    await request('https://example.com/middle', 101, moved)
+    expect(network.getRequestDetail('chain').request).toMatchObject({
+      id: '1:chain',
+      method: 'GET',
+    })
+    expect(network.getRequestDetail('chain').request).not.toHaveProperty('status')
+    expect(
+      (network.getRequestDetail('chain').request as Record<string, unknown>).postData,
+    ).toBeUndefined()
+    await request('https://example.com/start', 102, found)
+    checkIndexes()
+    const [first, second, current] = state.network.requests
+    expect(new Set(state.network.requests.map((record) => record.id)).size).toBe(3)
+    expect(state.network.requests.map((record) => record.requestId)).toEqual([
+      'chain',
+      'chain',
+      'chain',
+    ])
+    expect(first).toMatchObject({
+      status: 301,
+      postData: 'original=body',
+      durationMs: 1000,
+      protocol: 'h2',
+      timing: moved.timing,
+      responseMimeType: 'text/html',
+    })
+    expect(second).toMatchObject({ status: 302, durationMs: 1000 })
+    expect(current?.id).toBe('1:chain')
+    expect(current?.responseBody).toBeUndefined()
+    expect(network.getRequestDetail(first!.id!).request).toBe(first)
+    expect(network.getRequestDetail(second!.id!, 1).request).toBe(second)
+    expect(network.getRequestDetail('chain', 1).request).toBe(current)
+    expect(network.getRequestDetail('1:chain').request).toBe(current)
+    await network.handleEvent({ tabId: 1 }, 'Network.responseReceived', {
+      requestId: 'chain',
+      timestamp: 103,
+      response: { status: 200, statusText: 'OK', mimeType: 'text/plain' },
+    })
+    await network.handleEvent({ tabId: 1 }, 'Network.loadingFinished', {
+      requestId: 'chain',
+      timestamp: 104,
+    })
+    // 模拟同毫秒收到全部事件，验证排序不依赖随机归档 id。
+    for (const record of state.network.requests) record.startedAt = state.network.harStartedAt
+    const stopping = network.stopHar()
+    expect(state.network.pendingBodyFetches.size).toBe(1)
+    resolveBody({ body: 'final body' })
+    const result = (await stopping) as {
+      har: {
+        log: {
+          entries: Array<{
+            request: { url: string; method: string; postData?: unknown }
+            response: {
+              status: number
+              redirectURL: string
+              content: { text?: string }
+              httpVersion: string
+            }
+            time: number
+          }>
+        }
+      }
+    }
+    const entries = result.har.log.entries
+    expect(entries.map((entry) => entry.response.status)).toEqual([301, 302, 200])
+    expect(entries.map((entry) => entry.request.url)).toEqual([
+      'https://example.com/start',
+      'https://example.com/middle',
+      'https://example.com/start',
+    ])
+    expect(entries.map((entry) => entry.response.redirectURL)).toEqual(['/middle', '/start', ''])
+    expect(entries.map((entry) => entry.response.content.text)).toEqual([
+      undefined,
+      undefined,
+      'final body',
+    ])
+    expect(entries.map((entry) => entry.time)).toEqual([1000, 1000, 2000])
+    expect(entries[0]?.response.httpVersion).toBe('HTTP/2')
+    expect(entries[1]?.request.postData).toBeUndefined()
+    expect(entries[2]?.request.postData).toBeUndefined()
+    expect(state.network.pendingBodyFetches.size).toBe(0)
+    expect(state.network.inFlightByTab.get(1)?.size).toBe(0)
+    checkIndexes()
+  })
+
+  test('raw ids select the current hop but retain cross-tab ambiguity', async () => {
+    const { network, request } = harness()
+    await request('https://example.com/start', 100)
+    await request('https://example.com/middle', 101, moved)
+    await request('https://other.example/start', 100, undefined, 2)
+    expect(() => network.getRequestDetail('chain')).toThrow('ambiguous across tabs')
+    expect(network.getRequestDetail('chain', 1).request).toMatchObject({
+      id: '1:chain',
+      url: 'https://example.com/middle',
+    })
+    expect(network.getRequestDetail('2:chain').request).toMatchObject({ tabId: 2 })
+  })
+
+  test('maxRequests trims archived hops without breaking current lookup or indexes', async () => {
+    const { state, network, request, checkIndexes } = harness(2)
+    await request('https://example.com/start', 100)
+    await request('https://example.com/middle', 101, moved)
+    const evictedId = state.network.requests[0]!.id!
+    await request('https://example.com/start', 102, found)
+    checkIndexes()
+    expect(state.network.requests.map((record) => record.status)).toEqual([302, undefined])
+    expect(() => network.getRequestDetail(evictedId)).toThrow('not found')
+    expect(network.getRequestDetail('chain').request).toMatchObject({
+      id: '1:chain',
+      url: 'https://example.com/start',
+    })
+    await network.handleEvent({ tabId: 1 }, 'Network.loadingFinished', {
+      requestId: 'chain',
+      timestamp: 103,
+    })
+    await network.stopHar()
+    expect(network.getRequestDetail('chain').request).toMatchObject({ responseBody: 'final body' })
+    checkIndexes()
+  })
+
+  test('repeated redirect loops keep distinct hop ids after trimming', async () => {
+    const { state, network, request, checkIndexes } = harness(2)
+    await request('https://example.com/start', 100)
+    const ids = new Set<string>()
+    for (let hop = 1; hop <= 12; hop += 1) {
+      await request('https://example.com/start', 100 + hop, moved)
+      const archivedId = state.network.requests[0]!.id!
+      expect(ids.has(archivedId)).toBe(false)
+      ids.add(archivedId)
+      expect(network.getRequestDetail('chain').request).toMatchObject({ id: '1:chain' })
+      checkIndexes()
+    }
+    expect(ids.size).toBe(12)
+  })
+
+  for (const terminal of ['Network.loadingFinished', 'Network.loadingFailed']) {
+    test(`late events for trimmed requests do not evict retained hops (${terminal})`, async () => {
+      const { state, network, request, checkIndexes } = harness(1)
+      await request('https://example.com/old', 100)
+      await network.handleEvent({ tabId: 1 }, 'Network.requestWillBeSent', {
+        requestId: 'new',
+        request: { url: 'https://example.com/new' },
+      })
+      await network.handleEvent({ tabId: 1 }, 'Network.responseReceived', {
+        requestId: 'chain',
+        response: { status: 200 },
+      })
+      await network.handleEvent({ tabId: 1 }, terminal, { requestId: 'chain' })
+      expect(state.network.requests.map((record) => record.id)).toEqual(['1:new'])
+      expect(state.network.inFlightByTab.get(1)?.has('chain')).toBe(false)
+      expect(state.network.pendingBodyFetches.size).toBe(0)
+      checkIndexes()
+    })
+  }
+
+  for (const reject of [false, true]) {
+    test(`trimmed pending body cannot resurrect an evicted record (${reject ? 'failure' : 'success'})`, async () => {
+      const state = createExtensionState(57978)
+      state.network.harMaxRequests = 1
+      let finish!: () => void
+      const pending = new Promise<{ body: string }>((resolve, rejectBody) => {
+        finish = () => (reject ? rejectBody(new Error('evicted')) : resolve({ body: 'old' }))
+      })
+      const network = createNetworkDomain({
+        state,
+        getTargetTab: async () => ({ id: 1 }) as never,
+        sendDebuggerCommand: async () => ({}) as never,
+        sendRawDebuggerCommand: async () => (await pending) as never,
+      })
+      await network.handleEvent({ tabId: 1 }, 'Network.requestWillBeSent', {
+        requestId: 'old',
+        request: { url: 'https://example.com/old' },
+      })
+      await network.handleEvent({ tabId: 1 }, 'Network.loadingFinished', { requestId: 'old' })
+      await network.handleEvent({ tabId: 1 }, 'Network.requestWillBeSent', {
+        requestId: 'new',
+        request: { url: 'https://example.com/new' },
+      })
+      finish()
+      await network.stopHar()
+      expect(state.network.requests.map((record) => record.id)).toEqual(['1:new'])
+      expect([...state.network.requestMap.keys()]).toEqual(['1:new'])
+      expect([...state.network.requestIndex.entries()]).toEqual([['1:new', 0]])
+    })
+  }
+})

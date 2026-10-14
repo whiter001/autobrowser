@@ -250,14 +250,40 @@ export async function waitForServerStatus(
 ): Promise<ServerSnapshotStatus | null> {
   const deadline = Date.now() + timeoutMs
 
-  while (Date.now() <= deadline && !signal?.aborted) {
+  while (Date.now() < deadline && !signal?.aborted) {
+    const controller = new AbortController()
+    let onAbort: () => void = () => {}
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const cancelled = new Promise<null>((resolve) => {
+      onAbort = () => {
+        controller.abort()
+        resolve(null)
+      }
+      timer = setTimeout(onAbort, Math.max(0, deadline - Date.now()))
+      signal?.addEventListener('abort', onAbort, { once: true })
+      if (signal?.aborted) {
+        onAbort()
+      }
+    })
+
     try {
-      const status = await getStatus(baseUrl)
+      const status = await Promise.race([getStatus(baseUrl, controller.signal), cancelled])
+      if (controller.signal.aborted || signal?.aborted || Date.now() >= deadline) {
+        return null
+      }
       if (isServerSnapshotOnPorts(status, relayPort, ipcPort)) {
         return status
       }
     } catch {
       // keep polling until the server becomes available or the timeout elapses
+    } finally {
+      clearTimeout(timer)
+      signal?.removeEventListener('abort', onAbort)
+    }
+
+    const remainingMs = deadline - Date.now()
+    if (remainingMs <= 0 || signal?.aborted) {
+      return null
     }
 
     await new Promise<void>((resolve) => {
@@ -269,7 +295,7 @@ export async function waitForServerStatus(
         cleanup()
         resolve()
       }
-      const timer = setTimeout(finish, intervalMs)
+      const timer = setTimeout(finish, Math.min(intervalMs, remainingMs))
       const onAbort = (): void => {
         finish()
       }

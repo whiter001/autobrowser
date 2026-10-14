@@ -134,6 +134,18 @@ function redactCommandArgs(command: string, args: unknown): unknown {
   if (command === 'fill' || command === 'type') {
     redact('value')
   }
+  if (command === 'fillform' && Array.isArray(redactedArgs.fields)) {
+    redactedArgs.fields = redactedArgs.fields.map((field) =>
+      isRecord(field) && 'value' in field ? { ...field, value: REDACTED_VALUE } : field,
+    )
+  }
+  if (command === 'batch' && Array.isArray(redactedArgs.steps)) {
+    redactedArgs.steps = redactedArgs.steps.map((step) =>
+      isRecord(step) && typeof step.command === 'string'
+        ? { ...step, args: redactCommandArgs(step.command, step.args) }
+        : step,
+    )
+  }
   if (command === 'find' && (action === 'fill' || action === 'type')) {
     redact('value')
   }

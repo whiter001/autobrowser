@@ -89,6 +89,7 @@ interface NetworkEventParams {
   requestId?: string
   request?: NetworkRequestPayload
   response?: NetworkResponsePayload
+  redirectResponse?: NetworkResponsePayload & { encodedDataLength?: number }
   type?: string
   timestamp?: number
   wallTime?: number
@@ -316,12 +317,16 @@ function getNetworkRequestById(
       (item?.requestId === requestId || item?.id === requestId) &&
       (typeof tabId !== 'number' || item.tabId === tabId),
   )
-  if (matches.length > 1) {
+  if (new Set(matches.map((item) => item.tabId)).size > 1) {
     throw new Error(
       `network request id is ambiguous across tabs: ${requestId}; use the full tabId:requestId id`,
     )
   }
-  return matches[0] || null
+  return (
+    matches.find((item) => item.id === createNetworkRequestKey(item.tabId ?? null, requestId)) ||
+    matches.at(-1) ||
+    null
+  )
 }
 
 function summarizeNetworkRequest(
@@ -530,7 +535,8 @@ function buildHarEntry(record: NetworkRequestRecord): Record<string, unknown> {
       cookies: [],
       headers: responseHeaders,
       content: responseContent,
-      redirectURL: '',
+      redirectURL:
+        responseHeaders.find((header) => header.name.toLowerCase() === 'location')?.value || '',
       headersSize: -1,
       bodySize: responseBodyBytes,
     },
@@ -542,7 +548,23 @@ function buildHarEntry(record: NetworkRequestRecord): Record<string, unknown> {
 }
 
 function buildHar(records: NetworkRequestRecord[]): Record<string, unknown> {
-  return buildHarPayload(records.map((record) => buildHarEntry(record)))
+  const ordered = [...records].sort((left, right) => {
+    // 同毫秒多跳不能按随机归档 id 排序；先按原始请求分组再按跳序排列。
+    const compared = compareHarRecords(
+      {
+        ...left,
+        id: left.requestId ? createNetworkRequestKey(left.tabId ?? null, left.requestId) : left.id,
+      },
+      {
+        ...right,
+        id: right.requestId
+          ? createNetworkRequestKey(right.tabId ?? null, right.requestId)
+          : right.id,
+      },
+    )
+    return compared || Number(left.hopSequence || 0) - Number(right.hopSequence || 0)
+  })
+  return buildHarPayload(ordered.map((record) => buildHarEntry(record)))
 }
 
 function matchesNetworkRequestFilters(
@@ -807,6 +829,8 @@ export function createNetworkDomain({
         'Network.getResponseBody',
         { requestId },
       )
+      // 裁剪或跳转后旧异步结果不得复活记录，也不能覆盖同 key 的下一跳。
+      if (state.network.requestMap.get(key) !== record) return
       const responseBody = String(result?.body || '')
       const responseBodySummary = summarizeStoredBody(
         responseBody,
@@ -825,6 +849,7 @@ export function createNetworkDomain({
         bodyRecord.responseMimeType = 'application/octet-stream'
       }
     } catch (error) {
+      if (state.network.requestMap.get(key) !== record) return
       const message = error instanceof Error ? error.message : String(error)
       upsertNetworkRequest(state, {
         ...record,
@@ -862,8 +887,42 @@ export function createNetworkDomain({
           ? summarizeStoredBody(payload.request.postData, false, getHarMaxBodyBytes(state))
           : null
 
+      const key = createNetworkRequestKey(tabId, requestId)
+      const previous = state.network.requestMap.get(key)
+      if (payload.redirectResponse && previous) {
+        const response = payload.redirectResponse
+        const durationMs =
+          typeof previous.requestWillBeSentAt === 'number' && typeof payload.timestamp === 'number'
+            ? Math.max(0, (payload.timestamp - previous.requestWillBeSentAt) * 1000)
+            : null
+        const archived: NetworkRequestRecord = {
+          ...previous,
+          id: `${key}:hop:${crypto.randomUUID()}`,
+          status: Number(response.status || 0),
+          statusText: String(response.statusText || ''),
+          responseHeaders: normalizeHeaders(response.headers),
+          responseMimeType: String(response.mimeType || 'application/octet-stream'),
+          protocol: String(response.protocol || ''),
+          timing: response.timing ? { ...response.timing } : undefined,
+          responseReceivedAt: payload.timestamp ?? null,
+          finishedAt: new Date().toISOString(),
+          durationMs,
+          waitMs: durationMs,
+          receiveMs: 0,
+          encodedDataLength: response.encodedDataLength ?? null,
+        }
+        // 原地改键保留前跳顺序，当前 key 留给新跳，禁止 merge 前跳的响应/请求体。
+        const index = state.network.requestIndex.get(key)
+        state.network.requestMap.delete(key)
+        state.network.requestIndex.delete(key)
+        if (index !== undefined) {
+          state.network.requests[index] = archived
+          state.network.requestIndex.set(archived.id!, index)
+          state.network.requestMap.set(archived.id!, archived)
+        }
+      }
       upsertNetworkRequest(state, {
-        id: createNetworkRequestKey(tabId, requestId),
+        id: key,
         requestId,
         tabId,
         pageEpoch: getPageEpoch(state, tabId),
@@ -878,8 +937,26 @@ export function createNetworkDomain({
         requestWillBeSentAt: typeof payload.timestamp === 'number' ? payload.timestamp : null,
         wallTime: typeof payload.wallTime === 'number' ? payload.wallTime : null,
         documentUrl: String(payload.documentURL || ''),
+        hopSequence: payload.redirectResponse ? Number(previous?.hopSequence || 0) + 1 : 0,
       })
+      scheduleHarCheckpoint()
       return
+    }
+
+    if (
+      method === 'Network.responseReceived' ||
+      method === 'Network.loadingFinished' ||
+      method === 'Network.loadingFailed'
+    ) {
+      const requestId = String(payload.requestId || '')
+      if (!state.network.requestMap.has(createNetworkRequestKey(tabId, requestId))) {
+        // 已被缓冲上限裁剪的请求不靠后续事件复活，但仍须结束 network-idle 计数。
+        if (method !== 'Network.responseReceived') {
+          state.network.inFlightByTab.get(tabId)?.delete(requestId)
+          state.network.lastActivityByTab.set(tabId, Date.now())
+        }
+        return
+      }
     }
 
     if (method === 'Network.responseReceived') {

@@ -223,6 +223,15 @@ function readBearerToken(request: Request): string {
   return match?.[1]?.trim() || ''
 }
 
+function validateHost(request: Request, listenerPort: number | undefined): Response | null {
+  const host = request.headers.get('host') || ''
+  const match = /^(?:127\.0\.0\.1|localhost|\[::1\])(?::([1-9]\d{0,4}))?$/i.exec(host)
+  if (!match || Number(match[1] || 80) !== listenerPort) {
+    return textResponse('forbidden host', { status: 403 })
+  }
+  return null
+}
+
 function unauthorizedResponse(): Response {
   return jsonResponse(
     { ok: false, error: { message: 'unauthorized', code: 'UNAUTHORIZED' } },
@@ -257,6 +266,10 @@ export async function startServers(options: ServerOptions = {}): Promise<StartSe
     hostname: '127.0.0.1',
     port: runtime.runtime.relayPort,
     fetch(request, server) {
+      const invalidHost = validateHost(request, server.port)
+      if (invalidHost) {
+        return invalidHost
+      }
       const url = new URL(request.url)
 
       if (url.pathname === '/ws') {
@@ -309,7 +322,11 @@ export async function startServers(options: ServerOptions = {}): Promise<StartSe
     ipcServer = Bun.serve({
       hostname: '127.0.0.1',
       port: runtime.runtime.ipcPort,
-      fetch(request) {
+      fetch(request, server) {
+        const invalidHost = validateHost(request, server.port)
+        if (invalidHost) {
+          return invalidHost
+        }
         const url = new URL(request.url)
 
         if (url.pathname === '/status' && request.method === 'GET') {

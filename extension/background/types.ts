@@ -232,8 +232,19 @@ export interface SavedStateCookie {
   name: string
   value: string
   domain?: string
+  url?: string
   path?: string
   secure?: boolean
+  httpOnly?: boolean
+  sameSite?: 'Strict' | 'Lax' | 'None'
+  expires?: number
+  session?: boolean
+  partitionKey?: { topLevelSite: string; hasCrossSiteAncestor: boolean }
+  partitionKeyOpaque?: boolean
+  priority?: 'Low' | 'Medium' | 'High'
+  sameParty?: boolean
+  sourceScheme?: 'Unset' | 'NonSecure' | 'Secure'
+  sourcePort?: number
 }
 
 export interface SavedStateData {
