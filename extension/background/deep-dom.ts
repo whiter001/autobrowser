@@ -9,8 +9,14 @@ export interface DeepDomRootLike {
   querySelectorAll: (selector: string) => ArrayLike<DeepDomNodeLike> | Iterable<DeepDomNodeLike>
 }
 
-function toArray<T>(value: ArrayLike<T> | Iterable<T> | null | undefined): T[] {
-  return value ? Array.from(value as ArrayLike<T> | Iterable<T>) : []
+function* toArray<T>(value: ArrayLike<T> | Iterable<T> | null | undefined): Iterable<T> {
+  if (!value) return
+  if (Symbol.iterator in value) {
+    yield* value as Iterable<T>
+  } else {
+    const list = value as ArrayLike<T>
+    for (let index = 0; index < list.length; index += 1) yield list[index]!
+  }
 }
 
 function normalizeMaxDepth(maxDepth: number | null | undefined): number {
@@ -99,8 +105,10 @@ export function deepQuerySelectorAll(
       return
     }
 
-    // 单趟 '*' 遍历：matches 判断命中的节点，同时发现 shadow host 就地递归，
-    // 避免每层 root 先查选择器再查 '*' 找 host 的双重遍历
+    // :scope 必须相对查询根求值，不能用 node.matches 改成相对候选节点。
+    const scoped = selector.includes(':scope')
+      ? new Set(toArray(currentRoot.querySelectorAll(selector)))
+      : null
     for (const node of toArray(currentRoot.querySelectorAll('*'))) {
       if (results.length >= nodeLimit) {
         return
@@ -111,8 +119,11 @@ export function deepQuerySelectorAll(
       }
 
       seen.add(node)
-      if (typeof node.matches === 'function' && node.matches(selector)) {
+      if (
+        scoped ? scoped.has(node) : typeof node.matches === 'function' && node.matches(selector)
+      ) {
         results.push(node)
+        if (results.length >= nodeLimit) return
       }
 
       const shadowRoot = node.shadowRoot
@@ -144,10 +155,25 @@ export function deepGetElementById(
     return null
   }
 
-  return (
-    deepCollectElements(root, maxDepth).find((node) => String(node.id || '') === normalizedId) ||
-    null
-  )
+  const seen = new Set<DeepDomNodeLike>()
+  const depthLimit = normalizeMaxDepth(maxDepth)
+  const visit = (
+    current: DeepDomRootLike | null | undefined,
+    depth: number,
+  ): DeepDomNodeLike | null => {
+    if (!current) return null
+    for (const node of toArray(current.querySelectorAll('*'))) {
+      if (seen.has(node)) continue
+      seen.add(node)
+      if (String(node.id || '') === normalizedId) return node
+      if (node.shadowRoot && depth < depthLimit) {
+        const found = visit(node.shadowRoot, depth + 1)
+        if (found) return found
+      }
+    }
+    return null
+  }
+  return visit(root, 0)
 }
 
 export function isDeepActiveElement(

@@ -51,8 +51,10 @@ export interface SearchArgs {
   query: string
   /** 每个匹配窗口包含的上下文行数 */
   context: number
-  /** 返回的最大匹配窗口数 */
+  /** 返回的最大匹配窗口数，仍受总行数和字节预算限制 */
   limit: number
+  /** 从此行继续搜索（1 起算）；省略时由 domain 默认从第 1 行开始 */
+  startLine?: number
 }
 
 export interface NetworkHarStartArgs {
@@ -908,6 +910,7 @@ export function parseSearchArgs(rest: string[]): SearchArgs {
   let query = ''
   let context = 3
   let limit = 20
+  let startLine: number | undefined
 
   for (let index = 0; index < rest.length; index += 1) {
     const value = rest[index]
@@ -918,7 +921,7 @@ export function parseSearchArgs(rest: string[]): SearchArgs {
         throw new Error('missing context value')
       }
 
-      context = parseNumberArg(rawContext, 'context', { min: 0, integer: true })
+      context = parseNumberArg(rawContext, 'context', { min: 0, max: 50, integer: true })
       index += 1
       continue
     }
@@ -929,7 +932,21 @@ export function parseSearchArgs(rest: string[]): SearchArgs {
         throw new Error('missing limit value')
       }
 
-      limit = parseNumberArg(rawLimit, 'limit', { min: 0, integer: true })
+      limit = parseNumberArg(rawLimit, 'limit', {
+        min: 0,
+        max: Number.MAX_SAFE_INTEGER,
+        integer: true,
+      })
+      index += 1
+      continue
+    }
+
+    if (value === '--start-line') {
+      startLine = parseNumberArg(rest[index + 1], 'start line', {
+        min: 1,
+        max: Number.MAX_SAFE_INTEGER,
+        integer: true,
+      })
       index += 1
       continue
     }
@@ -954,5 +971,5 @@ export function parseSearchArgs(rest: string[]): SearchArgs {
   // 提前校验正则，把无效模式挡在 CLI 侧，避免发给扩展后再失败
   parseSearchQueryRegex(trimmedQuery)
 
-  return { query: trimmedQuery, context, limit }
+  return { query: trimmedQuery, context, limit, ...(startLine !== undefined ? { startLine } : {}) }
 }

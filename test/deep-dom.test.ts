@@ -155,4 +155,46 @@ describe('deep dom traversal helpers', () => {
     expect(isDeepActiveElement(root, innerButton)).toBe(true)
     expect(isDeepActiveElement(root, host)).toBe(true)
   })
+
+  test('maxNodes limits matches, not visits; iterable is consumed only until enough matches', () => {
+    let visits = 0
+    let queries = 0
+    const target = { matches: () => true }
+    const root = {
+      querySelectorAll: () => {
+        queries++
+        return (function* () {
+          for (let i = 0; i < 60000; i++) {
+            visits++
+            yield { matches: () => false }
+          }
+          visits++
+          yield target
+          throw new Error('must not materialize the rest')
+        })()
+      },
+    }
+    expect(deepQuerySelectorAll(root, 'button', 25, 1)).toEqual([target])
+    expect(queries).toBe(1)
+    expect(visits).toBe(60001)
+  })
+
+  test('id lookup reaches late nodes without materializing all results', () => {
+    const target = { id: 'late' }
+    const root = {
+      querySelectorAll: () =>
+        (function* () {
+          for (let i = 0; i < 60000; i++) yield { id: '' }
+          yield target
+          throw new Error('lookup should stop at the match')
+        })(),
+    }
+    expect(deepGetElementById(root, 'late')).toBe(target)
+  })
+
+  test('scope selectors use the query root instead of the candidate as scope', () => {
+    const child = { matches: () => false }
+    const root = { querySelectorAll: (_selector: string) => [child] }
+    expect(deepQuerySelectorAll(root, ':scope > button')).toEqual([child])
+  })
 })

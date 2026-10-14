@@ -96,7 +96,7 @@ const MCP_TOOLS: McpToolDefinition[] = [
   {
     name: 'snapshot',
     description:
-      'Capture the page as a structured snapshot: a list of interactive/visible elements with stable @eN refs, roles, accessible names, and positions. Elements refs stay usable across commands even as the page changes; re-run snapshot to refresh them. Also returns frame refs (@fN) for the current page view. Start here to discover selectors and refs before interacting.',
+      'Capture interactive/visible elements with @eN refs, roles, names and positions, plus @fN frame refs. Refs are not reused within a document, but removed nodes are invalid and navigation makes refs stale: refresh snapshot before acting. Output is bounded to 200000 UTF-8 bytes; when truncated, narrow target/roles or use changed to read changes. Start here to discover targets.',
     command: 'snapshot',
     inputSchema: {
       type: 'object',
@@ -114,7 +114,7 @@ const MCP_TOOLS: McpToolDefinition[] = [
         changed: {
           type: 'boolean',
           description:
-            'Only return elements added or changed since the last snapshot; the first run (or after navigation) returns the full snapshot with full: true.',
+            'Return added/changed elements including state changes (checked/disabled etc.) and removedRefs. Baselines are document/frame scoped; first run or navigation returns full: true. Truncated snapshots only cache delivered elements.',
         },
       },
     },
@@ -140,29 +140,41 @@ const MCP_TOOLS: McpToolDefinition[] = [
             'Text to match (case-insensitive substring) or a /pattern/flags regular expression.',
         },
         context: {
-          type: 'number',
-          description: 'Number of context lines around each match (default 3).',
+          type: 'integer',
+          minimum: 0,
+          maximum: 50,
+          description: 'Context lines around each match (default 3, maximum 50).',
         },
         limit: {
-          type: 'number',
-          description: 'Maximum number of match windows to return (default 20).',
+          type: 'integer',
+          minimum: 0,
+          maximum: Number.MAX_SAFE_INTEGER,
+          description:
+            'Maximum match windows (default 20, capped at 200; 0 returns no windows or cursor); output also has a 200-line / 100000 UTF-8 byte budget.',
+        },
+        startLine: {
+          type: 'integer',
+          minimum: 1,
+          maximum: Number.MAX_SAFE_INTEGER,
+          description:
+            '1-based starting line (default 1). When truncated and nextStartLine is present, repeat the same query with startLine: nextStartLine; e.g. startLine: 201.',
         },
       },
       required: ['query'],
     },
-    toArgs: (args) => onlyDefined(args, ['query', 'context', 'limit']),
+    toArgs: (args) => onlyDefined(args, ['query', 'context', 'limit', 'startLine']),
   },
   {
     name: 'find',
     description:
-      'Find elements by role, text, label, placeholder, alt, title, test-id, or exact-name and optionally act on them. Returns matching @eN refs so follow-up commands can use them directly.',
+      'Find elements by role, text, label, placeholder, alt, title, test-id, or exact-name and optionally act. Read-only locate/text default to the first match. Write actions with multiple matches return AMBIGUOUS_TARGET and candidates unless position is explicit. Inspect candidates, narrow the query/exact match, or deliberately choose position before retrying.',
     command: 'find',
     inputSchema: {
       type: 'object',
       properties: {
         strategy: {
           type: 'string',
-          description: 'The lookup strategy.',
+          description: 'The lookup strategy; exact-name always matches exactly.',
           enum: ['role', 'text', 'label', 'placeholder', 'alt', 'title', 'test-id', 'exact-name'],
         },
         role: {
@@ -176,7 +188,7 @@ const MCP_TOOLS: McpToolDefinition[] = [
         name: {
           type: 'string',
           description:
-            'Restrict candidates to the exact accessible name (best with strategy role).',
+            'Accessible name filter (best with strategy role): substring by default; use exact: true for an exact match.',
         },
         exact: {
           type: 'boolean',
@@ -535,7 +547,11 @@ const MCP_TOOLS: McpToolDefinition[] = [
         pageSize: { type: 'number', description: 'Requests per page (default 50, max 200).' },
         allTabs: { type: 'boolean', description: 'Include all tabs instead of the target tab.' },
         allEpochs: { type: 'boolean', description: 'Include prior page epochs.' },
-        includeDetails: { type: 'boolean', description: 'Include headers and bodies inline.' },
+        includeDetails: {
+          type: 'boolean',
+          description:
+            'Include stored headers/body details, not a guarantee of body availability. Without HAR only metadata is monitored; CLI network request <id> fetches body on demand via CDP, which may fail for historical/expired requests.',
+        },
       },
     },
     toArgs: (args) => ({
@@ -545,14 +561,18 @@ const MCP_TOOLS: McpToolDefinition[] = [
   },
   {
     name: 'network_har',
-    description: 'Start, stop, inspect, or recover checkpointed HAR capture.',
+    description:
+      'Start, stop, inspect, or recover checkpointed HAR capture. Body fetches use 4 slots and a 10s logical timeout; uncancellable CDP work keeps its slot until settled. Stop waits only for this capture and transparently reassembles large chunked results (or returns an explicit size error), without silently truncating HAR.',
     command: 'network',
     inputSchema: {
       type: 'object',
       properties: {
         action: { type: 'string', enum: ['start', 'stop', 'status', 'recover'] },
         maxRequests: { type: 'number' },
-        maxBodyBytes: { type: 'number' },
+        maxBodyBytes: {
+          type: 'number',
+          description: 'Stored body byte limit, not a CDP download/transfer limit.',
+        },
       },
       required: ['action'],
     },
@@ -949,7 +969,11 @@ export class AutobrowserMcpServer {
   async connect(transport: Transport): Promise<void> {
     const server = new Server(
       { name: this.name, version: this.version },
-      { capabilities: { tools: {} } },
+      {
+        capabilities: { tools: {} },
+        instructions:
+          'Request budgets default to 30s. Explicit eval/navigation/click timeoutMs or wait timeout/ms adds 5s transport allowance (at least 30s); batch combines step/retry/delay budgets, capped at 30 minutes including allowance. Sent commands with unknown outcomes are not automatically replayed: inspect status, command_control and page state before retrying. Explicit batch retries may repeat side effects and are not an idempotency guarantee.',
+      },
     )
     server.setRequestHandler(ListToolsRequestSchema, () => ({ tools: this.listTools() }))
     server.setRequestHandler(CallToolRequestSchema, async (request) => {

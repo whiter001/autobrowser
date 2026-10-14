@@ -135,7 +135,15 @@ function connectCdp(wsUrl: string, timeoutMs = 10_000): Promise<CdpClient> {
           return new Promise<Record<string, unknown>>((resolveSend, rejectSend) => {
             const id = nextId++
             pending.set(id, { resolve: resolveSend, reject: rejectSend })
-            socket.send(JSON.stringify({ id, method, params }))
+            const { sessionId, ...commandParams } = params
+            socket.send(
+              JSON.stringify({
+                id,
+                method,
+                params: commandParams,
+                ...(sessionId ? { sessionId } : {}),
+              }),
+            )
           })
         },
         close() {
@@ -360,6 +368,23 @@ suite('live browser smoke test', () => {
   let chromeProcess: ChildProcess | null = null
   let chromeStderr = ''
   let cdp: CdpClient | null = null
+  const batchSignals = new Set<string>()
+  const harBody = 'synthetic-har-body:'.padEnd(256 * 1024, 'h')
+
+  interface Snapshot {
+    full?: boolean
+    removedRefs?: string[]
+    elements: Array<{
+      ref: string
+      role: string
+      name: string
+      checked?: boolean
+      disabled?: boolean
+      href?: string
+      value?: string
+    }>
+    frames: Array<{ ref: string }>
+  }
 
   async function command(
     commandName: string,
@@ -373,6 +398,8 @@ suite('live browser smoke test', () => {
     args: Record<string, unknown> = {},
   ): Promise<T> {
     const response = await command(commandName, args)
+    if (!response.ok)
+      console.error(`[live-smoke] ${commandName} failed: ${JSON.stringify(response.error)}`)
     expect(response.error).toBeUndefined()
     expect(response.ok).toBe(true)
     // 对象型结果附带路由 meta，数据断言只剥离该协议字段，保留所有实际返回字段。
@@ -387,6 +414,50 @@ suite('live browser smoke test', () => {
     await checkedCommand('frame', { selector: 'top' })
     await checkedCommand('goto', { url })
     await checkedCommand('wait', { type: 'selector', selector: '#increment', timeout: 15_000 })
+    // Chrome 后台/被遮挡时可能暂停 rAF；先激活本测试 target，再给 compositor 切换文档的机会。
+    if (cdp) {
+      const targets = (await cdp.send('Target.getTargets')) as {
+        targetInfos: Array<{ targetId: string; url: string }>
+      }
+      const target = targets.targetInfos.find((entry) => entry.url === url)
+      if (target) await cdp.send('Target.activateTarget', { targetId: target.targetId })
+    }
+    await Bun.sleep(150)
+  }
+
+  async function logExtensionDiagnostics(): Promise<void> {
+    if (!cdp) return
+    try {
+      const targets = (await cdp.send('Target.getTargets')) as {
+        targetInfos: Array<{ targetId: string; type: string; url: string }>
+      }
+      const worker = targets.targetInfos.find(
+        (target) =>
+          target.type === 'service_worker' &&
+          target.url.startsWith(`chrome-extension://${getExtensionId()}/`),
+      )
+      if (!worker) return
+      const { sessionId } = await cdp.send('Target.attachToTarget', {
+        targetId: worker.targetId,
+        flatten: true,
+      })
+      try {
+        const diagnostics = await cdp.send('Runtime.evaluate', {
+          sessionId,
+          awaitPromise: true,
+          returnByValue: true,
+          expression:
+            'chrome.storage.local.get("autobrowserConnectionDiagnostics").then(value => value.autobrowserConnectionDiagnostics)',
+        })
+        console.error(
+          `[live-smoke] isolated extension connection diagnostics: ${JSON.stringify(diagnostics)}`,
+        )
+      } finally {
+        await cdp.send('Target.detachFromTarget', { sessionId })
+      }
+    } catch (error) {
+      console.error('[live-smoke] could not read isolated extension diagnostics', error)
+    }
   }
 
   beforeAll(async () => {
@@ -403,6 +474,30 @@ suite('live browser smoke test', () => {
 
     httpServer = createHttpServer((request, response) => {
       const pathname = new URL(request.url || '/', 'http://127.0.0.1').pathname
+      if (pathname.startsWith('/batch-signal/')) {
+        batchSignals.add(pathname.split('/').pop()!)
+        response.writeHead(200, { 'cache-control': 'no-store' })
+        response.end('ok')
+        return
+      }
+      if (pathname === '/regression-frame') {
+        response.writeHead(200, {
+          'content-type': 'text/html; charset=utf-8',
+          'cache-control': 'no-store',
+        })
+        response.end(
+          '<!doctype html><button id="same" onclick="this.dataset.clicks = String(Number(this.dataset.clicks || 0) + 1)">Same frame button</button>',
+        )
+        return
+      }
+      if (pathname.startsWith('/har-body/')) {
+        response.writeHead(200, {
+          'content-type': 'text/plain; charset=utf-8',
+          'cache-control': 'no-store',
+        })
+        response.end(harBody)
+        return
+      }
       if (pathname === '/redirect-start' || pathname === '/redirect-middle') {
         response.writeHead(pathname === '/redirect-start' ? 301 : 302, {
           location: pathname === '/redirect-start' ? '/redirect-middle' : '/redirect-final',
@@ -935,6 +1030,465 @@ suite('live browser smoke test', () => {
       expect(hops[2]!.response.content.text).toBe('synthetic redirect final body')
     } finally {
       if (recording) await checkedCommand('network', { action: 'har', subaction: 'stop' })
+      await loadSmokePage()
+    }
+  }, 60_000)
+
+  test('snapshot and find never recycle removed highest or all element/frame refs', async () => {
+    await loadSmokePage()
+    const index = (ref: string) => Number(ref.match(/[ef](\d+)/)![1])
+    const locate = () =>
+      checkedCommand<{ match: { ref: string } }>('find', {
+        strategy: 'role',
+        role: 'button',
+        name: 'Fresh',
+        exact: true,
+      })
+    try {
+      await checkedCommand('eval', {
+        script: `document.body.innerHTML = '<button>Keep</button><button id="highest">Highest</button><iframe src="/regression-frame"></iframe><iframe id="highest-frame" src="/regression-frame"></iframe>'; true`,
+      })
+      const first = await checkedCommand<Snapshot>('snapshot')
+      expect(first.elements).toHaveLength(2)
+      expect(first.frames).toHaveLength(2)
+      const oldElement = first.elements.reduce((a, b) => (index(a.ref) > index(b.ref) ? a : b)).ref
+      const oldFrame = first.frames.reduce((a, b) => (index(a.ref) > index(b.ref) ? a : b)).ref
+      await checkedCommand('eval', {
+        script: `document.getElementById('highest').remove(); document.getElementById('highest-frame').remove(); document.body.insertAdjacentHTML('beforeend', '<button id="fresh" onclick="this.dataset.clicks = String(Number(this.dataset.clicks || 0) + 1)">Fresh</button><iframe src="/regression-frame"></iframe>'); true`,
+      })
+      const fresh = await locate()
+      expect(index(fresh.match.ref)).toBeGreaterThan(index(oldElement))
+      const second = await checkedCommand<Snapshot>('snapshot')
+      expect(second.elements.find((item) => item.name === 'Fresh')?.ref).toBe(fresh.match.ref)
+      expect(Math.max(...second.frames.map((item) => index(item.ref)))).toBeGreaterThan(
+        index(oldFrame),
+      )
+      const staleClick = await command('click', { selector: oldElement })
+      expect(staleClick.ok).toBe(false)
+      expect(staleClick.error?.code).toBe('STALE_REFERENCE')
+      expect(
+        await checkedCommand('eval', {
+          script: 'document.getElementById("fresh").dataset.clicks || "0"',
+        }),
+      ).toBe('0')
+      expect((await command('frame', { selector: oldFrame })).ok).toBe(false)
+      await checkedCommand('frame', { selector: 'top' })
+
+      // 保留同一个 document，只删除全部 ref 节点，不能靠导航 epoch 避免复用。
+      await checkedCommand('eval', {
+        script: `document.body.innerHTML = '<button id="fresh" onclick="this.dataset.clicks = String(Number(this.dataset.clicks || 0) + 1)">Fresh</button><iframe src="/regression-frame"></iframe>'; true`,
+      })
+      const third = await checkedCommand<Snapshot>('snapshot')
+      expect(index(third.elements[0]!.ref)).toBeGreaterThan(
+        Math.max(...second.elements.map((item) => index(item.ref))),
+      )
+      expect(index(third.frames[0]!.ref)).toBeGreaterThan(
+        Math.max(...second.frames.map((item) => index(item.ref))),
+      )
+      expect((await locate()).match.ref).toBe(third.elements[0]!.ref)
+      expect((await command('click', { selector: fresh.match.ref })).error?.code).toBe(
+        'STALE_REFERENCE',
+      )
+      expect(
+        await checkedCommand('eval', {
+          script: 'document.getElementById("fresh").dataset.clicks || "0"',
+        }),
+      ).toBe('0')
+      expect((await command('frame', { selector: second.frames.at(-1)!.ref })).ok).toBe(false)
+    } finally {
+      await loadSmokePage()
+    }
+  }, 60_000)
+
+  test('changed snapshots include semantic-only mutations and removedRefs', async () => {
+    await loadSmokePage()
+    try {
+      await checkedCommand('eval', {
+        script: `document.body.innerHTML = '<input id="check" aria-label="Check" type="checkbox"><button id="disable">Disable</button><a id="link" href="/before">Link</a><input id="value" aria-label="Value" value="before"><button id="remove">Remove</button>'; true`,
+      })
+      const first = await checkedCommand<Snapshot>('snapshot', { changed: true })
+      expect(first.full).toBe(true)
+      expect(first.elements).toHaveLength(5)
+      expect((await checkedCommand<Snapshot>('snapshot', { changed: true })).elements).toHaveLength(
+        0,
+      )
+      const cases = [
+        {
+          name: 'Check',
+          script: 'document.getElementById("check").checked = true',
+          field: { checked: true },
+        },
+        {
+          name: 'Disable',
+          script: 'document.getElementById("disable").disabled = true',
+          field: { disabled: true },
+        },
+        {
+          name: 'Link',
+          script: 'document.getElementById("link").href = "/after"',
+          field: { href: new URL('/after', pageUrl).href },
+        },
+        {
+          name: 'Value',
+          script: 'document.getElementById("value").value = "after"',
+          field: { value: 'after' },
+        },
+      ]
+      for (const mutation of cases) {
+        await checkedCommand('eval', { script: mutation.script })
+        const delta = await checkedCommand<Snapshot>('snapshot', { changed: true })
+        expect(delta.full).toBe(false)
+        expect(delta.elements).toHaveLength(1)
+        expect(delta.elements[0]).toMatchObject({ name: mutation.name, ...mutation.field })
+        expect(delta.removedRefs).toEqual([])
+      }
+      const removed = first.elements.find((item) => item.name === 'Remove')!.ref
+      await checkedCommand('eval', { script: 'document.getElementById("remove").remove(); true' })
+      const delta = await checkedCommand<Snapshot>('snapshot', { changed: true })
+      expect(delta.elements).toHaveLength(0)
+      expect(delta.removedRefs).toEqual([removed])
+    } finally {
+      await loadSmokePage()
+    }
+  }, 60_000)
+
+  test('identical iframe snapshots isolate explicit/selected baselines and reset on document navigation', async () => {
+    await loadSmokePage()
+    try {
+      await checkedCommand('eval', {
+        script: `document.body.innerHTML = '<iframe id="one" src="/regression-frame?one"></iframe><iframe id="two" src="/regression-frame?two"></iframe>'; true`,
+      })
+      for (const frame of ['#one', '#two']) {
+        await checkedCommand('wait', { selector: '#same', frame, timeout: 15_000 })
+        const full = await checkedCommand<Snapshot>('snapshot', { frame, changed: true })
+        expect(full.full).toBe(true)
+        expect(full.elements).toHaveLength(1)
+        expect(full.elements[0]!.name).toBe('Same frame button')
+        expect(
+          (await checkedCommand<Snapshot>('snapshot', { frame, changed: true })).elements,
+        ).toHaveLength(0)
+      }
+      await checkedCommand('frame', { selector: '#one' })
+      expect((await checkedCommand<Snapshot>('snapshot', { changed: true })).elements).toHaveLength(
+        0,
+      )
+      await checkedCommand('eval', { script: 'document.getElementById("same").disabled = true' })
+      await checkedCommand('frame', { selector: '#two' })
+      expect((await checkedCommand<Snapshot>('snapshot', { changed: true })).elements).toHaveLength(
+        0,
+      )
+      const changedOne = await checkedCommand<Snapshot>('snapshot', {
+        frame: '#one',
+        changed: true,
+      })
+      expect(changedOne.elements).toHaveLength(1)
+      expect(changedOne.elements[0]!.disabled).toBe(true)
+      await checkedCommand('eval', {
+        frame: 'top',
+        script: 'document.getElementById("one").src = "/regression-frame?navigated"; true',
+      })
+      await checkedCommand('wait', {
+        frame: '#one',
+        fn: 'location.search === "?navigated" && document.readyState === "complete"',
+        timeout: 15_000,
+      })
+      const navigated = await checkedCommand<Snapshot>('snapshot', { frame: '#one', changed: true })
+      expect(navigated.full).toBe(true)
+      expect(navigated.elements).toHaveLength(1)
+      expect(navigated.elements[0]!.disabled).toBe(false)
+      expect(navigated.removedRefs).toEqual([])
+      expect((await checkedCommand<Snapshot>('snapshot', { changed: true })).elements).toHaveLength(
+        0,
+      )
+    } finally {
+      await loadSmokePage()
+    }
+  }, 60_000)
+
+  test('find write ambiguity has no side effects, while exact and explicit position act', async () => {
+    await loadSmokePage()
+    try {
+      await checkedCommand('eval', {
+        script: `document.body.innerHTML = '<button id="save" onclick="this.dataset.clicks = String(Number(this.dataset.clicks || 0) + 1)">Save</button><button id="copy" onclick="this.dataset.clicks = String(Number(this.dataset.clicks || 0) + 1)">Save copy</button>'; true`,
+      })
+      const target = { strategy: 'role', role: 'button', name: 'Save' }
+      const readClicks = () =>
+        checkedCommand('eval', {
+          script:
+            'Array.from(document.querySelectorAll("button"), node => Number(node.dataset.clicks || 0))',
+        })
+      expect((await checkedCommand<{ match: { name: string } }>('find', target)).match.name).toBe(
+        'Save',
+      )
+      const ambiguous = await command('find', { ...target, action: 'click' })
+      expect(ambiguous.ok).toBe(false)
+      expect(ambiguous.error?.code).toBe('AMBIGUOUS_TARGET')
+      expect(ambiguous.error?.suggestedAction).toContain('exact:true')
+      expect(await readClicks()).toEqual([0, 0])
+      await checkedCommand('find', { ...target, action: 'click', exact: true })
+      expect(await readClicks()).toEqual([1, 0])
+      await checkedCommand('find', { ...target, action: 'click', position: 'last' })
+      expect(await readClicks()).toEqual([1, 1])
+    } finally {
+      await loadSmokePage()
+    }
+  }, 60_000)
+
+  test('search paginates 10000 consecutive UTF-8 matches without gaps within line/byte budgets', async () => {
+    await loadSmokePage()
+    interface SearchResult {
+      totalMatches: number
+      truncated: boolean
+      nextStartLine?: number
+      windows: Array<{ lines: Array<{ line: number; text: string; matched: boolean }> }>
+    }
+    try {
+      await checkedCommand('eval', {
+        script: `document.body.innerHTML = '<pre id="lines"></pre>'; document.getElementById('lines').textContent = Array.from({ length: 10000 }, (_, i) => '命中-' + String(i + 1).padStart(5, '0') + '-' + '界'.repeat(220)).join('\\n'); true`,
+      })
+      let startLine = 1
+      let count = 0
+      let pages = 0
+      while (true) {
+        const result = await checkedCommand<SearchResult>('search', {
+          query: '/命中/g',
+          context: 50,
+          limit: 200,
+          startLine,
+        })
+        const lines = result.windows.flatMap((window) => window.lines)
+        expect(result.totalMatches).toBe(10000)
+        expect(lines.length).toBeGreaterThan(0)
+        expect(lines.length).toBeLessThanOrEqual(200)
+        expect(new TextEncoder().encode(JSON.stringify(result)).length).toBeLessThanOrEqual(100_000)
+        for (const [offset, line] of lines.entries()) {
+          expect(line.line).toBe(startLine + offset)
+          expect(line.text).toBe(
+            `命中-${String(count + offset + 1).padStart(5, '0')}-${'界'.repeat(220)}`,
+          )
+          expect(line.matched).toBe(true)
+        }
+        count += lines.length
+        pages++
+        if (result.nextStartLine === undefined) break
+        expect(result.truncated).toBe(true)
+        expect(result.nextStartLine).toBe(startLine + lines.length)
+        startLine = result.nextStartLine
+        expect(pages).toBeLessThan(200)
+      }
+      expect(count).toBe(10000)
+      expect(pages).toBeGreaterThan(50)
+      console.info(`[live-smoke] search read all ${count} UTF-8 lines in ${pages} pages`)
+    } finally {
+      await loadSmokePage()
+    }
+  }, 90_000)
+
+  test('cancelling a running batch prevents its next click and releases the queue', async () => {
+    await loadSmokePage()
+    const signal = crypto.randomUUID()
+    let batch: Promise<CommandResponse> | undefined
+    let runningId: string | undefined
+    try {
+      batch = command('batch', {
+        steps: [
+          {
+            command: 'eval',
+            args: {
+              script: `(async () => { await fetch('/batch-signal/${signal}'); await new Promise(resolve => setTimeout(resolve, 2500)); window.batchFinished = true; return true; })()`,
+            },
+          },
+          { command: 'click', args: { selector: '#increment' } },
+        ],
+      })
+      await waitFor(
+        'the first batch eval to start in Chrome',
+        () => batchSignals.has(signal),
+        10_000,
+      )
+      const listed = await checkedCommand<{ commands: Array<{ id: string; state: string }> }>(
+        'command',
+        { action: 'list' },
+      )
+      const running = listed.commands.filter((entry) => entry.state === 'running')
+      expect(running).toHaveLength(1)
+      runningId = running[0]!.id
+      expect(
+        await checkedCommand('command', { action: 'cancel', commandId: runningId }),
+      ).toMatchObject({ cancelled: true })
+      const cancelled = await batch
+      expect(cancelled.ok).toBe(false)
+      expect(cancelled.error?.code).toBe('COMMAND_CANCELLED')
+      // 先证明取消后队列可用，再等原 CDP promise 真正结束，不能仅在延迟中检查未点击。
+      expect(
+        await checkedCommand('eval', { script: 'document.getElementById("counter").textContent' }),
+      ).toBe('0')
+      await checkedCommand('wait', { fn: 'window.batchFinished === true', timeout: 10_000 })
+      await Bun.sleep(150)
+      expect(
+        await checkedCommand('eval', { script: 'document.getElementById("counter").textContent' }),
+      ).toBe('0')
+      await checkedCommand('click', { selector: '#increment' })
+      expect(
+        await checkedCommand('eval', { script: 'document.getElementById("counter").textContent' }),
+      ).toBe('1')
+    } finally {
+      if (runningId) await command('command', { action: 'cancel', commandId: runningId })
+      if (batch) await batch
+      batchSignals.delete(signal)
+      await loadSmokePage()
+    }
+  }, 30_000)
+
+  test('greater-than-16MiB eval strings, objects and HAR-shaped results round-trip intact', async () => {
+    await loadSmokePage()
+    const bytes = 17 * 1024 * 1024
+    try {
+      const text = await checkedCommand<string>('eval', {
+        script: `'begin:' + 'x'.repeat(${bytes}) + ':end'`,
+      })
+      expect(text).toBe(`begin:${'x'.repeat(bytes)}:end`)
+      const object = await checkedCommand<{ payload: string; nested: { tail: string } }>('eval', {
+        script: `({ payload: '界'.repeat(${6 * 1024 * 1024}), nested: { tail: 'synthetic-object-end' } })`,
+      })
+      expect(new TextEncoder().encode(JSON.stringify(object)).length).toBeGreaterThan(
+        16 * 1024 * 1024,
+      )
+      expect(object).toEqual({
+        payload: '界'.repeat(6 * 1024 * 1024),
+        nested: { tail: 'synthetic-object-end' },
+      })
+      const shaped = await checkedCommand<{
+        har: { log: { entries: Array<{ response: { content: { text: string } } }> } }
+      }>('eval', {
+        script: `({ har: { log: { entries: Array.from({ length: 65 }, (_, i) => ({ response: { content: { text: String(i).padStart(3, '0') + 'h'.repeat(256 * 1024) } } })) } } })`,
+      })
+      expect(new TextEncoder().encode(JSON.stringify(shaped)).length).toBeGreaterThan(
+        16 * 1024 * 1024,
+      )
+      expect(shaped.har.log.entries).toHaveLength(65)
+      for (const [i, entry] of shaped.har.log.entries.entries()) {
+        expect(entry.response.content.text).toBe(
+          `${String(i).padStart(3, '0')}${'h'.repeat(256 * 1024)}`,
+        )
+      }
+      expect(await checkedCommand('eval', { script: '"healthy after chunked transfers"' })).toBe(
+        'healthy after chunked transfers',
+      )
+    } finally {
+      await loadSmokePage()
+    }
+  }, 90_000)
+
+  test('HAR exports bodies for 65 real local 256KiB responses and keeps the connection usable', async () => {
+    await loadSmokePage()
+    let recording = false
+    try {
+      await checkedCommand('network', {
+        action: 'har',
+        subaction: 'start',
+        maxRequests: 100,
+        maxBodyBytes: 1024 * 1024,
+      })
+      recording = true
+      const fetched = await checkedCommand<number[]>('eval', {
+        timeoutMs: 60_000,
+        script: `(async () => { const lengths = []; for (let i = 0; i < 65; i++) { const response = await fetch('/har-body/' + i, { cache: 'no-store' }); lengths.push((await response.text()).length); await new Promise(resolve => setTimeout(resolve, 25)); } return lengths; })()`,
+      })
+      expect(fetched).toEqual(Array(65).fill(harBody.length))
+      const stopped = await checkedCommand<{
+        requestCount: number
+        har: {
+          log: {
+            entries: Array<{
+              request: { url: string }
+              response: { status: number; content: { text?: string; comment?: string } }
+            }>
+          }
+        }
+      }>('network', { action: 'har', subaction: 'stop' })
+      recording = false
+      const entries = stopped.har.log.entries.filter((entry) =>
+        new URL(entry.request.url).pathname.startsWith('/har-body/'),
+      )
+      expect(entries).toHaveLength(65)
+      expect(stopped.requestCount).toBeGreaterThanOrEqual(65)
+      for (const [i, entry] of entries.entries()) {
+        expect(new URL(entry.request.url).pathname).toBe(`/har-body/${i}`)
+        expect(entry.response.status).toBe(200)
+        expect(entry.response.content.comment).toBeUndefined()
+        expect(entry.response.content.text).toBe(harBody)
+      }
+      expect(new TextEncoder().encode(JSON.stringify(stopped)).length).toBeGreaterThan(
+        16 * 1024 * 1024,
+      )
+      expect(await checkedCommand('eval', { script: '65' })).toBe(65)
+    } catch (error) {
+      await logExtensionDiagnostics()
+      throw error
+    } finally {
+      if (recording) await checkedCommand('network', { action: 'har', subaction: 'stop' })
+      await loadSmokePage()
+    }
+  }, 90_000)
+
+  test('eval honors an explicit 60s budget for a real 35s promise', async () => {
+    await loadSmokePage()
+    try {
+      const started = performance.now()
+      expect(
+        await checkedCommand('eval', {
+          timeoutMs: 60_000,
+          script: 'new Promise(resolve => setTimeout(() => resolve("35s complete"), 35000))',
+        }),
+      ).toBe('35s complete')
+      expect(performance.now() - started).toBeGreaterThanOrEqual(35_000)
+      expect(await checkedCommand('eval', { script: '"healthy after long eval"' })).toBe(
+        'healthy after long eval',
+      )
+    } finally {
+      await loadSmokePage()
+    }
+  }, 90_000)
+
+  test('reports actual find/snapshot timing on 100 controls plus 20000 divs', async () => {
+    await loadSmokePage()
+    try {
+      expect(
+        await checkedCommand('eval', {
+          script: `document.body.innerHTML = Array.from({ length: 20000 }, (_, i) => '<div id="decoration-' + i + '">synthetic div ' + i + '</div>').join('') + Array.from({ length: 100 }, (_, i) => '<label for="control-' + i + '">Control ' + i + '</label><input id="control-' + i + '">').join(''); ({ divs: document.querySelectorAll('div').length, inputs: document.querySelectorAll('input').length })`,
+        }),
+      ).toEqual({ divs: 20000, inputs: 100 })
+      const findMs: number[] = []
+      const snapshotMs: number[] = []
+      for (let i = 0; i < 3; i++) {
+        const snapshotStart = performance.now()
+        const snapshot = await checkedCommand<Snapshot>('snapshot')
+        snapshotMs.push(Number((performance.now() - snapshotStart).toFixed(2)))
+        expect(snapshot.elements).toHaveLength(100)
+        const findStart = performance.now()
+        const response = await command('find', {
+          strategy: 'role',
+          role: 'textbox',
+          name: 'Control 99',
+          exact: true,
+        })
+        findMs.push(Number((performance.now() - findStart).toFixed(2)))
+        console.info(
+          `[live-smoke] large DOM sample ${i + 1}: snapshot=${snapshotMs.at(-1)}ms, find=${findMs.at(-1)}ms, find.ok=${response.ok}`,
+        )
+        expect(response.error).toBeUndefined()
+        expect(response.ok).toBe(true)
+        const found = response.result as { match: { name: string; ref: string } }
+        expect(found.match.name).toBe('Control 99')
+        expect(snapshot.elements.find((item) => item.name === 'Control 99')?.ref).toBe(
+          found.match.ref,
+        )
+      }
+      console.info(
+        `[live-smoke] 20000 divs + 100 controls, wall-clock ms: find=${JSON.stringify(findMs)}, snapshot=${JSON.stringify(snapshotMs)} (no baseline comparison)`,
+      )
+    } finally {
       await loadSmokePage()
     }
   }, 60_000)

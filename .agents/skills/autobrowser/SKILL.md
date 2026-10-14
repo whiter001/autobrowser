@@ -61,8 +61,11 @@ autobrowser 是一个面向 Chrome/Edge 的浏览器自动化 CLI，通过本地
   - `--har-max-requests <n>`
   - `--har-max-body-bytes <n>`
   - `--har-unlimited`
-- `network har stop [output.har]` 会返回完整 HAR；CLI 只会在面对较旧扩展时回退到重新组装网络请求。
-- `--har-unlimited` 不限制 autobrowser 自身保存的 body 大小；若浏览器 CDP 对 `Network.getResponseBody` 触发配额错误，HAR 仍会导出，并在对应 entry 的 `response.content.comment` 标明 body 获取失败原因。
+- 未启动 HAR 时只自动监控网络元数据，不预取 body；`network request <id>` 按需通过 CDP 获取 body，历史请求或失效 CDP 会话可能无法补取，须查看获取失败信息。`--include-details` 只包含已存储的详情，不保证 body 完整。
+- HAR body 获取使用 4 个并发槽和每次 10 秒逻辑超时；底层 CDP 不可中止时仍占槽直到结束，不会因超时无限启动新请求。`stop` 只等待本次 capture 的有界任务。
+- `--har-max-body-bytes` 只限制 body 存储大小，不限制 CDP 下载或传输量。
+- `network har stop [output.har]` 的大结果会透明分块并重组后返回 HAR；传输超限明确报错，不静默截断。CLI 只会在面对较旧扩展时回退到重新组装网络请求。
+- `--har-unlimited` 不限制 autobrowser 自身保存的 body 大小，但不是绕过 CDP/传输资源上限；若浏览器 CDP 对 `Network.getResponseBody` 触发配额错误，HAR 仍会导出，并在对应 entry 的 `response.content.comment` 标明 body 获取失败原因。
 
 ## 等待语义
 
@@ -70,6 +73,20 @@ autobrowser 是一个面向 Chrome/Edge 的浏览器自动化 CLI，通过本地
 - 如果要等 3 秒，请写成 `wait time 3000`。
 - `--timeout <ms>` 也是毫秒。
 - 如果页面仍在加载，优先使用 `open <url>` 后再配合短等待，或直接用 `wait --load networkidle`。
+
+## 搜索、引用与歧义恢复
+
+- `search "error" --context 3 --limit 20` 只读搜索可见文本。`context` 为 0–50；`limit` 限制匹配窗口数（默认 20、最大 200；0 不返回窗口或续读游标），但每次仍最多返回 200 行、100000 UTF-8 字节，单个合并窗口也可能截断。
+- `--start-line <n>` 是 1 起算的正安全整数，默认 1。若 `truncated:true` 且有 `nextStartLine:201`，保持查询和 tab/frame 不变，运行 `search "error" --context 3 --limit 20 --start-line 201` 续读；MCP 对应 `search({query:"error", context:3, limit:20, startLine:201})`。页面变更后行号可能变化，应重新搜索确认。
+- `snapshot`/`find` 在同一 document 内不复用已分配 ref；这不代表被删除节点仍有效。导航后 ref stale，删除/重渲染后先刷新 snapshot。
+- `snapshot --changed` 包含 checked/disabled 等状态变化与 `removedRefs`；基线按 document/frame 隔离。输出有 200000 UTF-8 字节预算，`truncated` 时用 `--target`/`--role` 收窄或 `--changed` 查看后续变化；只有实际交付的元素进入基线。
+- `find --name` 默认 substring，不是 exact；需要精确匹配用 `--exact`（MCP `exact:true`），`exact-name` 策略恒精确。只读 locate/text 默认取 first；写操作多匹配且未显式 position 时返回 `AMBIGUOUS_TARGET` 和候选。先检查 `--candidates 3`、收窄条件，再明确选择 `--position first|last|nth=N` 或使用确认后的 ref，不盲目重复写操作。
+
+## 总预算与重试
+
+- 请求预算默认 30 秒；显式 eval/navigation/click `timeoutMs`、wait `timeout`/`ms` 加 5 秒传输余量，且不低于默认预算。batch 合成逐步预算、重试、延迟和嵌套预算；总上限 30 分钟，**包含余量**，超大或非有限值会被拒绝。
+- 已发送命令断连时结果可能未知，不会自动重放。先检查 `status`、`command list` 与页面实际状态，确认副作用后再决定是否重试；取消/超时阻止后续 batch 步骤，但不能撤销已发生的操作或所有在途 CDP 调用。
+- batch 显式 `retries` 可能重复失败步骤已发生的副作用，不是幂等保证。提交、付款、删除等动作不要仅因报错就重放。
 
 ## eval 使用边界
 

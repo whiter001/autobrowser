@@ -35,7 +35,12 @@
 - `script add/list/remove`，用于管理每次导航后、页面自身脚本执行前注入的初始化脚本
 - 模态状态显式建模：JS 对话框（confirm/prompt）按 tab 跟踪，`snapshot` 会返回 modal 描述，交互类命令返回 `MODAL_OPEN` 错误码与 `suggestedAction`；alert/beforeunload 仍自动接受，但记录在 `lastDialog` 中供 agent 感知
 - 语义定位增强：`find` 扩展为 `role`/`text`/`label`/`placeholder`/`alt`/`title`/`test-id`/`exact-name` 八种策略，支持 `--position first|last|nth=N` 位置选择与 `--candidates <n>` Top-N 候选列表（精确匹配优先、可交互元素优先排序）
-- `search` 全文检索：对页面可见文本按行匹配并返回上下文窗口（支持 `/pattern/flags` 正则与 `--context`/`--limit`），只读、不定位元素，与 `find` 的定位语义互补
+- `search` 全文检索：支持 `/pattern/flags`、`--context`（0–50）、`--limit`（窗口数，默认20、最大200；0不返回窗口）和 1 起算的 `--start-line`（MCP `startLine`）。每次最多200返回行/100000 UTF-8字节，`truncated` 且有 `nextStartLine` 时保持查询/目标不变续读，例如 `search "error" --start-line 201`。
+- 当前引用/歧义规则：snapshot/find 在同一 document 内不复用 ref，但删除节点无效、导航后 stale。`snapshot --changed` 包含状态变化和 `removedRefs`，按 document/frame 隔离基线；200000 UTF-8字节预算截断时收窄 target/roles 或使用 changed。`find.name` 默认子串，`exact:true` 精确；locate/text 默认 first，写操作多匹配返回 `AMBIGUOUS_TARGET` 与候选，检查 candidates 后收窄或显式 position。
+- 当前执行预算：默认30秒，显式 eval/navigation/click timeoutMs、wait timeout/ms 加5秒余量且不低于默认；batch 合成步骤/重试/延迟/嵌套预算，总上限30分钟含余量。已发送后断连的未知结果不自动重放；显式 batch retries 可能重复副作用，不提供幂等性。
+- 当前网络策略：未 HAR 仅自动监控元数据，request detail 按需 CDP 获取 body，历史请求可能失效；HAR body 使用4槽/10秒逻辑超时，不可中止的底层工作继续占槽。maxBodyBytes 只限存储，stop 只等待本次 capture，大结果透明分块重组或明确报超限。
+
+以下“缺口/建议”保留早期设计讨论，不应覆盖上述已实现行为；例如候选排序、位置选择、stale 检测和 batch 已有实现。
 
 当前架构仍然是扩展优先：
 

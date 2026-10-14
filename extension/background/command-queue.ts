@@ -16,10 +16,16 @@ export interface CommandQueueEntry {
   error: string | null
 }
 
+export interface CommandExecutionContext {
+  readonly cancelled: boolean
+  readonly deadlineAt: string | null
+  throwIfCancelled: () => void
+}
+
 export interface CommandQueue {
   enqueue: <TResult>(
     key: string,
-    task: () => Promise<TResult>,
+    task: (context: CommandExecutionContext) => Promise<TResult>,
     options?: { id?: string; deadlineAt?: string | null },
   ) => Promise<TResult>
   cancel: (id: string) => boolean
@@ -28,7 +34,7 @@ export interface CommandQueue {
 }
 
 interface QueueItem<TResult = unknown> extends CommandQueueEntry {
-  task: () => Promise<TResult>
+  task: (context: CommandExecutionContext) => Promise<TResult>
   resolve: (value: TResult) => void
   reject: (reason: Error) => void
   settled: boolean
@@ -94,8 +100,23 @@ export function createCommandQueue(): CommandQueue {
     }
     item.state = 'running'
     item.startedAt = new Date().toISOString()
-    void item
-      .task()
+    const context: CommandExecutionContext = {
+      get cancelled() {
+        return (
+          item.state === 'cancelled' || (Number.isFinite(deadlineMs) && Date.now() >= deadlineMs)
+        )
+      },
+      deadlineAt: item.deadlineAt,
+      throwIfCancelled() {
+        if (this.cancelled) throw createCancellationError(item.id, 'cancelled or deadline elapsed')
+      },
+    }
+    // 同步异常也必须走队列清理路径；取消后即使底层任务迟到，后续步骤也能读到同一状态。
+    const execute = async () => {
+      context.throwIfCancelled()
+      return await item.task(context)
+    }
+    void execute()
       .then(
         (result) => {
           if (!item.settled) {
@@ -132,7 +153,7 @@ export function createCommandQueue(): CommandQueue {
 
   function enqueue<TResult>(
     key: string,
-    task: () => Promise<TResult>,
+    task: (context: CommandExecutionContext) => Promise<TResult>,
     options: { id?: string; deadlineAt?: string | null } = {},
   ): Promise<TResult> {
     const id = options.id || crypto.randomUUID()

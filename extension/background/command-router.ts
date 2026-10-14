@@ -15,7 +15,8 @@ import {
   toTabSummary,
 } from './targeting.js'
 import { serializeCommandError, type SerializedCommandError } from './errors.js'
-import { createCommandQueue } from './command-queue.js'
+import { createCommandQueue, type CommandExecutionContext } from './command-queue.js'
+import { getCommandRequestBudgetMs } from '../../src/core/command-budget.js'
 import { DEFAULT_PAGE_SIZE, paginateList } from './pagination.js'
 import { commandSupportsTabTarget, validateCommandArgs } from '../../src/core/command-spec.js'
 import type {
@@ -593,6 +594,7 @@ export function createCommandRouter({
       query: readStringArg(args, 'query').trim(),
       name: readStringArg(args, 'name').trim(),
       exact: args.exact === true,
+      requireUnique: action !== 'locate' && action !== 'text' && !position,
       ...(position ? { position } : {}),
       ...(candidatesCount > 0 ? { candidates: candidatesCount } : {}),
     }
@@ -1028,6 +1030,7 @@ export function createCommandRouter({
     step: BatchCommandStep,
     index: number,
     options: BatchCommandOptions,
+    context?: CommandExecutionContext,
   ): Promise<{
     result: BatchCommandStepResult
     failed: boolean
@@ -1042,9 +1045,11 @@ export function createCommandRouter({
       : 0
 
     while (attempt <= maxRetries) {
+      context?.throwIfCancelled()
       try {
-        // batch 已在自身队列槽内执行，子步骤再进队列会死锁，直接执行
-        const result = await executeCommand(step.command, step.args, true)
+        // batch 已在自身队列槽内执行，嵌套步骤共享取消状态，不能重新创建上下文。
+        const result = await executeCommand(step.command, step.args, true, undefined, context)
+        context?.throwIfCancelled()
         return {
           result: {
             index: index + 1,
@@ -1058,6 +1063,7 @@ export function createCommandRouter({
           retryCount,
         }
       } catch (error) {
+        context?.throwIfCancelled()
         lastError = error
         if (attempt >= maxRetries) {
           break
@@ -1065,6 +1071,7 @@ export function createCommandRouter({
 
         retryCount += 1
         await waitForRetryDelay(options.retryDelayMs)
+        context?.throwIfCancelled()
       }
 
       attempt += 1
@@ -1223,6 +1230,7 @@ export function createCommandRouter({
 
   async function handleBatchCommand(
     args: CommandArgs,
+    context?: CommandExecutionContext,
   ): Promise<{ steps: BatchCommandStepResult[]; summary: BatchCommandSummary }> {
     const steps = readBatchCommandSteps(args)
     const options = readBatchCommandOptions(args)
@@ -1236,6 +1244,7 @@ export function createCommandRouter({
     let terminatedAtIndex: number | null = null
 
     for (const [index, step] of steps.entries()) {
+      context?.throwIfCancelled()
       if (terminated) {
         skippedCount += 1
         results.push(
@@ -1263,7 +1272,7 @@ export function createCommandRouter({
         }
       }
 
-      const stepExecution = await executeBatchStep(step, index, options)
+      const stepExecution = await executeBatchStep(step, index, options, context)
       results.push(stepExecution.result)
 
       if (stepExecution.failed) {
@@ -1429,7 +1438,9 @@ export function createCommandRouter({
     args: CommandArgs = {},
     skipQueue = false,
     request?: { id?: string; deadlineAt?: string },
+    context?: CommandExecutionContext,
   ) {
+    context?.throwIfCancelled()
     validateCommandArgs(command, args)
 
     const tabId = readTabInputArg(args, 'tabId')
@@ -1488,6 +1499,7 @@ export function createCommandRouter({
     await assertNoOpenDialog(command, tabTarget)
 
     async function runCommand(): Promise<unknown> {
+      context?.throwIfCancelled()
       switch (command) {
         case 'status':
           return {
@@ -1607,6 +1619,9 @@ export function createCommandRouter({
               query: searchQuery,
               context: searchContext,
               limit: searchLimit,
+              ...(args.startLine !== undefined
+                ? { startLine: readNumberArg(args, 'startLine', 1) }
+                : {}),
             },
             frameSelector,
           )
@@ -1847,7 +1862,7 @@ export function createCommandRouter({
           return { errors: items, pagination }
         }
         case 'batch':
-          return await handleBatchCommand(args)
+          return await handleBatchCommand(args, context)
         case 'script':
           if (action === 'add') {
             return await initScripts.addScript(readStringArg(args, 'source'))
@@ -1899,7 +1914,7 @@ export function createCommandRouter({
             })
           }
           if (action === 'request') {
-            return network.getRequestDetail(requestId, resolveEffectiveTargetTabId(tabTarget))
+            return await network.getRequestDetail(requestId, resolveEffectiveTargetTabId(tabTarget))
           }
           if (action === 'har') {
             if (subaction === 'start') {
@@ -1995,7 +2010,19 @@ export function createCommandRouter({
     const result =
       skipQueue || CONTROL_COMMANDS.has(command) || networkControl
         ? await runCommand()
-        : await commandQueue.enqueue(resolveCommandQueueKey(tabTarget), runCommand, request)
+        : await commandQueue.enqueue(
+            resolveCommandQueueKey(tabTarget),
+            async (queueContext) => {
+              context = queueContext
+              return await runCommand()
+            },
+            {
+              ...request,
+              deadlineAt:
+                request?.deadlineAt ??
+                new Date(Date.now() + getCommandRequestBudgetMs(command, args)).toISOString(),
+            },
+          )
     const meta = await buildCommandMeta(command, args, tabTarget, frameSelector)
     return attachCommandMeta(result, meta)
   }

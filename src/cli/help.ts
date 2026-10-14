@@ -24,7 +24,7 @@ function helpNode(
 
 const HELP_ROOT = helpNode(
   'autobrowser',
-  'Browser automation CLI for controlling Chrome/Edge through a relay server and extension.',
+  'Browser automation CLI for controlling Chrome/Edge through a relay server and extension. Request budget defaults to 30s; explicit eval/navigation/click timeoutMs or wait timeout/ms adds 5s transport allowance (at least 30s). Batch combines step/retry/delay budgets; maximum 30 minutes including allowance. Sent commands with unknown outcomes are not automatically replayed: inspect status, command list and page state before retrying.',
   'autobrowser [command] [options]',
   [
     '--json',
@@ -46,6 +46,11 @@ const HELP_ROOT = helpNode(
       'batch',
       'Execute commands in sequence with optional retries and continue-on-error.',
       'autobrowser batch [--stdin|--file <path>|--base64] <json-array|json-object>',
+      [
+        'retries may repeat side effects from a failed step; retries are NOT an idempotency guarantee.',
+        'The total budget combines step budgets, retries, delays and nested batches; maximum 30 minutes including transport allowance.',
+        'Cancellation/deadline stops subsequent steps, but cannot undo side effects or abort all in-flight CDP work.',
+      ],
     ),
     helpNode(
       'server',
@@ -197,7 +202,14 @@ const HELP_ROOT = helpNode(
       'find',
       'Find elements by role, text, label, or other attributes and optionally act on them.',
       'autobrowser find <role|text|label|placeholder|alt|title|test-id|exact-name> <query> [locate|click|fill|type|hover|focus|check|uncheck|text] [value]',
-      ['--name <name>', '--exact', '--position <first|last|nth=N>', '--candidates <n>'],
+      [
+        '--name <name>  accessible name substring by default',
+        '--exact  require exact matching (exact-name strategy is always exact)',
+        '--position <first|last|nth=N>  explicitly choose a match, including for write actions',
+        '--candidates <n>  inspect ranked candidates with locate before choosing a target',
+        'Read-only locate/text default to first; write actions with multiple matches return AMBIGUOUS_TARGET and candidates.',
+        'Resolve ambiguity by narrowing the query/--exact, inspecting --candidates, or deliberately setting --position.',
+      ],
     ),
     helpNode(
       'type',
@@ -466,18 +478,31 @@ const HELP_ROOT = helpNode(
           'autobrowser network export [output.jsonl] [--filter <text>] [--type <xhr,fetch>] [--method <POST>] [--status <2xx>]',
           ['--filter <text>', '--type <xhr,fetch>', '--method <POST>', '--status <2xx>'],
         ),
-        helpNode('request', 'Inspect a single request.', 'autobrowser network request <requestId>'),
+        helpNode(
+          'request',
+          'Inspect a single request; without HAR only metadata is monitored automatically.',
+          'autobrowser network request <requestId>',
+          [
+            'Body is fetched on demand via CDP; historical/expired requests may report body retrieval failure.',
+          ],
+        ),
         helpNode(
           'har',
           'Record or stop HAR capture.',
           'autobrowser network har <start|stop|status|recover>',
-          undefined,
+          [
+            'Body fetches use 4 slots and a 10s logical timeout; uncancellable CDP work keeps its slot until settled.',
+          ],
           [
             helpNode(
               'start',
               'Start HAR capture with configurable limits.',
               'autobrowser network har start [--har-max-requests <n>] [--har-max-body-bytes <n>] [--har-unlimited]',
-              ['--har-max-requests <n>', '--har-max-body-bytes <n>', '--har-unlimited'],
+              [
+                '--har-max-requests <n>',
+                '--har-max-body-bytes <n>  limits storage only, not CDP download/transfer bytes',
+                '--har-unlimited  does not bypass CDP or response transfer resource limits',
+              ],
             ),
             helpNode(
               'status',
@@ -493,6 +518,9 @@ const HELP_ROOT = helpNode(
               'stop',
               'Stop HAR capture and save it.',
               'autobrowser network har stop [output.har]',
+              [
+                'Waits only for this capture; large results are transparently chunked/reassembled or explicitly rejected for size, not silently truncated.',
+              ],
             ),
           ],
         ),
@@ -518,7 +546,9 @@ const HELP_ROOT = helpNode(
       [
         '--target <selector|@eN>  limit the snapshot to an element subtree',
         '--role <button,link,...>  only return elements with matching roles; @eN refs stay stable across snapshots',
-        '--changed  only return elements added or changed since the last snapshot; first run returns the full snapshot with full:true',
+        '--changed  return added/changed elements including checked/disabled state and removedRefs; first run or navigation returns full:true',
+        'Refs are not reused within a document; removed nodes are invalid and navigation makes refs stale. Refresh before acting.',
+        'Output has a 200000 UTF-8 byte budget. If truncated, narrow --target/--role or use --changed; only delivered elements enter the baseline.',
       ],
       [
         helpNode(
@@ -536,10 +566,14 @@ const HELP_ROOT = helpNode(
     helpNode(
       'search',
       'Search the page visible text and return matching lines with context.',
-      'autobrowser search <query|/regex/flags> [--context <n>] [--limit <n>]',
+      'autobrowser search <query|/regex/flags> [--context <n>] [--limit <n>] [--start-line <n>]',
       [
-        '--context <n>  number of surrounding lines to include before and after each match (default 3)',
-        '--limit <n>  maximum number of match windows to return (default 20)',
+        '--context <n>  surrounding lines before and after each match (default 3, integer 0-50)',
+        '--limit <n>  maximum match windows (default 20, capped at 200; 0 returns no windows or cursor)',
+        '--start-line <n>  positive safe integer, 1-based starting line (default 1)',
+        'Output is bounded to 200 returned lines and 100000 UTF-8 bytes, even within one merged window.',
+        'If truncated and nextStartLine is present, repeat the same query with --start-line <nextStartLine>.',
+        'Example: nextStartLine:201 -> autobrowser search "error" --context 3 --start-line 201',
       ],
     ),
   ],

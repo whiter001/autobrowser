@@ -3,6 +3,9 @@ import { createExtensionState } from '../extension/background/state.js'
 import { resolveEffectiveFrameSelector } from '../extension/background/targeting.js'
 import {
   collapseWhitespace,
+  boundPageText,
+  getPageObservationState,
+  createPageNameIndex,
   parsePageContextElementRefIndex,
   splitWhitespaceTokens,
 } from '../extension/background/page-context-helpers.js'
@@ -47,6 +50,38 @@ describe('page context helpers', () => {
     expect(
       evaluateSerializedHelpers<number | null>("parsePageContextElementRefIndex(' e42 ')"),
     ).toBe(42)
+  })
+
+  test('UTF8 bounding preserves codepoints and serializes without module closures', () => {
+    const bound = new Function(`return (${boundPageText.toString()})`)() as typeof boundPageText
+    expect(bound('😀界abc', 6)).toBe('😀')
+    expect(bound('界'.repeat(10000), 10)).toBe('界界界')
+    expect(new TextEncoder().encode(bound('😀'.repeat(10000), 1024)).length).toBe(1024)
+  })
+
+  test('document identity persists until epoch/document changes', () => {
+    const doc = {}
+    const first = getPageObservationState(doc, 1)
+    first.highWater.e = 99
+    expect(getPageObservationState(doc, 1)).toBe(first)
+    expect(getPageObservationState(doc, 2).id).not.toBe(first.id)
+    expect(getPageObservationState({}, 2).highWater).toEqual({})
+  })
+
+  test('name indexes preserve the first id/label match in one iteration', () => {
+    const first = { id: 'same', tagName: 'LABEL', getAttribute: () => 'input' }
+    const duplicate = { ...first }
+    let visits = 0
+    const nodes = (function* () {
+      visits++
+      yield first
+      visits++
+      yield duplicate
+    })()
+    const index = createPageNameIndex(nodes as never)
+    expect(index.ids.get('same')).toBe(first as never)
+    expect(index.labels.get('input')).toBe(first as never)
+    expect(visits).toBe(2)
   })
 })
 

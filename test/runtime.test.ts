@@ -3,6 +3,12 @@ import { access, mkdir, mkdtemp, readFile, rm, utimes, writeFile } from 'node:fs
 import os from 'node:os'
 import path from 'node:path'
 import { createRuntime } from '../src/core/runtime.js'
+import { shouldTriggerAutoConnect } from '../src/cli/client.js'
+import {
+  MAX_RESPONSE_BYTES,
+  responseByteLength,
+  responseChunks,
+} from '../src/core/response-transfer.js'
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
@@ -48,6 +54,148 @@ describe('runtime snapshot', () => {
         await rm(dir, { recursive: true, force: true })
       }),
     )
+  })
+
+  test('only assembles pending requests and releases budgets on every lifecycle exit', async () => {
+    const homeDir = await mkdtemp(path.join(os.tmpdir(), 'autobrowser-runtime-test-'))
+    tempDirs.push(homeDir)
+    const runtime = await createTestRuntime({
+      homeDir,
+      requestTimeoutMs: 50,
+      heartbeatTimeoutMs: 0,
+    })
+    const sent: Array<{ type: string; id: string }> = []
+    const socket = {
+      readyState: WebSocket.OPEN,
+      send(payload: string) {
+        sent.push(JSON.parse(payload))
+        return 1
+      },
+      close() {},
+    } as unknown as Bun.ServerWebSocket<{}>
+    runtime.attachExtension(socket)
+    const start = (id: string, totalBytes = MAX_RESPONSE_BYTES) =>
+      runtime.handleExtensionMessage({ type: 'response.start', id, sequence: 0, totalBytes })
+    const begin = async () => {
+      const outcome = runtime.dispatchCommand('snapshot').catch((error: unknown) => error)
+      await Promise.resolve()
+      const id = sent.filter((message) => message.type === 'command').at(-1)!.id
+      return { id, outcome }
+    }
+    for (let index = 0; index < 100; index += 1) start(`unknown-${index}`)
+    for (const exit of ['ordinary', 'malformed', 'timeout', 'disconnect', 'replace']) {
+      const first = await begin()
+      start(first.id)
+      const second = await begin()
+      start(second.id, 1)
+      expect(await second.outcome).toMatchObject({
+        code: 'RESPONSE_TOO_LARGE',
+        suggestedAction: expect.any(String),
+      })
+      if (exit === 'ordinary')
+        runtime.handleExtensionMessage({
+          type: 'response',
+          id: first.id,
+          ok: true,
+          result: 'old extension',
+        })
+      if (exit === 'malformed')
+        runtime.handleExtensionMessage({
+          type: 'response.chunk',
+          id: first.id,
+          sequence: 5,
+          byteLength: 1,
+          data: 'x',
+        })
+      if (exit === 'disconnect') runtime.detachExtension()
+      if (exit === 'replace') runtime.attachExtension({ ...socket } as Bun.ServerWebSocket<{}>)
+      const outcome = await first.outcome
+      if (exit === 'ordinary') expect(outcome).toBe('old extension')
+      else
+        expect(outcome).toMatchObject({
+          code:
+            exit === 'timeout'
+              ? 'COMMAND_TIMEOUT'
+              : exit === 'malformed'
+                ? 'RESPONSE_TRANSFER_ERROR'
+                : 'COMMAND_EXECUTION_UNKNOWN',
+        })
+      runtime.attachExtension(socket)
+      start(first.id)
+      runtime.handleExtensionMessage({
+        type: 'response.chunk',
+        id: first.id,
+        sequence: 0,
+        data: 'late',
+        byteLength: 4,
+      })
+      const after = await begin()
+      start(after.id)
+      runtime.handleExtensionMessage({
+        type: 'response',
+        id: after.id,
+        ok: true,
+        result: 'released',
+      })
+      expect(await after.outcome).toBe('released')
+    }
+  })
+
+  test('assembled responses reuse envelope validation and preserve actionable errors', async () => {
+    const homeDir = await mkdtemp(path.join(os.tmpdir(), 'autobrowser-runtime-test-'))
+    tempDirs.push(homeDir)
+    const runtime = await createTestRuntime({ homeDir, requestTimeoutMs: 200 })
+    let currentId = ''
+    runtime.attachExtension({
+      readyState: WebSocket.OPEN,
+      send(payload: string) {
+        const message = JSON.parse(payload)
+        if (message.type === 'command') currentId = message.id
+        return 1
+      },
+    } as unknown as Bun.ServerWebSocket<{}>)
+    for (const invalid of [false, true]) {
+      const outcome = runtime.dispatchCommand('snapshot').catch((error: unknown) => error)
+      await Promise.resolve()
+      const text = JSON.stringify({
+        type: 'response',
+        id: currentId,
+        ok: invalid ? 'not a boolean' : false,
+        error: {
+          code: 'SYNTHETIC',
+          message: 'failure',
+          suggestedAction: 'Inspect snapshot before retrying.',
+        },
+      })
+      const totalBytes = responseByteLength(text)
+      runtime.handleExtensionMessage({
+        type: 'response.start',
+        id: currentId,
+        sequence: 0,
+        totalBytes,
+      })
+      const chunks = [...responseChunks(text)]
+      chunks.forEach((data, sequence) =>
+        runtime.handleExtensionMessage({
+          type: 'response.chunk',
+          id: currentId,
+          sequence,
+          data,
+          byteLength: responseByteLength(data),
+        }),
+      )
+      runtime.handleExtensionMessage({
+        type: 'response.end',
+        id: currentId,
+        sequence: chunks.length,
+        totalBytes,
+      })
+      expect(await outcome).toMatchObject(
+        invalid
+          ? { code: 'RESPONSE_TRANSFER_ERROR' }
+          : { code: 'SYNTHETIC', suggestedAction: 'Inspect snapshot before retrying.' },
+      )
+    }
   })
 
   test('records the target tab id from extension state messages', async () => {
@@ -462,6 +610,110 @@ describe('runtime snapshot', () => {
     })
   })
 
+  test('disconnect and replacement report unknown outcomes that CLI will not replay', async () => {
+    for (const replace of [false, true]) {
+      const homeDir = await mkdtemp(path.join(os.tmpdir(), 'autobrowser-runtime-test-'))
+      tempDirs.push(homeDir)
+      const runtime = await createTestRuntime({ homeDir, requestTimeoutMs: 100 })
+      let sent!: () => void
+      const delivered = new Promise<void>((resolve) => {
+        sent = resolve
+      })
+      const socket = {
+        readyState: WebSocket.OPEN,
+        send: () => {
+          sent()
+          return -1
+        },
+        close: () => {},
+      } as unknown as Bun.ServerWebSocket<{}>
+      runtime.attachExtension(socket)
+      const outcome = runtime
+        .dispatchCommand('click', { selector: '#submit' })
+        .catch((error) => error)
+      await delivered
+      if (replace)
+        runtime.attachExtension({
+          readyState: WebSocket.OPEN,
+          send: () => 1,
+        } as unknown as Bun.ServerWebSocket<{}>)
+      else runtime.detachExtension(socket)
+      const error = (await outcome) as Error & { code?: string }
+      expect(error).toMatchObject({
+        code: 'COMMAND_EXECUTION_UNKNOWN',
+        details: { commandId: expect.any(String) },
+      })
+      expect(shouldTriggerAutoConnect({ ok: false, error })).toBe(false)
+    }
+    expect(
+      shouldTriggerAutoConnect({
+        ok: false,
+        error: { code: 'EXTENSION_DISCONNECTED', message: 'not sent' },
+      }),
+    ).toBe(true)
+  })
+
+  test('keeps backpressured sends pending and delivers the eventual response', async () => {
+    const homeDir = await mkdtemp(path.join(os.tmpdir(), 'autobrowser-runtime-test-'))
+    tempDirs.push(homeDir)
+    const runtime = await createTestRuntime({ homeDir, requestTimeoutMs: 100 })
+    const socket = {
+      readyState: WebSocket.OPEN,
+      send(payload: string) {
+        const message = JSON.parse(payload)
+        setTimeout(
+          () =>
+            runtime.handleExtensionMessage({
+              type: 'response',
+              id: message.id,
+              ok: true,
+              result: 'delivered',
+            }),
+          10,
+        )
+        return -1
+      },
+    } as unknown as Bun.ServerWebSocket<{}>
+    runtime.attachExtension(socket)
+    await expect(runtime.dispatchCommand('snapshot')).resolves.toBe('delivered')
+  })
+
+  test('propagates explicit and composite budgets as deadlines without long waits', async () => {
+    const homeDir = await mkdtemp(path.join(os.tmpdir(), 'autobrowser-runtime-test-'))
+    tempDirs.push(homeDir)
+    const runtime = await createTestRuntime({ homeDir, requestTimeoutMs: 100 })
+    const budgets: number[] = []
+    const socket = {
+      readyState: WebSocket.OPEN,
+      send(payload: string) {
+        const message = JSON.parse(payload)
+        budgets.push(Date.parse(message.deadlineAt) - Date.parse(message.requestedAt))
+        queueMicrotask(() =>
+          runtime.handleExtensionMessage({
+            type: 'response',
+            id: message.id,
+            ok: true,
+            result: true,
+          }),
+        )
+        return 1
+      },
+    } as unknown as Bun.ServerWebSocket<{}>
+    runtime.attachExtension(socket)
+    await runtime.dispatchCommand('eval', { script: '1', timeoutMs: 35_000 })
+    await runtime.dispatchCommand('wait', { type: 'time', ms: 40_000 })
+    await runtime.dispatchCommand('batch', {
+      retries: 1,
+      retryDelayMs: 10,
+      steps: [{ command: 'eval', args: { script: '1', timeoutMs: 35_000 } }],
+    })
+    expect(budgets).toEqual([40_000, 45_000, 80_010])
+    await expect(
+      runtime.dispatchCommand('eval', { script: '1', timeoutMs: 1_800_000 }),
+    ).rejects.toMatchObject({ code: 'INVALID_COMMAND_ARGS' })
+    expect(budgets).toHaveLength(3)
+  })
+
   test('reports the timeout budget and troubleshooting hints on command timeout', async () => {
     const homeDir = await mkdtemp(path.join(os.tmpdir(), 'autobrowser-runtime-test-'))
     tempDirs.push(homeDir)
@@ -566,9 +818,11 @@ describe('runtime snapshot', () => {
 
     const commandPromise = runtime.dispatchCommand('goto', { url: 'https://example.com' })
 
-    // 心跳超时触发 detach 时，in-flight 命令应立即以 EXTENSION_DISCONNECTED 失败，而不是干等 30s
+    // 已发送命令的副作用未知，不得触发 CLI 的断线重放。
     await expect(commandPromise).rejects.toMatchObject({
-      code: 'EXTENSION_DISCONNECTED',
+      code: 'COMMAND_EXECUTION_UNKNOWN',
+      details: { commandId: expect.any(String) },
+      suggestedAction: expect.stringContaining('Do not blindly replay'),
     })
   })
 })

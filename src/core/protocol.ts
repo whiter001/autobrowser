@@ -10,7 +10,7 @@ export const STATE_DIR_NAME = '.autobrowser'
 export const CONFIG_FILE_NAME = 'config.json'
 export const TOKEN_FILE_NAME = 'token'
 export const STATE_FILE_NAME = 'state.json'
-export const DEFAULT_REQUEST_TIMEOUT_MS = 30_000
+export { DEFAULT_REQUEST_TIMEOUT_MS } from './command-budget.js'
 
 export interface ResponseInit {
   headers?: Record<string, string>

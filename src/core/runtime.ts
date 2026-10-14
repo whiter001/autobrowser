@@ -12,6 +12,8 @@ import {
   writeJsonFile,
 } from './protocol.js'
 import { validateCommandArgs } from './command-spec.js'
+import { getCommandRequestBudgetMs } from './command-budget.js'
+import { ResponseAssembler, ResponseTransferError } from './response-transfer.js'
 
 export interface TabInfo {
   id: number
@@ -81,8 +83,12 @@ function rejectPendingRequests(
 ): void {
   for (const [id, pending] of pendingRequests) {
     clearTimeout(pending.timer)
-    // 带 EXTENSION_DISCONNECTED 标记，便于调用方区分「扩展断开」与「超时」
-    pending.reject(createExtensionDisconnectedError(message))
+    // 已交给 socket 的命令可能产生副作用，不能让 CLI 把断线当作安全重放信号。
+    const error = new Error(`${message}; command execution result is unknown`) as ErrorWithCode
+    error.code = 'COMMAND_EXECUTION_UNKNOWN'
+    error.details = { commandId: id }
+    error.suggestedAction = `Reconnect, then run 'command status ${id}' and inspect 'snapshot' or the target page before deciding whether to retry. Do not blindly replay side-effecting commands.`
+    pending.reject(error)
     pendingRequests.delete(id)
   }
 }
@@ -286,6 +292,7 @@ export async function createRuntime(options: RuntimeOptions = {}): Promise<Runti
 
   // pendingRequests maps CLI commands to extension responses
   const pendingRequests = new Map<string, PendingRequest>()
+  const responseAssembler = new ResponseAssembler()
   const connectionWaiters = new Set<ConnectionWaiter>()
   const snapshot: Snapshot = createDefaultSnapshot()
 
@@ -459,6 +466,8 @@ export async function createRuntime(options: RuntimeOptions = {}): Promise<Runti
   ): void {
     const previousSocket = runtime.extensionSocket
     if (previousSocket && previousSocket !== socket) {
+      responseAssembler.clear()
+      rejectPendingRequests(pendingRequests, 'extension connection replaced')
       // 扩展重连时旧 socket 还挂在运行时上：先通知旧连接被新实例顶替，再主动关闭，
       // 否则旧侧会把断开误判成网络故障；detachExtension 会做身份校验，不会误伤新连接
       try {
@@ -502,6 +511,7 @@ export async function createRuntime(options: RuntimeOptions = {}): Promise<Runti
     runtime.extensionId = null
     snapshot.extension = null
     clearHeartbeatTimeout()
+    responseAssembler.clear()
     rejectPendingRequests(pendingRequests, 'extension disconnected')
     // 断开时立即唤醒等待连接的 waiter，否则它们只能干等超时
     // reject 内的 settle 会把 waiter 从 Set 删除，Set 迭代期间删除当前元素是安全的
@@ -521,7 +531,7 @@ export async function createRuntime(options: RuntimeOptions = {}): Promise<Runti
     pageEpochs?: Record<string, unknown>
     id?: string
     ok?: boolean
-    error?: { message?: string; code?: string; details?: unknown }
+    error?: { message?: string; code?: string; details?: unknown; suggestedAction?: string }
     result?: unknown
     sentAt?: string
   }
@@ -582,22 +592,43 @@ export async function createRuntime(options: RuntimeOptions = {}): Promise<Runti
       return
     }
 
-    if (message?.type !== 'response' || typeof message.id !== 'string') {
-      return
-    }
-
+    if (typeof message?.id !== 'string') return
     const pending = pendingRequests.get(message.id)
-    if (!pending) {
+    if (!pending) return
+
+    if (typeof message.type === 'string' && message.type.startsWith('response.')) {
+      try {
+        const response = responseAssembler.accept(message as Record<string, unknown>)
+        if (response) handleExtensionMessage(response)
+      } catch (error) {
+        clearTimeout(pending.timer)
+        pendingRequests.delete(message.id)
+        pending.reject(error as Error)
+        try {
+          runtime.extensionSocket?.send(
+            JSON.stringify({ type: 'cancel', id: message.id, reason: 'invalid response transfer' }),
+          )
+        } catch {
+          // 拒绝后即释放预算，取消只用于让发送端尽早停止。
+        }
+      }
       return
     }
+    if (message.type !== 'response') return
 
     clearTimeout(pending.timer)
     pendingRequests.delete(message.id)
+    responseAssembler.release(message.id)
+    if (typeof message.ok !== 'boolean' || (message.ok === false && !isRecord(message.error))) {
+      pending.reject(new ResponseTransferError('Invalid response envelope'))
+      return
+    }
 
     if (message.ok === false) {
       const error = new Error(message.error?.message || 'extension command failed') as ErrorWithCode
       error.code = message.error?.code || 'EXTENSION_ERROR'
       error.details = message.error?.details || null
+      error.suggestedAction = message.error?.suggestedAction
       pending.reject(error)
       return
     }
@@ -619,13 +650,14 @@ export async function createRuntime(options: RuntimeOptions = {}): Promise<Runti
     args: Record<string, unknown> = {},
   ): Promise<unknown> {
     validateCommandArgs(command, args)
+    const budgetMs = getCommandRequestBudgetMs(command, args, requestTimeoutMs)
     setLastCommand(command, args)
 
     const connectionTimeoutMs = Math.min(requestTimeoutMs, 10_000)
     const socket = await waitForExtensionConnection(connectionTimeoutMs)
 
     const id = createId('cmd')
-    const deadlineAt = new Date(Date.now() + requestTimeoutMs).toISOString()
+    const deadlineAt = new Date(Date.now() + budgetMs).toISOString()
     const payload: CommandPayload = {
       type: 'command',
       id,
@@ -638,13 +670,14 @@ export async function createRuntime(options: RuntimeOptions = {}): Promise<Runti
     return await new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         pendingRequests.delete(id)
+        responseAssembler.release(id)
         try {
           socket.send(JSON.stringify({ type: 'cancel', id, reason: 'relay timeout' }))
         } catch {
           // socket 断开时 detachExtension 会负责清理 pending；取消消息属于尽力而为。
         }
         const timeoutError = new Error(
-          `command timed out after ${requestTimeoutMs}ms: ${command}. ` +
+          `command timed out after ${budgetMs}ms: ${command}. ` +
             'The relay cancelled the queued command; a running browser operation may still be finishing.',
         ) as ErrorWithCode
         timeoutError.code = 'COMMAND_TIMEOUT'
@@ -652,17 +685,17 @@ export async function createRuntime(options: RuntimeOptions = {}): Promise<Runti
         timeoutError.suggestedAction =
           "Run 'status', then 'command list'. Tab control remains available; use 'tab list', 'target clear', or 'tab close <tN>' to recover before retrying."
         reject(timeoutError)
-      }, requestTimeoutMs)
+      }, budgetMs)
 
       pendingRequests.set(id, { resolve, reject, timer })
 
       try {
-        // waitForExtensionConnection 返回到 send 之间扩展可能已断开；
-        // Bun 对已关闭 socket 的 send 不抛异常而是返回 ≤0，需检查返回值快速失败
+        // Bun 的 -1 表示已接收但背压排队，只有 0 表示未发送。
         const sent = socket.send(JSON.stringify(payload))
-        if (sent <= 0) {
+        if (sent === 0) {
           clearTimeout(timer)
           pendingRequests.delete(id)
+          responseAssembler.release(id)
           reject(
             createExtensionDisconnectedError(
               `extension disconnected while sending command: ${command}`,
@@ -672,6 +705,7 @@ export async function createRuntime(options: RuntimeOptions = {}): Promise<Runti
       } catch (error) {
         clearTimeout(timer)
         pendingRequests.delete(id)
+        responseAssembler.release(id)
         reject(
           error instanceof Error
             ? error

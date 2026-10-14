@@ -64,6 +64,8 @@ function createMinimalRouter(overrides?: {
   snapshotTab?: (tabId: unknown, frameSelector: unknown, options?: unknown) => Promise<unknown>
   navigateTo?: (tabId: unknown, url: string) => Promise<unknown>
   listTabs?: () => Promise<unknown[]>
+  findSemanticTarget?: (tabId: unknown, options: unknown, frame: unknown) => Promise<unknown>
+  getRequestDetail?: () => Promise<unknown>
 }) {
   const snapshotCalls: Array<{ tabId: unknown; frameSelector: unknown; options?: unknown }> = []
   const feedCalls: Array<{
@@ -202,7 +204,9 @@ function createMinimalRouter(overrides?: {
         screenshotCalls.push({ tabId, options })
         return { captured: true }
       },
-      findSemanticTarget: async () => ({ match: null, reason: 'not used in test' }),
+      findSemanticTarget:
+        overrides?.findSemanticTarget ??
+        (async () => ({ match: null, reason: 'not used in test' })),
       searchPageText: async (tabId: unknown, options: unknown, frameSelector: unknown) => {
         searchCalls.push({ tabId, options, frameSelector })
         return {
@@ -300,7 +304,7 @@ function createMinimalRouter(overrides?: {
       unrouteRequest: async () => undefined,
       listRoutes: () => ({ routes: [{ id: 'route_1', pattern: '**/api/*', abort: true }] }),
       listRequests: () => ({}),
-      getRequestDetail: () => ({}),
+      getRequestDetail: overrides?.getRequestDetail ?? (() => ({})),
       startHar: async () => undefined,
       stopHar: () => undefined,
     } as never,
@@ -1983,6 +1987,185 @@ describe('command router window/downloads/dialog-auto routing', () => {
     })) as { autoAccept: boolean }
 
     expect(result).toMatchObject({ autoAccept: false })
+  })
+})
+
+describe('observer and asynchronous network routing', () => {
+  test('passes search continuation to the domain', async () => {
+    const { router, searchCalls } = createMinimalRouter()
+    await router.handleCommand({ command: 'search', args: { query: 'x', startLine: 201 } })
+    expect(searchCalls[0]?.options).toMatchObject({ startLine: 201 })
+  })
+
+  test('requires uniqueness only for actions without an explicit position', async () => {
+    const options: unknown[] = []
+    const { router } = createMinimalRouter({
+      findSemanticTarget: async (_tab, opts) => {
+        options.push(opts)
+        return { match: { ref: '@e1' } }
+      },
+    })
+    for (const args of [
+      { action: 'locate' },
+      { action: 'text' },
+      { action: 'click' },
+      { action: 'click', position: 'first' },
+    ]) {
+      await router.handleCommand({
+        command: 'find',
+        args: { strategy: 'text', query: 'x', ...args },
+      })
+    }
+    expect(options.map((option) => (option as { requireUnique: boolean }).requireUnique)).toEqual([
+      false,
+      false,
+      true,
+      false,
+    ])
+  })
+
+  test('awaits asynchronous request details and preserves errors and result metadata', async () => {
+    const { router } = createMinimalRouter({
+      getRequestDetail: async () => {
+        await Bun.sleep(1)
+        return { requestId: 'r1', body: 'loaded' }
+      },
+    })
+    await expect(
+      router.handleCommand({ command: 'network', args: { action: 'request', requestId: 'r1' } }),
+    ).resolves.toMatchObject({ body: 'loaded', meta: expect.any(Object) })
+    const failing = createMinimalRouter({
+      getRequestDetail: async () => {
+        throw Object.assign(new Error('missing'), { code: 'NOT_FOUND' })
+      },
+    })
+    await expect(
+      failing.router.handleCommand({
+        command: 'network',
+        args: { action: 'request', requestId: 'r1' },
+      }),
+    ).rejects.toMatchObject({ code: 'NOT_FOUND' })
+  })
+})
+
+describe('batch cancellation lifecycle', () => {
+  for (const mode of ['cancel', 'reset', 'deadline'] as const) {
+    test(`${mode} stops nested steps and retries after an in-flight operation`, async () => {
+      let release!: () => void
+      let started!: () => void
+      const entered = new Promise<void>((resolve) => {
+        started = resolve
+      })
+      let calls = 0
+      const { router, navigateCalls } = createMinimalRouter({
+        snapshotTab: async () => {
+          calls++
+          started()
+          await new Promise<void>((resolve) => {
+            release = resolve
+          })
+          throw new Error('late failure')
+        },
+      })
+      const pending = router.handleCommand({
+        id: 'cancel-batch',
+        command: 'batch',
+        ...(mode === 'deadline' ? { deadlineAt: new Date(Date.now() + 40).toISOString() } : {}),
+        args: {
+          continueOnError: true,
+          retries: 2,
+          steps: [
+            {
+              command: 'batch',
+              args: {
+                continueOnError: true,
+                retries: 2,
+                steps: ['snapshot', { command: 'goto', args: { url: 'https://nested.example' } }],
+              },
+            },
+            { command: 'goto', args: { url: 'https://outer.example' } },
+          ],
+        },
+      })
+      const outcome = pending.catch((error) => error)
+      await entered
+      if (mode === 'cancel') expect(router.cancelCommand('cancel-batch')).toBe(true)
+      if (mode === 'reset') {
+        await router.handleCommand({
+          command: 'command',
+          args: { action: 'reset', queueKey: 'default' },
+        })
+      }
+      if (mode === 'deadline') await Bun.sleep(60)
+      release()
+      expect(await outcome).toMatchObject({ code: 'COMMAND_CANCELLED' })
+      await Bun.sleep(10)
+      expect(calls).toBe(1)
+      expect(navigateCalls).toHaveLength(0)
+      await expect(router.handleCommand({ command: 'status' })).resolves.toMatchObject({
+        connected: true,
+      })
+    })
+  }
+
+  test('cancel during retry delay never starts another attempt or next step', async () => {
+    let calls = 0
+    const { router, navigateCalls } = createMinimalRouter({
+      snapshotTab: async () => {
+        calls++
+        throw new Error('retry me')
+      },
+    })
+    const pending = router.handleCommand({
+      id: 'retry-delay',
+      command: 'batch',
+      args: {
+        retries: 2,
+        retryDelayMs: 40,
+        continueOnError: true,
+        steps: ['snapshot', { command: 'goto', args: { url: 'https://next.example' } }],
+      },
+    })
+    const outcome = pending.catch((error) => error)
+    await Bun.sleep(10)
+    expect(calls).toBe(1)
+    expect(router.cancelCommand('retry-delay')).toBe(true)
+    expect(await outcome).toMatchObject({ code: 'COMMAND_CANCELLED' })
+    await Bun.sleep(60)
+    expect(calls).toBe(1)
+    expect(navigateCalls).toHaveLength(0)
+  })
+
+  test('cancelled successful step cannot start the following step', async () => {
+    let release!: () => void
+    let started!: () => void
+    const entered = new Promise<void>((resolve) => {
+      started = resolve
+    })
+    const { router, navigateCalls } = createMinimalRouter({
+      snapshotTab: async () => {
+        started()
+        await new Promise<void>((resolve) => {
+          release = resolve
+        })
+        return { done: true }
+      },
+    })
+    const outcome = router
+      .handleCommand({
+        id: 'success-cancel',
+        command: 'batch',
+        args: {
+          steps: ['snapshot', { command: 'goto', args: { url: 'https://next.example' } }],
+        },
+      })
+      .catch((error) => error)
+    await entered
+    router.cancelCommand('success-cancel')
+    release()
+    expect(await outcome).toMatchObject({ code: 'COMMAND_CANCELLED' })
+    await Bun.sleep(10)
+    expect(navigateCalls).toHaveLength(0)
   })
 })
 

@@ -1,4 +1,4 @@
-import { describe, expect, test } from 'bun:test'
+import { describe, expect, spyOn, test } from 'bun:test'
 import { createNetworkDomain } from '../extension/background/network.js'
 import { createExtensionState } from '../extension/background/state.js'
 
@@ -359,7 +359,7 @@ describe('network domain HAR export', () => {
       encodedDataLength: bigText.length,
     })
 
-    const detail = network.getRequestDetail('1:req-1') as {
+    const detail = (await network.getRequestDetail('1:req-1')) as {
       request: {
         postData?: string
         postDataTruncated?: boolean
@@ -430,9 +430,9 @@ describe('network domain HAR export', () => {
 
     await new Promise((resolve) => setTimeout(resolve, 0))
 
-    expect(sendCalls.some((call) => call.method === 'Network.getResponseBody')).toBeTrue()
+    expect(sendCalls.some((call) => call.method === 'Network.getResponseBody')).toBeFalse()
 
-    const detail = network.getRequestDetail('1:req-1') as {
+    const detail = (await network.getRequestDetail('1:req-1')) as {
       request: {
         postData?: string
         postDataTruncated?: boolean
@@ -799,7 +799,7 @@ describe('network domain HAR field completion', () => {
     })
     await new Promise((resolve) => setTimeout(resolve, 0))
 
-    const detail = network.getRequestDetail('1:req-q') as {
+    const detail = (await network.getRequestDetail('1:req-q')) as {
       harEntry: {
         time: number
         request: {
@@ -861,7 +861,7 @@ describe('network domain HAR field completion', () => {
     })
     await new Promise((resolve) => setTimeout(resolve, 0))
 
-    const detail = network.getRequestDetail('1:req-plain') as {
+    const detail = (await network.getRequestDetail('1:req-plain')) as {
       harEntry: {
         request: { httpVersion: string; queryString: unknown[] }
         timings: Record<string, number>
@@ -943,13 +943,13 @@ describe('network redirect hops', () => {
     await network.startHar(1, { maxRequests: null })
     await request('https://example.com/start', 100)
     await request('https://example.com/middle', 101, moved)
-    expect(network.getRequestDetail('chain').request).toMatchObject({
+    expect((await network.getRequestDetail('chain')).request).toMatchObject({
       id: '1:chain',
       method: 'GET',
     })
-    expect(network.getRequestDetail('chain').request).not.toHaveProperty('status')
+    expect((await network.getRequestDetail('chain')).request).not.toHaveProperty('status')
     expect(
-      (network.getRequestDetail('chain').request as Record<string, unknown>).postData,
+      ((await network.getRequestDetail('chain')).request as Record<string, unknown>).postData,
     ).toBeUndefined()
     await request('https://example.com/start', 102, found)
     checkIndexes()
@@ -971,10 +971,10 @@ describe('network redirect hops', () => {
     expect(second).toMatchObject({ status: 302, durationMs: 1000 })
     expect(current?.id).toBe('1:chain')
     expect(current?.responseBody).toBeUndefined()
-    expect(network.getRequestDetail(first!.id!).request).toBe(first)
-    expect(network.getRequestDetail(second!.id!, 1).request).toBe(second)
-    expect(network.getRequestDetail('chain', 1).request).toBe(current)
-    expect(network.getRequestDetail('1:chain').request).toBe(current)
+    expect((await network.getRequestDetail(first!.id!)).request).toBe(first)
+    expect((await network.getRequestDetail(second!.id!, 1)).request).toBe(second)
+    expect((await network.getRequestDetail('chain', 1)).request).toBe(current)
+    expect((await network.getRequestDetail('1:chain')).request).toBe(current)
     await network.handleEvent({ tabId: 1 }, 'Network.responseReceived', {
       requestId: 'chain',
       timestamp: 103,
@@ -1032,12 +1032,12 @@ describe('network redirect hops', () => {
     await request('https://example.com/start', 100)
     await request('https://example.com/middle', 101, moved)
     await request('https://other.example/start', 100, undefined, 2)
-    expect(() => network.getRequestDetail('chain')).toThrow('ambiguous across tabs')
-    expect(network.getRequestDetail('chain', 1).request).toMatchObject({
+    await expect(network.getRequestDetail('chain')).rejects.toThrow('ambiguous across tabs')
+    expect((await network.getRequestDetail('chain', 1)).request).toMatchObject({
       id: '1:chain',
       url: 'https://example.com/middle',
     })
-    expect(network.getRequestDetail('2:chain').request).toMatchObject({ tabId: 2 })
+    expect((await network.getRequestDetail('2:chain')).request).toMatchObject({ tabId: 2 })
   })
 
   test('maxRequests trims archived hops without breaking current lookup or indexes', async () => {
@@ -1048,8 +1048,8 @@ describe('network redirect hops', () => {
     await request('https://example.com/start', 102, found)
     checkIndexes()
     expect(state.network.requests.map((record) => record.status)).toEqual([302, undefined])
-    expect(() => network.getRequestDetail(evictedId)).toThrow('not found')
-    expect(network.getRequestDetail('chain').request).toMatchObject({
+    await expect(network.getRequestDetail(evictedId)).rejects.toThrow('not found')
+    expect((await network.getRequestDetail('chain')).request).toMatchObject({
       id: '1:chain',
       url: 'https://example.com/start',
     })
@@ -1058,7 +1058,9 @@ describe('network redirect hops', () => {
       timestamp: 103,
     })
     await network.stopHar()
-    expect(network.getRequestDetail('chain').request).toMatchObject({ responseBody: 'final body' })
+    expect((await network.getRequestDetail('chain')).request).toMatchObject({
+      responseBody: 'final body',
+    })
     checkIndexes()
   })
 
@@ -1071,7 +1073,7 @@ describe('network redirect hops', () => {
       const archivedId = state.network.requests[0]!.id!
       expect(ids.has(archivedId)).toBe(false)
       ids.add(archivedId)
-      expect(network.getRequestDetail('chain').request).toMatchObject({ id: '1:chain' })
+      expect((await network.getRequestDetail('chain')).request).toMatchObject({ id: '1:chain' })
       checkIndexes()
     }
     expect(ids.size).toBe(12)
@@ -1100,6 +1102,7 @@ describe('network redirect hops', () => {
   for (const reject of [false, true]) {
     test(`trimmed pending body cannot resurrect an evicted record (${reject ? 'failure' : 'success'})`, async () => {
       const state = createExtensionState(57978)
+      state.network.harRecording = true
       state.network.harMaxRequests = 1
       let finish!: () => void
       const pending = new Promise<{ body: string }>((resolve, rejectBody) => {
@@ -1127,4 +1130,273 @@ describe('network redirect hops', () => {
       expect([...state.network.requestIndex.entries()]).toEqual([['1:new', 0]])
     })
   }
+})
+
+describe('network body scheduler', () => {
+  function harness() {
+    const state = createExtensionState(57978)
+    const calls: Array<{
+      tabId: number
+      requestId: string
+      resolve: (body: { body: string }) => void
+      reject: (error: Error) => void
+    }> = []
+    const stored: Record<string, unknown> = {}
+    const network = createNetworkDomain({
+      state,
+      getTargetTab: async (tabId) => ({ id: Number(tabId || 1) }) as never,
+      sendDebuggerCommand: async () => ({}) as never,
+      sendRawDebuggerCommand: async <TResult = unknown>(
+        tabId: number,
+        method: string,
+        params?: Record<string, unknown>,
+      ): Promise<TResult> => {
+        expect(method).toBe('Network.getResponseBody')
+        return (await new Promise<{ body: string }>((resolve, reject) => {
+          calls.push({ tabId, requestId: String(params?.requestId), resolve, reject })
+        })) as TResult
+      },
+      storageLocalSet: async (items) => {
+        Object.assign(stored, items)
+      },
+      storageLocalGet: async (key) => ({ [key]: stored[key] }),
+    })
+    const request = async (requestId: string, tabId = 1, finish = true) => {
+      await network.handleEvent({ tabId }, 'Network.requestWillBeSent', {
+        requestId,
+        request: { url: `https://example.com/${requestId}` },
+      })
+      if (finish) await network.handleEvent({ tabId }, 'Network.loadingFinished', { requestId })
+    }
+    const flush = async () => {
+      for (let i = 0; i < 10; i += 1) await Promise.resolve()
+    }
+    return { state, network, calls, stored, request, flush }
+  }
+
+  test('metadata remains automatic without HAR; detail lazily fetches and deduplicates body', async () => {
+    const { state, network, calls, request } = harness()
+    await request('lazy')
+    expect(calls).toHaveLength(0)
+    expect(network.listRequests()).toMatchObject({ total: 1 })
+    expect(state.network.inFlightByTab.get(1)?.size).toBe(0)
+    const first = network.getRequestDetail('lazy')
+    const second = network.getRequestDetail('lazy')
+    expect(calls).toHaveLength(1)
+    calls[0]!.resolve({ body: 'on demand' })
+    expect((await first).request).toMatchObject({ responseBody: 'on demand' })
+    expect((await second).request).toMatchObject({ responseBody: 'on demand' })
+    await network.getRequestDetail('lazy')
+    expect(calls).toHaveLength(1)
+  })
+
+  test('historical pages, unfinished requests and CDP failures explain missing bodies', async () => {
+    const { state, network, calls, request } = harness()
+    await request('old')
+    state.targeting.pageEpochs.set(1, 2)
+    expect((await network.getRequestDetail('old')).request).toMatchObject({
+      responseBodyError: expect.stringContaining('historical page epoch'),
+    })
+    expect(calls).toHaveLength(0)
+    await request('loading', 1, false)
+    expect((await network.getRequestDetail('loading')).request).toMatchObject({
+      responseBodyError: expect.stringContaining('not finished'),
+    })
+    await network.handleEvent({ tabId: 1 }, 'Network.loadingFinished', { requestId: 'loading' })
+    const detail = network.getRequestDetail('loading')
+    calls[0]!.reject(new Error('No resource with given identifier found'))
+    const result = await detail
+    expect(result.request).toMatchObject({
+      responseBodyError: 'No resource with given identifier found',
+    })
+    expect(result.harEntry).toMatchObject({
+      response: { content: { comment: expect.stringContaining('body unavailable') } },
+    })
+  })
+
+  test('HAR and detail share four real CDP slots and release them only on settle', async () => {
+    const { network, calls, request, flush } = harness()
+    await network.startHar(1)
+    for (let i = 0; i < 6; i += 1) await request(`r${i}`)
+    await request('detail', 2)
+    const detail = network.getRequestDetail('detail', 2)
+    expect(calls).toHaveLength(4)
+    calls[0]!.resolve({ body: 'zero' })
+    await flush()
+    expect(calls).toHaveLength(5)
+    calls[1]!.reject(new Error('one failed'))
+    await flush()
+    expect(calls).toHaveLength(6)
+    calls[2]!.resolve({ body: 'two' })
+    await flush()
+    expect(calls).toHaveLength(7)
+    for (const call of calls.slice(3)) call.resolve({ body: 'rest' })
+    await detail
+    expect(await network.stopHar()).toMatchObject({ requestCount: 6 })
+  })
+
+  test('stop waits only its capture and excludes unrelated tab detail and post-stop metadata', async () => {
+    const { network, calls, request } = harness()
+    await network.startHar(1)
+    await request('own')
+    await request('other', 2)
+    expect(calls).toHaveLength(1)
+    const detail = network.getRequestDetail('other', 2)
+    const stopped = network.stopHar()
+    await request('after-stop')
+    expect(calls).toHaveLength(2)
+    calls[0]!.resolve({ body: 'own body' })
+    const result = await stopped
+    expect(result).toMatchObject({ requestCount: 1 })
+    expect(result.har).toMatchObject({
+      log: { entries: [{ response: { content: { text: 'own body' } } }] },
+    })
+    calls[1]!.resolve({ body: 'other body' })
+    await detail
+  })
+
+  test('old stop keeps its records and limits; same-key new capture and checkpoint stay isolated', async () => {
+    const { state, network, calls, request, stored } = harness()
+    await network.startHar(1, { maxRequests: 10, maxBodyBytes: 3 })
+    await request('same')
+    const oldRecord = state.network.requestMap.get('1:same')!
+    const oldStop = network.stopHar()
+    await network.startHar(1, { maxRequests: 20, maxBodyBytes: 8 })
+    await request('same')
+    calls[0]!.resolve({ body: 'old content' })
+    const oldResult = await oldStop
+    expect(oldRecord.responseBody).toBe('old')
+    expect(oldResult.har).toMatchObject({
+      log: { entries: [{ response: { content: { text: 'old' } } }] },
+    })
+    expect(state.network.harRecording).toBe(true)
+    expect(state.network.harMaxBodyBytes).toBe(8)
+    expect(state.network.requestMap.get('1:same')?.responseBody).toBeUndefined()
+    expect(stored['autobrowser.harCheckpoint']).toMatchObject({ recording: true, maxBodyBytes: 8 })
+    calls[1]!.resolve({ body: 'new content' })
+    const newResult = await network.stopHar()
+    expect(newResult).toMatchObject({ requestCount: 1 })
+    expect(newResult.har).toMatchObject({
+      log: { entries: [{ response: { content: { text: 'new cont' } } }] },
+    })
+  })
+
+  test('starting a new capture without stop excludes old pending work and late loadingFinished', async () => {
+    const { state, network, calls, request } = harness()
+    await request('before-capture', 1, false)
+    await network.startHar(1, { maxBodyBytes: 2 })
+    await request('old')
+    await request('old-unfinished', 1, false)
+    const oldRecord = state.network.requestMap.get('1:old')!
+    await network.startHar(2, { maxBodyBytes: 7 })
+    await network.handleEvent({ tabId: 1 }, 'Network.loadingFinished', {
+      requestId: 'old-unfinished',
+    })
+    await network.handleEvent({ tabId: 1 }, 'Network.loadingFinished', {
+      requestId: 'before-capture',
+    })
+    await request('new', 2)
+    expect(calls).toHaveLength(2)
+    calls[1]!.resolve({ body: 'new content' })
+    const result = await network.stopHar()
+    expect(result).toMatchObject({ requestCount: 1 })
+    expect(result.har).toMatchObject({
+      log: { entries: [{ response: { content: { text: 'new con' } } }] },
+    })
+    expect(state.network.pendingBodyFetches.size).toBe(1)
+    calls[0]!.resolve({ body: 'old content' })
+    await Promise.all(state.network.pendingBodyFetches)
+    expect(oldRecord.responseBody).toBe('ol')
+  })
+
+  test('queued evictions skip CDP and active evictions never resurrect records', async () => {
+    const { state, network, calls, request, flush } = harness()
+    await network.startHar(1, { maxRequests: 5 })
+    for (let i = 0; i < 10; i += 1) await request(`r${i}`)
+    expect(calls).toHaveLength(4)
+    for (const call of calls.slice()) call.resolve({ body: 'evicted' })
+    await flush()
+    expect(calls.map((call) => call.requestId)).not.toContain('r4')
+    expect(state.network.requests.map((record) => record.id)).toEqual([
+      '1:r5',
+      '1:r6',
+      '1:r7',
+      '1:r8',
+      '1:r9',
+    ])
+    for (const call of calls.slice(4)) call.resolve({ body: 'retained' })
+    await flush()
+    for (const call of calls.slice(8)) call.resolve({ body: 'retained' })
+    await network.stopHar()
+    expect(state.network.requests.every((record) => record.responseBody === 'retained')).toBe(true)
+  })
+
+  test('redirect archives never fetch the next hop body, including queued stale work', async () => {
+    const { state, network, calls, request, flush } = harness()
+    await network.startHar(1)
+    for (let i = 0; i < 4; i += 1) await request(`busy${i}`)
+    await request('chain')
+    await network.handleEvent({ tabId: 1 }, 'Network.requestWillBeSent', {
+      requestId: 'chain',
+      request: { url: 'https://example.com/next' },
+      redirectResponse: { status: 302, headers: { location: '/next' } },
+    })
+    const archived = state.network.requests.find((record) => record.redirectArchived)!
+    expect((await network.getRequestDetail(archived.id!)).request).toMatchObject({
+      responseBodyError: expect.stringContaining('redirect hop'),
+    })
+    for (const call of calls) call.resolve({ body: 'busy' })
+    await flush()
+    expect(calls).toHaveLength(4)
+    await network.handleEvent({ tabId: 1 }, 'Network.loadingFinished', { requestId: 'chain' })
+    expect(calls).toHaveLength(5)
+    calls[4]!.resolve({ body: 'next hop' })
+    await network.stopHar()
+    expect(archived.responseBody).toBeUndefined()
+    expect(state.network.requestMap.get('1:chain')?.responseBody).toBe('next hop')
+  })
+
+  test('queue is capped at 1000; logical timeout bounds stop without freeing stuck CDP slots', async () => {
+    const timers: Array<() => void> = []
+    const original = globalThis.setTimeout
+    const timerSpy = spyOn(globalThis, 'setTimeout').mockImplementation(((
+      callback: () => void,
+      delay?: number,
+    ) => {
+      if (delay === 10_000) {
+        timers.push(callback)
+        return original(() => {}, 60_000)
+      }
+      return original(callback, delay)
+    }) as typeof setTimeout)
+    try {
+      const { state, network, calls, request, flush } = harness()
+      await network.startHar(1, { maxRequests: null })
+      for (let i = 0; i < 1005; i += 1) await request(`r${i}`)
+      expect(calls).toHaveLength(4)
+      expect(state.network.pendingBodyFetches.size).toBe(1004)
+      expect(state.network.requestMap.get('1:r1004')?.responseBodyError).toContain('queue is full')
+      const stopped = network.stopHar()
+      for (const timeout of timers.slice()) timeout()
+      expect((await stopped).requestCount).toBe(1005)
+      expect(state.network.pendingBodyFetches.size).toBe(0)
+      expect(calls).toHaveLength(4)
+      expect(state.network.requestMap.get('1:r0')?.responseBodyError).toContain('timed out')
+      await network.startHar(1, { maxRequests: null })
+      await request('new')
+      expect(calls).toHaveLength(4)
+      const detail = network.getRequestDetail('r0')
+      await detail
+      expect(calls).toHaveLength(4)
+      calls[0]!.resolve({ body: 'late discarded' })
+      await flush()
+      expect(calls).toHaveLength(5)
+      expect(calls[4]?.requestId).toBe('new')
+      expect(state.network.requestMap.get('1:r0')?.responseBody).toBeUndefined()
+      for (const call of calls.slice(1)) call.resolve({ body: 'done' })
+      await network.stopHar()
+    } finally {
+      timerSpy.mockRestore()
+    }
+  })
 })

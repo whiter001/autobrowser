@@ -1,5 +1,9 @@
 import { describe, expect, test } from 'bun:test'
-import { mkdtemp, rm, stat } from 'node:fs/promises'
+import { mkdir, mkdtemp, rm, stat, writeFile } from 'node:fs/promises'
+import { Client } from '@modelcontextprotocol/sdk/client/index.js'
+import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
+import { parseSearchArgs } from '../src/cli/parse.js'
+import { printHelp } from '../src/cli/help.js'
 import os from 'node:os'
 import path from 'node:path'
 import { PassThrough } from 'node:stream'
@@ -542,11 +546,14 @@ describe('AutobrowserMcpServer.connect (JSON-RPC over stdio)', () => {
       protocolVersion: string
       capabilities: { tools?: unknown }
       serverInfo: { name: string }
+      instructions: string
     }
     expect(initializeResponse.error).toBeUndefined()
     expect(result.protocolVersion).toBe('2025-03-26')
     expect(result.capabilities.tools).toBeDefined()
     expect(result.serverInfo.name).toBe('autobrowser')
+    expect(result.instructions).toContain('30 minutes including allowance')
+    expect(result.instructions).toContain('not automatically replayed')
 
     client.write(
       JSON.stringify({
@@ -623,3 +630,216 @@ async function waitForMessage(
   }
   throw new Error('timed out waiting for JSON-RPC message')
 }
+
+describe('search interfaces', () => {
+  test('parses 1-based cursors and preserves defaults', () => {
+    expect(parseSearchArgs(['error'])).toEqual({ query: 'error', context: 3, limit: 20 })
+    expect(
+      parseSearchArgs(['/error/gi', '--start-line', '201', '--context', '50', '--limit', '0']),
+    ).toEqual({ query: '/error/gi', startLine: 201, context: 50, limit: 0 })
+    expect(
+      parseSearchArgs(['error', '--start-line', String(Number.MAX_SAFE_INTEGER)]).startLine,
+    ).toBe(Number.MAX_SAFE_INTEGER)
+  })
+
+  test('rejects invalid cursors, context and unsafe limits before dispatch', () => {
+    for (const value of ['0', '-1', '1.5', 'NaN', 'Infinity', '9007199254740992', '']) {
+      expect(() => parseSearchArgs(['error', '--start-line', value])).toThrow()
+    }
+    expect(() => parseSearchArgs(['error', '--start-line'])).toThrow('missing start line value')
+    for (const value of ['51', '-1', '1.5', 'Infinity']) {
+      expect(() => parseSearchArgs(['error', '--context', value])).toThrow()
+    }
+    expect(() => parseSearchArgs(['error', '--limit', '9007199254740992'])).toThrow()
+  })
+
+  test('help and MCP schemas describe bounded pagination and recovery', () => {
+    const tools = new AutobrowserMcpServer({ requestCommand: async () => okResult({}) }).listTools()
+    const search = tools.find((tool) => tool.name === 'search')!
+    expect(search.inputSchema.properties?.startLine).toMatchObject({
+      type: 'integer',
+      minimum: 1,
+      maximum: Number.MAX_SAFE_INTEGER,
+    })
+    expect(search.inputSchema.properties?.context).toMatchObject({ maximum: 50 })
+    expect(printHelp(['search'])).toContain('--start-line <n>')
+    expect(printHelp(['search'])).toContain('nextStartLine:201')
+    expect(printHelp(['search'])).toContain('100000 UTF-8 bytes')
+    expect(printHelp(['find'])).toContain('AMBIGUOUS_TARGET')
+    expect(printHelp(['snapshot'])).toContain('removedRefs')
+    expect(printHelp(['batch'])).toContain('NOT an idempotency guarantee')
+    expect(JSON.stringify(tools.find((tool) => tool.name === 'find'))).toContain(
+      'substring by default',
+    )
+  })
+
+  test('CLI and SDK stdio client round-trip cursors and structured errors through isolated mock IPC', async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), 'autobrowser-search-interfaces-'))
+    const token = 'search-interface-test-token'
+    const calls: RecordedCall[] = []
+    const authorization: Array<string | null> = []
+    const firstPage = {
+      query: 'error',
+      startLine: 1,
+      nextStartLine: 201,
+      truncated: true,
+      returned: 1,
+      windows: [
+        { startLine: 1, endLine: 200, lines: [{ line: 1, text: 'error 一', matched: true }] },
+      ],
+    }
+    const secondPage = {
+      query: 'error',
+      startLine: 201,
+      truncated: false,
+      returned: 1,
+      windows: [
+        { startLine: 201, endLine: 201, lines: [{ line: 201, text: 'error 二', matched: true }] },
+      ],
+    }
+    const ambiguous = {
+      code: 'AMBIGUOUS_TARGET',
+      message: 'multiple matching buttons',
+      suggestedAction: 'Inspect candidates or set position explicitly.',
+      details: {
+        candidates: [
+          { ref: '@e1', name: 'Delete draft' },
+          { ref: '@e2', name: 'Delete all' },
+        ],
+      },
+    }
+    const ipc = Bun.serve({
+      hostname: '127.0.0.1',
+      port: 0,
+      async fetch(request) {
+        if (new URL(request.url).pathname === '/status') {
+          return Response.json({ extensionConnected: true, token })
+        }
+        authorization.push(request.headers.get('authorization'))
+        const call = (await request.json()) as RecordedCall
+        calls.push(call)
+        if (call.command === 'find') return Response.json({ ok: false, error: ambiguous })
+        return Response.json(okResult(call.args.startLine === 201 ? secondPage : firstPage))
+      },
+    })
+    const client = new Client({ name: 'search-interface-test', version: '1' })
+    const cliPath = path.resolve(import.meta.dir, '../src/cli.ts')
+    const serverUrl = `http://127.0.0.1:${ipc.port}`
+    const transport = new StdioClientTransport({
+      command: process.execPath,
+      args: [cliPath, '--server', serverUrl, 'mcp'],
+      env: {
+        ...Object.fromEntries(
+          Object.entries(process.env).filter(
+            (entry): entry is [string, string] => entry[1] !== undefined,
+          ),
+        ),
+        AUTOBROWSER_HOME: home,
+      },
+      stderr: 'pipe',
+    })
+    try {
+      await mkdir(path.join(home, '.autobrowser'))
+      await writeFile(path.join(home, '.autobrowser', 'token'), JSON.stringify({ token }))
+      const runSearch = async (rest: string[]) => {
+        const child = Bun.spawn(
+          [process.execPath, cliPath, '--server', serverUrl, 'search', ...rest],
+          {
+            env: { ...process.env, AUTOBROWSER_HOME: home },
+            stdout: 'pipe',
+            stderr: 'pipe',
+          },
+        )
+        try {
+          const [stdout, stderr, exitCode] = await Promise.all([
+            new Response(child.stdout).text(),
+            new Response(child.stderr).text(),
+            child.exited,
+          ])
+          return { stdout, stderr, exitCode }
+        } finally {
+          child.kill()
+          await child.exited
+        }
+      }
+      const first = await runSearch(['error', '--context', '0'])
+      expect(first.exitCode).toBe(0)
+      expect(JSON.parse(first.stdout).result).toEqual(firstPage)
+      const next = JSON.parse(first.stdout).result.nextStartLine
+      const second = await runSearch(['error', '--context', '0', '--start-line', String(next)])
+      expect(second.exitCode).toBe(0)
+      expect(JSON.parse(second.stdout).result).toEqual(secondPage)
+      expect(calls.slice(0, 2)).toEqual([
+        { command: 'search', args: { query: 'error', context: 0, limit: 20 } },
+        { command: 'search', args: { query: 'error', context: 0, limit: 20, startLine: 201 } },
+      ])
+      const invalidCli = await runSearch(['error', '--start-line', '0'])
+      expect(invalidCli.exitCode).toBe(1)
+      expect(calls).toHaveLength(2)
+
+      await client.connect(transport)
+      const listed = await client.listTools()
+      expect(listed.tools.map((tool) => tool.name)).toEqual(KNOWN_TOOL_NAMES)
+      const page = await client.callTool({
+        name: 'search',
+        arguments: { query: 'error', context: 0, limit: 2, tab: 't2', frame: '@f1' },
+      })
+      expect(page.structuredContent).toEqual(firstPage)
+      const resumed = await client.callTool({
+        name: 'search',
+        arguments: {
+          query: 'error',
+          context: 0,
+          limit: 2,
+          startLine: (page.structuredContent as typeof firstPage).nextStartLine,
+          tab: 't2',
+          frame: '@f1',
+        },
+      })
+      expect(resumed.structuredContent).toEqual(secondPage)
+      expect(calls.at(-1)).toEqual({
+        command: 'search',
+        args: { query: 'error', context: 0, limit: 2, startLine: 201, tabId: 't2', frame: '@f1' },
+      })
+      for (const args of [
+        { startLine: 0 },
+        { startLine: 1.5 },
+        { startLine: Number.MAX_SAFE_INTEGER + 1 },
+        { context: 51 },
+      ]) {
+        const before = calls.length
+        const invalid = await client.callTool({
+          name: 'search',
+          arguments: { query: 'error', ...args },
+        })
+        expect(invalid.isError).toBe(true)
+        expect(invalid.structuredContent).toMatchObject({ error: { code: 'INVALID_COMMAND_ARGS' } })
+        expect(calls).toHaveLength(before)
+      }
+      const failure = await client.callTool({
+        name: 'find',
+        arguments: { strategy: 'role', role: 'button', name: 'Delete', action: 'click' },
+      })
+      expect(failure.isError).toBe(true)
+      expect(failure.structuredContent).toEqual({ error: ambiguous })
+      await client.callTool({
+        name: 'find',
+        arguments: {
+          strategy: 'role',
+          role: 'button',
+          name: 'Delete',
+          exact: true,
+          position: 'nth=2',
+          action: 'click',
+        },
+      })
+      expect(calls.at(-1)?.args).toMatchObject({ exact: true, position: 'nth=2', action: 'click' })
+      expect(authorization.every((value) => value === `Bearer ${token}`)).toBe(true)
+    } finally {
+      await client.close()
+      await transport.close()
+      await ipc.stop(true)
+      await rm(home, { recursive: true, force: true })
+    }
+  }, 15000)
+})

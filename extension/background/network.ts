@@ -148,6 +148,28 @@ const DEFAULT_HAR_MAX_BODY_BYTES = 256 * 1024
 /** 全局请求列表的绝对上限，与 HAR 配置无关，防止长时间运行时内存无界增长 */
 const GLOBAL_REQUEST_HARD_CAP = 10_000
 const HAR_CHECKPOINT_STORAGE_KEY = 'autobrowser.harCheckpoint'
+const BODY_FETCH_CONCURRENCY = 4
+const BODY_FETCH_QUEUE_LIMIT = 1000
+const BODY_FETCH_TIMEOUT_MS = 10_000
+const evictedRequests = new WeakSet<NetworkRequestRecord>()
+
+interface HarCapture {
+  id: string
+  tabId: number | null
+  startedAt: string | null
+  maxRequests: number | null
+  maxBodyBytes: number | null
+  pending: Set<Promise<void>>
+}
+
+interface BodyFetchTask {
+  record: NetworkRequestRecord
+  capture: HarCapture | null
+  maxBodyBytes: number | null
+  done: Promise<void>
+  finish: (error?: string) => void
+  settled: boolean
+}
 
 function estimateTextByteLength(text: string): number {
   return new TextEncoder().encode(text).length
@@ -264,7 +286,8 @@ function upsertNetworkRequest(
   }
 
   const existing: NetworkRequestRecord = state.network.requestMap.get(key) || { id: key }
-  const merged: NetworkRequestRecord = { ...existing, ...record }
+  // 保持单次请求对象身份，异步 body 只写回该对象，不按可复用的 CDP id 覆盖新请求。
+  const merged = Object.assign(existing, record)
   state.network.requestMap.set(key, merged)
 
   const index = state.network.requestIndex.get(key)
@@ -283,6 +306,7 @@ function upsertNetworkRequest(
     const removed = state.network.requests.splice(0, state.network.requests.length - effectiveLimit)
     for (const item of removed) {
       if (item && typeof item.id === 'string') {
+        evictedRequests.add(item)
         state.network.requestMap.delete(item.id)
       }
     }
@@ -647,31 +671,58 @@ export function createNetworkDomain({
   },
 }: NetworkDomainDependencies) {
   let checkpointTimer: ReturnType<typeof setTimeout> | null = null
+  let capture: HarCapture | null = state.network.harRecording ? createCapture(null) : null
+  let checkpointWrites: Promise<void> = Promise.resolve()
+  const bodyTasks = new WeakMap<NetworkRequestRecord, BodyFetchTask>()
+  const bodyQueue: BodyFetchTask[] = []
+  let activeBodyFetches = 0
+
+  function createCapture(tabId: number | null): HarCapture {
+    return {
+      id: crypto.randomUUID(),
+      tabId,
+      startedAt: state.network.harStartedAt,
+      maxRequests: getHarMaxRequests(state),
+      maxBodyBytes: getHarMaxBodyBytes(state),
+      pending: new Set(),
+    }
+  }
+
+  function captureRequests(session: HarCapture | null): NetworkRequestRecord[] {
+    return state.network.requests.filter((record) =>
+      session
+        ? (session.tabId === null || record.tabId === session.tabId) &&
+          (record.harCaptureId === session.id ||
+            (record.harCaptureId === undefined &&
+              (!session.startedAt || String(record.startedAt || '') >= session.startedAt)))
+        : true,
+    )
+  }
 
   function checkpointPayload(
     recording = state.network.harRecording,
-    startedAt = state.network.harStartedAt,
+    session = capture,
+    requests = captureRequests(session),
   ): Record<string, unknown> {
-    const requests = state.network.requests.filter(
-      (record) => !startedAt || String(record.startedAt || '') >= startedAt,
-    )
     return {
       recording,
-      startedAt,
-      maxRequests: state.network.harMaxRequests,
-      maxBodyBytes: state.network.harMaxBodyBytes,
+      startedAt: session?.startedAt ?? state.network.harStartedAt,
+      maxRequests: session ? session.maxRequests : state.network.harMaxRequests,
+      maxBodyBytes: session ? session.maxBodyBytes : state.network.harMaxBodyBytes,
       updatedAt: new Date().toISOString(),
       requests,
     }
   }
 
-  async function writeHarCheckpoint(
-    recording = state.network.harRecording,
-    startedAt = state.network.harStartedAt,
-  ): Promise<void> {
-    await storageLocalSet({
-      [HAR_CHECKPOINT_STORAGE_KEY]: checkpointPayload(recording, startedAt),
-    })
+  async function writeHarCheckpoint(payload = checkpointPayload()): Promise<void> {
+    // 串行落盘避免旧 stop 的慢写覆盖新 capture 的 checkpoint。
+    const write = checkpointWrites.then(() =>
+      storageLocalSet({
+        [HAR_CHECKPOINT_STORAGE_KEY]: payload,
+      }),
+    )
+    checkpointWrites = write.catch(() => {})
+    await write
   }
 
   function scheduleHarCheckpoint(): void {
@@ -736,6 +787,12 @@ export function createNetworkDomain({
         requestWillBeSentAt: typeof payload.timestamp === 'number' ? payload.timestamp : null,
         routeId: route?.id || null,
         routeAction: route?.abort ? 'abort' : route?.body !== undefined ? 'mock' : 'continue',
+        harCaptureId:
+          state.network.harRecording &&
+          capture &&
+          (capture.tabId === null || capture.tabId === tabId)
+            ? capture.id
+            : '',
       })
 
       if (route?.abort) {
@@ -816,48 +873,123 @@ export function createNetworkDomain({
     }
   }
 
-  async function finalizeRequestBody(tabId: number, requestId: string): Promise<void> {
-    const key = createNetworkRequestKey(tabId, requestId)
-    const record = getNetworkRequestById(state, key)
-    if (!record) {
-      return
+  function bodyUnavailable(record: NetworkRequestRecord): string | null {
+    if (evictedRequests.has(record)) return 'request was evicted before body retrieval'
+    if (record.redirectArchived) return 'redirect hop body is no longer available from CDP'
+    if (typeof record.tabId !== 'number' || !record.requestId) return 'no live CDP request identity'
+    if (
+      state.network.requestMap.get(createNetworkRequestKey(record.tabId, record.requestId)) !==
+      record
+    ) {
+      return 'historical request is no longer the live CDP request'
     }
+    if (record.pageEpoch !== getPageEpoch(state, record.tabId))
+      return 'historical page epoch; body is no longer available'
+    if (record.errorText) return `request failed: ${record.errorText}`
+    if (!record.finishedAt) return 'request has not finished; retry detail after loading finishes'
+    return null
+  }
 
+  function pumpBodyQueue(): void {
+    for (let index = bodyQueue.length - 1; index >= 0; index -= 1) {
+      const task = bodyQueue[index]!
+      const reason = bodyUnavailable(task.record)
+      if (task.settled || reason) {
+        bodyQueue.splice(index, 1)
+        task.finish(reason || undefined)
+      }
+    }
+    while (activeBodyFetches < BODY_FETCH_CONCURRENCY && bodyQueue.length > 0) {
+      const task = bodyQueue.shift()!
+      activeBodyFetches += 1
+      void runBodyFetch(task)
+    }
+  }
+
+  async function runBodyFetch(task: BodyFetchTask): Promise<void> {
+    const { record } = task
     try {
       const result = await sendRawDebuggerCommand<{ body?: string; base64Encoded?: boolean }>(
-        tabId,
+        record.tabId as number,
         'Network.getResponseBody',
-        { requestId },
+        { requestId: record.requestId },
       )
-      // 裁剪或跳转后旧异步结果不得复活记录，也不能覆盖同 key 的下一跳。
-      if (state.network.requestMap.get(key) !== record) return
-      const responseBody = String(result?.body || '')
-      const responseBodySummary = summarizeStoredBody(
-        responseBody,
-        Boolean(result?.base64Encoded),
-        getHarMaxBodyBytes(state),
-      )
-      const bodyRecord = upsertNetworkRequest(state, {
-        ...record,
-        responseBody: responseBodySummary.text,
-        responseBodyTruncated: responseBodySummary.truncated,
-        responseBodyBytes: responseBodySummary.byteLength,
-        responseBodyBase64: Boolean(result?.base64Encoded),
-      })
-
-      if (!bodyRecord.responseMimeType) {
-        bodyRecord.responseMimeType = 'application/octet-stream'
+      // CDP 不支持流式截断；maxBodyBytes 只限制收到完整响应后的存储量。
+      // stop 后仍可写自己的旧对象，但淘汰、重定向及逻辑超时后的结果丢弃。
+      if (!task.settled && !evictedRequests.has(record) && !record.redirectArchived) {
+        const summary = summarizeStoredBody(
+          String(result?.body || ''),
+          Boolean(result?.base64Encoded),
+          task.maxBodyBytes,
+        )
+        Object.assign(record, {
+          responseBody: summary.text,
+          responseBodyTruncated: summary.truncated,
+          responseBodyBytes: summary.byteLength,
+          responseBodyBase64: Boolean(result?.base64Encoded),
+          responseBodyError: undefined,
+          responseMimeType: record.responseMimeType || 'application/octet-stream',
+        })
       }
+      task.finish()
     } catch (error) {
-      if (state.network.requestMap.get(key) !== record) return
-      const message = error instanceof Error ? error.message : String(error)
-      upsertNetworkRequest(state, {
-        ...record,
-        responseBody: '',
-        responseBodyTruncated: false,
-        responseBodyError: message || 'Network.getResponseBody failed',
-      })
+      task.finish(error instanceof Error ? error.message : String(error))
+    } finally {
+      // 超时不能释放真实 CDP 槽，否则卡死连接会持续累积底层请求。
+      activeBodyFetches -= 1
+      pumpBodyQueue()
     }
+  }
+
+  function fetchRequestBody(
+    record: NetworkRequestRecord,
+    session: HarCapture | null,
+  ): Promise<void> {
+    const existing = bodyTasks.get(record)
+    if (existing) return existing.done
+    if (typeof record.responseBody === 'string') return Promise.resolve()
+    const reason = bodyUnavailable(record)
+    if (reason) {
+      record.responseBodyError = reason
+      return Promise.resolve()
+    }
+    pumpBodyQueue()
+    if (bodyQueue.length >= BODY_FETCH_QUEUE_LIMIT) {
+      record.responseBodyError =
+        'body fetch queue is full (1000 queued requests); retry detail later'
+      return Promise.resolve()
+    }
+    let resolve!: () => void
+    const done = new Promise<void>((complete) => {
+      resolve = complete
+    })
+    const task: BodyFetchTask = {
+      record,
+      capture: session,
+      maxBodyBytes: session ? session.maxBodyBytes : DEFAULT_HAR_MAX_BODY_BYTES,
+      done,
+      settled: false,
+      finish: (error) => {
+        if (task.settled) return
+        task.settled = true
+        clearTimeout(timer)
+        if (error && !evictedRequests.has(record)) record.responseBodyError = error
+        session?.pending.delete(done)
+        state.network.pendingBodyFetches.delete(done)
+        resolve()
+      },
+    }
+    // 等待队列也计入预算，stop 不会被排队工作无限拖延。
+    const timer = setTimeout(() => {
+      task.finish('Network.getResponseBody timed out after 10000ms (including queue wait)')
+      pumpBodyQueue()
+    }, BODY_FETCH_TIMEOUT_MS)
+    bodyTasks.set(record, task)
+    session?.pending.add(done)
+    state.network.pendingBodyFetches.add(done)
+    bodyQueue.push(task)
+    pumpBodyQueue()
+    return done
   }
 
   async function handleEvent(
@@ -889,7 +1021,13 @@ export function createNetworkDomain({
 
       const key = createNetworkRequestKey(tabId, requestId)
       const previous = state.network.requestMap.get(key)
+      if (previous && !payload.redirectResponse) {
+        // CDP id 可复用；新请求必须使用新对象，旧任务只持有旧对象。
+        state.network.requestMap.delete(key)
+      }
       if (payload.redirectResponse && previous) {
+        previous.redirectArchived = true
+        previous.responseBodyError = 'redirect hop body is no longer available from CDP'
         const response = payload.redirectResponse
         const durationMs =
           typeof previous.requestWillBeSentAt === 'number' && typeof payload.timestamp === 'number'
@@ -938,7 +1076,14 @@ export function createNetworkDomain({
         wallTime: typeof payload.wallTime === 'number' ? payload.wallTime : null,
         documentUrl: String(payload.documentURL || ''),
         hopSequence: payload.redirectResponse ? Number(previous?.hopSequence || 0) + 1 : 0,
+        harCaptureId:
+          state.network.harRecording &&
+          capture &&
+          (capture.tabId === null || capture.tabId === tabId)
+            ? capture.id
+            : '',
       })
+      pumpBodyQueue()
       scheduleHarCheckpoint()
       return
     }
@@ -1022,13 +1167,9 @@ export function createNetworkDomain({
           typeof payload.encodedDataLength === 'number' ? payload.encodedDataLength : null,
       })
 
-      const bodyFetch = finalizeRequestBody(tabId, requestId)
-      // fire-and-forget 的 body 抓取要登记下来，stopHar 导出前会等待它们 settle，
-      // 否则“页面加载完立刻 network har stop”时 HAR 会大面积缺响应体
-      state.network.pendingBodyFetches.add(bodyFetch)
-      void bodyFetch.finally(() => {
-        state.network.pendingBodyFetches.delete(bodyFetch)
-      })
+      if (record && state.network.harRecording && capture && record.harCaptureId === capture.id) {
+        void fetchRequestBody(record, capture)
+      }
       scheduleHarCheckpoint()
       return
     }
@@ -1138,11 +1279,18 @@ export function createNetworkDomain({
     return result
   }
 
-  function getRequestDetail(requestId: string, tabId?: number | null): Record<string, unknown> {
+  async function getRequestDetail(
+    requestId: string,
+    tabId?: number | null,
+  ): Promise<Record<string, unknown>> {
     const record = getNetworkRequestById(state, String(requestId || ''), tabId)
     if (!record) {
       throw new Error(`network request not found: ${requestId}`)
     }
+    await fetchRequestBody(
+      record,
+      state.network.harRecording && record.harCaptureId === capture?.id ? capture : null,
+    )
 
     return {
       request: record,
@@ -1163,6 +1311,7 @@ export function createNetworkDomain({
       options.maxRequests === undefined ? DEFAULT_HAR_MAX_REQUESTS : options.maxRequests
     state.network.harMaxBodyBytes =
       options.maxBodyBytes === undefined ? DEFAULT_HAR_MAX_BODY_BYTES : options.maxBodyBytes
+    capture = createCapture(tab.id)
     await writeHarCheckpoint()
     return {
       recording: true,
@@ -1173,57 +1322,44 @@ export function createNetworkDomain({
   }
 
   async function stopHar(): Promise<Record<string, unknown>> {
-    // 先停记录再等 body：stop 之后 loadingFinished 不再触发新的抓取，
-    // 等待当前已注册的 promise 即可（它们是 CDP 请求，自身会超时 settle）
-    const startedAt = state.network.harStartedAt
+    const session = capture
+    const startedAt = session?.startedAt ?? state.network.harStartedAt
     const stoppedAt = new Date().toISOString()
+    // 快照持有旧记录对象与该 capture 的逻辑等待，不受后续 start/同 key 请求影响。
+    const requests = captureRequests(session)
+    const pending = [...(session?.pending || [])]
     state.network.harRecording = false
     state.network.harStartedAt = null
+    state.network.harMaxRequests = DEFAULT_HAR_MAX_REQUESTS
+    state.network.harMaxBodyBytes = DEFAULT_HAR_MAX_BODY_BYTES
     if (checkpointTimer) {
       clearTimeout(checkpointTimer)
       checkpointTimer = null
     }
+    await Promise.allSettled(pending)
 
+    const retained = requests.filter((record) => !evictedRequests.has(record))
+    let checkpointError: string | null = null
     try {
-      if (state.network.pendingBodyFetches.size > 0) {
-        await Promise.allSettled(state.network.pendingBodyFetches)
+      if (capture === session && !state.network.harRecording) {
+        await writeHarCheckpoint(checkpointPayload(false, session, retained))
       }
-
-      const requests = state.network.requests.filter((record) => {
-        if (!startedAt) {
-          return true
-        }
-
-        return String(record.startedAt || '') >= startedAt
-      })
-
-      const harRequests = [...requests].sort((left, right) => compareHarRecords(left, right))
-      let checkpointError: string | null = null
-      try {
-        await writeHarCheckpoint(false, startedAt)
-      } catch (error) {
-        checkpointError = error instanceof Error ? error.message : String(error)
-      }
-      const har = buildHar(harRequests)
-
-      return {
-        recording: false,
-        startedAt,
-        stoppedAt,
-        requestCount: requests.length,
-        // 直接在扩展侧生成 HAR，避免 CLI 为了导出再逐条回拉 request detail，形成 N+1 往返。
-        har,
-        ...(checkpointError
-          ? {
-              checkpoint: { saved: false, error: checkpointError },
-              suggestedAction:
-                'HAR export succeeded, but the checkpoint could not be saved. Use the returned HAR from this stop result; for long captures, restart with lower --har-max-body-bytes/--har-max-requests instead of --har-unlimited.',
-            }
-          : {}),
-      }
-    } finally {
-      state.network.harMaxRequests = DEFAULT_HAR_MAX_REQUESTS
-      state.network.harMaxBodyBytes = DEFAULT_HAR_MAX_BODY_BYTES
+    } catch (error) {
+      checkpointError = error instanceof Error ? error.message : String(error)
+    }
+    return {
+      recording: false,
+      startedAt,
+      stoppedAt,
+      requestCount: retained.length,
+      har: buildHar(retained),
+      ...(checkpointError
+        ? {
+            checkpoint: { saved: false, error: checkpointError },
+            suggestedAction:
+              'HAR export succeeded, but the checkpoint could not be saved. Use the returned HAR from this stop result; for long captures, restart with lower --har-max-body-bytes/--har-max-requests instead of --har-unlimited.',
+          }
+        : {}),
     }
   }
 

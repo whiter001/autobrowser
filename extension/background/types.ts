@@ -61,6 +61,9 @@ export interface NetworkRoute {
 
 export interface NetworkRequestRecord {
   id?: string
+  /** 捕获身份独立于毫秒时间及可复用的 CDP requestId。 */
+  harCaptureId?: string
+  redirectArchived?: boolean
   requestId?: string
   tabId?: number | null
   pageEpoch?: number | null
@@ -109,7 +112,7 @@ export interface NetworkState {
   requestMap: Map<string, NetworkRequestRecord>
   /** requests 数组下标索引，避免每个网络事件对上万条记录做 findIndex 全表扫描 */
   requestIndex: Map<string, number>
-  /** 进行中的响应体抓取（Network.getResponseBody），stopHar 收集前需等待其 settle，避免 HAR 丢 body */
+  /** body 的有界逻辑等待（含 detail）；仅供观测，stopHar 使用各 capture 自己的 pending 快照。 */
   pendingBodyFetches: Set<Promise<unknown>>
   inFlightByTab: Map<number, Set<string>>
   lastActivityByTab: Map<number, number>

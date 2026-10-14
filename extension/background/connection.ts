@@ -15,6 +15,7 @@ import type {
 } from './types.js'
 import { serializeCommandError } from './errors.js'
 import { getPageEpoch } from './targeting.js'
+import { createResponseSender } from '../../src/core/response-transfer.js'
 
 interface NetworkDomain {
   handleRequestPaused: (tabId: number, params: unknown) => Promise<void>
@@ -499,6 +500,8 @@ export function createConnectionRuntime({
       )
 
       state.connection.socket = socket
+      const responseSender = createResponseSender(socket)
+      const activeCommands = new Map<string, { cancelled: boolean }>()
 
       socket.addEventListener('open', () => {
         state.connection.lastHeartbeatAt = null
@@ -564,6 +567,9 @@ export function createConnectionRuntime({
 
         if (message?.type === 'cancel' && typeof message.id === 'string') {
           cancelCommand(message.id)
+          const transfer = activeCommands.get(message.id)
+          if (transfer) transfer.cancelled = true
+          responseSender.cancel(message.id)
           return
         }
 
@@ -571,17 +577,17 @@ export function createConnectionRuntime({
           return
         }
 
+        const transfer = { cancelled: false }
+        activeCommands.set(message.id, transfer)
         try {
           const result = await handleCommand(message)
-          socket.send(
-            JSON.stringify({
-              type: 'response',
-              id: message.id,
-              ok: true,
-              result,
-            }),
+          if (transfer.cancelled) return
+          await responseSender.send(
+            { type: 'response', id: message.id, ok: true, result },
+            message.deadlineAt,
           )
         } catch (error) {
+          if (transfer.cancelled) return
           const err = error as ErrorWithCode
           state.connection.lastCommandError = {
             command: String(message.command || ''),
@@ -590,14 +596,23 @@ export function createConnectionRuntime({
             at: new Date().toISOString(),
           }
           persistDiagnostics()
-          socket.send(
-            JSON.stringify({
-              type: 'response',
-              id: message.id,
-              ok: false,
-              error: serializeCommandError(error),
-            }),
-          )
+          try {
+            await responseSender.send(
+              { type: 'response', id: message.id, ok: false, error: serializeCommandError(error) },
+              message.deadlineAt,
+            )
+          } catch (sendError) {
+            // 失败必须闭环；不能在断线/拥塞后再次裸 send 巨型响应或留下拒绝未处理。
+            console.warn('failed to deliver command response', sendError)
+            responseSender.dispose()
+            try {
+              socket.close()
+            } catch {
+              // 发送器已释放所有任务和定时器，关闭失败不应造成未处理拒绝。
+            }
+          }
+        } finally {
+          activeCommands.delete(message.id)
         }
 
         try {
@@ -608,6 +623,9 @@ export function createConnectionRuntime({
       })
 
       socket.addEventListener('close', (event) => {
+        responseSender.dispose()
+        for (const transfer of activeCommands.values()) transfer.cancelled = true
+        activeCommands.clear()
         clearHeartbeatTimers()
         state.connection.socket = null
         state.connection.connecting = false
@@ -622,6 +640,7 @@ export function createConnectionRuntime({
       })
 
       socket.addEventListener('error', () => {
+        responseSender.dispose()
         clearHeartbeatTimers()
         state.connection.connecting = false
         setConnectionError('relay websocket error')

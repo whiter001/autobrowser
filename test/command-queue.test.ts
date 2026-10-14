@@ -103,6 +103,26 @@ describe('command queue', () => {
     )
   })
 
+  test('shares live cancellation and deadline state with running tasks', async () => {
+    const queue = createCommandQueue()
+    let context!: Parameters<Parameters<typeof queue.enqueue>[1]>[0]
+    const pending = queue.enqueue(
+      'tab:1',
+      async (value) => {
+        context = value
+        await new Promise(() => {})
+      },
+      { id: 'context', deadlineAt: new Date(Date.now() + 20).toISOString() },
+    )
+    expect(context.cancelled).toBe(false)
+    await flush(30)
+    expect(context.cancelled).toBe(true)
+    expect(() => context.throwIfCancelled()).toThrow('deadline elapsed')
+    expect(queue.reset('tab:1')).toBe(1)
+    await expect(pending).rejects.toMatchObject({ code: 'COMMAND_CANCELLED' })
+    expect(context.cancelled).toBe(true)
+  })
+
   test('does not start a queued command after its deadline', async () => {
     const queue = createCommandQueue()
     let ran = false

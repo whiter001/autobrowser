@@ -1,4 +1,5 @@
 import { parseSearchQueryRegex } from './search.js'
+import { getCommandRequestBudgetMs } from './command-budget.js'
 
 export interface CommandSpec {
   name: string
@@ -464,7 +465,7 @@ function validateBatchStep(value: unknown, index: number): void {
       validateBatchWhen(value.when)
     }
 
-    validateCommandArgs(command, value.args ?? {})
+    validateCommandArgsShape(command, value.args ?? {})
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error)
     throw createCommandArgsValidationError('batch', `${stepLabel}: ${reason}`, {
@@ -475,6 +476,12 @@ function validateBatchStep(value: unknown, index: number): void {
 }
 
 export function validateCommandArgs(command: string, args: unknown): void {
+  const normalizedArgs = requireRecordArgs(command, args)
+  getCommandRequestBudgetMs(command, normalizedArgs)
+  validateCommandArgsShape(command, normalizedArgs)
+}
+
+function validateCommandArgsShape(command: string, args: unknown): void {
   const normalizedArgs = requireRecordArgs(command, args)
 
   // 这些字段在多个命令之间共享，先做统一的浅层类型约束，避免把明显错误的值传到扩展侧。
@@ -749,7 +756,14 @@ export function validateCommandArgs(command: string, args: unknown): void {
       return
     case 'search': {
       const query = readStringField(normalizedArgs, 'query', command)
-      readOptionalNonNegativeIntegerField(normalizedArgs, 'context', command)
+      const context = readOptionalNonNegativeIntegerField(normalizedArgs, 'context', command)
+      if (context !== undefined && context > 50) {
+        throw createCommandArgsValidationError(command, 'context must not exceed 50')
+      }
+      const startLine = readOptionalNonNegativeIntegerField(normalizedArgs, 'startLine', command)
+      if (startLine !== undefined && (!Number.isSafeInteger(startLine) || startLine < 1)) {
+        throw createCommandArgsValidationError(command, 'startLine must be a positive safe integer')
+      }
       readOptionalNonNegativeIntegerField(normalizedArgs, 'limit', command)
       try {
         // readStringField 保证 query 非空字符串，这里仅做正则语法校验

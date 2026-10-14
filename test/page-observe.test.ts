@@ -5,6 +5,7 @@ import {
   createPageObserveDomain,
 } from '../extension/background/page-observe.js'
 import type { DialogState } from '../extension/background/types.js'
+import { serializeCommandError } from '../extension/background/errors.js'
 
 describe('page observe waitForExpression', () => {
   test('wraps expressions so promise-returning functions are awaited', async () => {
@@ -1301,5 +1302,681 @@ describe('page observe snapshot byte cap', () => {
     expect(result).not.toHaveProperty('truncated')
     expect(result).not.toHaveProperty('totalElements')
     expect(result).not.toHaveProperty('returnedElements')
+  })
+})
+
+// 执行真正的注入表达式；只模拟 DOM API，不模拟 snapshot/find 的返回值。
+class ObserveNode {
+  attributes = new Map<string, string>()
+  children: ObserveNode[] = []
+  shadowRoot: ObserveDocument | null = null
+  innerText = ''
+  id = ''
+  className = ''
+  name = ''
+  title = ''
+  src = ''
+  href = ''
+  type = 'text'
+  value = ''
+  checked = false
+  disabled = false
+  ownerDocument!: ObserveDocument
+  reads = new Map<string, number>()
+  constructor(public tagName = 'BUTTON') {}
+  getAttribute(key: string) {
+    this.reads.set(key, (this.reads.get(key) || 0) + 1)
+    return this.attributes.get(key) ?? null
+  }
+  setAttribute(key: string, value: string) {
+    this.attributes.set(key, value)
+  }
+  getBoundingClientRect() {
+    return { left: 0, top: 0, width: 20, height: 10 }
+  }
+  matches(selector: string): boolean {
+    return selector.split(',').some((part) => {
+      if (part === '*') return true
+      if (part.startsWith('#')) return this.id === part.slice(1)
+      const attr = /\[([^=\]]+)(?:=['"]?([^'"\]]+)['"]?)?\]/.exec(part)
+      const tag = /^[a-z0-9]+/i.exec(part)?.[0]
+      if (tag && this.tagName.toLowerCase() !== tag.toLowerCase()) return false
+      if (part.includes(':not'))
+        return this.tagName === 'INPUT' ? this.type !== 'hidden' : this.attributes.has('tabindex')
+      return (
+        !attr ||
+        (this.attributes.has(attr[1]!) && (!attr[2] || this.attributes.get(attr[1]!) === attr[2]))
+      )
+    })
+  }
+  closest(selector: string) {
+    return this.matches(selector) ? this : null
+  }
+  querySelectorAll(selector: string) {
+    return this.children.filter((node) => node.matches(selector))
+  }
+}
+class ObserveInput extends ObserveNode {
+  constructor() {
+    super('INPUT')
+  }
+}
+class ObserveAnchor extends ObserveNode {
+  constructor() {
+    super('A')
+    this.setAttribute('href', '/a')
+    this.href = '/a'
+  }
+}
+class ObserveFrame extends ObserveNode {
+  constructor() {
+    super('IFRAME')
+  }
+}
+class ObserveDocument {
+  title = ''
+  readyState = 'complete'
+  body = { innerText: '' }
+  queries = 0
+  defaultView = {
+    getComputedStyle: () => ({ display: 'block', visibility: 'visible', opacity: '1' }),
+  }
+  constructor(public nodes: ObserveNode[] = []) {
+    this.attach()
+  }
+  attach() {
+    for (const node of this.nodes) node.ownerDocument = this
+  }
+  querySelectorAll(selector: string) {
+    this.queries++
+    this.attach()
+    return this.nodes.filter((node) => node.matches(selector))
+  }
+}
+function expressionHarness(document: ObserveDocument) {
+  const state = createObserveState()
+  const documents = new Map<string, ObserveDocument>([['top', document]])
+  const payloads: unknown[] = []
+  const domain = createPageObserveDomain({
+    state,
+    getTargetTab: async () => ({ id: 1 }),
+    resolveElementSelectorForTab: async (_: unknown, selector: string) => ({
+      tab: { id: 1 },
+      resolvedSelector: selector,
+    }),
+    resolveFrameTarget: async () => {
+      throw new Error('unused')
+    },
+    evaluateInTabContext: async (
+      _: unknown,
+      expression: string,
+      options?: { frameSelector?: string },
+    ) => {
+      const frame = options?.frameSelector || state.targeting.selectedFrames.get(1) || 'top'
+      const doc = documents.get(frame)!
+      const value = new Function(
+        'document',
+        'location',
+        'window',
+        'HTMLElement',
+        'HTMLInputElement',
+        'HTMLAnchorElement',
+        'HTMLIFrameElement',
+        'getComputedStyle',
+        `return ${expression}`,
+      )(
+        doc,
+        { href: doc.title },
+        { scrollX: 0, scrollY: 0 },
+        ObserveNode,
+        ObserveInput,
+        ObserveAnchor,
+        ObserveFrame,
+        doc.defaultView.getComputedStyle,
+      )
+      payloads.push(value)
+      return { tab: { id: 1 }, response: { result: {} }, value }
+    },
+    sendDebuggerCommand: async () => undefined,
+  } as never)
+  return { domain, state, documents, payloads }
+}
+type ObservedSnapshot = {
+  elements: Array<Record<string, unknown>>
+  frames: Array<{ ref: string }>
+  full: boolean
+  removedRefs: string[]
+  truncated?: boolean
+}
+
+describe('executed observation expressions', () => {
+  test('find deduplicates native and indexed labels by DOM identity for exact names', async () => {
+    const input = new ObserveInput()
+    input.id = 'control-99'
+    const label = new ObserveNode('LABEL')
+    label.setAttribute('for', input.id)
+    label.innerText = 'Control 99'
+    Object.assign(input, { labels: [label] })
+    const doc = new ObserveDocument([input, label])
+    const h = expressionHarness(doc)
+    const result = await h.domain.findSemanticTarget(
+      1,
+      {
+        strategy: 'role',
+        role: 'textbox',
+        name: 'Control 99',
+        exact: true,
+      } as never,
+      null,
+    )
+    expect(result.match?.name).toBe('Control 99')
+    expect(result.match?.ref).toBe('@e1#p1')
+    expect(doc.queries).toBe(2)
+  })
+
+  test('find retains distinct same-text wrapping and external labels from both sources', async () => {
+    for (const nativeIncludesExternal of [false, true]) {
+      const input = new ObserveInput()
+      input.id = 'control'
+      const wrapping = new ObserveNode('LABEL')
+      wrapping.innerText = 'Control'
+      wrapping.children = [input]
+      const external = new ObserveNode('LABEL')
+      external.setAttribute('for', input.id)
+      external.innerText = 'Control'
+      Object.assign(input, { labels: nativeIncludesExternal ? [wrapping, external] : [wrapping] })
+      const doc = new ObserveDocument([wrapping, input, external])
+      const h = expressionHarness(doc)
+      const result = await h.domain.findSemanticTarget(
+        1,
+        {
+          strategy: 'role',
+          role: 'textbox',
+          name: 'Control Control',
+          exact: true,
+        } as never,
+        null,
+      )
+      expect(result.match?.name).toBe('Control Control')
+      expect(doc.queries).toBe(2)
+    }
+  })
+
+  test('ambiguity candidates survive the real command error serializer', async () => {
+    const h = expressionHarness(
+      new ObserveDocument(Array.from({ length: 25 }, () => new ObserveNode())),
+    )
+    const error = await h.domain
+      .findSemanticTarget(
+        1,
+        {
+          strategy: 'role',
+          role: 'button',
+          requireUnique: true,
+        } as never,
+        null,
+      )
+      .then(
+        () => {
+          throw new Error('expected ambiguity')
+        },
+        (error: unknown) => error,
+      )
+    const serialized = JSON.parse(JSON.stringify(serializeCommandError(error)))
+    expect(serialized.code).toBe('AMBIGUOUS_TARGET')
+    expect(serialized.details.candidates).toHaveLength(10)
+    expect(serialized.details.candidates[0].ref).toBe('@e1#p1')
+    expect(serialized.suggestedAction).toContain('exact:true')
+    expect(new TextEncoder().encode(JSON.stringify(serialized)).length).toBeLessThan(20000)
+  })
+
+  test('password values are never read or included in names, text, signatures or payloads', async () => {
+    const unlabeled = new ObserveInput(),
+      labeled = new ObserveInput(),
+      aria = new ObserveInput()
+    const nodes = [unlabeled, labeled, aria]
+    const secret = 'private-password-do-not-export'
+    let valueReads = 0
+    for (const node of nodes) {
+      node.type = 'password'
+      node.setAttribute('type', 'password')
+      node.innerText = secret
+      Object.defineProperty(node, 'value', {
+        configurable: true,
+        get: () => {
+          valueReads++
+          return secret
+        },
+      })
+    }
+    labeled.id = 'password'
+    const label = new ObserveNode('LABEL')
+    label.setAttribute('for', 'password')
+    label.innerText = 'Account password'
+    aria.setAttribute('aria-label', 'Secret input')
+    const h = expressionHarness(new ObserveDocument([...nodes, label]))
+    const first = (await h.domain.snapshotTab(1, null)) as ObservedSnapshot
+    expect(first.elements.map((node) => node.value)).toEqual([null, null, null])
+    expect(first.elements.map((node) => node.name)).toEqual([
+      '',
+      'Account password',
+      'Secret input',
+    ])
+    expect(first.elements.map((node) => node.text)).toEqual(['', '', ''])
+    const signatures = (h.payloads.at(-1) as { signatures: string[] }).signatures
+    for (const node of nodes)
+      Object.defineProperty(node, 'value', {
+        get: () => {
+          valueReads++
+          return 'changed-password'
+        },
+      })
+    const delta = (await h.domain.snapshotTab(1, null, { changed: true })) as ObservedSnapshot
+    expect(delta.elements).toHaveLength(0)
+    expect((h.payloads.at(-1) as { signatures: string[] }).signatures).toEqual(signatures)
+    expect(valueReads).toBe(0)
+    expect(JSON.stringify(h.payloads)).not.toContain(secret)
+    expect(JSON.stringify(h.payloads)).not.toContain('changed-password')
+  })
+
+  test('find excludes password fallbacks in locate and ambiguity while retaining ordinary input values', async () => {
+    const unlabeled = new ObserveInput(),
+      labeled = new ObserveInput(),
+      aria = new ObserveInput()
+    const secret = 'find-password-must-not-leak'
+    let valueReads = 0
+    for (const node of [unlabeled, labeled, aria]) {
+      node.type = 'password'
+      node.setAttribute('type', 'password')
+      node.innerText = secret
+      Object.defineProperty(node, 'value', {
+        get: () => {
+          valueReads++
+          return secret
+        },
+      })
+    }
+    labeled.id = 'find-password'
+    const label = new ObserveNode('LABEL')
+    label.setAttribute('for', labeled.id)
+    label.innerText = 'Account password'
+    aria.setAttribute('aria-label', 'Secret input')
+    const ordinary = new ObserveInput()
+    ordinary.value = '  Ordinary value  '
+    const h = expressionHarness(new ObserveDocument([unlabeled, labeled, aria, ordinary, label]))
+    const options = { strategy: 'role', role: 'textbox' }
+    for (const [index, name] of [
+      '',
+      'Account password',
+      'Secret input',
+      'Ordinary value',
+    ].entries()) {
+      const result = await h.domain.findSemanticTarget(
+        1,
+        { ...options, position: `nth=${index + 1}` } as never,
+        null,
+      )
+      expect(result.match?.name).toBe(name)
+      expect(result.match?.text).toBe('')
+      expect(JSON.stringify(result)).not.toContain(secret)
+    }
+    const candidates = await h.domain.findSemanticTarget(
+      1,
+      { ...options, candidates: 4 } as never,
+      null,
+    )
+    expect(candidates.candidates?.map((node) => node.name)).toEqual([
+      '',
+      'Account password',
+      'Secret input',
+      'Ordinary value',
+    ])
+    const error = await h.domain
+      .findSemanticTarget(1, { ...options, requireUnique: true } as never, null)
+      .then(
+        () => {
+          throw new Error('expected ambiguity')
+        },
+        (error: unknown) => error,
+      )
+    const serialized = serializeCommandError(error)
+    expect(serialized.code).toBe('AMBIGUOUS_TARGET')
+    expect((serialized.details as { candidates: unknown[] }).candidates).toHaveLength(4)
+    expect(JSON.stringify(serialized)).not.toContain(secret)
+    await expect(
+      h.domain.findSemanticTarget(1, { strategy: 'text', query: secret } as never, null),
+    ).rejects.toThrow('no text match found')
+    expect(valueReads).toBe(0)
+    // 无匹配错误可能回显查询；此前所有成功 locate/候选及歧义 payload 均不得包含密码。
+    expect(JSON.stringify(h.payloads.slice(0, -1))).not.toContain(secret)
+  })
+
+  test('all visibility layout reads precede any ref attribute writes', async () => {
+    const events: string[] = []
+    const nodes = [
+      new ObserveNode(),
+      new ObserveInput(),
+      new ObserveNode(),
+      new ObserveFrame(),
+      new ObserveFrame(),
+    ]
+    for (const [index, node] of nodes.entries()) {
+      node.getBoundingClientRect = () => {
+        events.push(`rect:${index}`)
+        return { left: 0, top: 0, width: 20, height: 10 }
+      }
+      const setAttribute = node.setAttribute.bind(node)
+      node.setAttribute = (key, value) => {
+        if (key.startsWith('data-autobrowser-')) events.push(`write:${index}`)
+        setAttribute(key, value)
+      }
+    }
+    const doc = new ObserveDocument(nodes)
+    doc.defaultView.getComputedStyle = () => {
+      events.push('style')
+      return { display: 'block', visibility: 'visible', opacity: '1' }
+    }
+    await expressionHarness(doc).domain.snapshotTab(1, null)
+    const firstWrite = events.findIndex((event) => event.startsWith('write:'))
+    expect(firstWrite).toBe(10)
+    expect(events.slice(0, firstWrite).filter((event) => event.startsWith('rect:'))).toHaveLength(5)
+    expect(events.slice(0, firstWrite).filter((event) => event === 'style')).toHaveLength(5)
+    expect(events.slice(firstWrite)).toHaveLength(5)
+    expect(events.slice(firstWrite).every((event) => event.startsWith('write:'))).toBe(true)
+  })
+
+  test('snapshot/find share monotonic element and frame counters after maximum/all deletion', async () => {
+    const doc = new ObserveDocument([new ObserveNode(), new ObserveNode(), new ObserveFrame()])
+    const h = expressionHarness(doc)
+    const first = (await h.domain.snapshotTab(1, null)) as ObservedSnapshot
+    expect(first.elements.map((e) => e.ref)).toEqual(['@e1#p1', '@e2#p1'])
+    doc.nodes.pop()
+    doc.nodes.pop()
+    doc.nodes.push(new ObserveNode(), new ObserveFrame())
+    const second = (await h.domain.snapshotTab(1, null)) as ObservedSnapshot
+    expect(second.elements[1]!.ref).toBe('@e3#p1')
+    expect(second.frames[0]!.ref).toBe('@f2#p1')
+    doc.nodes = [new ObserveNode()]
+    const found = await h.domain.findSemanticTarget(
+      1,
+      { strategy: 'role', role: 'button' } as never,
+      null,
+    )
+    expect(found.match!.ref).toBe('@e4#p1')
+    doc.nodes = [new ObserveNode(), new ObserveFrame()]
+    const last = (await h.domain.snapshotTab(1, null)) as ObservedSnapshot
+    expect(last.elements[0]!.ref).toBe('@e5#p1')
+    expect(last.frames[0]!.ref).toBe('@f3#p1')
+  })
+
+  test('semantic changes and removals are delivered, selected frame and new document reset baselines', async () => {
+    const input = new ObserveInput(),
+      anchor = new ObserveAnchor()
+    const doc = new ObserveDocument([input, anchor])
+    const h = expressionHarness(doc)
+    await h.domain.snapshotTab(1, null)
+    expect(
+      ((await h.domain.snapshotTab(1, null, { changed: true })) as ObservedSnapshot).elements,
+    ).toHaveLength(0)
+    for (const mutate of [
+      () => {
+        input.checked = true
+      },
+      () => {
+        input.disabled = true
+      },
+      () => {
+        input.type = 'checkbox'
+      },
+      () => input.setAttribute('placeholder', 'new'),
+      () => {
+        anchor.href = '/b'
+      },
+    ]) {
+      mutate()
+      expect(
+        ((await h.domain.snapshotTab(1, null, { changed: true })) as ObservedSnapshot).elements,
+      ).toHaveLength(1)
+    }
+    doc.nodes = [anchor]
+    expect(
+      ((await h.domain.snapshotTab(1, null, { changed: true })) as ObservedSnapshot).removedRefs,
+    ).toEqual(['@e1#p1'])
+    h.documents.set('#child', new ObserveDocument([new ObserveAnchor()]))
+    h.state.targeting.selectedFrames.set(1, '#child')
+    expect(
+      ((await h.domain.snapshotTab(1, undefined, { changed: true })) as ObservedSnapshot).full,
+    ).toBe(true)
+    expect(
+      ((await h.domain.snapshotTab(1, undefined, { changed: true })) as ObservedSnapshot).elements,
+    ).toHaveLength(0)
+    h.documents.set('#child', new ObserveDocument([new ObserveAnchor()]))
+    expect(
+      ((await h.domain.snapshotTab(1, undefined, { changed: true })) as ObservedSnapshot).full,
+    ).toBe(true)
+    expect(
+      ((await h.domain.snapshotTab(1, 'top', { changed: true })) as ObservedSnapshot).elements,
+    ).toHaveLength(0)
+  })
+
+  test('quantity/UTF8 clipping only acknowledges delivered refs, including summaries and internal payload', async () => {
+    const nodes = Array.from({ length: 260 }, () => {
+      const node = new ObserveInput()
+      node.setAttribute('placeholder', '界'.repeat(4000))
+      node.value = '界'.repeat(4000)
+      return node
+    })
+    const doc = new ObserveDocument(nodes)
+    doc.title = '界'.repeat(100000)
+    doc.body.innerText = doc.title
+    for (let i = 0; i < 30; i++) {
+      const frame = new ObserveFrame()
+      frame.src = doc.title
+      frame.title = doc.title
+      const heading = new ObserveNode('H1')
+      heading.id = doc.title
+      heading.className = doc.title
+      doc.nodes.push(frame, heading)
+    }
+    const h = expressionHarness(doc)
+    const seen = new Set<unknown>()
+    for (let i = 0; i < 20 && seen.size < 260; i++) {
+      const result = (await h.domain.snapshotTab(1, null, { changed: true })) as ObservedSnapshot
+      expect(result.truncated).toBe(true)
+      expect(new TextEncoder().encode(JSON.stringify(result)).length).toBeLessThanOrEqual(200000)
+      expect(
+        new TextEncoder().encode(JSON.stringify(h.payloads.at(-1))).length,
+      ).toBeLessThanOrEqual(200000)
+      for (const node of result.elements) {
+        expect(seen.has(node.ref)).toBe(false)
+        seen.add(node.ref)
+      }
+    }
+    expect(seen.size).toBe(260)
+  })
+
+  test('write ambiguity is bounded; locate first and explicit positions remain supported', async () => {
+    const doc = new ObserveDocument(Array.from({ length: 15 }, () => new ObserveNode()))
+    const h = expressionHarness(doc)
+    const options = { strategy: 'role', role: 'button', requireUnique: true } as const
+    await expect(h.domain.findSemanticTarget(1, options as never, null)).rejects.toMatchObject({
+      code: 'AMBIGUOUS_TARGET',
+      candidates: expect.any(Array),
+      suggestedAction: expect.stringContaining('exact:true'),
+    })
+    expect((h.payloads.at(-1) as { candidates: unknown[] }).candidates).toHaveLength(10)
+    expect(
+      (await h.domain.findSemanticTarget(1, { ...options, requireUnique: false } as never, null))
+        .match!.ref,
+    ).toBe('@e1#p1')
+    expect(
+      (await h.domain.findSemanticTarget(1, { ...options, position: 'nth=2' } as never, null))
+        .match!.ref,
+    ).toBe('@e2#p1')
+  })
+
+  test('count cap pages undisclosed nodes and names resolve through shadow-root indexes', async () => {
+    const nodes = Array.from({ length: 205 }, () => new ObserveNode())
+    const shadowButton = new ObserveNode()
+    shadowButton.setAttribute('aria-labelledby', 'shadow-label')
+    const label = new ObserveNode('LABEL')
+    label.id = 'shadow-label'
+    label.innerText = 'Shadow Save'
+    const host = new ObserveNode('DIV')
+    host.shadowRoot = new ObserveDocument([shadowButton, label])
+    const doc = new ObserveDocument([...nodes, host])
+    const h = expressionHarness(doc)
+    const first = (await h.domain.snapshotTab(1, null, { changed: true })) as ObservedSnapshot
+    expect(first.elements).toHaveLength(200)
+    expect(first.truncated).toBe(true)
+    const second = (await h.domain.snapshotTab(1, null, { changed: true })) as ObservedSnapshot
+    expect(second.elements).toHaveLength(6)
+    expect(second.elements.at(-1)!.name).toBe('Shadow Save')
+    const found = await h.domain.findSemanticTarget(
+      1,
+      { strategy: 'role', role: 'button', name: 'Shadow Save', exact: true } as never,
+      null,
+    )
+    expect(found.match!.ref).toBe(second.elements.at(-1)!.ref as string)
+  })
+
+  test('final defensive cap bounds oversized metadata and every summary array', async () => {
+    const huge = '界'.repeat(100000)
+    const result = (await createObserveForScreenshot(
+      {
+        title: huge,
+        url: huge,
+        text: huge,
+        elements: [],
+        frames: [{ src: huge }],
+        headings: [{ className: huge }],
+        buttons: [{ text: huge }],
+        modal: { message: huge },
+        signatures: [],
+      },
+      [],
+    ).snapshotTab(1, null)) as Record<string, unknown>
+    expect(result.truncated).toBe(true)
+    expect(new TextEncoder().encode(JSON.stringify(result)).length).toBeLessThanOrEqual(200000)
+  })
+
+  test('find uses two root queries independent of labelled candidates, with lazy memoized names', async () => {
+    const doc = new ObserveDocument()
+    for (let i = 0; i < 100; i++) {
+      const node = new ObserveNode()
+      node.id = `button${i}`
+      node.setAttribute('aria-label', 'Save')
+      node.setAttribute('aria-labelledby', 'label')
+      doc.nodes.push(node)
+    }
+    const label = new ObserveNode('LABEL')
+    label.id = 'label'
+    label.innerText = 'Other'
+    doc.nodes.push(label)
+    const h = expressionHarness(doc)
+    await h.domain.findSemanticTarget(
+      1,
+      { strategy: 'role', role: 'button', name: 'Save', candidates: 5 } as never,
+      null,
+    )
+    expect(doc.queries).toBe(2)
+    expect(doc.nodes[0]!.reads.get('aria-label')).toBe(1)
+    expect(doc.nodes[0]!.reads.get('aria-labelledby')).toBeUndefined()
+  })
+
+  test('search executes pagination with no missing or duplicated lines', async () => {
+    const doc = new ObserveDocument()
+    doc.body.innerText = Array(501).fill('hit').join('\n')
+    const h = expressionHarness(doc)
+    const lines: number[] = []
+    let startLine = 1
+    for (let i = 0; i < 4; i++) {
+      const result = await h.domain.searchPageText(
+        1,
+        { query: '/hit/g', context: 100, startLine },
+        null,
+      )
+      expect(result.context).toBe(50)
+      lines.push(
+        ...result.windows.flatMap((w) =>
+          w.lines.map((l) => {
+            expect(l.matched).toBe(true)
+            return l.line
+          }),
+        ),
+      )
+      if (!result.nextStartLine) {
+        expect(result.truncated).toBe(false)
+        break
+      }
+      expect(result.nextStartLine).toBeGreaterThan(startLine)
+      startLine = result.nextStartLine
+    }
+    expect(lines).toEqual(Array.from({ length: 501 }, (_, i) => i + 1))
+  })
+})
+
+describe('search byte and window continuation', () => {
+  test('UTF8 byte budget cuts inside one window and resumes at the exact next line', () => {
+    const raw = Array(350).fill('界'.repeat(240)).join('\n')
+    const first = computeSearchPageTextMatches(raw, '界', '界', 'g', 0, 20, 240, 'complete')
+    const count = first.windows[0]!.lines.length
+    expect(count).toBeLessThan(200)
+    expect(first.nextStartLine).toBe(count + 1)
+    expect(new TextEncoder().encode(JSON.stringify(first)).length).toBeLessThanOrEqual(100000)
+    expect(first.windows[0]!.lines.every((line) => line.matched)).toBe(true)
+    const next = computeSearchPageTextMatches(
+      raw,
+      '界',
+      '界',
+      'g',
+      0,
+      20,
+      240,
+      'complete',
+      first.nextStartLine,
+    )
+    expect(next.windows[0]!.startLine).toBe(count + 1)
+  })
+  test('window limit continuation, long-line terminal truncation and zero-limit do not loop', () => {
+    const first = computeSearchPageTextMatches(
+      'hit\nno\nhit',
+      'hit',
+      'hit',
+      'i',
+      0,
+      1,
+      240,
+      'complete',
+    )
+    expect(first.nextStartLine).toBe(3)
+    const last = computeSearchPageTextMatches(
+      'hit\nno\nhit',
+      'hit',
+      'hit',
+      'i',
+      0,
+      1,
+      240,
+      'complete',
+      3,
+    )
+    expect(last.truncated).toBe(false)
+    expect(last.nextStartLine).toBeUndefined()
+    const long = computeSearchPageTextMatches(
+      'x'.repeat(500),
+      'x',
+      'x',
+      'i',
+      0,
+      20,
+      240,
+      'complete',
+    )
+    expect(long.truncated).toBe(true)
+    expect(long.nextStartLine).toBeUndefined()
+    expect(
+      computeSearchPageTextMatches('x', 'x', 'x', 'i', 0, 0, 240, 'complete').nextStartLine,
+    ).toBeUndefined()
   })
 })
