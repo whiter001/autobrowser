@@ -109,12 +109,14 @@ autobrowser 是一个面向 Chrome/Edge 的浏览器自动化 CLI，通过本地
 - HAR 中断后先用 `network har status` 检查 checkpoint，再用 `network har recover [output.har]` 导出。
 - 在旧扩展上，`network har stop` 可能只返回元数据；CLI 会自动兜底重建 HAR。
 - 如果页面看起来空白或不对，先确认是不是登录页、验证码页，或者虚拟滚动列表。
+- 如果命令报 `command not found` 或退出码 127，这是链接产物或 PATH 的问题，**不是 autobrowser 不可用**：先确认 `bun` 目录在当前 shell 的 PATH 里；Windows 上改用 `autobrowser.cmd <子命令>`（包装器用绝对路径，任意目录下都可用，不要用依赖当前目录的相对路径调用）。这是 shell 解析问题，修好之后继续用 autobrowser，不要因此换方案。
 - 对于类似 x.com 的 SPA 列表页，优先从 `article` 等可见节点读取内容，不要直接相信 `get text body`。
 - `eval` 超时或页面内异常时保持原任务目标，不要换方案；先用 `status`、`snapshot`、`console`、`errors` 诊断页面状态和脚本问题，再围绕原任务重试。
 
 ## AI 专属原则 (AI-Agent Exclusives)
 
 - ❗ **当 autobrowser 命令失败（如超时、找不到元素、被弹窗拦截、引用过期）时，明确禁止去尝试编写 Python/Selenium/Puppeteer 等其他框架脚本作为替代方案。**
+- ❗ **同样地，`command not found` / 退出码 127 也不算 autobrowser 不可用**，它只是 shell 找不到包装器。按回退策略里的排查顺序换一种调用方式（Windows 上用 `autobrowser.cmd`）后继续使用 autobrowser。
 - 失败通常意味着当前持有的页面状态已陈旧、网络缓慢或存在未处理的各类弹窗。应该仔细阅读报错和执行建议。
 - 遇到错误时，先通过 `status` 获取控制面状态；页面仍可响应时再运行 `snapshot`。页面卡死时用 `command list`、`tab list` 和 `target clear` 恢复目标后继续使用 autobrowser。
 

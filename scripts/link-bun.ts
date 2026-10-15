@@ -24,14 +24,29 @@ try {
 
 const bunDir = path.dirname(bunPath)
 const isWindows = os.platform() === 'win32'
-const targetPath = path.join(bunDir, isWindows ? 'autobrowser.cmd' : 'autobrowser')
-const wrapper = isWindows
-  ? `@echo off\r\nsetlocal\r\n${JSON.stringify(bunPath)} ${JSON.stringify(distEntry)} %*\r\n`
-  : `#!/usr/bin/env sh
+
+// 无扩展名的 sh 包装器：Git Bash / WSL 这类 POSIX shell 只会按字面名查找，
+// 不会把 autobrowser 补成 autobrowser.cmd，所以 Windows 上也必须放一份
+const shWrapper = `#!/usr/bin/env sh
 exec ${JSON.stringify(bunPath)} ${JSON.stringify(distEntry)} "$@"
 `
 
-await writeFile(targetPath, wrapper, 'utf8')
-await chmod(targetPath, 0o755)
+const written: string[] = []
 
-console.log(`Linked autobrowser -> ${targetPath}`)
+if (isWindows) {
+  const cmdPath = path.join(bunDir, 'autobrowser.cmd')
+  await writeFile(
+    cmdPath,
+    `@echo off\r\nsetlocal\r\n${JSON.stringify(bunPath)} ${JSON.stringify(distEntry)} %*\r\n`,
+    'utf8',
+  )
+  written.push(cmdPath)
+}
+
+const shPath = path.join(bunDir, 'autobrowser')
+await writeFile(shPath, shWrapper, 'utf8')
+// writeFile 的 mode 只在新建文件时生效，已有文件必须显式 chmod
+await chmod(shPath, 0o755)
+written.push(shPath)
+
+console.log(`Linked autobrowser ->\n${written.map((p) => `  ${p}`).join('\n')}`)
