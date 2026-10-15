@@ -1067,7 +1067,7 @@ suite('live browser smoke test', () => {
       expect(staleClick.ok).toBe(false)
       expect(staleClick.error?.code).toBe('STALE_REFERENCE')
       expect(
-        await checkedCommand('eval', {
+        await checkedCommand<string>('eval', {
           script: 'document.getElementById("fresh").dataset.clicks || "0"',
         }),
       ).toBe('0')
@@ -1090,7 +1090,7 @@ suite('live browser smoke test', () => {
         'STALE_REFERENCE',
       )
       expect(
-        await checkedCommand('eval', {
+        await checkedCommand<string>('eval', {
           script: 'document.getElementById("fresh").dataset.clicks || "0"',
         }),
       ).toBe('0')
@@ -1321,16 +1321,22 @@ suite('live browser smoke test', () => {
       expect(cancelled.error?.code).toBe('COMMAND_CANCELLED')
       // 先证明取消后队列可用，再等原 CDP promise 真正结束，不能仅在延迟中检查未点击。
       expect(
-        await checkedCommand('eval', { script: 'document.getElementById("counter").textContent' }),
+        await checkedCommand<string>('eval', {
+          script: 'document.getElementById("counter").textContent',
+        }),
       ).toBe('0')
       await checkedCommand('wait', { fn: 'window.batchFinished === true', timeout: 10_000 })
       await Bun.sleep(150)
       expect(
-        await checkedCommand('eval', { script: 'document.getElementById("counter").textContent' }),
+        await checkedCommand<string>('eval', {
+          script: 'document.getElementById("counter").textContent',
+        }),
       ).toBe('0')
       await checkedCommand('click', { selector: '#increment' })
       expect(
-        await checkedCommand('eval', { script: 'document.getElementById("counter").textContent' }),
+        await checkedCommand<string>('eval', {
+          script: 'document.getElementById("counter").textContent',
+        }),
       ).toBe('1')
     } finally {
       if (runningId) await command('command', { action: 'cancel', commandId: runningId })
@@ -1372,9 +1378,9 @@ suite('live browser smoke test', () => {
           `${String(i).padStart(3, '0')}${'h'.repeat(256 * 1024)}`,
         )
       }
-      expect(await checkedCommand('eval', { script: '"healthy after chunked transfers"' })).toBe(
-        'healthy after chunked transfers',
-      )
+      expect(
+        await checkedCommand<string>('eval', { script: '"healthy after chunked transfers"' }),
+      ).toBe('healthy after chunked transfers')
     } finally {
       await loadSmokePage()
     }
@@ -1422,7 +1428,7 @@ suite('live browser smoke test', () => {
       expect(new TextEncoder().encode(JSON.stringify(stopped)).length).toBeGreaterThan(
         16 * 1024 * 1024,
       )
-      expect(await checkedCommand('eval', { script: '65' })).toBe(65)
+      expect(await checkedCommand<number>('eval', { script: '65' })).toBe(65)
     } catch (error) {
       await logExtensionDiagnostics()
       throw error
@@ -1437,13 +1443,13 @@ suite('live browser smoke test', () => {
     try {
       const started = performance.now()
       expect(
-        await checkedCommand('eval', {
+        await checkedCommand<string>('eval', {
           timeoutMs: 60_000,
           script: 'new Promise(resolve => setTimeout(() => resolve("35s complete"), 35000))',
         }),
       ).toBe('35s complete')
       expect(performance.now() - started).toBeGreaterThanOrEqual(35_000)
-      expect(await checkedCommand('eval', { script: '"healthy after long eval"' })).toBe(
+      expect(await checkedCommand<string>('eval', { script: '"healthy after long eval"' })).toBe(
         'healthy after long eval',
       )
     } finally {
@@ -1455,7 +1461,7 @@ suite('live browser smoke test', () => {
     await loadSmokePage()
     try {
       expect(
-        await checkedCommand('eval', {
+        await checkedCommand<{ divs: number; inputs: number }>('eval', {
           script: `document.body.innerHTML = Array.from({ length: 20000 }, (_, i) => '<div id="decoration-' + i + '">synthetic div ' + i + '</div>').join('') + Array.from({ length: 100 }, (_, i) => '<label for="control-' + i + '">Control ' + i + '</label><input id="control-' + i + '">').join(''); ({ divs: document.querySelectorAll('div').length, inputs: document.querySelectorAll('input').length })`,
         }),
       ).toEqual({ divs: 20000, inputs: 100 })
