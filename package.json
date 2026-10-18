@@ -1,11 +1,35 @@
 {
-  "name": "autobrowser",
+  "name": "@whiter001/autobrowser",
   "version": "0.1.0",
-  "private": true,
+  "description": "面向 AI agent 的浏览器自动化 CLI：本地 relay + Chrome/Edge 扩展，支持导航、点击/填写、snapshot 引用、网络拦截与 HAR，以及 MCP server",
+  "keywords": [
+    "browser-automation",
+    "chrome-extension",
+    "cdp",
+    "ai-agent",
+    "mcp",
+    "scraping",
+    "bun"
+  ],
   "bin": {
-    "autobrowser": "./src/cli.ts"
+    "autobrowser": "dist/autobrowser.js"
   },
+  "files": [
+    "dist",
+    "chrome",
+    "docs",
+    "README.md"
+  ],
   "type": "module",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/whiter001/autobrowser.git"
+  },
+  "bugs": {
+    "url": "https://github.com/whiter001/autobrowser/issues"
+  },
+  "homepage": "https://github.com/whiter001/autobrowser#readme",
   "scripts": {
     "dev": "bun src/cli.ts server",
     "start": "bun src/cli.ts server",
@@ -20,6 +44,8 @@
     "build:chrome": "bun scripts/build-chrome.ts",
     "build": "bun run build:cli && bun run build:chrome",
     "link:bun": "bun scripts/link-bun.ts",
+    "prepublishOnly": "bun run build",
+    "release": "npm publish --registry=https://registry.npmjs.org/ --access=public",
     "prepare": "husky"
   },
   "devDependencies": {
