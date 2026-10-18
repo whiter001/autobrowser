@@ -84,7 +84,7 @@ autobrowser 是一个面向 Chrome/Edge 的浏览器自动化 CLI，通过本地
 
 ## 总预算与重试
 
-- 请求预算默认 30 秒；显式 eval/navigation/click `timeoutMs`、wait `timeout`/`ms` 加 5 秒传输余量，且不低于默认预算。batch 合成逐步预算、重试、延迟和嵌套预算；总上限 30 分钟，**包含余量**，超大或非有限值会被拒绝。
+- 请求预算默认 30 秒；显式 eval/navigation/click `timeoutMs`、wait `timeout`/`ms` 加 5 秒传输余量，且不低于默认预算。feed 将 `maxScrolls` 限制为最多 40，按滚动次数 × `pauseMs` + 60 秒执行余量 + 5 秒传输余量计算，不低于默认预算，超过 30 分钟则拒绝。batch 合成逐步预算、重试、延迟和嵌套预算；总上限 30 分钟，**包含余量**，超大或非有限值会被拒绝。
 - 已发送命令断连时结果可能未知，不会自动重放。先检查 `status`、`command list` 与页面实际状态，确认副作用后再决定是否重试；取消/超时阻止后续 batch 步骤，但不能撤销已发生的操作或所有在途 CDP 调用。
 - batch 显式 `retries` 可能重复失败步骤已发生的副作用，不是幂等保证。提交、付款、删除等动作不要仅因报错就重放。
 

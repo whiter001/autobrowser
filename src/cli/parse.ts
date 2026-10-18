@@ -637,7 +637,8 @@ export function parseFindArgs(rest: string[]): FindArgs {
     throw new Error(`unsupported find strategy: ${strategy || '(empty)'}`)
   }
 
-  if (!queryOrRole) {
+  // 定位串仍要求非空白；fill/type 的内容值改用存在性校验，空串即"清空目标"
+  if (queryOrRole === undefined || !queryOrRole.trim()) {
     throw new Error(`missing ${strategy} value`)
   }
 
@@ -726,11 +727,11 @@ export function parseFindArgs(rest: string[]): FindArgs {
   findArgs.action = action
 
   if (['fill', 'type'].includes(action)) {
-    const actionValue = positionals.slice(1).join(' ')
-    if (!actionValue) {
+    if (positionals.length < 2) {
       throw new Error(`missing value for find ${action}`)
     }
-    findArgs.value = actionValue
+
+    findArgs.value = positionals.slice(1).join(' ')
     return findArgs
   }
 

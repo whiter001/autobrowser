@@ -1,6 +1,8 @@
 import { describe, expect, test } from 'bun:test'
 import {
   COMMAND_TRANSPORT_ALLOWANCE_MS,
+  FEED_EXECUTION_ALLOWANCE_MS,
+  FEED_MAX_SCROLLS,
   getCommandRequestBudgetMs,
   MAX_REQUEST_TIMEOUT_MS,
 } from '../src/core/command-budget.js'
@@ -67,6 +69,86 @@ describe('bounded command budgets', () => {
     expect(() => validateCommandArgs('batch', { steps: Array(10_001).fill('snapshot') })).toThrow(
       'too many',
     )
+  })
+
+  test('budgets feed scrolling like the extension collectFeed defaults', () => {
+    // 与 extension collectFeed 对齐：maxScrolls 默认 20、pauseMs 默认 900，滚动预算之外再留执行与传输余量
+    expect(getCommandRequestBudgetMs('feed')).toBe(
+      20 * 900 + FEED_EXECUTION_ALLOWANCE_MS + COMMAND_TRANSPORT_ALLOWANCE_MS,
+    )
+    expect(getCommandRequestBudgetMs('feed', {})).toBe(
+      20 * 900 + FEED_EXECUTION_ALLOWANCE_MS + COMMAND_TRANSPORT_ALLOWANCE_MS,
+    )
+    expect(
+      getCommandRequestBudgetMs('feed', { maxScrolls: 40, pauseMs: 1_000, stallRounds: 2 }),
+    ).toBe(40 * 1_000 + FEED_EXECUTION_ALLOWANCE_MS + COMMAND_TRANSPORT_ALLOWANCE_MS)
+    // 扩展把滚动轮数收敛到 FEED_MAX_SCROLLS，超出部分不会真的滚，预算按有效值算
+    expect(getCommandRequestBudgetMs('feed', { maxScrolls: 500, pauseMs: 1_000 })).toBe(
+      FEED_MAX_SCROLLS * 1_000 + FEED_EXECUTION_ALLOWANCE_MS + COMMAND_TRANSPORT_ALLOWANCE_MS,
+    )
+
+    expect(() => validateCommandArgs('feed', { maxScrolls: 40, pauseMs: 100_000 })).toThrow()
+    expect(() => validateCommandArgs('feed', { maxScrolls: -1 })).toThrow()
+  })
+
+  test('matches collectFeed normalization for zero and fractional feed counts', () => {
+    const idleBudget = FEED_EXECUTION_ALLOWANCE_MS + COMMAND_TRANSPORT_ALLOWANCE_MS
+    // 0 轮/0 停顿都是合法输入，预算退化为页内解析余量
+    expect(getCommandRequestBudgetMs('feed', { maxScrolls: 0 })).toBe(idleBudget)
+    expect(getCommandRequestBudgetMs('feed', { maxScrolls: 0, pauseMs: 0 })).toBe(idleBudget)
+    expect(getCommandRequestBudgetMs('feed', { pauseMs: 0 })).toBe(idleBudget)
+    expect(getCommandRequestBudgetMs('feed', { maxScrolls: 0, pauseMs: 0, stallRounds: 0 })).toBe(
+      idleBudget,
+    )
+    // 归一化与 collectFeed 一致：向下取整
+    expect(getCommandRequestBudgetMs('feed', { maxScrolls: 3.9, pauseMs: 1_000 })).toBe(
+      3 * 1_000 + FEED_EXECUTION_ALLOWANCE_MS + COMMAND_TRANSPORT_ALLOWANCE_MS,
+    )
+    expect(getCommandRequestBudgetMs('feed', { maxScrolls: 2, pauseMs: 900.7 })).toBe(
+      2 * 900 + FEED_EXECUTION_ALLOWANCE_MS + COMMAND_TRANSPORT_ALLOWANCE_MS,
+    )
+  })
+
+  test('caps feed counts before bounding time and does not treat stall rounds as milliseconds', () => {
+    const idleBudget = FEED_EXECUTION_ALLOWANCE_MS + COMMAND_TRANSPORT_ALLOWANCE_MS
+    const large = MAX_REQUEST_TIMEOUT_MS + 1
+    expect(getCommandRequestBudgetMs('feed', { maxScrolls: large, pauseMs: 0 })).toBe(idleBudget)
+    expect(getCommandRequestBudgetMs('feed', { maxScrolls: Number.MAX_VALUE, pauseMs: 1 })).toBe(
+      idleBudget + FEED_MAX_SCROLLS,
+    )
+    expect(getCommandRequestBudgetMs('feed', { stallRounds: Number.MAX_VALUE })).toBe(
+      getCommandRequestBudgetMs('feed'),
+    )
+    expect(getCommandRequestBudgetMs('feed', { maxScrolls: 0, pauseMs: large })).toBe(idleBudget)
+    expect(() =>
+      validateCommandArgs('feed', { maxScrolls: large, pauseMs: 0, stallRounds: large }),
+    ).not.toThrow()
+    const pauseMs = (MAX_REQUEST_TIMEOUT_MS - idleBudget) / FEED_MAX_SCROLLS
+    expect(getCommandRequestBudgetMs('feed', { maxScrolls: large, pauseMs })).toBe(
+      MAX_REQUEST_TIMEOUT_MS,
+    )
+    expect(() =>
+      getCommandRequestBudgetMs('feed', { maxScrolls: large, pauseMs: pauseMs + 1 }),
+    ).toThrow('request budget')
+    for (const key of ['maxScrolls', 'pauseMs', 'stallRounds']) {
+      for (const value of [-1, Infinity, NaN, '2']) {
+        expect(() => getCommandRequestBudgetMs('feed', { [key]: value })).toThrow(key)
+      }
+    }
+  })
+
+  test('gives nested feed steps the same budget inside a batch', () => {
+    const feedBudget = 20 * 900 + FEED_EXECUTION_ALLOWANCE_MS + COMMAND_TRANSPORT_ALLOWANCE_MS
+    expect(
+      getCommandRequestBudgetMs('batch', {
+        steps: [{ command: 'feed', args: { maxScrolls: 5, pauseMs: 1_000 } }],
+      }),
+    ).toBe(5 * 1_000 + FEED_EXECUTION_ALLOWANCE_MS + COMMAND_TRANSPORT_ALLOWANCE_MS)
+    expect(
+      getCommandRequestBudgetMs('batch', {
+        steps: [{ command: 'batch', args: { steps: ['feed', { command: 'feed', args: {} }] } }],
+      }),
+    ).toBe(2 * feedBudget)
   })
 
   test('validates bounded search continuation arguments', () => {

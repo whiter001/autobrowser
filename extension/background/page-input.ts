@@ -1,6 +1,7 @@
 import { resolveAgentSelector } from '../../src/core/agent-selectors.js'
 import { resolveAgentFrameSelector } from '../../src/core/agent-handles.js'
 import { buildDeepDomTraversalHelpersSource } from './deep-dom.js'
+import type { CommandExecutionContext } from './command-queue.js'
 import {
   assertFreshFrameRef,
   clearSelectedFrame,
@@ -66,6 +67,7 @@ interface PageInputDependencies {
     tabId: number,
     method: string,
     params?: Record<string, unknown>,
+    context?: CommandExecutionContext,
   ) => Promise<TResult>
 }
 
@@ -156,6 +158,8 @@ function applyFillValue(
 
 const FILL_VALUE_HELPER_SOURCE = `const applyFillValue = ${applyFillValue.toString()};`
 
+// 多步骤动作把执行上下文按可选末位参数传下来，在每个 await 之后、发出下一个 CDP 副作用
+// 之前检查取消；keyUp/mouseReleased 这类收尾清理不传 context。
 export function createPageInputDomain({
   state,
   getTargetTab,
@@ -224,7 +228,7 @@ export function createPageInputDomain({
 
   async function waitForPageSettled(
     tabId: number,
-    options: WaitForPageSettledOptions = {},
+    options: WaitForPageSettledOptions & { commandContext?: CommandExecutionContext } = {},
   ): Promise<{ settled: boolean; settleReason?: string; settledInMs?: number }> {
     const timeoutMs = options.timeoutMs ?? 10000
     const waitUntil = options.waitUntil || 'domquiet'
@@ -240,6 +244,7 @@ export function createPageInputDomain({
         try {
           const { value } = await evaluateInTabContextBase<string>(tabId, 'document.readyState', {
             timeoutMs: 2000,
+            commandContext: options.commandContext,
           })
           if (
             value === 'complete' ||
@@ -249,6 +254,7 @@ export function createPageInputDomain({
             break
           }
         } catch {
+          options.commandContext?.throwIfCancelled()
           // 导航中的上下文销毁/瞬时失败，继续轮询
         }
         await sleep(100)
@@ -285,12 +291,14 @@ export function createPageInputDomain({
           reason?: string
         }>(tabId, buildMutationQuietExpression(remaining(), domQuietMs), {
           timeoutMs: remaining() + 5000,
+          commandContext: options.commandContext,
         })
         if (value?.settled) {
           return { settled: true, settledInMs: Date.now() - startedAt }
         }
         return { settled: false, settleReason: value?.reason || 'page kept changing' }
       } catch (error) {
+        options.commandContext?.throwIfCancelled()
         const message = error instanceof Error ? error.message : String(error)
         if (!/context was destroyed|cannot find context/i.test(message)) {
           return { settled: false, settleReason: message }
@@ -381,14 +389,22 @@ export function createPageInputDomain({
     tabId: number,
     box: ElementBox,
     clickCount: number,
+    context?: CommandExecutionContext,
   ): Promise<void> {
-    await sendDebuggerCommand(tabId, 'Input.dispatchMouseEvent', {
-      type: 'mousePressed',
-      x: box.x,
-      y: box.y,
-      button: 'left',
-      clickCount,
-    })
+    // 只在按下前检查：释放是收尾动作，按下已发出就必须补上，否则页面停留在按下状态
+    context?.throwIfCancelled()
+    await sendDebuggerCommand(
+      tabId,
+      'Input.dispatchMouseEvent',
+      {
+        type: 'mousePressed',
+        x: box.x,
+        y: box.y,
+        button: 'left',
+        clickCount,
+      },
+      context,
+    )
     await sendDebuggerCommand(tabId, 'Input.dispatchMouseEvent', {
       type: 'mouseReleased',
       x: box.x,
@@ -403,20 +419,29 @@ export function createPageInputDomain({
     keyName: string,
     modifiers: number,
     type: 'keyDown' | 'keyUp',
+    context?: CommandExecutionContext,
   ): Promise<void> {
-    await sendDebuggerCommand(tabId, 'Input.dispatchKeyEvent', {
-      type,
-      key: keyName,
-      code: keyName,
-      modifiers,
-    })
+    context?.throwIfCancelled()
+    await sendDebuggerCommand(
+      tabId,
+      'Input.dispatchKeyEvent',
+      {
+        type,
+        key: keyName,
+        code: keyName,
+        modifiers,
+      },
+      context,
+    )
   }
 
+  // 坐标测量会滚动父页/iframe/目标元素，属于副作用，取消后不能再发
   async function getElementBox(
     tabId: TabInput,
     selector: string,
     frameSelector: FrameSelector,
     scrollIntoView: boolean | 'none' = false,
+    context?: CommandExecutionContext,
   ) {
     const { tab, resolvedSelector } = await resolveElementSelectorForTab(tabId, selector)
     const effectiveFrame = resolveEffectiveFrameSelector(state, tab, frameSelector)
@@ -428,15 +453,17 @@ export function createPageInputDomain({
     if (effectiveFrame) assertFreshFrameRef(state, tab.id, effectiveFrame)
     if (effectiveFrame && scrollIntoView !== 'none') {
       // 必须先滚动父页，否则屏幕外 iframe 的 CDP frame 解析可能命中错误位置。
+      context?.throwIfCancelled()
       await evaluateInTabContext(
         tab.id,
         `(() => {
           ${frameExpression}
           frame.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
         })()`,
-        { frameSelector: 'top' },
+        { frameSelector: 'top', commandContext: context },
       )
     }
+    context?.throwIfCancelled()
     const { value } = await evaluateInTabContext<ElementBox>(
       tab.id,
       `(() => {
@@ -452,48 +479,69 @@ export function createPageInputDomain({
           height: rect.height
         };
       })()`,
-      withFrameSelectorOptions(effectiveFrame || 'top'),
+      withFrameSelectorOptions(effectiveFrame || 'top', { commandContext: context }),
     )
     if (!value || !effectiveFrame) return value
 
     // 子页滚动可能连带移动父页；重新取 frame 位置，并补上内容视口的边框偏移。
     const frame = await resolveFrameTarget(tab.id, effectiveFrame)
+    context?.throwIfCancelled()
     const { value: border } = await evaluateInTabContext<{ left: number; top: number }>(
       tab.id,
       `(() => {
         ${frameExpression}
         return { left: frame.clientLeft, top: frame.clientTop };
       })()`,
-      { frameSelector: 'top' },
+      { frameSelector: 'top', commandContext: context },
     )
     if (!border) throw new Error(`frame not found: ${effectiveFrame}`)
     return { ...value, x: value.x + frame.left + border.left, y: value.y + frame.top + border.top }
   }
 
-  async function dispatchInsertText(tabId: TabInput, text: string) {
+  async function dispatchInsertText(
+    tabId: TabInput,
+    text: string,
+    context?: CommandExecutionContext,
+  ) {
     const tab = await getTargetTab(tabId)
-    await sendDebuggerCommand(tab.id, 'Input.insertText', {
-      text: String(text || ''),
-    })
+    context?.throwIfCancelled()
+    await sendDebuggerCommand(
+      tab.id,
+      'Input.insertText',
+      {
+        text: String(text || ''),
+      },
+      context,
+    )
     return { inserted: true, text }
   }
 
-  async function insertTextSequentially(tabId: TabInput, text: string) {
+  async function insertTextSequentially(
+    tabId: TabInput,
+    text: string,
+    context?: CommandExecutionContext,
+  ) {
     const normalizedText = String(text || '')
     // tab 只解析一次，否则每个块都会 tabs.get + debugger 各往返一次
     const tab = await getTargetTab(tabId)
 
     for (let offset = 0; offset < normalizedText.length; offset += INSERT_TEXT_CHUNK_SIZE) {
-      await sendDebuggerCommand(tab.id, 'Input.insertText', {
-        text: normalizedText.slice(offset, offset + INSERT_TEXT_CHUNK_SIZE),
-      })
+      context?.throwIfCancelled()
+      await sendDebuggerCommand(
+        tab.id,
+        'Input.insertText',
+        {
+          text: normalizedText.slice(offset, offset + INSERT_TEXT_CHUNK_SIZE),
+        },
+        context,
+      )
     }
 
     return { typed: true, text: normalizedText }
   }
 
-  async function insertTextOnce(tabId: TabInput, text: string) {
-    return await dispatchInsertText(tabId, text)
+  async function insertTextOnce(tabId: TabInput, text: string, context?: CommandExecutionContext) {
+    return await dispatchInsertText(tabId, text, context)
   }
 
   async function evaluateScript(
@@ -607,6 +655,7 @@ export function createPageInputDomain({
     selector: string,
     frameSelector: FrameSelector,
     timeoutMs = 10000,
+    context?: CommandExecutionContext,
   ) {
     const { tab, resolvedSelector } = await resolveElementSelectorForTab(tabId, selector)
     const beforeEpoch = getPageEpoch(state, tab.id)
@@ -614,12 +663,13 @@ export function createPageInputDomain({
 
     // CDP 优先：先 scrollIntoView 并取元素中心坐标，走 trusted 的 Input.dispatchMouseEvent；
     // 依赖 isTrusted 的页面（表单校验/统计埋点等）必须由真实输入事件触发
-    const boxResult = await getElementBox(tab.id, selector, frameSelector, true)
+    const boxResult = await getElementBox(tab.id, selector, frameSelector, true, context)
 
     if (boxResult) {
-      await dispatchMouseClick(tab.id, boxResult, 1)
+      await dispatchMouseClick(tab.id, boxResult, 1, context)
     } else {
       // 坐标拿不到（display:none 等不可见元素）时回退到页面内 node.click()
+      context?.throwIfCancelled()
       const { value: jsResult } = await evaluateInTabContext<ElementActionResult>(
         tab.id,
         `(() => {
@@ -628,7 +678,7 @@ export function createPageInputDomain({
           node.click();
           return { found: true, selector: ${JSON.stringify(selector)} };
         })()`,
-        withFrameSelectorOptions(frameSelector),
+        withFrameSelectorOptions(frameSelector, { commandContext: context }),
       )
 
       if (!jsResult?.found) {
@@ -637,9 +687,10 @@ export function createPageInputDomain({
     }
 
     // 点击可能触发导航（链接/表单提交），两条路径统一在这里检测并等待页面稳定
+    context?.throwIfCancelled()
     const navigated = await detectNavigationAfterClick(tab.id, beforeEpoch, beforeUrl)
     if (navigated) {
-      const settle = await waitForPageSettled(tab.id, { timeoutMs })
+      const settle = await waitForPageSettled(tab.id, { timeoutMs, commandContext: context })
       let currentUrl: string | null = null
       try {
         const currentTab = await getTargetTab(tab.id)
@@ -658,13 +709,19 @@ export function createPageInputDomain({
     return { found: true, selector }
   }
 
-  async function hoverElement(tabId: TabInput, selector: string, frameSelector: FrameSelector) {
+  async function hoverElement(
+    tabId: TabInput,
+    selector: string,
+    frameSelector: FrameSelector,
+    context?: CommandExecutionContext,
+  ) {
     const { tab, resolvedSelector } = await resolveElementSelectorForTab(tabId, selector)
-    const box = await getElementBox(tab.id, selector, frameSelector)
+    const box = await getElementBox(tab.id, selector, frameSelector, false, context)
     if (!box) {
       throw createElementNotFoundError(selector)
     }
 
+    context?.throwIfCancelled()
     const { value } = await evaluateInTabContext<boolean>(
       tab.id,
       `(() => {
@@ -682,25 +739,31 @@ export function createPageInputDomain({
         node.dispatchEvent(new MouseEvent('mousemove', opts));
         return true;
       })()`,
-      withFrameSelectorOptions(frameSelector),
+      withFrameSelectorOptions(frameSelector, { commandContext: context }),
     )
 
     if (value) {
       return { found: true, selector }
     }
 
-    await sendDebuggerCommand(tab.id, 'Input.dispatchMouseEvent', {
-      type: 'mouseMoved',
-      x: box.x,
-      y: box.y,
-      button: 'none',
-      clickCount: 0,
-    })
+    context?.throwIfCancelled()
+    await sendDebuggerCommand(
+      tab.id,
+      'Input.dispatchMouseEvent',
+      {
+        type: 'mouseMoved',
+        x: box.x,
+        y: box.y,
+        button: 'none',
+        clickCount: 0,
+      },
+      context,
+    )
 
     return { found: true, selector }
   }
 
-  async function pressKey(tabId: TabInput, key: string) {
+  async function pressKey(tabId: TabInput, key: string, context?: CommandExecutionContext) {
     const { key: keyName, modifiers } = parseKeyboardKey(key)
     const tab = await getTargetTab(tabId)
 
@@ -708,7 +771,7 @@ export function createPageInputDomain({
     // keyUp 失败不掩盖原始错误，只在原始无错时才抛出
     let keyUpError: unknown = null
     try {
-      await dispatchKeyEvent(tab.id, keyName, modifiers, 'keyDown')
+      await dispatchKeyEvent(tab.id, keyName, modifiers, 'keyDown', context)
     } finally {
       try {
         await dispatchKeyEvent(tab.id, keyName, modifiers, 'keyUp')
@@ -719,12 +782,19 @@ export function createPageInputDomain({
     if (keyUpError !== null) {
       throw keyUpError
     }
+    context?.throwIfCancelled()
 
     return { key, pressed: true }
   }
 
-  async function focusElement(tabId: TabInput, selector: string, frameSelector: FrameSelector) {
+  async function focusElement(
+    tabId: TabInput,
+    selector: string,
+    frameSelector: FrameSelector,
+    context?: CommandExecutionContext,
+  ) {
     const { tab, resolvedSelector } = await resolveElementSelectorForTab(tabId, selector)
+    context?.throwIfCancelled()
     const { value } = await evaluateInTabContext<ElementActionResult>(
       tab.id,
       `(() => {
@@ -733,7 +803,7 @@ export function createPageInputDomain({
         node.focus();
         return { found: true, focused: isDeepActiveElement(document, node) };
       })()`,
-      withFrameSelectorOptions(frameSelector),
+      withFrameSelectorOptions(frameSelector, { commandContext: context }),
     )
 
     if (value?.found) {
@@ -803,11 +873,13 @@ export function createPageInputDomain({
     deltaX = 0,
     deltaY = 100,
     frameSelector: FrameSelector,
+    context?: CommandExecutionContext,
   ) {
     let resolvedSelector = ''
     if (selector) {
       ;({ resolvedSelector } = await resolveElementSelectorForTab(tabId, selector))
     }
+    context?.throwIfCancelled()
     const { value } = await evaluateInTabContext<ElementActionResult>(
       tabId,
       `(() => {
@@ -823,7 +895,7 @@ export function createPageInputDomain({
         window.scrollBy(${deltaX}, ${deltaY});
         return { found: true, scrolled: true };
       })()`,
-      withFrameSelectorOptions(frameSelector),
+      withFrameSelectorOptions(frameSelector, { commandContext: context }),
     )
 
     if (selector && value && value.found === false) {
@@ -838,22 +910,23 @@ export function createPageInputDomain({
     startSelector: string,
     endSelector: string,
     frameSelector: FrameSelector,
+    context?: CommandExecutionContext,
   ) {
-    let startBox = await getElementBox(tabId, startSelector, frameSelector)
+    let startBox = await getElementBox(tabId, startSelector, frameSelector, false, context)
     if (!startBox) {
       throw new Error(`start element not found: ${startSelector}`)
     }
 
     let endBox: ElementBox
     if (endSelector) {
-      const resolvedEndBox = await getElementBox(tabId, endSelector, frameSelector)
+      const resolvedEndBox = await getElementBox(tabId, endSelector, frameSelector, false, context)
       if (!resolvedEndBox) {
         throw new Error(`end element not found: ${endSelector}`)
       }
       const tab = await getTargetTab(tabId)
       if (resolveEffectiveFrameSelector(state, tab, frameSelector)) {
         // 终点滚动后起点坐标也可能变化；只重新测量，避免再次滚动使终点失效。
-        startBox = await getElementBox(tab.id, startSelector, frameSelector, 'none')
+        startBox = await getElementBox(tab.id, startSelector, frameSelector, 'none', context)
         if (!startBox) throw new Error(`start element not found: ${startSelector}`)
       }
       endBox = resolvedEndBox
@@ -868,34 +941,53 @@ export function createPageInputDomain({
 
     const tab = await getTargetTab(tabId)
 
-    await sendDebuggerCommand(tab.id, 'Input.dispatchMouseEvent', {
-      type: 'mousePressed',
-      x: startBox.x,
-      y: startBox.y,
-      button: 'left',
-      clickCount: 1,
-    })
-
-    const steps = 10
-    for (let i = 1; i <= steps; i++) {
-      const x = startBox.x + (endBox.x - startBox.x) * (i / steps)
-      const y = startBox.y + (endBox.y - startBox.y) * (i / steps)
-      await sendDebuggerCommand(tab.id, 'Input.dispatchMouseEvent', {
-        type: 'mouseMoved',
-        x,
-        y,
+    context?.throwIfCancelled()
+    await sendDebuggerCommand(
+      tab.id,
+      'Input.dispatchMouseEvent',
+      {
+        type: 'mousePressed',
+        x: startBox.x,
+        y: startBox.y,
         button: 'left',
         clickCount: 1,
-      })
-    }
+      },
+      context,
+    )
 
-    await sendDebuggerCommand(tab.id, 'Input.dispatchMouseEvent', {
+    const steps = 10
+    const mouseRelease = {
       type: 'mouseReleased',
       x: endBox.x,
       y: endBox.y,
       button: 'left',
       clickCount: 1,
-    })
+    }
+    try {
+      for (let i = 1; i <= steps; i++) {
+        context?.throwIfCancelled()
+        const x = startBox.x + (endBox.x - startBox.x) * (i / steps)
+        const y = startBox.y + (endBox.y - startBox.y) * (i / steps)
+        await sendDebuggerCommand(
+          tab.id,
+          'Input.dispatchMouseEvent',
+          {
+            type: 'mouseMoved',
+            x,
+            y,
+            button: 'left',
+            clickCount: 1,
+          },
+          context,
+        )
+      }
+    } catch (error) {
+      // 拖拽途中失败或被取消：按下的左键必须释放，页面不能停留在拖拽状态
+      await sendDebuggerCommand(tab.id, 'Input.dispatchMouseEvent', mouseRelease).catch(() => {})
+      throw error
+    }
+
+    await sendDebuggerCommand(tab.id, 'Input.dispatchMouseEvent', mouseRelease)
 
     return { found: true, dragged: true }
   }
@@ -905,6 +997,7 @@ export function createPageInputDomain({
     selector: string,
     filePaths: string[],
     frameSelector: FrameSelector,
+    context?: CommandExecutionContext,
   ) {
     const { resolvedSelector } = await resolveElementSelectorForTab(tabId, selector)
     const { tab, executionContextId } = await getFrameExecutionContext(tabId, frameSelector)
@@ -914,17 +1007,22 @@ export function createPageInputDomain({
         text?: string
         exception?: { description?: string }
       }
-    }>(tab.id, 'Runtime.evaluate', {
-      expression: `(() => {
+    }>(
+      tab.id,
+      'Runtime.evaluate',
+      {
+        expression: `(() => {
         ${PAGE_CONTEXT_DEEP_DOM_HELPERS_SOURCE}
 
         const node = deepQuerySelector(document, ${JSON.stringify(resolvedSelector)});
         return node && node.tagName === 'INPUT' && node.type === 'file' ? node : null;
       })()`,
-      awaitPromise: true,
-      returnByValue: false,
-      ...(executionContextId ? { contextId: executionContextId } : {}),
-    })
+        awaitPromise: true,
+        returnByValue: false,
+        ...(executionContextId ? { contextId: executionContextId } : {}),
+      },
+      context,
+    )
 
     // evaluate 抛异常时 result 是异常对象，其 objectId 若传给 setFileInputFiles 会产生误导性报错
     if (result?.exceptionDetails) {
@@ -940,10 +1038,16 @@ export function createPageInputDomain({
     }
 
     try {
-      await sendDebuggerCommand(tab.id, 'DOM.setFileInputFiles', {
-        files: filePaths,
-        objectId,
-      })
+      context?.throwIfCancelled()
+      await sendDebuggerCommand(
+        tab.id,
+        'DOM.setFileInputFiles',
+        {
+          files: filePaths,
+          objectId,
+        },
+        context,
+      )
     } finally {
       await sendDebuggerCommand(tab.id, 'Runtime.releaseObject', {
         objectId,
@@ -1278,8 +1382,10 @@ export function createPageInputDomain({
     selector: string,
     value: string,
     frameSelector: FrameSelector,
+    context?: CommandExecutionContext,
   ): Promise<ElementActionResult> {
     const { tab, resolvedSelector } = await resolveElementSelectorForTab(tabId, selector)
+    context?.throwIfCancelled()
     const { value: result } = await evaluateInTabContext<ElementActionResult>(
       tab.id,
       `(() => {
@@ -1292,7 +1398,7 @@ export function createPageInputDomain({
         const result = applyFillValue(node, ${JSON.stringify(value)});
         return { ...result, selector: ${JSON.stringify(selector)} };
       })()`,
-      withFrameSelectorOptions(frameSelector),
+      withFrameSelectorOptions(frameSelector, { commandContext: context }),
     )
 
     if (result?.found) {
@@ -1311,8 +1417,9 @@ export function createPageInputDomain({
     selector: string,
     value: string,
     frameSelector: FrameSelector,
+    context?: CommandExecutionContext,
   ) {
-    return await fillElement(tabId, selector, value, frameSelector)
+    return await fillElement(tabId, selector, value, frameSelector, context)
   }
 
   /** 批量填表：逐 field 串行执行 fillElement，单个失败不中断（语义同 batch 的
@@ -1321,6 +1428,7 @@ export function createPageInputDomain({
     tabId: TabInput,
     fields: FillFormField[],
     frameSelector: FrameSelector,
+    context?: CommandExecutionContext,
   ): Promise<{
     results: Array<{ selector: string; ok: boolean; error?: string }>
     succeeded: number
@@ -1330,11 +1438,15 @@ export function createPageInputDomain({
     let succeeded = 0
     let failed = 0
     for (const field of fields) {
+      // 取消后不再填下一个字段，也不能把取消误报成普通字段失败
+      context?.throwIfCancelled()
       try {
-        await fillElement(tabId, field.selector, field.value, frameSelector)
+        await fillElement(tabId, field.selector, field.value, frameSelector, context)
+        context?.throwIfCancelled()
         results.push({ selector: field.selector, ok: true })
         succeeded += 1
       } catch (error) {
+        context?.throwIfCancelled()
         results.push({
           selector: field.selector,
           ok: false,
@@ -1346,19 +1458,19 @@ export function createPageInputDomain({
     return { results, succeeded, failed }
   }
 
-  async function keyDownOnly(tabId: TabInput, key: string) {
+  async function keyDownOnly(tabId: TabInput, key: string, context?: CommandExecutionContext) {
     const { key: keyName, modifiers } = parseKeyboardKey(String(key || ''))
     const tab = await getTargetTab(tabId)
 
-    await dispatchKeyEvent(tab.id, keyName, modifiers, 'keyDown')
+    await dispatchKeyEvent(tab.id, keyName, modifiers, 'keyDown', context)
     return { key, pressed: true, type: 'keydown' }
   }
 
-  async function keyUpOnly(tabId: TabInput, key: string) {
+  async function keyUpOnly(tabId: TabInput, key: string, context?: CommandExecutionContext) {
     const { key: keyName, modifiers } = parseKeyboardKey(String(key || ''))
     const tab = await getTargetTab(tabId)
 
-    await dispatchKeyEvent(tab.id, keyName, modifiers, 'keyUp')
+    await dispatchKeyEvent(tab.id, keyName, modifiers, 'keyUp', context)
     return { key, released: true, type: 'keyup' }
   }
 
@@ -1368,12 +1480,15 @@ export function createPageInputDomain({
     value: string,
     frameSelector: FrameSelector,
     submit = false,
+    context?: CommandExecutionContext,
   ) {
-    await focusElement(tabId, selector, frameSelector)
-    const typed = await insertTextSequentially(tabId, value)
+    await focusElement(tabId, selector, frameSelector, context)
+    context?.throwIfCancelled()
+    const typed = await insertTextSequentially(tabId, value, context)
     // --submit 对齐 Playwright type 的语义：输入完成后补一次 Enter，触发表单提交
     if (submit) {
-      await pressKey(tabId, 'Enter')
+      context?.throwIfCancelled()
+      await pressKey(tabId, 'Enter', context)
     }
     return {
       found: true,
@@ -1387,14 +1502,15 @@ export function createPageInputDomain({
     tabId: TabInput,
     selector: string,
     frameSelector: FrameSelector,
+    context?: CommandExecutionContext,
   ) {
-    const box = await getElementBox(tabId, selector, frameSelector)
+    const box = await getElementBox(tabId, selector, frameSelector, false, context)
     if (!box) {
       throw createElementNotFoundError(selector)
     }
 
     const tab = await getTargetTab(tabId)
-    await dispatchMouseClick(tab.id, box, 2)
+    await dispatchMouseClick(tab.id, box, 2, context)
 
     return { found: true, selector, doubleClicked: true }
   }
@@ -1403,8 +1519,10 @@ export function createPageInputDomain({
     tabId: TabInput,
     selector: string,
     frameSelector: FrameSelector,
+    context?: CommandExecutionContext,
   ) {
     const { tab, resolvedSelector } = await resolveElementSelectorForTab(tabId, selector)
+    context?.throwIfCancelled()
     const { value } = await evaluateInTabContext<ElementActionResult>(
       tab.id,
       `(() => {
@@ -1420,7 +1538,7 @@ export function createPageInputDomain({
           };
         }
       })()`,
-      withFrameSelectorOptions(frameSelector),
+      withFrameSelectorOptions(frameSelector, { commandContext: context }),
     )
 
     if (value?.found) {

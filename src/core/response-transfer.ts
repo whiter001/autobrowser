@@ -31,7 +31,7 @@ export function responseByteLength(text: string): number {
 }
 
 export function* responseChunks(text: string): Generator<string> {
-  for (let offset = 0; offset < text.length; ) {
+  for (let offset = 0; offset < text.length;) {
     let end = Math.min(offset + RESPONSE_CHUNK_CHARS, text.length)
     const last = text.charCodeAt(end - 1)
     if (end < text.length && last >= 0xd800 && last <= 0xdbff) end -= 1

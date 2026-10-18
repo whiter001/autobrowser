@@ -822,7 +822,8 @@ ${PAGE_CONTEXT_SNAPSHOT_HELPERS_SOURCE}
         const sameDocument = documentId === ${JSON.stringify(cached?.documentId || null)};
         const previousSet = new Set(sameDocument ? previousSignatures : []);
         const deepElements = deepCollectElements(scope);
-        const nameIndex = createPageNameIndex(deepElements);
+        // 传入遍历根：scope 为 document 时名称索引覆盖整棵树，未命中即确定负结果。
+        const nameIndex = createPageNameIndex(deepElements, scope);
         let fieldsTruncated = false;
         const bounded = (value, limit = 1024) => {
           const text = String(value ?? '');
@@ -835,11 +836,11 @@ ${PAGE_CONTEXT_SNAPSHOT_HELPERS_SOURCE}
         const readValue = (node) => !isPassword(node) && typeof node.value === 'string' ? node.value : null;
         const readText = (node) => isPassword(node) ? '' : collapseWhitespace(bounded(node.innerText || node.textContent || '', 2048));
         const getAssociatedLabel = (node) => {
-          const label = nameIndex.labels.get(node.id);
+          const label = nameIndex.lookupLabel(node, node.id);
           return label ? readText(label) : '';
         };
         const getAriaLabelledByText = (node) => splitWhitespaceTokens(node.getAttribute('aria-labelledby'))
-          .map((id) => nameIndex.ids.get(id)).filter(Boolean).map(readText).filter(Boolean).join(' ');
+          .map((id) => nameIndex.lookupId(node, id)).filter(Boolean).map(readText).filter(Boolean).join(' ');
 
         const inferRole = (node) => {
           const explicitRole = node.getAttribute('role');
@@ -1104,7 +1105,7 @@ ${PAGE_CONTEXT_SNAPSHOT_HELPERS_SOURCE}
 ${PAGE_CONTEXT_FIND_HELPERS_SOURCE}
 
         const deepElements = deepCollectElements(document);
-        const nameIndex = createPageNameIndex(deepElements);
+        const nameIndex = createPageNameIndex(deepElements, document);
         const observation = getPageObservationState(document, pageEpoch);
         computeStableRefIndexes(deepElements, [], refAttribute, 'e', parsePageContextElementRefIndex, observation.highWater);
         const requireUnique = ${options.requireUnique === true && !options.position};
@@ -1149,7 +1150,7 @@ ${PAGE_CONTEXT_FIND_HELPERS_SOURCE}
             for (const label of node.labels) labels.add(label);
           }
           if (node.id) {
-            const externalLabel = nameIndex.labels.get(node.id);
+            const externalLabel = nameIndex.lookupLabel(node, node.id);
             if (externalLabel) labels.add(externalLabel);
           }
           return normalizeText(Array.from(labels, readText).filter(Boolean).join(' '));
@@ -1163,7 +1164,7 @@ ${PAGE_CONTEXT_FIND_HELPERS_SOURCE}
 
           return normalizeText(
             splitWhitespaceTokens(labelledBy)
-              .map((id) => nameIndex.ids.get(id))
+              .map((id) => nameIndex.lookupId(node, id))
               .filter(Boolean)
               .map((element) => readText(element))
               .filter(Boolean)

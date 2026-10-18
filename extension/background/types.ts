@@ -1,3 +1,4 @@
+import type { CommandExecutionContext } from './command-queue.js'
 import type {
   CommandErrorInfo,
   ConnectionErrorInfo,
@@ -298,6 +299,8 @@ export interface CommandMeta {
 }
 
 export interface EvaluateInTabContextOptions extends Record<string, unknown> {
+  /** 仅供扩展侧发送前检查，不得混入 Runtime.evaluate 参数。 */
+  commandContext?: CommandExecutionContext
   frameSelector?: string
   /** Runtime.evaluate 的执行超时（毫秒），缺省 25000（小于 server 的命令超时 30s） */
   timeoutMs?: number

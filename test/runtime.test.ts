@@ -464,6 +464,77 @@ describe('runtime snapshot', () => {
     await runtime.persist()
   })
 
+  test('redacts route headers, injected scripts and state payloads everywhere', async () => {
+    const homeDir = await mkdtemp(path.join(os.tmpdir(), 'autobrowser-runtime-test-'))
+    tempDirs.push(homeDir)
+    const runtime = await createTestRuntime({ homeDir })
+    const runtimeStatePath = path.join(homeDir, '.autobrowser', 'state.json')
+    const secrets = ['route-header-secret', 'script-secret', 'state-secret', 'nested-route-secret']
+
+    runtime.setLastCommand('network', {
+      action: 'route',
+      url: '**/api',
+      abort: false,
+      body: '{"token":"route-body-secret"}',
+      headers: { authorization: 'Bearer route-header-secret' },
+    })
+    runtime.setLastCommand('script', {
+      action: 'add',
+      source: 'localStorage.setItem("a","script-secret")',
+    })
+    runtime.setLastCommand('state', {
+      action: 'load',
+      name: 'default',
+      data: { token: 'state-secret' },
+    })
+    runtime.setLastCommand('batch', {
+      steps: [
+        {
+          command: ' network ',
+          args: {
+            action: 'route',
+            url: '**/api',
+            headers: { authorization: 'Bearer nested-route-secret' },
+          },
+        },
+        { command: '  script  ', args: { action: 'add', source: 'window.x=1' } },
+      ],
+    })
+
+    await runtime.persist()
+    const persisted = JSON.parse(await readFile(runtimeStatePath, 'utf8'))
+    const batchSteps = persisted.snapshot.lastCommand.args.steps as Array<Record<string, any>>
+    // 嵌套 batch 的命令名带空白时也要命中脱敏规则
+    expect(batchSteps[0].args.headers).toBe('[redacted]')
+    expect(batchSteps[1].args.source).toBe('[redacted]')
+
+    for (const lastCommand of [
+      { command: 'network', args: { action: 'route', url: '**/api', headers: '[redacted]' } },
+      { command: 'script', args: { action: 'add', source: '[redacted]' } },
+      { command: 'state', args: { action: 'load', name: 'default', data: '[redacted]' } },
+    ]) {
+      runtime.setLastCommand(lastCommand.command, lastCommand.args)
+      await runtime.persist()
+      const snapshot = JSON.parse(await readFile(runtimeStatePath, 'utf8'))
+      expect(snapshot.snapshot.lastCommand).toMatchObject(lastCommand)
+    }
+
+    runtime.setLastCommand('status', { pageIdx: 0, pageSize: 50 })
+    await runtime.persist()
+    const statusState = JSON.parse(await readFile(runtimeStatePath, 'utf8'))
+    expect(statusState.snapshot.lastCommand).toMatchObject({
+      command: 'status',
+      args: { pageIdx: 0, pageSize: 50 },
+    })
+
+    // 状态文件与对外 status 快照都不应再出现明文 secret
+    const rawState = await readFile(runtimeStatePath, 'utf8')
+    for (const secret of secrets) {
+      expect(rawState).not.toContain(secret)
+    }
+    expect(JSON.stringify(runtime.snapshot())).not.toContain('route-body-secret')
+  })
+
   test('falls back when persisted state JSON is corrupted', async () => {
     const homeDir = await mkdtemp(path.join(os.tmpdir(), 'autobrowser-runtime-test-'))
     tempDirs.push(homeDir)

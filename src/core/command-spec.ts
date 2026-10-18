@@ -575,7 +575,8 @@ function validateCommandArgsShape(command: string, args: unknown): void {
     case 'type':
     case 'select':
       readStringField(normalizedArgs, 'selector', command)
-      readStringField(normalizedArgs, 'value', command)
+      // 清空字段是 fill/select 的合法语义，value 必须存在但允许空串与纯空白
+      readStringField(normalizedArgs, 'value', command, { required: true, allowEmpty: true })
       if (command === 'type') {
         readBooleanField(normalizedArgs, 'submit', command)
       }
@@ -590,10 +591,14 @@ function validateCommandArgsShape(command: string, args: unknown): void {
     case 'press':
       readStringField(normalizedArgs, 'key', command)
       return
-    case 'keyboard':
-      readStringField(normalizedArgs, 'action', command)
-      readStringField(normalizedArgs, 'text', command)
+    case 'keyboard': {
+      const action = readStringField(normalizedArgs, 'action', command)
+      readStringField(normalizedArgs, 'text', command, {
+        required: true,
+        allowEmpty: action === 'type' || action === 'inserttext',
+      })
       return
+    }
     case 'drag':
       readStringField(normalizedArgs, 'start', command)
       readStringField(normalizedArgs, 'end', command)
@@ -709,7 +714,8 @@ function validateCommandArgsShape(command: string, args: unknown): void {
       }
 
       if (action === 'fill' || action === 'type') {
-        readStringField(normalizedArgs, 'value', command)
+        // 与单字段 fill/type 一致：清空目标的空值合法
+        readStringField(normalizedArgs, 'value', command, { required: true, allowEmpty: true })
       }
 
       return
@@ -807,20 +813,28 @@ function validateCommandArgsShape(command: string, args: unknown): void {
       readOptionalNonNegativeIntegerField(normalizedArgs, 'pageIdx', command)
       readOptionalNonNegativeIntegerField(normalizedArgs, 'pageSize', command)
       return
-    case 'cookies':
-      readStringField(normalizedArgs, 'action', command)
-      readStringField(normalizedArgs, 'name', command, { required: false })
-      readStringField(normalizedArgs, 'value', command, { required: false })
+    case 'cookies': {
+      const action = readStringField(normalizedArgs, 'action', command)
+      readStringField(normalizedArgs, 'name', command, { required: action === 'set' })
+      readStringField(normalizedArgs, 'value', command, {
+        required: action === 'set',
+        allowEmpty: true,
+      })
       readStringField(normalizedArgs, 'domain', command, { required: false })
       readStringField(normalizedArgs, 'path', command, { required: false })
       return
-    case 'storage':
-      readStringField(normalizedArgs, 'action', command)
-      readStringField(normalizedArgs, 'key', command, { required: false })
-      readStringField(normalizedArgs, 'value', command, { required: false })
+    }
+    case 'storage': {
+      const action = readStringField(normalizedArgs, 'action', command)
+      readStringField(normalizedArgs, 'key', command, { required: action === 'set' })
+      readStringField(normalizedArgs, 'value', command, {
+        required: action === 'set',
+        allowEmpty: true,
+      })
       readBooleanField(normalizedArgs, 'session', command)
       readObjectOrArrayField(normalizedArgs, 'data', command)
       return
+    }
     case 'set': {
       const type = readStringField(normalizedArgs, 'type', command)
       if (type === 'viewport') {
@@ -867,7 +881,8 @@ function validateCommandArgsShape(command: string, args: unknown): void {
         readObjectOrArrayField(normalizedArgs, 'headers', command)
         readStringArrayField(normalizedArgs, 'removeHeaders', command, { required: false })
       } else if (action === 'unroute') {
-        readStringField(normalizedArgs, 'url', command)
+        // 省略 url 表示清空全部路由，与扩展的 unroute 语义一致
+        readStringField(normalizedArgs, 'url', command, { required: false })
       } else if (action === 'request') {
         readStringField(normalizedArgs, 'requestId', command)
       } else if (action === 'har') {
@@ -890,10 +905,14 @@ function validateCommandArgsShape(command: string, args: unknown): void {
       }
       return
     }
-    case 'clipboard':
-      readStringField(normalizedArgs, 'action', command)
-      readStringField(normalizedArgs, 'text', command, { required: false })
+    case 'clipboard': {
+      const action = readStringField(normalizedArgs, 'action', command)
+      readStringField(normalizedArgs, 'text', command, {
+        required: action === 'write',
+        allowEmpty: true,
+      })
       return
+    }
     case 'script': {
       const action = readStringField(normalizedArgs, 'action', command)
       if (action === 'add') {

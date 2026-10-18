@@ -1,6 +1,221 @@
 import { describe, expect, test } from 'bun:test'
 import { createPageInputDomain } from '../extension/background/page-input.js'
 import { createExtensionState } from '../extension/background/state.js'
+import type { CommandExecutionContext } from '../extension/background/command-queue.js'
+
+// 提取真实生产函数（不启动扩展 runtime），仅替换 CDP/Chrome 准备边界。
+const backgroundSource = new Bun.Transpiler({ loader: 'ts' }).transformSync(
+  await Bun.file(new URL('../extension/background-main.ts', import.meta.url)).text(),
+)
+function extractBackgroundFunction(name: string) {
+  const start = backgroundSource.search(new RegExp(`^(?:async )?function ${name}\\(`, 'm'))
+  if (start < 0) throw new Error(`missing production function: ${name}`)
+  const rest = backgroundSource.slice(start)
+  const end = rest.indexOf('\n}\n')
+  if (end < 0) throw new Error(`missing function end: ${name}`)
+  return rest.slice(0, end + 2)
+}
+
+function inputGate() {
+  let release!: () => void
+  const promise = new Promise<void>((resolve) => {
+    release = resolve
+  })
+  return { promise, release }
+}
+
+function createProductionDispatchInput(stage: string, cancel: () => void = () => {}) {
+  const entered = inputGate()
+  const gate = inputGate()
+  const calls: Array<{ method: string; params: Record<string, unknown> }> = []
+  let lookups = 0
+  let attaches = 0
+  const getFrameExecutionContext = async () => {
+    lookups++
+    if ((stage === 'frame' && lookups === 1) || (stage === 'retry-frame' && lookups === 2)) {
+      entered.release()
+      await gate.promise
+    }
+    return {
+      tab: { id: 1 },
+      executionContextId: lookups,
+      worldFromCache: true,
+      worldCacheKey: '1:f',
+    }
+  }
+  const ensureDebuggerAttached = async () => {
+    attaches++
+    if ((stage === 'attach' && attaches === 1) || (stage === 'retry-attach' && attaches === 2)) {
+      entered.release()
+      await gate.promise
+    }
+  }
+  const sendRawDebuggerCommand = async (
+    _tab: number,
+    method: string,
+    params: Record<string, unknown>,
+  ) => {
+    calls.push({ method, params })
+    if (stage.startsWith('retry-') && calls.length === 1) {
+      if (stage === 'retry-error') {
+        entered.release()
+        await gate.promise
+      }
+      throw new Error('Cannot find context with specified id')
+    }
+    if (
+      (stage === 'key-cleanup' && params.type === 'keyDown') ||
+      (stage === 'mouse-cleanup' && params.type === 'mouseMoved')
+    )
+      cancel()
+    return { result: { value: { found: true, x: 10, y: 20, width: 10, height: 10 } } }
+  }
+  const production = new Function(
+    'getFrameExecutionContext',
+    'ensureDebuggerAttached',
+    'sendRawDebuggerCommand',
+    `const DEFAULT_EVALUATE_TIMEOUT_MS = 25000;
+     const frameWorldContextCache = new Map();
+     ${[
+       'sendDebuggerCommand',
+       'evaluateInTabContext',
+       'isStaleWorldContextError',
+       'isEvaluationTimeoutError',
+       'createEvaluationTimeoutError',
+       'createPageEvaluationExceptionError',
+       'unwrapEvaluationResult',
+     ]
+       .map(extractBackgroundFunction)
+       .join('\n')}
+     return { evaluateInTabContext, sendDebuggerCommand };`,
+  )(getFrameExecutionContext, ensureDebuggerAttached, sendRawDebuggerCommand) as Pick<
+    Parameters<typeof createPageInputDomain>[0],
+    'evaluateInTabContext' | 'sendDebuggerCommand'
+  >
+  const pageInput = createPageInputDomain({
+    state: createExtensionState(1),
+    getTargetTab: async () => ({ id: 1 }) as never,
+    resolveElementSelectorForTab: async (_tab, selector) =>
+      ({ tab: { id: 1 }, resolvedSelector: selector }) as never,
+    resolveFrameTarget: async () => ({}) as never,
+    getFrameExecutionContext: getFrameExecutionContext as never,
+    ...production,
+  })
+  return { pageInput, calls, entered, gate, production, lookups: () => lookups }
+}
+
+describe('production evaluate and debugger dispatch cancellation gates', () => {
+  for (const stage of ['frame', 'attach', 'retry-frame', 'retry-attach', 'retry-error']) {
+    for (const action of ['type', 'fill', 'scroll', 'click', 'hover', 'scrollIntoView'] as const) {
+      test(`${action} sends no new business CDP after cancellation during ${stage}`, async () => {
+        const { context, cancel } = createCancellableContext()
+        const h = createProductionDispatchInput(stage)
+        const pending =
+          action === 'type'
+            ? h.pageInput.typeIntoSelector(1, '#x', 'text', '#frame', true, context)
+            : action === 'fill'
+              ? h.pageInput.fillFields(1, [{ selector: '#x', value: 'v' }], '#frame', context)
+              : action === 'scroll'
+                ? h.pageInput.scrollElement(1, '#x', 0, 100, '#frame', context)
+                : action === 'click'
+                  ? h.pageInput.clickSelector(1, '#x', '#frame', 1000, context)
+                  : action === 'hover'
+                    ? h.pageInput.hoverElement(1, '#x', '#frame', context)
+                    : h.pageInput.scrollIntoViewSelector(1, '#x', '#frame', context)
+        await h.entered.promise
+        const alreadySent = h.calls.length
+        cancel()
+        h.gate.release()
+        await expect(pending).rejects.toMatchObject({ code: 'COMMAND_CANCELLED' })
+        expect(h.calls).toHaveLength(alreadySent)
+        expect(alreadySent).toBe(stage.startsWith('retry-') ? 1 : 0)
+        if (stage === 'retry-error') expect(h.lookups()).toBe(1)
+        for (const call of h.calls) {
+          expect(call.params).not.toHaveProperty('commandContext')
+          expect(call.params).not.toHaveProperty('frameSelector')
+        }
+      })
+    }
+  }
+
+  test('direct insertText is stopped during debugger attach', async () => {
+    const { context, cancel } = createCancellableContext()
+    const h = createProductionDispatchInput('attach')
+    const pending = h.pageInput.insertTextSequentially(1, 'a'.repeat(120), context)
+    await h.entered.promise
+    cancel()
+    h.gate.release()
+    await expect(pending).rejects.toMatchObject({ code: 'COMMAND_CANCELLED' })
+    expect(h.calls).toEqual([])
+  })
+
+  test('successful evaluate strips extension options and preserves CDP options', async () => {
+    const { context } = createCancellableContext()
+    const h = createProductionDispatchInput('success')
+    await h.production.evaluateInTabContext(1, '1', {
+      commandContext: context,
+      frameSelector: '#frame',
+      timeoutMs: 42,
+      userGesture: true,
+    })
+    expect(h.calls).toEqual([
+      {
+        method: 'Runtime.evaluate',
+        params: {
+          expression: '1',
+          awaitPromise: true,
+          returnByValue: true,
+          timeout: 42,
+          contextId: 1,
+          userGesture: true,
+        },
+      },
+    ])
+  })
+
+  for (const stage of ['key-cleanup', 'mouse-cleanup']) {
+    test(`${stage} still reaches production dispatch after cancellation`, async () => {
+      const { context, cancel } = createCancellableContext()
+      const h = createProductionDispatchInput(stage, cancel)
+      const pending =
+        stage === 'key-cleanup'
+          ? h.pageInput.pressKey(1, 'Enter', context)
+          : h.pageInput.dragElement(1, '#x', '', null, context)
+      await expect(pending).rejects.toMatchObject({ code: 'COMMAND_CANCELLED' })
+      const types = h.calls
+        .filter((call) => call.method.startsWith('Input.'))
+        .map((call) => call.params.type)
+      expect(types).toEqual(
+        stage === 'key-cleanup'
+          ? ['keyDown', 'keyUp']
+          : ['mousePressed', 'mouseMoved', 'mouseReleased'],
+      )
+    })
+  }
+})
+
+// 可取消的命令执行上下文：命令队列运行期通过 cancelled 表达取消/超时，
+// page-input 在每个新 CDP 副作用之前读取它
+function createCancellableContext() {
+  let cancelled = false
+  const context: CommandExecutionContext = {
+    get cancelled() {
+      return cancelled
+    },
+    deadlineAt: null,
+    throwIfCancelled() {
+      if (cancelled) {
+        throw Object.assign(new Error('command cancelled'), { code: 'COMMAND_CANCELLED' })
+      }
+    },
+  }
+  return {
+    context,
+    cancel() {
+      cancelled = true
+    },
+  }
+}
 
 function createPageInput(evaluateValue: unknown) {
   return createPageInputDomain({
@@ -859,6 +1074,131 @@ describe('contenteditable fill with complete executed expressions', () => {
     expect(h.editable.textContent).toBe('')
   })
 
+  describe('page input fillFields cancellation', () => {
+    test('fillFields stops before the next field once the command is cancelled', async () => {
+      const { context, cancel } = createCancellableContext()
+      let evaluated = 0
+      const pageInput = createPageInputDomain({
+        state: createExtensionState(1),
+        getTargetTab: async () => ({ id: 1 }) as never,
+        resolveElementSelectorForTab: async (_tabId: unknown, selector: unknown) =>
+          ({ tab: { id: 1 }, resolvedSelector: selector }) as never,
+        resolveFrameTarget: async () => ({}) as never,
+        getFrameExecutionContext: async () => ({}) as never,
+        evaluateInTabContext: async () => {
+          evaluated += 1
+          // 第二个字段填充途中被取消：它已经发出，之后的字段不能再继续
+          if (evaluated === 2) cancel()
+          return {
+            tab: { id: 1 },
+            response: { result: undefined },
+            value: { found: true },
+          } as never
+        },
+        sendDebuggerCommand: async () => undefined as never,
+      } as never)
+
+      await expect(
+        pageInput.fillFields(
+          1,
+          [
+            { selector: '#a', value: '1' },
+            { selector: '#b', value: '2' },
+            { selector: '#c', value: '3' },
+          ],
+          null,
+          context,
+        ),
+      ).rejects.toMatchObject({ code: 'COMMAND_CANCELLED' })
+      expect(evaluated).toBe(2)
+    })
+  })
+
+  describe('page input cancellation between input chunks', () => {
+    test('stops sending insertText chunks after the command is cancelled', async () => {
+      const { context, cancel } = createCancellableContext()
+      const debuggerCalls: Array<{ method: string; params?: Record<string, unknown> }> = []
+      const pageInput = createPageInputDomain({
+        state: createExtensionState(1),
+        getTargetTab: async () => ({ id: 1 }) as never,
+        resolveElementSelectorForTab: async (_tabId: unknown, selector: unknown) =>
+          ({ tab: { id: 1 }, resolvedSelector: selector }) as never,
+        resolveFrameTarget: async () => ({}) as never,
+        getFrameExecutionContext: async () => ({}) as never,
+        evaluateInTabContext: async () =>
+          ({ tab: { id: 1 }, response: { result: undefined }, value: { found: true } }) as never,
+        sendDebuggerCommand: async (
+          _tabId: unknown,
+          method: string,
+          params?: Record<string, unknown>,
+        ) => {
+          debuggerCalls.push({ method, params })
+          // 第一块输入发出后命令被取消
+          if (method === 'Input.insertText') cancel()
+          return undefined as never
+        },
+      } as never)
+
+      await expect(
+        pageInput.insertTextSequentially(1, 'a'.repeat(120), context),
+      ).rejects.toMatchObject({
+        code: 'COMMAND_CANCELLED',
+      })
+      expect(debuggerCalls.filter((call) => call.method === 'Input.insertText')).toHaveLength(1)
+    })
+  })
+
+  describe('page input type cancellation', () => {
+    function createBlockingTypePageInput(
+      debuggerCalls: Array<{ method: string; params?: Record<string, unknown> }>,
+      focusGate: Promise<void>,
+    ) {
+      return createPageInputDomain({
+        state: createExtensionState(1),
+        getTargetTab: async () => ({ id: 1 }) as never,
+        resolveElementSelectorForTab: async (_tabId: unknown, selector: unknown) =>
+          ({ tab: { id: 1 }, resolvedSelector: selector }) as never,
+        resolveFrameTarget: async () => ({}) as never,
+        getFrameExecutionContext: async () => ({}) as never,
+        evaluateInTabContext: async () => {
+          // focus 是 type 的第一步，等待期间调用方取消命令
+          await focusGate
+          return {
+            tab: { id: 1 },
+            response: { result: undefined },
+            value: { found: true },
+          } as never
+        },
+        sendDebuggerCommand: async (
+          _tabId: unknown,
+          method: string,
+          params?: Record<string, unknown>,
+        ) => {
+          debuggerCalls.push({ method, params })
+          return undefined as never
+        },
+      } as never)
+    }
+
+    test('emits no insertText and no Enter once the command is cancelled while focusing', async () => {
+      const { context, cancel } = createCancellableContext()
+      const debuggerCalls: Array<{ method: string; params?: Record<string, unknown> }> = []
+      let releaseFocus!: () => void
+      const focusGate = new Promise<void>((resolve) => {
+        releaseFocus = resolve
+      })
+      const pageInput = createBlockingTypePageInput(debuggerCalls, focusGate)
+
+      const pending = pageInput.typeIntoSelector(1, '#q', 'hello', null, true, context)
+      await Bun.sleep(5)
+      cancel()
+      releaseFocus()
+
+      await expect(pending).rejects.toMatchObject({ code: 'COMMAND_CANCELLED' })
+      expect(debuggerCalls).toEqual([])
+    })
+  })
+
   test('fillFields handles editable and textarea while reporting missing fields', async () => {
     const h = createEditableHarness()
     const result = await h.pageInput.fillFields(
@@ -875,5 +1215,102 @@ describe('contenteditable fill with complete executed expressions', () => {
     expect(h.editable.textContent).toBe('<b>literal</b>')
     expect(h.textarea.value).toBe('typed')
     expect(h.events).toEqual(['focus', 'input', 'change', 'focus', 'input', 'change'])
+  })
+})
+
+describe('page input cancellation keeps side effects out', () => {
+  test('does not scroll the page when the click is cancelled while resolving the selector', async () => {
+    const { context, cancel } = createCancellableContext()
+    let releaseSelector!: () => void
+    const selectorGate = new Promise<void>((resolve) => {
+      releaseSelector = resolve
+    })
+    const evaluateCalls: string[] = []
+    const pageInput = createPageInputDomain({
+      state: createExtensionState(1),
+      getTargetTab: async () => ({ id: 1 }) as never,
+      resolveElementSelectorForTab: async (_tabId: unknown, selector: unknown) => {
+        // 元素解析期间命令被取消：后续的 scrollIntoView/坐标测量都不该发出
+        await selectorGate
+        return { tab: { id: 1 }, resolvedSelector: selector } as never
+      },
+      resolveFrameTarget: async () => ({}) as never,
+      getFrameExecutionContext: async () => ({}) as never,
+      evaluateInTabContext: async (_tabId: unknown, expression: string) => {
+        evaluateCalls.push(expression)
+        return { tab: { id: 1 }, response: { result: undefined }, value: { x: 1, y: 2 } } as never
+      },
+      sendDebuggerCommand: async () => {
+        throw new Error('no input event should be dispatched')
+      },
+    } as never)
+
+    const pending = pageInput.clickSelector(1, '#btn', null, 1000, context)
+    await Bun.sleep(5)
+    cancel()
+    releaseSelector()
+
+    await expect(pending).rejects.toMatchObject({ code: 'COMMAND_CANCELLED' })
+    expect(evaluateCalls).toEqual([])
+  })
+
+  test('pressKey releases the key and reports cancellation when cancelled after keyDown', async () => {
+    const { context, cancel } = createCancellableContext()
+    const keyEvents: Array<{ method: string; type?: string }> = []
+    const pageInput = createPageInputDomain({
+      state: createExtensionState(1),
+      getTargetTab: async () => ({ id: 1 }) as never,
+      resolveElementSelectorForTab: async () => ({}) as never,
+      resolveFrameTarget: async () => ({}) as never,
+      getFrameExecutionContext: async () => ({}) as never,
+      evaluateInTabContext: async () => {
+        throw new Error('unused in pressKey tests')
+      },
+      sendDebuggerCommand: async (_tabId: unknown, method: string, params?: unknown) => {
+        const type = (params as { type?: string } | undefined)?.type
+        keyEvents.push({ method, ...(type ? { type } : {}) })
+        // keyDown 发出后命令被取消，keyUp 仍必须补发
+        if (type === 'keyDown') cancel()
+        return undefined as never
+      },
+    } as never)
+
+    await expect(pageInput.pressKey(1, 'Enter', context)).rejects.toMatchObject({
+      code: 'COMMAND_CANCELLED',
+    })
+    expect(keyEvents.map((event) => event.type)).toEqual(['keyDown', 'keyUp'])
+  })
+
+  test('drag releases the mouse when the command is cancelled mid-move', async () => {
+    const { context, cancel } = createCancellableContext()
+    const mouseEvents: Array<string> = []
+    let moved = 0
+    const pageInput = createPageInputDomain({
+      state: createExtensionState(1),
+      getTargetTab: async () => ({ id: 1 }) as never,
+      resolveElementSelectorForTab: async (_tabId: unknown, selector: unknown) =>
+        ({ tab: { id: 1 }, resolvedSelector: selector }) as never,
+      resolveFrameTarget: async () => ({}) as never,
+      getFrameExecutionContext: async () => ({}) as never,
+      evaluateInTabContext: async () =>
+        ({
+          tab: { id: 1 },
+          response: { result: undefined },
+          value: { x: 10, y: 20, width: 10, height: 10 },
+        }) as never,
+      sendDebuggerCommand: async (_tabId: unknown, _method: string, params?: unknown) => {
+        const type = (params as { type?: string } | undefined)?.type
+        mouseEvents.push(type || 'unknown')
+        moved += 1
+        if (moved === 3) cancel()
+        return undefined as never
+      },
+    } as never)
+
+    await expect(pageInput.dragElement(1, '#start', '#end', null, context)).rejects.toMatchObject({
+      code: 'COMMAND_CANCELLED',
+    })
+    // 移动途中取消：最后的 mouseReleased 必须发出，页面不能停留在按下状态
+    expect(mouseEvents.at(-1)).toBe('mouseReleased')
   })
 })

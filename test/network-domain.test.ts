@@ -598,6 +598,570 @@ describe('network domain routes', () => {
   })
 })
 
+describe('network domain fetch interception', () => {
+  const URL_A = 'https://example.com/api/user'
+
+  function createInterceptionHarness(options: { deferFulfill?: boolean } = {}) {
+    const state = createExtensionState(57978)
+    const sendCalls: Array<{ method: string; params?: Record<string, unknown> }> = []
+    const fulfillGates: Array<() => void> = []
+    const network = createNetworkDomain({
+      state,
+      getTargetTab: async () => ({ id: 1 }) as never,
+      sendRawDebuggerCommand: async <TResult = unknown>(
+        _tabId: number,
+        method: string,
+        params?: Record<string, unknown>,
+      ): Promise<TResult> => {
+        sendCalls.push({ method, params })
+        // 挂起 fulfill：模拟 CDP 命令发出到返回之间又来了别的事件
+        if (options.deferFulfill && method === 'Fetch.fulfillRequest') {
+          await new Promise<void>((resolve) => fulfillGates.push(resolve))
+        }
+        return {} as TResult
+      },
+      sendDebuggerCommand: async <TResult = unknown>(): Promise<TResult> => ({}) as TResult,
+    })
+
+    const releaseFulfill = () => {
+      for (const open of fulfillGates.splice(0)) open()
+    }
+
+    const sendNetworkRequest = (request: {
+      requestId: string
+      url?: string
+      method?: string
+      postData?: string
+      headers?: Record<string, string>
+      timestamp?: number
+      redirectResponse?: Record<string, unknown>
+    }) =>
+      network.handleEvent({ tabId: 1 }, 'Network.requestWillBeSent', {
+        requestId: request.requestId,
+        request: {
+          url: request.url || URL_A,
+          method: request.method || 'POST',
+          headers: request.headers ?? {},
+          ...(request.postData === undefined ? {} : { postData: request.postData }),
+        },
+        ...(request.redirectResponse ? { redirectResponse: request.redirectResponse } : {}),
+        type: 'XHR',
+        timestamp: request.timestamp ?? 100,
+        wallTime: 100,
+      })
+
+    const pauseFetch = (request: {
+      requestId: string
+      networkId?: string
+      redirectedRequestId?: string
+      url?: string
+      method?: string
+      postData?: string
+      headers?: Record<string, string>
+      timestamp?: number
+    }) =>
+      network.handleRequestPaused(1, {
+        requestId: request.requestId,
+        redirectedRequestId: request.redirectedRequestId,
+        ...(request.networkId === undefined ? {} : { networkId: request.networkId }),
+        resourceType: 'XHR',
+        request: {
+          url: request.url || URL_A,
+          method: request.method || 'POST',
+          headers: request.headers ?? {},
+          ...(request.postData === undefined ? {} : { postData: request.postData }),
+        },
+        timestamp: request.timestamp ?? 100,
+      })
+
+    return { state, network, sendCalls, sendNetworkRequest, pauseFetch, releaseFulfill }
+  }
+
+  const flush = () => new Promise((resolve) => setTimeout(resolve, 0))
+
+  test('Network 先到时，Fetch 事件不覆盖已记录的时间戳/请求头/请求体', async () => {
+    const { state, network, sendCalls, sendNetworkRequest, pauseFetch } =
+      createInterceptionHarness()
+
+    await sendNetworkRequest({
+      requestId: 'net-1',
+      postData: 'network=1',
+      headers: { 'content-type': 'application/json', 'x-network': 'yes' },
+      timestamp: 100,
+    })
+    const startedAt = state.network.requests[0]?.startedAt
+    await pauseFetch({
+      requestId: 'int-1',
+      networkId: 'net-1',
+      postData: 'fetch=1',
+      headers: { 'content-type': 'application/json' },
+      timestamp: 100.5,
+    })
+
+    expect(state.network.requests).toHaveLength(1)
+    expect(state.network.requests[0]).toMatchObject({
+      id: '1:net-1',
+      requestId: 'net-1',
+      startedAt,
+      requestWillBeSentAt: 100,
+      postData: 'network=1',
+      requestHeaders: { 'content-type': 'application/json', 'x-network': 'yes' },
+    })
+    // Fetch.* 只能用它自己的 requestId
+    expect(sendCalls.at(-1)).toEqual({
+      method: 'Fetch.continueRequest',
+      params: { requestId: 'int-1' },
+    })
+    expect(network.listRequests()).toMatchObject({ total: 1 })
+  })
+
+  test('Fetch 先到时用 networkId 建记录，随后的 Network 事件并入同一对象并补齐缺失字段', async () => {
+    const { state, network, sendNetworkRequest, pauseFetch } = createInterceptionHarness()
+
+    await pauseFetch({
+      requestId: 'int-2',
+      networkId: 'net-2',
+      postData: 'a=1',
+      headers: { 'x-fetch': '1' },
+      timestamp: 99,
+    })
+    const created = state.network.requests[0]
+    expect(created).toMatchObject({ id: '1:net-2', requestId: 'net-2', postData: 'a=1' })
+
+    await sendNetworkRequest({ requestId: 'net-2', headers: {}, timestamp: 100 })
+
+    expect(state.network.requests).toHaveLength(1)
+    // 同一个对象：异步 body 抓取、route 决策都不会因换 key 而丢失
+    expect(state.network.requests[0]).toBe(created)
+    expect(created).toMatchObject({
+      postData: 'a=1',
+      requestHeaders: { 'x-fetch': '1' },
+      requestWillBeSentAt: 100,
+      startedAt: created?.startedAt,
+    })
+    expect(network.listRequests()).toMatchObject({ total: 1 })
+  })
+
+  test('CDP 复用同一个 id 时，拦截记录不会写进已结束的旧记录', async () => {
+    const { state, network, sendNetworkRequest, pauseFetch } = createInterceptionHarness()
+
+    await sendNetworkRequest({
+      requestId: 'net-r',
+      postData: 'old=1',
+      headers: { 'x-old': '1' },
+      timestamp: 100,
+    })
+    await network.handleEvent({ tabId: 1 }, 'Network.loadingFinished', {
+      requestId: 'net-r',
+      timestamp: 101,
+    })
+    const finished = state.network.requests[0]
+
+    await pauseFetch({
+      requestId: 'int-r',
+      networkId: 'net-r',
+      postData: 'new=1',
+      headers: { 'x-new': '1' },
+      timestamp: 200,
+    })
+
+    expect(state.network.requests).toHaveLength(1)
+    expect(state.network.requests[0]).not.toBe(finished)
+    expect(state.network.requests[0]).toMatchObject({
+      id: '1:net-r',
+      postData: 'new=1',
+      requestHeaders: { 'x-new': '1' },
+    })
+    expect(finished).toMatchObject({ postData: 'old=1', requestHeaders: { 'x-old': '1' } })
+  })
+
+  test('没有 networkId 时回退用 Fetch 的 requestId 建记录', async () => {
+    const { state, sendCalls, pauseFetch } = createInterceptionHarness()
+
+    await pauseFetch({ requestId: 'int-9', headers: { 'x-fetch': '1' } })
+
+    expect(state.session.downloads).toHaveLength(0)
+    expect(state.network.requests).toHaveLength(1)
+    expect(state.network.requests[0]).toMatchObject({ id: '1:int-9', requestId: 'int-9' })
+    expect(sendCalls.find((call) => call.method === 'Fetch.continueRequest')?.params).toEqual({
+      requestId: 'int-9',
+    })
+  })
+
+  const ORDERS = ['network-first', 'fetch-first'] as const
+  const ROUTES = [
+    { kind: 'continue', route: { body: undefined }, method: 'Fetch.continueRequest', status: 200 },
+    { kind: 'mock', route: { body: { ok: true } }, method: 'Fetch.fulfillRequest', status: 200 },
+    { kind: 'abort', route: { abort: true }, method: 'Fetch.failRequest', status: 0 },
+  ] as const
+
+  for (const order of ORDERS) {
+    for (const routeCase of ROUTES) {
+      test(`${order} 的 ${routeCase.kind} 路由在 HAR 里只留一条记录`, async () => {
+        const { state, network, sendCalls, sendNetworkRequest, pauseFetch } =
+          createInterceptionHarness()
+
+        await network.routeRequest(1, '/api/user', { ...routeCase.route })
+        await network.startHar(1)
+
+        const fetchEvent = {
+          requestId: 'int-a',
+          networkId: 'net-a',
+          postData: 'a=1',
+          headers: { 'x-fetch': '1' },
+        }
+        const networkEvent = {
+          requestId: 'net-a',
+          postData: 'a=1',
+          headers: { 'x-network': '1' },
+        }
+        // 真正按顺序触发：两个 handler 都是 async，先调用就已经开始建立记录
+        if (order === 'network-first') {
+          await sendNetworkRequest(networkEvent)
+          await pauseFetch(fetchEvent)
+        } else {
+          await pauseFetch(fetchEvent)
+          await sendNetworkRequest(networkEvent)
+        }
+
+        const intercepted = sendCalls.find((call) => call.method === routeCase.method)
+        // 拦截命令必须用 Fetch 自己的 requestId，不能用 networkId
+        expect(intercepted?.params?.requestId).toBe('int-a')
+
+        if (routeCase.kind === 'mock') {
+          await network.handleEvent({ tabId: 1 }, 'Network.responseReceived', {
+            requestId: 'net-a',
+            response: { status: 200, statusText: 'OK', headers: {}, mimeType: 'application/json' },
+            timestamp: 101,
+          })
+        }
+        if (routeCase.kind === 'abort') {
+          await network.handleEvent({ tabId: 1 }, 'Network.loadingFailed', {
+            requestId: 'net-a',
+            errorText: 'net::ERR_FAILED',
+          })
+        }
+        if (routeCase.kind === 'continue') {
+          await network.handleEvent({ tabId: 1 }, 'Network.responseReceived', {
+            requestId: 'net-a',
+            response: { status: 200, statusText: 'OK', headers: {}, mimeType: 'application/json' },
+            timestamp: 101,
+          })
+          await network.handleEvent({ tabId: 1 }, 'Network.loadingFinished', {
+            requestId: 'net-a',
+            timestamp: 102,
+            encodedDataLength: 10,
+          })
+        }
+
+        const result = (await network.stopHar()) as {
+          requestCount: number
+          har: {
+            log: {
+              entries: Array<{
+                request: { url: string }
+                response: { status: number; content: { text?: string } }
+              }>
+            }
+          }
+        }
+
+        expect(state.network.requests).toHaveLength(1)
+        expect(result.requestCount).toBe(1)
+        expect(result.har.log.entries).toHaveLength(1)
+        expect(result.har.log.entries[0]?.request.url).toBe(URL_A)
+        expect(result.har.log.entries[0]?.response.status).toBe(routeCase.status)
+        // mock 响应不会被后续 Network 事件清掉
+        expect(result.har.log.entries[0]?.response.content.text).toBe(
+          routeCase.kind === 'mock' ? '{\n  "ok": true\n}\n' : undefined,
+        )
+      })
+    }
+  }
+
+  test('mock 回写晚到时不复活已被缓冲上限淘汰的记录', async () => {
+    const { state, network, sendCalls, pauseFetch, sendNetworkRequest, releaseFulfill } =
+      createInterceptionHarness({ deferFulfill: true })
+    state.network.harMaxRequests = 1
+    await network.routeRequest(1, '/api/user', { body: { mocked: true } })
+
+    const paused = pauseFetch({ requestId: 'int-m', networkId: 'net-m' })
+    await flush()
+    expect(state.network.requests.map((record) => record.id)).toEqual(['1:net-m'])
+
+    // 记录被新请求挤出缓冲后，迟到的 fulfill 结果不得把它重新插回来
+    await sendNetworkRequest({ requestId: 'net-other', url: 'https://example.com/other' })
+    expect(state.network.requests.map((record) => record.id)).toEqual(['1:net-other'])
+
+    releaseFulfill()
+    await paused
+
+    expect(sendCalls.some((call) => call.method === 'Fetch.fulfillRequest')).toBeTrue()
+    expect(state.network.requests.map((record) => record.id)).toEqual(['1:net-other'])
+    expect(state.network.requestMap.size).toBe(1)
+  })
+
+  test('mock 回写晚到时不污染复用同一 networkId 的新代次记录', async () => {
+    const { state, network, pauseFetch, sendNetworkRequest, releaseFulfill } =
+      createInterceptionHarness({ deferFulfill: true })
+    await network.routeRequest(1, '/api/old', { body: { mocked: true } })
+
+    const paused = pauseFetch({
+      requestId: 'int-1',
+      networkId: 'net-x',
+      url: 'https://example.com/api/old',
+    })
+    await flush()
+    await network.handleEvent({ tabId: 1 }, 'Network.loadingFinished', {
+      requestId: 'net-x',
+      timestamp: 101,
+    })
+    // 同一 networkId 被复用到一个新请求（URL/方法都不同）
+    await pauseFetch({
+      requestId: 'int-2',
+      networkId: 'net-x',
+      url: 'https://example.com/api/new',
+      method: 'GET',
+    })
+    await sendNetworkRequest({
+      requestId: 'net-x',
+      url: 'https://example.com/api/new',
+      method: 'GET',
+    })
+
+    const current = state.network.requests[0]
+    expect(state.network.requests).toHaveLength(1)
+    expect(current).toMatchObject({
+      id: '1:net-x',
+      url: 'https://example.com/api/new',
+      method: 'GET',
+    })
+
+    releaseFulfill()
+    await paused
+
+    expect(state.network.requests[0]).toBe(current)
+    expect(current.status).toBeUndefined()
+    expect(current.responseBody).toBeUndefined()
+  })
+
+  for (const order of ORDERS) {
+    for (const sameUrl of [true, false]) {
+      for (const deferFulfill of [false, true]) {
+        test(`${order} redirect ${sameUrl ? '同' : '不同'} URL 保留每跳身份（延迟 mock=${deferFulfill}）`, async () => {
+          const { state, network, pauseFetch, sendNetworkRequest, releaseFulfill, sendCalls } =
+            createInterceptionHarness({ deferFulfill })
+          const firstUrl = 'https://example.com/same'
+          const nextUrl = sameUrl ? firstUrl : 'https://example.com/next'
+          await sendNetworkRequest({ requestId: 'chain', url: firstUrl, method: 'GET' })
+          await pauseFetch({
+            requestId: 'fetch-first',
+            networkId: 'chain',
+            url: firstUrl,
+            method: 'GET',
+          })
+          const { route } = await network.routeRequest(1, nextUrl, {
+            body: 'NEXT_HOP',
+            status: 201,
+          })
+          const redirect = () =>
+            sendNetworkRequest({
+              requestId: 'chain',
+              url: nextUrl,
+              method: 'GET',
+              timestamp: 101,
+              redirectResponse: {
+                status: 302,
+                statusText: 'Found',
+                headers: { location: nextUrl },
+              },
+            })
+          if (order === 'network-first') await redirect()
+          const paused = pauseFetch({
+            requestId: 'fetch-next',
+            redirectedRequestId: 'fetch-first',
+            networkId: 'chain',
+            url: nextUrl,
+            method: 'GET',
+          })
+          const current = state.network.requestMap.get('1:chain')
+          if (!current) throw new Error('Expected current redirect hop in requestMap')
+          if (!deferFulfill) await paused
+          if (order === 'fetch-first') await redirect()
+          releaseFulfill()
+          await paused
+
+          expect(state.network.requests).toHaveLength(2)
+          const [previous, next] = state.network.requests
+          expect(next).toBe(current)
+          expect(previous).toMatchObject({
+            url: firstUrl,
+            method: 'GET',
+            status: 302,
+            routeAction: 'continue',
+            routeId: null,
+            redirectArchived: true,
+            hopSequence: 0,
+          })
+          expect(previous?.responseBody).toBeUndefined()
+          expect(next).toMatchObject({
+            id: '1:chain',
+            url: nextUrl,
+            method: 'GET',
+            status: 201,
+            routeAction: 'mock',
+            routeId: route.id,
+            responseBody: 'NEXT_HOP',
+            hopSequence: 1,
+          })
+          expect(next?.redirectArchived).toBeUndefined()
+          expect(
+            sendCalls.find((call) => call.method === 'Fetch.fulfillRequest')?.params?.requestId,
+          ).toBe('fetch-next')
+          expect(state.network.requestMap.size).toBe(2)
+          expect(state.network.requestIndex.size).toBe(2)
+          state.network.requests.forEach((record, index) => {
+            expect(state.network.requestMap.get(record.id!)).toBe(record)
+            expect(state.network.requestIndex.get(record.id!)).toBe(index)
+          })
+        })
+      }
+    }
+    for (const fragments of [
+      ['#fetch', ''],
+      ['', '#network'],
+      ['#fetch', '#network'],
+    ]) {
+      test(`${order} fragment ${JSON.stringify(fragments)} 不丢 mock、不改对外 URL、不重复记录`, async () => {
+        const { state, network, pauseFetch, sendNetworkRequest } = createInterceptionHarness()
+        await network.routeRequest(1, '/api/user', { body: 'FRAGMENT_MOCK' })
+        const fetchUrl = URL_A + fragments[0]
+        const networkUrl = URL_A + fragments[1]
+        const fetch = () =>
+          pauseFetch({ requestId: 'fetch-fragment', networkId: 'fragment', url: fetchUrl })
+        const sent = () => sendNetworkRequest({ requestId: 'fragment', url: networkUrl })
+        if (order === 'network-first') await sent()
+        else await fetch()
+        const original = state.network.requests[0]
+        if (order === 'network-first') await fetch()
+        else await sent()
+        expect(state.network.requests).toHaveLength(1)
+        expect(state.network.requests[0]).toBe(original)
+        expect(original).toMatchObject({
+          url: order === 'network-first' ? networkUrl : fetchUrl,
+          status: 200,
+          routeAction: 'mock',
+          responseBody: 'FRAGMENT_MOCK',
+        })
+        expect(state.network.requestMap.size).toBe(1)
+        expect(state.network.requestMap.get('1:fragment')).toBe(original)
+        expect([...state.network.requestIndex.entries()]).toEqual([['1:fragment', 0]])
+      })
+    }
+  }
+
+  test('redirect 下一跳的 Fetch 事件先到时不并入上一跳记录', async () => {
+    const { state, network, pauseFetch, sendNetworkRequest } = createInterceptionHarness()
+    await network.routeRequest(1, '/api/new', { body: { mocked: true } })
+    await network.startHar(1)
+
+    await sendNetworkRequest({
+      requestId: 'chain',
+      url: 'https://example.com/api/old',
+      method: 'POST',
+      postData: 'a=1',
+      timestamp: 100,
+    })
+    // 第一跳同样被 Fetch 拦截（无路由命中 → 放行），确保它的 route 决策不丢
+    await pauseFetch({
+      requestId: 'int-1',
+      networkId: 'chain',
+      url: 'https://example.com/api/old',
+      method: 'POST',
+      postData: 'a=1',
+      timestamp: 100,
+    })
+    // 下一跳先被 Fetch 拦截命中 mock，之后才收到它的 requestWillBeSent
+    await pauseFetch({
+      requestId: 'int-2',
+      networkId: 'chain',
+      url: 'https://example.com/api/new',
+      method: 'GET',
+    })
+    await sendNetworkRequest({
+      requestId: 'chain',
+      url: 'https://example.com/api/new',
+      method: 'GET',
+      timestamp: 101,
+      redirectResponse: {
+        status: 302,
+        statusText: 'Found',
+        headers: { location: '/api/new' },
+        mimeType: 'text/plain',
+      },
+    })
+
+    expect(state.network.requests).toHaveLength(2)
+    const [previousHop, currentHop] = state.network.requests
+    expect(previousHop).toMatchObject({
+      url: 'https://example.com/api/old',
+      method: 'POST',
+      postData: 'a=1',
+      status: 302,
+      routeAction: 'continue',
+    })
+    expect(previousHop?.responseBody).toBeUndefined()
+    expect(currentHop).toMatchObject({
+      id: '1:chain',
+      url: 'https://example.com/api/new',
+      method: 'GET',
+      status: 200,
+      routeAction: 'mock',
+    })
+    expect(String(currentHop?.responseBody)).toContain('mocked')
+
+    const result = (await network.stopHar()) as {
+      har: { log: { entries: Array<{ response: { status: number; content: { text?: string } } }> } }
+    }
+    expect(result.har.log.entries.map((entry) => entry.response.status)).toEqual([302, 200])
+  })
+
+  test('中断请求的残留拦截标记不会吞掉同 networkId 的新代次', async () => {
+    const { state, network, pauseFetch, sendNetworkRequest } = createInterceptionHarness()
+    await network.routeRequest(1, '/api/old', { abort: true })
+
+    await pauseFetch({
+      requestId: 'int-a',
+      networkId: 'chain',
+      url: 'https://example.com/api/old',
+    })
+    await network.handleEvent({ tabId: 1 }, 'Network.loadingFailed', {
+      requestId: 'chain',
+      errorText: 'net::ERR_ABORTED',
+    })
+    expect(state.network.requests[0]).toMatchObject({
+      routeAction: 'abort',
+      errorText: 'net::ERR_ABORTED',
+    })
+
+    // 新代次只带来了 requestWillBeSent，没有对应的 Fetch 事件
+    await sendNetworkRequest({
+      requestId: 'chain',
+      url: 'https://example.com/api/new',
+      method: 'GET',
+      timestamp: 200,
+    })
+
+    expect(state.network.requests).toHaveLength(1)
+    expect(state.network.requests[0]).toMatchObject({
+      id: '1:chain',
+      url: 'https://example.com/api/new',
+      method: 'GET',
+    })
+    expect(state.network.requests[0]).not.toHaveProperty('errorText')
+  })
+})
+
 describe('network domain request list pagination', () => {
   function createListHarness() {
     const state = createExtensionState(57978)
@@ -776,18 +1340,18 @@ describe('network domain HAR field completion', () => {
         headers: { 'content-type': 'application/json' },
         mimeType: 'application/json',
         protocol: 'h2',
-        // ResourceTiming 各阶段相对 requestTime 的秒数偏移
+        // CDP ResourceTiming：requestTime 是秒基准，其余字段已是相对请求开始的毫秒偏移
         timing: {
-          requestTime: 1.0,
-          dnsStart: 1.001,
-          dnsEnd: 1.01,
-          connectStart: 1.01,
-          connectEnd: 1.05,
-          sslStart: 1.05,
-          sslEnd: 1.08,
-          sendStart: 1.09,
-          sendEnd: 1.1,
-          receiveHeadersEnd: 1.2,
+          requestTime: 1_700_000_000.123,
+          dnsStart: 1,
+          dnsEnd: 10,
+          connectStart: 10,
+          connectEnd: 50,
+          sslStart: 50,
+          sslEnd: 80,
+          sendStart: 90,
+          sendEnd: 100,
+          receiveHeadersEnd: 200,
         },
       },
       timestamp: 101,
@@ -820,9 +1384,9 @@ describe('network domain HAR field completion', () => {
     // protocol 字段（h2）映射为 HAR 惯例的 HTTP/2
     expect(detail.harEntry.request.httpVersion).toBe('HTTP/2')
     expect(detail.harEntry.response.httpVersion).toBe('HTTP/2')
-    // blocked = connectStart - requestTime；wait = receiveHeadersEnd - sendEnd（DevTools 同款近似）
+    // 阶段值本身就是毫秒偏移：blocked 取首个有效偏移，阶段差直接相减（不再乘 1000）
     expect(detail.harEntry.timings).toEqual({
-      blocked: 10,
+      blocked: 1,
       dns: 9,
       connect: 40,
       ssl: 30,
@@ -832,6 +1396,91 @@ describe('network domain HAR field completion', () => {
     })
     // time = loadingFinished(102) - requestWillBeSent(100) = 2000ms
     expect(detail.harEntry.time).toBe(2000)
+  })
+
+  test('marks ResourceTiming phases that CDP did not report as -1', async () => {
+    const { network } = createHarHarness()
+
+    await network.handleEvent({ tabId: 1 }, 'Network.requestWillBeSent', {
+      requestId: 'req-partial',
+      request: { url: 'https://example.com/partial', method: 'GET', headers: {} },
+      type: 'XHR',
+      timestamp: 100,
+      wallTime: 100,
+    })
+    await network.handleEvent({ tabId: 1 }, 'Network.responseReceived', {
+      requestId: 'req-partial',
+      response: {
+        status: 200,
+        headers: {},
+        mimeType: 'application/json',
+        // 只有请求起点可用，其余阶段（以及 sendEnd 之前的收尾时间）都缺失
+        timing: { requestTime: 1_700_000_000.5, sendStart: 90 },
+      },
+      timestamp: 101,
+    })
+    await network.handleEvent({ tabId: 1 }, 'Network.loadingFinished', {
+      requestId: 'req-partial',
+      timestamp: 102,
+    })
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    const detail = (await network.getRequestDetail('1:req-partial')) as {
+      harEntry: { timings: Record<string, number> }
+    }
+
+    // 缺失阶段用 HAR 的 -1 表示不可用，不伪造 0；
+    // wait/receive 仍可退回事件时间戳近似（responseReceived 101 → loadingFinished 102）
+    expect(detail.harEntry.timings).toEqual({
+      blocked: 90,
+      dns: -1,
+      connect: -1,
+      ssl: -1,
+      send: -1,
+      wait: 1000,
+      receive: 1000,
+    })
+  })
+
+  test('ignores out-of-order ResourceTiming phases instead of clamping them', async () => {
+    const { network } = createHarHarness()
+
+    await network.handleEvent({ tabId: 1 }, 'Network.requestWillBeSent', {
+      requestId: 'req-broken',
+      request: { url: 'https://example.com/broken', method: 'GET', headers: {} },
+      type: 'XHR',
+      timestamp: 100,
+      wallTime: 100,
+    })
+    await network.handleEvent({ tabId: 1 }, 'Network.responseReceived', {
+      requestId: 'req-broken',
+      response: {
+        status: 200,
+        headers: {},
+        mimeType: 'text/plain',
+        // dnsEnd 早于 dnsStart：属于不可用数据，不能算成 0
+        timing: {
+          requestTime: 1_700_000_000.5,
+          dnsStart: 40,
+          dnsEnd: 10,
+          sendStart: 90,
+          sendEnd: 100,
+          receiveHeadersEnd: 200,
+        },
+      },
+      timestamp: 101,
+    })
+    await network.handleEvent({ tabId: 1 }, 'Network.loadingFinished', {
+      requestId: 'req-broken',
+      timestamp: 102,
+    })
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    const detail = (await network.getRequestDetail('1:req-broken')) as {
+      harEntry: { timings: Record<string, number> }
+    }
+
+    expect(detail.harEntry.timings).toMatchObject({ blocked: 40, dns: -1, send: 10, wait: 100 })
   })
 
   test('keeps the legacy timings shape and HTTP/1.1 fallback when timing is missing', async () => {
@@ -928,7 +1577,8 @@ describe('network redirect hops', () => {
     headers: { Location: '/middle' },
     mimeType: 'text/html',
     protocol: 'h2',
-    timing: { sendStart: 1, sendEnd: 1.01, receiveHeadersEnd: 1.1 },
+    // CDP ResourceTiming：毫秒偏移（requestTime 为秒基准）
+    timing: { requestTime: 1_700_000_000, sendStart: 1, sendEnd: 11, receiveHeadersEnd: 110 },
   }
   const found = {
     status: 302,

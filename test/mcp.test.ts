@@ -719,6 +719,18 @@ describe('search interfaces', () => {
         const call = (await request.json()) as RecordedCall
         calls.push(call)
         if (call.command === 'find') return Response.json({ ok: false, error: ambiguous })
+        if (call.command === 'fill') {
+          if (call.args.value === 'valid-error') {
+            return Response.json(
+              {
+                ok: false,
+                error: { code: 'UPSTREAM_ERROR', message: 'ECONNREFUSED ENOTFOUND' },
+              },
+              { status: 502 },
+            )
+          }
+          return new Response(String(call.args.value), { status: 503 })
+        }
         return Response.json(okResult(call.args.startLine === 201 ? secondPage : firstPage))
       },
     })
@@ -816,6 +828,42 @@ describe('search interfaces', () => {
         expect(invalid.structuredContent).toMatchObject({ error: { code: 'INVALID_COMMAND_ARGS' } })
         expect(calls).toHaveLength(before)
       }
+      for (const [name, key] of [
+        ['cookies', 'name'],
+        ['storage', 'key'],
+      ] as const) {
+        for (const args of [
+          { action: 'set', [key]: 'item' },
+          { action: 'set', value: '' },
+          { action: 'set', [key]: '', value: '' },
+          { action: 'set', [key]: '   ', value: '' },
+          { action: 'set', [key]: 'item', value: null },
+          { action: 'set', data: { item: 'value' } },
+        ]) {
+          const before = calls.length
+          const invalid = await client.callTool({ name, arguments: args })
+          expect(invalid.isError).toBe(true)
+          expect(invalid.structuredContent).toMatchObject({
+            error: { code: 'INVALID_COMMAND_ARGS' },
+          })
+          expect(calls).toHaveLength(before)
+        }
+        for (const value of ['', '   ']) {
+          const before = calls.length
+          const args = { action: 'set', [key]: 'item', value }
+          const valid = await client.callTool({ name, arguments: args })
+          expect(valid.isError).toBeFalsy()
+          expect(calls).toHaveLength(before + 1)
+          expect(calls.at(-1)).toEqual({ command: name, args })
+        }
+        for (const action of name === 'cookies' ? ['get', 'list'] : ['get']) {
+          const before = calls.length
+          const valid = await client.callTool({ name, arguments: { action } })
+          expect(valid.isError).toBeFalsy()
+          expect(calls).toHaveLength(before + 1)
+          expect(calls.at(-1)).toEqual({ command: name, args: { action: 'get' } })
+        }
+      }
       const failure = await client.callTool({
         name: 'find',
         arguments: { strategy: 'role', role: 'button', name: 'Delete', action: 'click' },
@@ -834,6 +882,28 @@ describe('search interfaces', () => {
         },
       })
       expect(calls.at(-1)?.args).toMatchObject({ exact: true, position: 'nth=2', action: 'click' })
+      for (const value of ['ENOTFOUND', '{"ok":true,"result":', 'ECONNREFUSED']) {
+        const before = calls.length
+        const unknown = await client.callTool({
+          name: 'fill',
+          arguments: { selector: '#field', value },
+        })
+        expect(unknown.isError).toBe(true)
+        expect(unknown.structuredContent).toMatchObject({
+          error: { code: 'COMMAND_EXECUTION_UNKNOWN', details: { command: 'fill' } },
+        })
+        expect(calls).toHaveLength(before + 1)
+      }
+      const before = calls.length
+      const upstream = await client.callTool({
+        name: 'fill',
+        arguments: { selector: '#field', value: 'valid-error' },
+      })
+      expect(upstream.isError).toBe(true)
+      expect(upstream.structuredContent).toEqual({
+        error: { code: 'UPSTREAM_ERROR', message: 'ECONNREFUSED ENOTFOUND' },
+      })
+      expect(calls).toHaveLength(before + 1)
       expect(authorization.every((value) => value === `Bearer ${token}`)).toBe(true)
     } finally {
       await client.close()

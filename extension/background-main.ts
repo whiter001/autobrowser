@@ -9,6 +9,7 @@ import {
   tabsQuery,
 } from './background/chrome.js'
 import { createCommandRouter } from './background/command-router.js'
+import type { CommandExecutionContext } from './background/command-queue.js'
 import { createConnectionRuntime } from './background/connection.js'
 import { createDownloadsDomain } from './background/downloads.js'
 import { createNetworkDomain } from './background/network.js'
@@ -239,8 +240,12 @@ async function sendDebuggerCommand<TResult = unknown>(
   tabId: number,
   method: string,
   params: Record<string, unknown> = {},
+  context?: CommandExecutionContext,
 ): Promise<TResult> {
+  context?.throwIfCancelled()
   await ensureDebuggerAttached(tabId)
+  // attach 也会异步等待；只阻止尚未发送的业务 CDP，不撤销已在途请求。
+  context?.throwIfCancelled()
   return await sendRawDebuggerCommand<TResult>(tabId, method, params)
 }
 
@@ -430,13 +435,15 @@ async function evaluateInTabContext<TValue = unknown>(
   response: { result: unknown }
   value: TValue | null
 }> {
-  const runtimeConfig = options
   const {
     frameSelector,
+    commandContext,
     timeoutMs = DEFAULT_EVALUATE_TIMEOUT_MS,
     ...runtimeOptions
-  } = runtimeConfig
+  } = options
+  commandContext?.throwIfCancelled()
   const context = await getFrameExecutionContext(tabId, frameSelector)
+  commandContext?.throwIfCancelled()
   let { tab, executionContextId } = context
 
   const evaluate = (contextId: number | null) =>
@@ -446,19 +453,25 @@ async function evaluateInTabContext<TValue = unknown>(
         text?: string
         exception?: { description?: string }
       }
-    }>(tab.id, 'Runtime.evaluate', {
-      expression,
-      awaitPromise: true,
-      returnByValue: true,
-      timeout: Math.max(1, Math.floor(timeoutMs)),
-      ...(contextId ? { contextId } : {}),
-      ...runtimeOptions,
-    })
+    }>(
+      tab.id,
+      'Runtime.evaluate',
+      {
+        expression,
+        awaitPromise: true,
+        returnByValue: true,
+        timeout: Math.max(1, Math.floor(timeoutMs)),
+        ...(contextId ? { contextId } : {}),
+        ...runtimeOptions,
+      },
+      commandContext,
+    )
 
   let response: Awaited<ReturnType<typeof evaluate>>
   try {
     response = await evaluate(executionContextId)
   } catch (error) {
+    commandContext?.throwIfCancelled()
     if (isEvaluationTimeoutError(error)) {
       throw createEvaluationTimeoutError(timeoutMs)
     }
@@ -468,6 +481,7 @@ async function evaluateInTabContext<TValue = unknown>(
     }
     frameWorldContextCache.delete(context.worldCacheKey)
     const retryContext = await getFrameExecutionContext(tabId, frameSelector)
+    commandContext?.throwIfCancelled()
     tab = retryContext.tab
     executionContextId = retryContext.executionContextId
     response = await evaluate(executionContextId)

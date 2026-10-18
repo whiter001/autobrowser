@@ -30,6 +30,7 @@ import {
 import { printHelp } from './cli/help.js'
 import { type ScreenshotArgs } from './cli/parse.js'
 import {
+  CommandRequestError,
   getStatus,
   isRecord,
   requestCommandRaw,
@@ -500,6 +501,65 @@ function isServerConnectionError(error: unknown): boolean {
     message.includes('connection refused') ||
     message.includes('econnreset')
   )
+}
+
+type CommandConnectionFailure = 'not-sent' | 'unknown'
+
+const RESET_CONNECTION_PATTERNS = [
+  'econnreset',
+  'epipe',
+  'socket hang up',
+  'socket closed',
+  'connection closed',
+  'connection terminated',
+  'server closed',
+]
+
+function classifyCommandConnectionError(error: unknown): CommandConnectionFailure | null {
+  if (!(error instanceof CommandRequestError)) return null
+  if (error.phase === 'response') return 'unknown'
+
+  const messages: string[] = []
+  const codes: string[] = []
+  const seen = new Set<unknown>()
+  let cause: unknown = error.cause
+  while (cause !== undefined && !seen.has(cause)) {
+    seen.add(cause)
+    messages.push(String(isRecord(cause) ? (cause.message ?? '') : cause).toLowerCase())
+    if (!isRecord(cause)) break
+    if (typeof cause.code === 'string') codes.push(cause.code.toUpperCase())
+    cause = cause.cause
+  }
+
+  // reset 证据优先；仅无其他 code 冲突的结构化拒绝连接能证明未送达。
+  // 纯文本及 DNS/路由错误均不能排除请求已写入，不能据此自动重放。
+  if (messages.some((message) => RESET_CONNECTION_PATTERNS.some((p) => message.includes(p)))) {
+    return 'unknown'
+  }
+  return codes.length > 0 && codes.every((code) => code === 'ECONNREFUSED') ? 'not-sent' : 'unknown'
+}
+
+/** 不确定执行结果时的稳定报错：不重试，并指明先查命令状态与页面再决定是否重来。 */
+function buildCommandExecutionUnknownResponse(
+  command: string,
+  originalMessage: string,
+): CommandResponse {
+  const message =
+    `autobrowser lost the connection to the control server while sending "${command}"; ` +
+    'the command may already have run in the browser, so it was not retried automatically.\n' +
+    'Inspect the current page first (for example `autobrowser snapshot` or `autobrowser status`), ' +
+    'then decide whether running the command again is safe.'
+
+  return {
+    ok: false,
+    error: {
+      message,
+      code: 'COMMAND_EXECUTION_UNKNOWN',
+      details: { command, originalMessage },
+      suggestedAction:
+        "Run 'autobrowser command list' (or 'autobrowser command status <id>') to check whether the command is still pending, then 'autobrowser status' and 'autobrowser snapshot' to inspect the browser before retrying. Do not blindly replay side-effecting commands such as click, fill, goto or form submissions.",
+    },
+  }
 }
 
 interface ConnectionRecoveryHints {
@@ -1210,8 +1270,17 @@ async function runMain(
     try {
       payload = await requestCommandWithToken(baseUrl, command, requestArgs)
     } catch (error) {
-      if (!isServerConnectionError(error)) {
+      const failure = classifyCommandConnectionError(error)
+      if (!failure) {
         throw error
+      }
+
+      // 只有"明确没送达"的才自动重放；不确定的一律不重试，避免副作用被执行两次。
+      if (failure === 'unknown') {
+        return buildCommandExecutionUnknownResponse(
+          command,
+          error instanceof Error ? error.message : String(error),
+        )
       }
 
       const recovered = await assistCommandConnection(baseUrl, recoveryHints)
@@ -1227,8 +1296,16 @@ async function runMain(
       try {
         payload = await requestCommandWithToken(baseUrl, command, requestArgs)
       } catch (retryError) {
-        if (!isServerConnectionError(retryError)) {
+        const retryFailure = classifyCommandConnectionError(retryError)
+        if (!retryFailure) {
           throw retryError
+        }
+
+        if (retryFailure === 'unknown') {
+          return buildCommandExecutionUnknownResponse(
+            command,
+            retryError instanceof Error ? retryError.message : String(retryError),
+          )
         }
 
         throw new Error(
@@ -1249,8 +1326,16 @@ async function runMain(
             ? withConnectionHelp(retriedPayload)
             : retriedPayload
         } catch (error) {
-          if (!isServerConnectionError(error)) {
+          const failure = classifyCommandConnectionError(error)
+          if (!failure) {
             throw error
+          }
+
+          if (failure === 'unknown') {
+            return buildCommandExecutionUnknownResponse(
+              command,
+              error instanceof Error ? error.message : String(error),
+            )
           }
 
           throw new Error(

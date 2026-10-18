@@ -6,6 +6,7 @@ import {
   readAllowedArg,
   readRequiredArg,
   requestAndWrite,
+  writeCommandError,
 } from './shared.js'
 import type { CommandContext, CommandRegistry } from './types.js'
 
@@ -25,10 +26,13 @@ const handleDoubleClick = createSingleArgRequestCommand({
 
 async function handleFill(rest: string[], context: CommandContext): Promise<number | void> {
   const selector = readRequiredArg(rest[0], context, ['fill'])
-  const value = rest.slice(1).join(' ')
   if (!selector) {
     return 0
   }
+  if (rest.length < 2) {
+    return writeCommandError('missing value for fill')
+  }
+  const value = rest.slice(1).join(' ')
 
   await requestAndWrite(context, 'fill', {
     selector,
@@ -159,6 +163,9 @@ async function handleType(rest: string[], context: CommandContext): Promise<numb
     }
     return true
   })
+  if (valueParts.length === 0) {
+    return writeCommandError('missing value for type')
+  }
   const value = valueParts.join(' ')
 
   await requestAndWrite(context, 'type', {
@@ -171,10 +178,13 @@ async function handleType(rest: string[], context: CommandContext): Promise<numb
 
 async function handleKeyboard(rest: string[], context: CommandContext): Promise<number | void> {
   const action = readAllowedArg(rest[0], context, ['keyboard'], KEYBOARD_ACTIONS)
-  const value = rest.slice(1).join(' ')
   if (!action) {
     return 0
   }
+  if (rest.length < 2) {
+    return writeCommandError(`missing text for keyboard ${action}`)
+  }
+  const value = rest.slice(1).join(' ')
 
   await requestAndWrite(context, 'keyboard', {
     action,

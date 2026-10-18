@@ -148,7 +148,8 @@ function redactCommandArgs(command: string, args: unknown): unknown {
   if (command === 'batch' && Array.isArray(redactedArgs.steps)) {
     redactedArgs.steps = redactedArgs.steps.map((step) =>
       isRecord(step) && typeof step.command === 'string'
-        ? { ...step, args: redactCommandArgs(step.command, step.args) }
+        ? // 命令名可能带空白，按 trim 后的名字匹配脱敏规则，否则嵌套步骤会漏脱敏。
+          { ...step, args: redactCommandArgs(step.command.trim(), step.args) }
         : step,
     )
   }
@@ -171,12 +172,15 @@ function redactCommandArgs(command: string, args: unknown): unknown {
     redact('value')
   }
   if (command === 'network' && action === 'route') {
-    redact('body')
+    redact('body', 'headers')
+  }
+  if (command === 'script' && action === 'add') {
+    redact('source')
   }
   if (command === 'set' && type === 'headers') {
     redact('headers')
   }
-  if (command === 'state' && action === 'load') {
+  if (command === 'state' && 'data' in redactedArgs) {
     redact('data')
   }
 

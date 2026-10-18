@@ -60,12 +60,14 @@ function singlePageInfo(count: number): Record<string, unknown> {
 }
 
 function createMinimalRouter(overrides?: {
-  getTargetTab?: () => Promise<{ id: number }>
+  getTargetTab?: (tabId?: unknown) => Promise<{ id: number }>
   snapshotTab?: (tabId: unknown, frameSelector: unknown, options?: unknown) => Promise<unknown>
   navigateTo?: (tabId: unknown, url: string) => Promise<unknown>
   listTabs?: () => Promise<unknown[]>
   findSemanticTarget?: (tabId: unknown, options: unknown, frame: unknown) => Promise<unknown>
   getRequestDetail?: () => Promise<unknown>
+  clickSelector?: (tabId: unknown, selector: unknown) => Promise<unknown>
+  typeIntoSelector?: (tabId: unknown, selector: unknown) => Promise<unknown>
 }) {
   const snapshotCalls: Array<{ tabId: unknown; frameSelector: unknown; options?: unknown }> = []
   const feedCalls: Array<{
@@ -79,8 +81,11 @@ function createMinimalRouter(overrides?: {
   const waitSelectorCalls: Array<{ selector: unknown; state: unknown; timeout: unknown }> = []
   const screenshotCalls: Array<{ tabId: unknown; options: unknown }> = []
   const waitTextCalls: Array<{ text: unknown; gone?: unknown }> = []
-  const typeCalls: Array<{ selector: unknown; value: unknown; submit?: unknown }> = []
+  const typeCalls: Array<{ tabId: unknown; selector: unknown; value: unknown; submit?: unknown }> =
+    []
   const cookieGetCalls: Array<{ tabId: unknown; filters: unknown }> = []
+  const clickCalls: Array<{ tabId: unknown; selector: unknown }> = []
+  const listRequestsCalls: Array<Record<string, unknown>> = []
   const searchCalls: Array<{
     tabId: unknown
     options: unknown
@@ -124,6 +129,8 @@ function createMinimalRouter(overrides?: {
         }),
       evaluateScript: async () => undefined,
       clickSelector: async (_tabId: unknown, selector: unknown) => {
+        clickCalls.push({ tabId: _tabId, selector })
+        if (overrides?.clickSelector) return overrides.clickSelector(_tabId, selector)
         // 模拟元素缺失时带引导字段的错误，验证 batch 错误序列化不丢字段
         if (selector === '#missing') {
           const error = new Error(`element not found: ${selector}`) as Error & {
@@ -155,7 +162,8 @@ function createMinimalRouter(overrides?: {
         _frame: unknown,
         submit?: unknown,
       ) => {
-        typeCalls.push({ selector, value, submit })
+        typeCalls.push({ tabId: _tabId, selector, value, submit })
+        if (overrides?.typeIntoSelector) return overrides.typeIntoSelector(_tabId, selector)
         return { found: true, selector, typed: true, ...(submit ? { submitted: true } : {}) }
       },
       hoverElement: async () => undefined,
@@ -174,7 +182,12 @@ function createMinimalRouter(overrides?: {
       navigateBack: async () => undefined,
       navigateForward: async () => undefined,
       reloadPage: async () => undefined,
-      switchToFrame: async () => undefined,
+      switchToFrame: async (tabId: number, selector: string) => {
+        if (['top', 'main', 'default'].includes(selector))
+          state.targeting.selectedFrames.delete(tabId)
+        else state.targeting.selectedFrames.set(tabId, selector)
+        return { found: true }
+      },
       checkIsState: async () => undefined,
       getAttribute: async () => ({ value: undefined }),
     } as never,
@@ -303,7 +316,10 @@ function createMinimalRouter(overrides?: {
       }),
       unrouteRequest: async () => undefined,
       listRoutes: () => ({ routes: [{ id: 'route_1', pattern: '**/api/*', abort: true }] }),
-      listRequests: () => ({}),
+      listRequests: (args: Record<string, unknown>) => {
+        listRequestsCalls.push(args)
+        return {}
+      },
       getRequestDetail: overrides?.getRequestDetail ?? (() => ({})),
       startHar: async () => undefined,
       stopHar: () => undefined,
@@ -348,6 +364,8 @@ function createMinimalRouter(overrides?: {
     waitTextCalls,
     typeCalls,
     cookieGetCalls,
+    clickCalls,
+    listRequestsCalls,
     searchCalls,
     downloadsCalls,
   }
@@ -1100,8 +1118,9 @@ describe('command router network/session extensions', () => {
       args: { action: 'list', domain: 'example.com' },
     })
 
+    // 未显式指定 tab 时命令已固定到回落的 tab 1（getTargetTab 的兜底选择结果）
     expect(cookieGetCalls).toEqual([
-      { tabId: undefined, filters: { domain: 'example.com', path: undefined } },
+      { tabId: 1, filters: { domain: 'example.com', path: undefined } },
     ])
   })
 
@@ -1310,7 +1329,7 @@ describe('command router playwright parity commands', () => {
       args: { selector: '#q', value: 'hello', submit: true },
     })
 
-    expect(typeCalls).toEqual([{ selector: '#q', value: 'hello', submit: true }])
+    expect(typeCalls).toEqual([{ tabId: 1, selector: '#q', value: 'hello', submit: true }])
     expect(result).toMatchObject({ typed: true, submitted: true })
   })
 
@@ -1525,6 +1544,62 @@ describe('command router meta context', () => {
     })
   })
 
+  // 基线旧竞态：snapshot 已执行，但 meta 的 tab lookup 尚未返回时后继 frame 切换。
+  for (const explicitFrame of [undefined, '#explicit', 'top']) {
+    test(`snapshot metadata stays with its executed frame during a gated tab lookup (${explicitFrame})`, async () => {
+      let releaseMeta!: () => void
+      let enteredMeta!: () => void
+      let enteredFollower!: () => void
+      const metaGate = new Promise<void>((resolve) => {
+        releaseMeta = resolve
+      })
+      const metaEntered = new Promise<void>((resolve) => {
+        enteredMeta = resolve
+      })
+      const followerEntered = new Promise<void>((resolve) => {
+        enteredFollower = resolve
+      })
+      let gateNextLookup = false
+      let metadataWaiting = false
+      const { router, state } = createMinimalRouter({
+        getTargetTab: async () => {
+          if (gateNextLookup) {
+            gateNextLookup = false
+            metadataWaiting = true
+            enteredMeta()
+            await metaGate
+          } else if (metadataWaiting) enteredFollower()
+          return { id: 1 }
+        },
+        snapshotTab: async (_tab, frame) => {
+          const executedFrame =
+            frame === 'top' ? null : frame || state.targeting.selectedFrames.get(1) || null
+          gateNextLookup = true
+          return { executedFrame }
+        },
+      })
+      state.targeting.selectedFrames.set(1, '#frameA')
+      const snapshot = router.handleCommand({
+        command: 'snapshot',
+        args: { tabId: 1, ...(explicitFrame ? { frame: explicitFrame } : {}) },
+      })
+      await metaEntered
+      const follower = router.handleCommand({ command: 'frame', args: { selector: '#frameB' } })
+      await followerEntered
+      // 给后继命令完整的调度机会；它应停留在同 tab 队列，不能越过 metadata。
+      await Bun.sleep(5)
+      expect(state.targeting.selectedFrames.get(1)).toBe('#frameA')
+      releaseMeta()
+      const result = await snapshot
+      const expected = explicitFrame === 'top' ? null : explicitFrame || '#frameA'
+      expect(result).toMatchObject({ executedFrame: expected, meta: { frame: expected } })
+      expect(await follower).toMatchObject({ meta: { frame: '#frameB' } })
+      expect(
+        await router.handleCommand({ command: 'frame', args: { tabId: 1, selector: 'top' } }),
+      ).toMatchObject({ meta: { frame: null } })
+    })
+  }
+
   test('resolves effective frame selector into meta', async () => {
     const { router } = createMinimalRouter()
 
@@ -1631,6 +1706,7 @@ describe('command router console/errors tab isolation', () => {
 
     const result = await router.handleCommand({ command: 'console' })
 
+    // 数据查询的过滤口径独立于页面操作目标：未解析出目标时仍是全局查询
     expect(result).toEqual({
       messages: [
         { type: 'log', text: 'from tab 1', timestamp: 1, tabId: 1 },
@@ -1640,6 +1716,50 @@ describe('command router console/errors tab isolation', () => {
       pagination: singlePageInfo(3),
       meta: fallbackTabMeta(),
     })
+  })
+
+  test('console clear empties every tab buffer when no tab target is resolved', async () => {
+    const { router, state } = createMinimalRouter()
+    state.session.consoleMessages.push(
+      { type: 'log', text: 'tab1 msg', timestamp: 1, tabId: 1 },
+      { type: 'log', text: 'tab2 msg', timestamp: 2, tabId: 2 },
+      { type: 'log', text: 'no tab msg', timestamp: 3, tabId: null },
+    )
+
+    const result = await router.handleCommand({ command: 'console', args: { action: 'clear' } })
+
+    expect(result).toMatchObject({ cleared: 3 })
+    expect(state.session.consoleMessages).toEqual([])
+  })
+
+  test('console clear only drops the target tab buffer when a tab resolves', async () => {
+    const { router, state } = createMinimalRouter()
+    state.session.consoleMessages.push(
+      { type: 'log', text: 'tab1 msg', timestamp: 1, tabId: 1 },
+      { type: 'log', text: 'tab2 msg', timestamp: 2, tabId: 2 },
+    )
+
+    const result = await router.handleCommand({
+      command: 'console',
+      args: { action: 'clear', tabId: 2 },
+    })
+
+    expect(result).toMatchObject({ cleared: 1 })
+    expect(
+      state.session.consoleMessages.map((message) => (message as { text: string }).text),
+    ).toEqual(['tab1 msg'])
+  })
+
+  test('network requests keeps the global scope without a tab target and filters across tabs with one', async () => {
+    const { router, state, listRequestsCalls } = createMinimalRouter()
+    state.targeting.targetTabId = null
+
+    await router.handleCommand({ command: 'network', args: { action: 'requests' } })
+    await router.handleCommand({ command: 'network', args: { action: 'requests', tabId: 2 } })
+
+    // 未解析出目标时不注入 tabId 过滤（全局），显式指定时按该 tab 过滤
+    expect(listRequestsCalls[0]).not.toHaveProperty('tabId')
+    expect(listRequestsCalls[1]).toMatchObject({ tabId: 2 })
   })
 
   test('console filters messages by explicit tabId', async () => {
@@ -2193,5 +2313,204 @@ describe('stale tab handle errors', () => {
       code: 'STALE_TAB_HANDLE',
       suggestedAction: 'Run tab list to see open tabs and refresh handles.',
     })
+  })
+})
+
+describe('command target pinning', () => {
+  test('applies a handle target to the page action and to meta', async () => {
+    // 生产环境 getTargetTab 对无法解析的目标回落到当前 targetTabId，
+    // 这里用同样的回落规则暴露"handle 只进 meta、页面动作仍打当前 tab"的缺陷
+    const { router, state, clickCalls } = createMinimalRouter({
+      getTargetTab: async (tabId?: unknown) => ({
+        id: typeof tabId === 'number' ? tabId : 1,
+      }),
+    })
+    state.targeting.targetTabId = 1
+    // 生产环境 getOrCreateTabHandle 同时维护两个方向的映射
+    state.targeting.tabHandles.set(2, 't2')
+    state.targeting.tabIdsByHandle.set('t2', 2)
+
+    const result = await router.handleCommand({
+      command: 'click',
+      args: { handle: 't2', selector: '#ok' },
+    })
+
+    expect(clickCalls).toEqual([{ tabId: 2, selector: '#ok' }])
+    expect(result).toMatchObject({
+      found: true,
+      selector: '#ok',
+      meta: {
+        tabId: 2,
+        tabHandle: 't2',
+        target: { tabId: 2, handle: 't2', explicit: true },
+      },
+    })
+  })
+
+  test('keeps the pinned tab when the target tab changes while the command is queued', async () => {
+    let releaseStuck!: () => void
+    const { router, state, snapshotCalls } = createMinimalRouter({
+      getTargetTab: async (tabId?: unknown) => ({ id: typeof tabId === 'number' ? tabId : 1 }),
+      navigateTo: async (tabId: unknown, url: string) => {
+        if (url === 'https://stuck') {
+          await new Promise<void>((resolve) => {
+            releaseStuck = resolve
+          })
+        }
+        return { navigated: true, tabId, url }
+      },
+    })
+    state.targeting.targetTabId = 1
+
+    const stuck = router
+      .handleCommand({ command: 'goto', args: { url: 'https://stuck' } })
+      .catch(() => undefined)
+    await Bun.sleep(5)
+    // 无显式目标的命令按入队时的 targetTabId=1 排队
+    const queued = router.handleCommand({ command: 'snapshot' })
+    await Bun.sleep(5)
+
+    // 生产环境执行过 tab 2 的命令后 targetTabId 会变成 2（getTargetTab 会 rememberTargetTab）
+    await router.handleCommand({
+      command: 'snapshot',
+      args: { tabId: 2 },
+    })
+    state.targeting.targetTabId = 2
+    releaseStuck()
+
+    const queuedResult = (await queued) as { meta: Record<string, unknown> }
+    await stuck
+    // 最后一条是无显式目标、排队等待的那次 snapshot
+    expect(snapshotCalls.at(-1)?.tabId).toBe(1)
+    expect(queuedResult.meta.tabId).toBe(1)
+  })
+
+  test('reports a stale handle instead of silently acting on the current tab', async () => {
+    const { router, state, clickCalls } = createMinimalRouter({
+      getTargetTab: async (tabId?: unknown) => {
+        if (typeof tabId === 'number') return { id: tabId }
+        throw createStaleTabHandleError(tabId as never)
+      },
+    })
+    state.targeting.targetTabId = 1
+
+    await expect(
+      router.handleCommand({ command: 'click', args: { handle: 't99', selector: '#ok' } }),
+    ).rejects.toMatchObject({ code: 'STALE_TAB_HANDLE' })
+    expect(clickCalls).toEqual([])
+  })
+
+  test('pins each batch step when the step starts instead of pinning the whole batch', async () => {
+    // page-input 内部在 focus 与 insert/Enter 之间会重新解析目标；
+    // 可变变量模拟 step 执行期间另一条命令把 target 改成了 tab 2
+    let currentTargetTabId: number | null = 1
+    const resolvedTargets: Array<{ atFocus: unknown; atInsert: unknown }> = []
+    const { router } = createMinimalRouter({
+      typeIntoSelector: async (tabId: unknown) => {
+        const atFocus = tabId ?? currentTargetTabId
+        currentTargetTabId = 2
+        resolvedTargets.push({ atFocus, atInsert: tabId ?? currentTargetTabId })
+        return { found: true, selector: '#q', typed: true }
+      },
+    })
+
+    await router.handleCommand({
+      command: 'batch',
+      args: { steps: [{ command: 'type', args: { selector: '#q', value: 'hi', submit: true } }] },
+    })
+
+    // step 开始时固定为 tab 1：focus 与后续输入/Enter 都留在 tab 1
+    expect(resolvedTargets).toEqual([{ atFocus: 1, atInsert: 1 }])
+  })
+
+  test('lets a batch step that follows tab.select act on the newly selected tab', async () => {
+    const originalChrome = globalThis.chrome
+    Object.defineProperty(globalThis, 'chrome', {
+      configurable: true,
+      enumerable: true,
+      writable: true,
+      value: {
+        runtime: { lastError: undefined },
+        tabs: {
+          update: (_tabId: number, _props: unknown, callback: (tab: unknown) => void) => {
+            callback({ id: 2, windowId: 1 })
+          },
+        },
+        windows: {
+          update: (_windowId: number, _info: unknown, callback: (window: unknown) => void) => {
+            callback({ id: 1 })
+          },
+        },
+      },
+    })
+
+    try {
+      // 未指定目标时按当前 targetTabId 回落，模拟生产环境 loadTargetTab 的解析顺序
+      const harness = createMinimalRouter({
+        getTargetTab: async (tabId?: unknown) => ({
+          id:
+            typeof tabId === 'number'
+              ? tabId
+              : tabId === 't2'
+                ? 2
+                : (harness.state.targeting.targetTabId ?? 1),
+        }),
+      })
+      const { router, typeCalls } = harness
+      harness.state.targeting.targetTabId = 1
+      harness.state.targeting.tabHandles.set(2, 't2')
+      harness.state.targeting.tabIdsByHandle.set('t2', 2)
+
+      await router.handleCommand({
+        command: 'batch',
+        args: {
+          steps: [
+            { command: 'tab.select', args: { handle: 't2' } },
+            { command: 'type', args: { selector: '#q', value: 'hi' } },
+          ],
+        },
+      })
+
+      // 固定发生在每个 step 自己的执行前，因此后续 step 用的是 tab.select 之后的 target
+      expect(typeCalls).toEqual([{ tabId: 2, selector: '#q', value: 'hi', submit: false }])
+    } finally {
+      Object.defineProperty(globalThis, 'chrome', {
+        configurable: true,
+        enumerable: true,
+        writable: true,
+        value: originalChrome,
+      })
+    }
+  })
+
+  test('re-checks the dialog on the fixed tab right before a queued command runs', async () => {
+    let releaseStuck!: () => void
+    const { router, state, clickCalls } = createMinimalRouter({
+      getTargetTab: async (tabId?: unknown) => ({ id: typeof tabId === 'number' ? tabId : 1 }),
+      navigateTo: async (tabId: unknown, url: string) => {
+        if (url === 'https://stuck') {
+          await new Promise<void>((resolve) => {
+            releaseStuck = resolve
+          })
+        }
+        return { navigated: true, tabId, url }
+      },
+    })
+    state.targeting.targetTabId = 1
+
+    const stuck = router
+      .handleCommand({ command: 'goto', args: { url: 'https://stuck' } })
+      .catch(() => undefined)
+    await Bun.sleep(5)
+    const queued = router.handleCommand({ command: 'click', args: { selector: '#ok' } })
+    await Bun.sleep(5)
+
+    // 入队时没有对话框，排队期间页面弹出 confirm
+    state.session.dialogs.set(1, openConfirmDialog(1))
+    releaseStuck()
+
+    await expect(queued).rejects.toMatchObject({ code: 'MODAL_OPEN' })
+    await stuck
+    expect(clickCalls).toEqual([])
   })
 })

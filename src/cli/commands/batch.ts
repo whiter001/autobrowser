@@ -1,3 +1,4 @@
+import { MAX_BATCH_DEPTH } from '../../core/command-budget.js'
 import { commandSupportsFrameTarget, commandSupportsTabTarget } from '../../core/command-spec.js'
 import { isRecord } from '../client.js'
 import { helpRequested, parseOrWriteError } from './shared.js'
@@ -47,10 +48,20 @@ interface BatchInput {
   options: BatchOptions
 }
 
-function normalizeBatchStepForDispatch(step: BatchStep, context: CommandContext): BatchStep {
+function normalizeBatchStepForDispatch(
+  step: BatchStep,
+  context: CommandContext,
+  depth = 0,
+): BatchStep {
   const args: Record<string, unknown> = { ...step.args }
 
-  if (commandSupportsTabTarget(step.command) && args.tabId === undefined && context.flags.tab) {
+  // 步骤显式给了 handle 时，全局 --tab 不能覆盖它；否则 handle 与 tabId 会同时发出去。
+  if (
+    args.handle === undefined &&
+    commandSupportsTabTarget(step.command) &&
+    args.tabId === undefined &&
+    context.flags.tab
+  ) {
     args.tabId = context.flags.tab
   }
 
@@ -58,10 +69,55 @@ function normalizeBatchStepForDispatch(step: BatchStep, context: CommandContext)
     args.frame = context.flags.frame
   }
 
+  // 递归归一化嵌套 batch，让全局目标同样作用到子步骤；深度上限与 command-budget 对齐，
+  // 更深的结构不再展开，交给 requestCommand 的参数校验报错。
+  if (step.command === 'batch' && Array.isArray(args.steps) && depth < MAX_BATCH_DEPTH) {
+    args.steps = args.steps.map((nested) => normalizeNestedBatchStep(nested, context, depth + 1))
+  }
+
   return {
     ...step,
     args,
   }
+}
+
+function normalizeNestedBatchStep(
+  nested: unknown,
+  context: CommandContext,
+  depth: number,
+): unknown {
+  // 嵌套步骤可能仍是字符串简写，展开后同样要注入全局目标
+  if (typeof nested === 'string') {
+    const command = nested.trim()
+    return command
+      ? normalizeBatchStepForDispatch({ command, args: {}, label: null }, context, depth)
+      : nested
+  }
+
+  if (!isRecord(nested) || typeof nested.command !== 'string') {
+    return nested
+  }
+
+  const command = nested.command.trim()
+  if (!command) {
+    return nested
+  }
+
+  // args 非法时原样透传，避免把校验错误改写成空 args
+  const args = nested.args === undefined ? {} : nested.args
+  if (args === null || Array.isArray(args) || typeof args !== 'object') {
+    return { ...nested, command }
+  }
+
+  return normalizeBatchStepForDispatch(
+    {
+      ...(nested as unknown as BatchStep),
+      command,
+      args: args as Record<string, unknown>,
+    },
+    context,
+    depth,
+  )
 }
 
 function normalizeBatchWhen(value: unknown, index: number): BatchStepWhen {

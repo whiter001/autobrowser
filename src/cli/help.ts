@@ -24,7 +24,7 @@ function helpNode(
 
 const HELP_ROOT = helpNode(
   'autobrowser',
-  'Browser automation CLI for controlling Chrome/Edge through a relay server and extension. Request budget defaults to 30s; explicit eval/navigation/click timeoutMs or wait timeout/ms adds 5s transport allowance (at least 30s). Batch combines step/retry/delay budgets; maximum 30 minutes including allowance. Sent commands with unknown outcomes are not automatically replayed: inspect status, command list and page state before retrying.',
+  'Browser automation CLI for controlling Chrome/Edge through a relay server and extension. Request budget defaults to 30s; explicit eval/navigation/click timeoutMs or wait timeout/ms adds 5s transport allowance (at least 30s). Batch combines step/retry/delay budgets; maximum 30 minutes including allowance. Feed uses scroll count (capped at 40) * pauseMs + 60s execution allowance + 5s transport allowance, at least the default budget; budgets over 30 minutes are rejected. Sent commands with unknown outcomes are not automatically replayed: inspect status, command list and page state before retrying.',
   'autobrowser [command] [options]',
   [
     '--json',
@@ -420,7 +420,11 @@ const HELP_ROOT = helpNode(
       undefined,
       [
         helpNode('read', 'Read the clipboard.', 'autobrowser clipboard read'),
-        helpNode('write', 'Write to the clipboard.', 'autobrowser clipboard write [text]'),
+        helpNode(
+          'write',
+          'Write to the clipboard; an explicit empty string is valid.',
+          'autobrowser clipboard write <text>',
+        ),
       ],
     ),
     helpNode('state', 'Save or load browser state.', 'autobrowser state <save|load>', undefined, [

@@ -84,9 +84,15 @@ const handleCookies = createActionCommand({
       return 0
     }
 
+    if (helpRequested(rest[0], context, ['cookies', 'set'])) {
+      return 0
+    }
     const [name, value, domain] = rest
-    if (!name || !value) {
+    if (!name) {
       return context.writeHelp(['cookies', 'set'])
+    }
+    if (value === undefined) {
+      return writeCommandError('missing value for cookies set')
     }
 
     await requestAndWrite(context, 'cookies', {
@@ -138,9 +144,15 @@ const handleStorage = createActionCommand({
       return 0
     }
 
+    if (helpRequested(args[0], context, ['storage', 'set'])) {
+      return 0
+    }
     const [key, value] = args
-    if (!key || value === undefined) {
+    if (!key) {
       return context.writeHelp(['storage', 'set'])
+    }
+    if (value === undefined) {
+      return writeCommandError('missing value for storage set')
     }
 
     await requestAndWrite(context, 'storage', {
@@ -265,6 +277,14 @@ const handleClipboard = createActionCommand({
   helpPath: ['clipboard'],
   allowed: CLIPBOARD_ACTIONS,
   handle: async (rest, context, action) => {
+    if (action === 'write') {
+      if (helpRequested(rest[0], context, ['clipboard', 'write'])) {
+        return 0
+      }
+      if (rest.length === 0) {
+        return writeCommandError('missing text for clipboard write')
+      }
+    }
     await requestAndWrite(context, 'clipboard', {
       action,
       ...(action === 'write' ? { text: rest.join(' ') } : {}),

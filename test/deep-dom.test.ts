@@ -115,6 +115,28 @@ describe('deep dom traversal helpers', () => {
     ])
   })
 
+  test('repeated ids across shadow roots are all traversed and stay per-root distinguishable', () => {
+    // 影子树允许重复 id，遍历必须把各 root 的同名节点都带出来，名称索引才能按 tree scope 分桶。
+    const saveLabel: MockNode = { tagName: 'LABEL', id: 'action' }
+    const saveHost: MockNode = {
+      tagName: 'DIV',
+      id: 'save-host',
+      shadowRoot: new MockRoot([saveLabel]),
+    }
+    const deleteLabel: MockNode = { tagName: 'LABEL', id: 'action' }
+    const deleteHost: MockNode = {
+      tagName: 'DIV',
+      id: 'delete-host',
+      shadowRoot: new MockRoot([deleteLabel]),
+    }
+    const root = new MockRoot([saveHost, deleteHost])
+
+    expect(deepCollectElements(root)).toEqual([saveHost, saveLabel, deleteHost, deleteLabel])
+    expect(deepCollectElements(saveHost.shadowRoot!)).toEqual([saveLabel])
+    expect(deepCollectElements(deleteHost.shadowRoot!)).toEqual([deleteLabel])
+    expect(deepQuerySelectorAll(root, 'label[for]')).toEqual([saveLabel, deleteLabel])
+  })
+
   test('respects the maximum shadow traversal depth', () => {
     const nestedShadowButton: MockNode = { tagName: 'BUTTON', id: 'nested-shadow-button' }
     const nestedHost: MockNode = {

@@ -5,6 +5,14 @@ export const MAX_BATCH_DEPTH = 16
 const MAX_BATCH_NODES = 10_000
 const MAX_BATCH_RETRIES = 1_000
 
+// 与 extension/background/page-observe.ts 的 collectFeed 默认值/上限对齐，
+// 否则 relay 会在扩展仍在滚动采集时提前取消命令。
+export const FEED_DEFAULT_MAX_SCROLLS = 20
+export const FEED_MAX_SCROLLS = 40
+export const FEED_DEFAULT_PAUSE_MS = 900
+/** 滚动之外的页内解析余量，对齐扩展 withFrameSelectorOptions 的 +60s */
+export const FEED_EXECUTION_ALLOWANCE_MS = 60_000
+
 function invalidBudget(command: string, reason: string): never {
   throw Object.assign(new Error(`invalid command arguments for ${command}: ${reason}`), {
     code: 'INVALID_COMMAND_ARGS',
@@ -90,6 +98,20 @@ export function getCommandRequestBudgetMs(
       const timeout = duration('timeout')
       const ms = duration('ms')
       explicit = ms !== undefined && ms > 0 ? ms : timeout
+    } else if (name === 'feed') {
+      // 先按 collectFeed 归一化，时间上限只约束最终预算，不约束计数。
+      const count = (key: string, fallback: number): number => {
+        const value = input[key] ?? fallback
+        if (typeof value !== 'number' || !Number.isFinite(value)) {
+          invalidBudget(name, `${key} must be a finite number`)
+        }
+        if (value < 0) invalidBudget(name, `${key} must be a non-negative number`)
+        return Math.floor(value)
+      }
+      const maxScrolls = Math.min(FEED_MAX_SCROLLS, count('maxScrolls', FEED_DEFAULT_MAX_SCROLLS))
+      const pauseMs = count('pauseMs', FEED_DEFAULT_PAUSE_MS)
+      count('stallRounds', 3)
+      explicit = maxScrolls * pauseMs + FEED_EXECUTION_ALLOWANCE_MS
     }
     return explicit === undefined
       ? defaultTimeoutMs

@@ -44,6 +44,17 @@ function resolveTabHostname(tabUrl: string | undefined): string {
   }
 }
 
+/** tab URL 能否作为 cookie 的作用域来源：只有 HTTP(S) 页面能安全推出 host/path */
+function resolveCookieScopeUrl(tabUrl: string | undefined): URL | null {
+  try {
+    const parsed = new URL(tabUrl || '')
+    return parsed.protocol === 'http:' || parsed.protocol === 'https:' ? parsed : null
+  } catch {
+    // chrome://、about:blank 等没有可用的 cookie 作用域
+    return null
+  }
+}
+
 function cookieMatchesHostname(cookieDomain: string, hostname: string): boolean {
   // cookie 的 domain 可能带前导点（如 .example.com），归一化后按域名后缀匹配父域/子域
   const normalizedDomain = String(cookieDomain || '')
@@ -177,12 +188,32 @@ export function createSessionDomain({
 
   async function cookiesSet(tabId: TabInput, name: string, value: string, domain?: string) {
     const tab = await getTargetTab(tabId)
-    const cookie: { name: string; value: string; domain?: string } = { name, value }
+    // 未显式给 domain 时使用 tab 的 HTTP(S) URL，
+    // 让协议推导 cookie 作用域，避免无作用域设置失败
+    const scope = resolveCookieScopeUrl(tab.url)
+    if (!domain && !scope) {
+      throw new Error(
+        `cannot set cookie ${name} without domain: tab url ${tab.url || '(unknown)'} is not an HTTP(S) page`,
+      )
+    }
+
+    const cookie: { name: string; value: string; domain?: string; url?: string } = { name, value }
     if (domain) {
       cookie.domain = domain
+    } else {
+      cookie.url = scope!.href
     }
-    await sendDebuggerCommand(tab.id, 'Network.setCookie', cookie)
-    return { set: true, name, value, domain }
+
+    const result = await sendDebuggerCommand<{ success?: boolean }>(
+      tab.id,
+      'Network.setCookie',
+      cookie,
+    )
+    // 老协议不返回 success 字段，只能把显式 false 当失败
+    if (result?.success === false) {
+      throw new Error(`cannot set cookie ${name}: Network.setCookie returned success:false`)
+    }
+    return { set: true, name, value, domain: domain || scope!.hostname }
   }
 
   async function cookiesClear(tabId: TabInput) {

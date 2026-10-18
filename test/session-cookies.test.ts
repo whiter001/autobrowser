@@ -131,6 +131,82 @@ describe('session cookiesGet filters', () => {
   })
 })
 
+function createCookiesSetHarness(tabUrl: string, setCookieResult?: Record<string, unknown>) {
+  const debuggerCalls: DebuggerCall[] = []
+  const session = createSessionDomain({
+    state: {
+      session: { emulation: new Map<number, Record<string, unknown>>() },
+    } as unknown as ExtensionState,
+    getTargetTab: async () => ({ id: 7, url: tabUrl }) as TabWithId,
+    evaluateInTabContext: async () => {
+      throw new Error('not used in this test')
+    },
+    sendDebuggerCommand: async <TResult>(
+      tabId: number,
+      method: string,
+      params?: Record<string, unknown>,
+    ): Promise<TResult> => {
+      debuggerCalls.push({ tabId, method, params })
+      if (method === 'Network.setCookie') return setCookieResult as TResult
+      return {} as TResult
+    },
+    storageLocalGet: async () => ({}) as never,
+    storageLocalSet: async () => {},
+  })
+
+  return { session, debuggerCalls }
+}
+
+describe('session cookiesSet', () => {
+  test('未指定 domain 时用当前 tab 的 HTTP(S) URL 作为 cookie 作用域', async () => {
+    const { session, debuggerCalls } = createCookiesSetHarness('https://app.example.com/app?x=1')
+
+    const result = (await session.cookiesSet(7, 'auth', 'secret')) as {
+      set: boolean
+      name: string
+      value: string
+      domain: string
+    }
+
+    const call = debuggerCalls.find((item) => item.method === 'Network.setCookie')
+    // CDP 的 setCookie 必须给 url 或 domain+path，否则报 “Either url or domain and path must be provided”
+    expect(call?.params).toEqual({
+      name: 'auth',
+      value: 'secret',
+      url: 'https://app.example.com/app?x=1',
+    })
+    expect(result).toEqual({ set: true, name: 'auth', value: 'secret', domain: 'app.example.com' })
+  })
+
+  test('显式 domain 原样保留，且不与 url 混用', async () => {
+    const { session, debuggerCalls } = createCookiesSetHarness('https://app.example.com/app')
+
+    await session.cookiesSet(7, 'auth', 'secret', '.example.com')
+
+    const call = debuggerCalls.find((item) => item.method === 'Network.setCookie')
+    expect(call?.params).toEqual({ name: 'auth', value: 'secret', domain: '.example.com' })
+  })
+
+  test('tab URL 不是 HTTP(S) 页面且没有 domain 时明确报错，不静默丢 cookie', async () => {
+    const { session, debuggerCalls } = createCookiesSetHarness('about:blank')
+
+    await expect(session.cookiesSet(7, 'auth', 'secret')).rejects.toThrow('about:blank')
+    expect(debuggerCalls.some((item) => item.method === 'Network.setCookie')).toBeFalse()
+  })
+
+  test('Network.setCookie 返回 success:false 时报错并回显实际 cookie', async () => {
+    const { session } = createCookiesSetHarness('https://app.example.com/', { success: false })
+
+    await expect(session.cookiesSet(7, 'auth', 'secret')).rejects.toThrow('success:false')
+  })
+
+  test('新协议未返回 success 字段时按成功处理', async () => {
+    const { session } = createCookiesSetHarness('https://app.example.com/', {})
+
+    expect(await session.cookiesSet(7, 'auth', 'secret')).toMatchObject({ set: true })
+  })
+})
+
 interface SessionEvalHarnessOptions {
   tabUrl?: string
 }

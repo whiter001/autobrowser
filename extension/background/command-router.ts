@@ -96,27 +96,32 @@ interface PageInputDomain {
     frameSelector: FrameSelector,
     timeoutMs?: number,
   ) => Promise<unknown>
+  // 多步骤交互动作的末位可选参数是命令执行上下文，供动作内部逐段检查取消
   clickSelector: (
     tabId: TabInput,
     selector: string,
     frameSelector: FrameSelector,
     timeoutMs?: number,
+    context?: CommandExecutionContext,
   ) => Promise<unknown>
   doubleClickSelector: (
     tabId: TabInput,
     selector: string,
     frameSelector: FrameSelector,
+    context?: CommandExecutionContext,
   ) => Promise<unknown>
   fillSelector: (
     tabId: TabInput,
     selector: string,
     value: string,
     frameSelector: FrameSelector,
+    context?: CommandExecutionContext,
   ) => Promise<unknown>
   fillFields: (
     tabId: TabInput,
     fields: Array<{ selector: string; value: string }>,
     frameSelector: FrameSelector,
+    context?: CommandExecutionContext,
   ) => Promise<unknown>
   typeIntoSelector: (
     tabId: TabInput,
@@ -124,21 +129,32 @@ interface PageInputDomain {
     value: string,
     frameSelector: FrameSelector,
     submit?: boolean,
+    context?: CommandExecutionContext,
   ) => Promise<unknown>
   hoverElement: (
     tabId: TabInput,
     selector: string,
     frameSelector: FrameSelector,
+    context?: CommandExecutionContext,
   ) => Promise<unknown>
-  pressKey: (tabId: TabInput, key: string) => Promise<unknown>
-  insertTextSequentially: (tabId: TabInput, text: string) => Promise<unknown>
-  insertTextOnce: (tabId: TabInput, text: string) => Promise<unknown>
-  keyDownOnly: (tabId: TabInput, key: string) => Promise<unknown>
-  keyUpOnly: (tabId: TabInput, key: string) => Promise<unknown>
+  pressKey: (tabId: TabInput, key: string, context?: CommandExecutionContext) => Promise<unknown>
+  insertTextSequentially: (
+    tabId: TabInput,
+    text: string,
+    context?: CommandExecutionContext,
+  ) => Promise<unknown>
+  insertTextOnce: (
+    tabId: TabInput,
+    text: string,
+    context?: CommandExecutionContext,
+  ) => Promise<unknown>
+  keyDownOnly: (tabId: TabInput, key: string, context?: CommandExecutionContext) => Promise<unknown>
+  keyUpOnly: (tabId: TabInput, key: string, context?: CommandExecutionContext) => Promise<unknown>
   focusElement: (
     tabId: TabInput,
     selector: string,
     frameSelector: FrameSelector,
+    context?: CommandExecutionContext,
   ) => Promise<unknown>
   selectOption: (
     tabId: TabInput,
@@ -158,23 +174,27 @@ interface PageInputDomain {
     deltaX: number,
     deltaY: number,
     frameSelector: FrameSelector,
+    context?: CommandExecutionContext,
   ) => Promise<unknown>
   scrollIntoViewSelector: (
     tabId: TabInput,
     selector: string,
     frameSelector: FrameSelector,
+    context?: CommandExecutionContext,
   ) => Promise<unknown>
   dragElement: (
     tabId: TabInput,
     startSelector: string,
     endSelector: string,
     frameSelector: FrameSelector,
+    context?: CommandExecutionContext,
   ) => Promise<unknown>
   uploadFiles: (
     tabId: TabInput,
     selector: string,
     filePaths: string[],
     frameSelector: FrameSelector,
+    context?: CommandExecutionContext,
   ) => Promise<unknown>
   navigateBack: (tabId: TabInput) => Promise<unknown>
   navigateForward: (tabId: TabInput) => Promise<unknown>
@@ -511,6 +531,34 @@ export function createCommandRouter({
     return typeof tabId === 'number' ? `tab:${tabId}` : 'default'
   }
 
+  /** 执行前固定真实目标 tab id：排队等待期间 targetTabId 可能被别的命令改写，
+   *  再解析就会打到别的 tab 上。取不到返回 null，交由各域沿用原解析路径报错。 */
+  async function pinCommandTargetTabId(
+    command: string,
+    tabTarget: TabInput,
+  ): Promise<number | null> {
+    if (!commandSupportsTabTarget(command)) {
+      return null
+    }
+
+    const resolved = resolveTabInput(state, tabTarget)
+    if (typeof resolved === 'number') {
+      return resolved
+    }
+
+    // 显式但无法解析的 handle：保持原样传下去，由执行阶段抛 STALE_TAB_HANDLE
+    if (tabTarget != null && String(tabTarget).trim()) {
+      return null
+    }
+
+    try {
+      const tab = await getTargetTab(tabTarget)
+      return typeof tab?.id === 'number' ? tab.id : null
+    } catch {
+      return null
+    }
+  }
+
   function createDialogBlockedError(dialog: DialogState): ErrorWithCode {
     const error = new Error(
       `page has an open ${dialog.type} dialog: ${dialog.message || '(no message)'}`,
@@ -576,6 +624,7 @@ export function createCommandRouter({
     tabId: TabInput,
     args: CommandArgs,
     frameSelector: FrameSelector,
+    context?: CommandExecutionContext,
   ) {
     const action = readStringArg(args, 'action', 'locate').trim()
     // 提前校验 action，避免执行耗时的语义搜索后才发现参数非法。
@@ -599,6 +648,8 @@ export function createCommandRouter({
       ...(candidatesCount > 0 ? { candidates: candidatesCount } : {}),
     }
     const result = await pageObserve.findSemanticTarget(tabId, findOptions, frameSelector)
+    // 语义搜索可能耗时较久，取消后不再执行后续动作
+    context?.throwIfCancelled()
     // 候选模式只返回候选列表，不执行动作（参数校验已保证 candidates 只搭配 locate）
     if (findOptions.candidates && Array.isArray(result.candidates)) {
       return result
@@ -620,14 +671,18 @@ export function createCommandRouter({
     }
 
     if (action === 'click') {
-      return { ...result, action, result: await pageInput.clickSelector(tabId, ref, frameSelector) }
+      return {
+        ...result,
+        action,
+        result: await pageInput.clickSelector(tabId, ref, frameSelector, undefined, context),
+      }
     }
 
     if (action === 'fill') {
       return {
         ...result,
         action,
-        result: await pageInput.fillSelector(tabId, ref, actionValue, frameSelector),
+        result: await pageInput.fillSelector(tabId, ref, actionValue, frameSelector, context),
       }
     }
 
@@ -635,16 +690,31 @@ export function createCommandRouter({
       return {
         ...result,
         action,
-        result: await pageInput.typeIntoSelector(tabId, ref, actionValue, frameSelector),
+        result: await pageInput.typeIntoSelector(
+          tabId,
+          ref,
+          actionValue,
+          frameSelector,
+          undefined,
+          context,
+        ),
       }
     }
 
     if (action === 'hover') {
-      return { ...result, action, result: await pageInput.hoverElement(tabId, ref, frameSelector) }
+      return {
+        ...result,
+        action,
+        result: await pageInput.hoverElement(tabId, ref, frameSelector, context),
+      }
     }
 
     if (action === 'focus') {
-      return { ...result, action, result: await pageInput.focusElement(tabId, ref, frameSelector) }
+      return {
+        ...result,
+        action,
+        result: await pageInput.focusElement(tabId, ref, frameSelector, context),
+      }
     }
 
     if (action === 'check') {
@@ -1348,6 +1418,7 @@ export function createCommandRouter({
     args: CommandArgs,
     tabTarget: TabInput,
     frameSelector: FrameSelector,
+    options: { pinnedTabId: number | null; targetTabIdBeforeCommand: number | null },
   ): Promise<CommandMeta> {
     if (!commandSupportsTabTarget(command)) {
       return emptyCommandMeta()
@@ -1356,8 +1427,10 @@ export function createCommandRouter({
     // 命令是否显式指定了 tabId/handle；未指定时 getTargetTab 内部可能走了兜底选择
     const explicitTarget =
       readTabInputArg(args, 'tabId') !== undefined || readTabInputArg(args, 'handle') !== undefined
-    // getTargetTab 成功后会 rememberTargetTab，必须在解析前记住旧值才能判断是否发生过 fallback
-    const preCommandTargetTabId = state.targeting.targetTabId
+    // getTargetTab 会 rememberTargetTab；固定目标时它发生在命令执行之前，
+    // 再读只会看到固定后的值、fallback note 不再出现，故用执行前捕获的旧值
+    const preCommandTargetTabId =
+      options.pinnedTabId === null ? state.targeting.targetTabId : options.targetTabIdBeforeCommand
 
     let tab
     try {
@@ -1443,8 +1516,9 @@ export function createCommandRouter({
     context?.throwIfCancelled()
     validateCommandArgs(command, args)
 
-    const tabId = readTabInputArg(args, 'tabId')
+    const requestedTabId = readTabInputArg(args, 'tabId')
     const handle = readTabInputArg(args, 'handle')
+    const explicitTabTarget = handle || requestedTabId
     const frameSelector = readFrameSelectorArg(args, 'frame')
     const action = readStringArg(args, 'action')
     const url = readStringArg(args, 'url', 'about:blank')
@@ -1494,12 +1568,26 @@ export function createCommandRouter({
     const searchLimit = readNumberArg(args, 'limit', 20)
     const pageIdx = readNumberArg(args, 'pageIdx', 0)
     const pageSize = readNumberArg(args, 'pageSize', DEFAULT_PAGE_SIZE)
-    const tabTarget = handle || tabId
 
-    await assertNoOpenDialog(command, tabTarget)
+    // fallback note 与查询口径都要用固定之前的目标，取值时机不能晚于 pinCommandTargetTabId
+    const targetTabIdBeforeCommand = state.targeting.targetTabId
+    const queryTargetTabId = resolveEffectiveTargetTabId(explicitTabTarget)
+    const networkControl =
+      command === 'network' && action === 'har' && ['stop', 'status', 'recover'].includes(subaction)
+    // 每次执行前固定目标：batch 子步骤在自己的队列槽内就地执行，
+    // 按步骤固定才能让 tab.select/tab.new 之后的步骤走新的 target；控制命令会改写 target，不固定
+    const pinnedTabId =
+      CONTROL_COMMANDS.has(command) || networkControl
+        ? null
+        : await pinCommandTargetTabId(command, explicitTabTarget)
+    const tabId: TabInput = typeof pinnedTabId === 'number' ? pinnedTabId : explicitTabTarget
+
+    await assertNoOpenDialog(command, tabId)
 
     async function runCommand(): Promise<unknown> {
       context?.throwIfCancelled()
+      // 排队期间可能新弹出对话框，入队前那次检查不够，执行前要针对固定后的 tab 再查一次
+      await assertNoOpenDialog(command, tabId)
       switch (command) {
         case 'status':
           return {
@@ -1511,7 +1599,7 @@ export function createCommandRouter({
           const filter = readStringArg(args, 'filter').toLowerCase()
           if (args.active === true) tabs = tabs.filter((tab) => tab.active)
           if (args.currentWindow === true) {
-            const targetId = resolveEffectiveTargetTabId(tabTarget)
+            const targetId = queryTargetTabId
             const currentWindowId = tabs.find((tab) => tab.id === targetId)?.windowId
             if (typeof currentWindowId === 'number') {
               tabs = tabs.filter((tab) => tab.windowId === currentWindowId)
@@ -1526,7 +1614,7 @@ export function createCommandRouter({
           return { tabs: items, total: tabs.length, pagination }
         }
         case 'tab.select':
-          return await selectTab(tabTarget)
+          return await selectTab(explicitTabTarget)
         case 'tab.new': {
           const tab = await tabsCreate({
             url,
@@ -1539,7 +1627,7 @@ export function createCommandRouter({
           return { tab: toTabSummary(state, tab || {}) }
         }
         case 'tab.close':
-          return await closeTab(tabTarget)
+          return await closeTab(explicitTabTarget)
         case 'target': {
           if (action === 'show') {
             return { targetTabId: state.targeting.targetTabId }
@@ -1555,7 +1643,7 @@ export function createCommandRouter({
             return { target: activeTab || null }
           }
           if (action === 'set') {
-            return await selectTab(tabTarget)
+            return await selectTab(explicitTabTarget)
           }
           throw new Error(`unsupported target action: ${action}`)
         }
@@ -1572,7 +1660,8 @@ export function createCommandRouter({
             return { commandId, cancelled: commandQueue.cancel(commandId) }
           }
           if (action === 'reset') {
-            const key = readOptionalStringArg(args, 'queueKey') || resolveCommandQueueKey(tabTarget)
+            const key =
+              readOptionalStringArg(args, 'queueKey') || resolveCommandQueueKey(explicitTabTarget)
             return { queueKey: key, cancelled: commandQueue.reset(key) }
           }
           throw new Error(`unsupported command action: ${action}`)
@@ -1633,15 +1722,16 @@ export function createCommandRouter({
             selector,
             frameSelector,
             readNumberArg(args, 'timeoutMs', 10000),
+            context,
           )
         case 'dblclick':
-          return await pageInput.doubleClickSelector(tabId, selector, frameSelector)
+          return await pageInput.doubleClickSelector(tabId, selector, frameSelector, context)
         case 'fill':
-          return await pageInput.fillSelector(tabId, selector, value, frameSelector)
+          return await pageInput.fillSelector(tabId, selector, value, frameSelector, context)
         case 'fillform':
-          return await pageInput.fillFields(tabId, readFillFormFields(args), frameSelector)
+          return await pageInput.fillFields(tabId, readFillFormFields(args), frameSelector, context)
         case 'find':
-          return await handleFindCommand(tabId, args, frameSelector)
+          return await handleFindCommand(tabId, args, frameSelector, context)
         case 'type':
           return await pageInput.typeIntoSelector(
             tabId,
@@ -1649,27 +1739,28 @@ export function createCommandRouter({
             value,
             frameSelector,
             readBooleanArg(args, 'submit', false),
+            context,
           )
         case 'hover':
-          return await pageInput.hoverElement(tabId, selector, frameSelector)
+          return await pageInput.hoverElement(tabId, selector, frameSelector, context)
         case 'press':
-          return await pageInput.pressKey(tabId, key)
+          return await pageInput.pressKey(tabId, key, context)
         case 'keyboard':
           if (action === 'type') {
-            return await pageInput.insertTextSequentially(tabId, text)
+            return await pageInput.insertTextSequentially(tabId, text, context)
           }
           if (action === 'inserttext') {
-            return await pageInput.insertTextOnce(tabId, text)
+            return await pageInput.insertTextOnce(tabId, text, context)
           }
           if (action === 'keydown') {
-            return await pageInput.keyDownOnly(tabId, text)
+            return await pageInput.keyDownOnly(tabId, text, context)
           }
           if (action === 'keyup') {
-            return await pageInput.keyUpOnly(tabId, text)
+            return await pageInput.keyUpOnly(tabId, text, context)
           }
           throw new Error(`unsupported keyboard action: ${action}`)
         case 'focus':
-          return await pageInput.focusElement(tabId, selector, frameSelector)
+          return await pageInput.focusElement(tabId, selector, frameSelector, context)
         case 'select':
           return await pageInput.selectOption(tabId, selector, value, frameSelector)
         case 'check':
@@ -1677,13 +1768,20 @@ export function createCommandRouter({
         case 'uncheck':
           return await pageInput.checkElement(tabId, selector, false, frameSelector)
         case 'scroll':
-          return await pageInput.scrollElement(tabId, scrollSelector, deltaX, deltaY, frameSelector)
+          return await pageInput.scrollElement(
+            tabId,
+            scrollSelector,
+            deltaX,
+            deltaY,
+            frameSelector,
+            context,
+          )
         case 'scrollintoview':
-          return await pageInput.scrollIntoViewSelector(tabId, selector, frameSelector)
+          return await pageInput.scrollIntoViewSelector(tabId, selector, frameSelector, context)
         case 'drag':
-          return await pageInput.dragElement(tabId, start, end, frameSelector)
+          return await pageInput.dragElement(tabId, start, end, frameSelector, context)
         case 'upload':
-          return await pageInput.uploadFiles(tabId, selector, files, frameSelector)
+          return await pageInput.uploadFiles(tabId, selector, files, frameSelector, context)
         case 'back':
           return await pageInput.navigateBack(tabId)
         case 'forward':
@@ -1805,7 +1903,7 @@ export function createCommandRouter({
           throw new Error(`unsupported storage action: ${action}`)
         }
         case 'console': {
-          const targetTabId = resolveEffectiveTargetTabId(tabTarget)
+          const targetTabId = queryTargetTabId
           if (action === 'clear') {
             const before = state.session.consoleMessages.length
             state.session.consoleMessages = state.session.consoleMessages.filter(
@@ -1836,7 +1934,7 @@ export function createCommandRouter({
           return { messages: items, pagination }
         }
         case 'errors': {
-          const targetTabId = resolveEffectiveTargetTabId(tabTarget)
+          const targetTabId = queryTargetTabId
           if (action === 'clear') {
             const before = state.session.pageErrors.length
             state.session.pageErrors = state.session.pageErrors.filter(
@@ -1900,7 +1998,7 @@ export function createCommandRouter({
             return await network.unrouteRequest(tabId, readStringArg(args, 'url'))
           }
           if (action === 'requests') {
-            const targetTabId = resolveEffectiveTargetTabId(tabTarget)
+            const targetTabId = queryTargetTabId
             return network.listRequests({
               ...args,
               ...(args.allTabs === true || targetTabId === null ? {} : { tabId: targetTabId }),
@@ -1914,7 +2012,7 @@ export function createCommandRouter({
             })
           }
           if (action === 'request') {
-            return await network.getRequestDetail(requestId, resolveEffectiveTargetTabId(tabTarget))
+            return await network.getRequestDetail(requestId, queryTargetTabId)
           }
           if (action === 'har') {
             if (subaction === 'start') {
@@ -2003,28 +2101,44 @@ export function createCommandRouter({
       }
     }
 
-    // 按 tab 串行执行，避免同一 tab 的 chrome.debugger.sendCommand 并发冲突；
-    // batch 子步骤（skipQueue）在 batch 自己的队列槽内执行，重入队列会死锁
-    const networkControl =
-      command === 'network' && action === 'har' && ['stop', 'status', 'recover'].includes(subaction)
-    const result =
-      skipQueue || CONTROL_COMMANDS.has(command) || networkControl
-        ? await runCommand()
-        : await commandQueue.enqueue(
-            resolveCommandQueueKey(tabTarget),
-            async (queueContext) => {
-              context = queueContext
-              return await runCommand()
-            },
-            {
-              ...request,
-              deadlineAt:
-                request?.deadlineAt ??
-                new Date(Date.now() + getCommandRequestBudgetMs(command, args)).toISOString(),
-            },
-          )
-    const meta = await buildCommandMeta(command, args, tabTarget, frameSelector)
-    return attachCommandMeta(result, meta)
+    async function runWithMeta() {
+      // 在真正开始执行时捕获，而不是入队时捕获；前面的 frame 命令可能尚未执行。
+      // top 是显式哨兵，避免 meta 查询 tab 的 await 后重新读取 selectedFrames。
+      const executionFrame =
+        pinnedTabId === null
+          ? frameSelector
+          : resolveEffectiveFrameSelector(state, { id: pinnedTabId }, frameSelector) || 'top'
+      const result = await runCommand()
+      // frame 命令回显切换后的 frame；普通页面命令回显开始执行时的 frame。
+      const metaFrame =
+        command === 'frame' && pinnedTabId !== null
+          ? resolveEffectiveFrameSelector(state, { id: pinnedTabId }, null) || 'top'
+          : executionFrame
+      const meta = await buildCommandMeta(command, args, tabId, metaFrame, {
+        pinnedTabId,
+        targetTabIdBeforeCommand,
+      })
+      return attachCommandMeta(result, meta)
+    }
+
+    // metadata 也在队列槽内完成，不能让后继 frame 切换污染前一命令的响应。
+    // batch 子步骤（skipQueue）在 batch 自己的队列槽内执行，重入队列会死锁。
+    const runsInQueue = !skipQueue && !CONTROL_COMMANDS.has(command) && !networkControl
+    return runsInQueue
+      ? await commandQueue.enqueue(
+          resolveCommandQueueKey(tabId),
+          async (queueContext) => {
+            context = queueContext
+            return await runWithMeta()
+          },
+          {
+            ...request,
+            deadlineAt:
+              request?.deadlineAt ??
+              new Date(Date.now() + getCommandRequestBudgetMs(command, args)).toISOString(),
+          },
+        )
+      : await runWithMeta()
   }
 
   async function handleCommand(message: CommandMessage) {

@@ -425,6 +425,42 @@ suite('live browser smoke test', () => {
     await Bun.sleep(150)
   }
 
+  /** 打开第二个本地冒烟页 tab 并等它就绪；handle/targeting 用例的真实目标 tab */
+  async function openExtraTab(): Promise<{ handle: string; tabId: number }> {
+    const created = await checkedCommand<{ tab: { id?: number | null; handle?: string | null } }>(
+      'tab.new',
+      { url: pageUrl },
+    )
+    const handle = created.tab.handle || ''
+    expect(handle).toMatch(/^t\d+$/)
+    expect(typeof created.tab.id).toBe('number')
+    await checkedCommand('wait', { selector: '#increment', handle, timeout: 15_000 })
+    return { handle, tabId: created.tab.id as number }
+  }
+
+  /** 当前默认目标 tab 的 handle（冒烟页），用于区分新建的临时 tab */
+  async function smokeTabHandle(): Promise<string> {
+    const listed = await checkedCommand<{ tabs: Array<{ handle?: string | null; url?: string }> }>(
+      'tab.list',
+    )
+    const smoke = listed.tabs.find(
+      (tab) =>
+        String(tab.url || '').includes('live-smoke.html') &&
+        /^t\d+$/.test(String(tab.handle || '')),
+    )
+    expect(smoke?.handle).toBeTruthy()
+    return String(smoke!.handle)
+  }
+
+  /** 关闭临时 tab 并把默认目标切回冒烟页；无论断言在哪一步失败都要恢复 */
+  async function closeExtraTab(
+    extra: { handle: string } | null,
+    home: string | null,
+  ): Promise<void> {
+    if (extra) await command('tab.close', { handle: extra.handle })
+    if (home) await command('tab.select', { handle: home })
+  }
+
   async function logExtensionDiagnostics(): Promise<void> {
     if (!cdp) return
     try {
@@ -512,6 +548,37 @@ suite('live browser smoke test', () => {
           'cache-control': 'no-store',
         })
         response.end('synthetic redirect final body')
+        return
+      }
+      // 分开延迟响应头和尾部，真实 CDP timing 必须体现 wait/receive 两个阶段。
+      if (pathname === '/routed-probe-slow') {
+        setTimeout(() => {
+          response.writeHead(200, {
+            'content-type': 'text/plain; charset=utf-8',
+            'cache-control': 'no-store',
+          })
+          response.write('slow-')
+          setTimeout(() => response.end('probe-body'), 300)
+        }, 400)
+        return
+      }
+      if (pathname === '/download-probe') {
+        response.writeHead(200, {
+          'content-type': 'application/octet-stream',
+          'content-disposition': 'attachment; filename="live-probe.txt"',
+          'content-length': Buffer.byteLength(harBody),
+          'cache-control': 'no-store',
+        })
+        response.end(harBody)
+        return
+      }
+      // route 用例的真实回源响应：unroute 之后必须拿到这里的正文，而不是 mock 正文
+      if (pathname === '/routed-probe-a' || pathname === '/routed-probe-b') {
+        response.writeHead(200, {
+          'content-type': 'text/plain; charset=utf-8',
+          'cache-control': 'no-store',
+        })
+        response.end(`real-probe-body:${pathname.slice('/routed-probe-'.length)}`)
         return
       }
       response.writeHead(200, { 'content-type': 'text/html; charset=utf-8' })
@@ -1495,6 +1562,554 @@ suite('live browser smoke test', () => {
         `[live-smoke] 20000 divs + 100 controls, wall-clock ms: find=${JSON.stringify(findMs)}, snapshot=${JSON.stringify(snapshotMs)} (no baseline comparison)`,
       )
     } finally {
+      await loadSmokePage()
+    }
+  }, 60_000)
+
+  test('explicit handle different from the current target acts on and reports that tab', async () => {
+    interface CommandMeta {
+      tabHandle?: string | null
+      tabId?: number | null
+      frame?: string | null
+      url?: string | null
+      target?: { tabId?: number; handle?: string | null; explicit?: boolean; note?: string }
+    }
+    await loadSmokePage()
+    let home: string | null = null
+    let extra: { handle: string; tabId: number } | null = null
+    try {
+      home = await smokeTabHandle()
+      extra = await openExtraTab()
+      expect(extra.handle).not.toBe(home)
+      // tab.new 会把默认目标改成新 tab，先切回冒烟页，确保后续默认值与显式 handle 真的不同
+      await checkedCommand('tab.select', { handle: home })
+
+      const clickResponse = await command('click', { selector: '#increment', handle: extra.handle })
+      expect(clickResponse.error).toBeUndefined()
+      expect(clickResponse.ok).toBe(true)
+      const meta = (clickResponse.result as { meta?: CommandMeta }).meta
+      expect(meta).toMatchObject({
+        tabHandle: extra.handle,
+        tabId: extra.tabId,
+        frame: null,
+        url: pageUrl,
+      })
+      expect(meta?.target).toMatchObject({
+        tabId: extra.tabId,
+        handle: extra.handle,
+        explicit: true,
+      })
+      // 显式指定了 handle，不应出现“兜底到非活动 tab”的提示
+      expect(meta?.target?.note).toBeUndefined()
+
+      // 动作真的发生在显式 handle 的 tab 上，默认目标 tab 不受影响
+      expect(
+        await checkedCommand('eval', {
+          handle: extra.handle,
+          script: 'document.getElementById("counter").textContent',
+        }),
+      ).toBe('1')
+      expect(
+        await checkedCommand('eval', {
+          handle: home,
+          script: 'document.getElementById("counter").textContent',
+        }),
+      ).toBe('0')
+
+      const snapshotResponse = await command('snapshot', { handle: extra.handle })
+      expect(snapshotResponse.ok).toBe(true)
+      const snapshot = snapshotResponse.result as { url?: string; meta?: CommandMeta }
+      expect(snapshot.url).toBe(pageUrl)
+      expect(snapshot.meta?.tabHandle).toBe(extra.handle)
+      expect(snapshot.meta?.tabId).toBe(extra.tabId)
+
+      // 显式 handle 命中后默认目标跟随该 tab，与 meta 回显一致
+      expect(
+        await checkedCommand<{ targetTabId: number | null }>('target', { action: 'show' }),
+      ).toMatchObject({ targetTabId: extra.tabId })
+    } finally {
+      await closeExtraTab(extra, home)
+      await loadSmokePage()
+    }
+  }, 90_000)
+
+  test('queued default-target command keeps the tab pinned from enqueue time', async () => {
+    await loadSmokePage()
+    const signal = crypto.randomUUID()
+    let home: string | null = null
+    let extra: { handle: string; tabId: number } | null = null
+    let blocker: Promise<CommandResponse> | undefined
+    try {
+      home = await smokeTabHandle()
+      extra = await openExtraTab()
+      await checkedCommand('tab.select', { handle: home })
+
+      // 先用显式 handle 占住冒烟页的串行队列；signal 确认它已在 Chrome 中执行
+      blocker = command('eval', {
+        handle: home,
+        timeoutMs: 20_000,
+        script: `(async () => { await fetch('/batch-signal/${signal}'); await new Promise(resolve => setTimeout(resolve, 2500)); return 'blocker-done'; })()`,
+      })
+      await waitFor(
+        'the queue-blocking eval to start in Chrome',
+        () => batchSignals.has(signal),
+        10_000,
+      )
+
+      // 未显式指定目标：入队时默认目标就是冒烟页
+      const pinned = command('eval', {
+        script: 'window.pinProbe = "pinned-to-home"; "pinned-result"',
+      })
+      // 前置条件：这条命令确实在队列里等待，而不是立刻执行完
+      await waitFor(
+        'the pinned eval to wait behind the blocking eval',
+        async () => {
+          const listed = await checkedCommand<{ commands: Array<{ state?: string }> }>('command', {
+            action: 'list',
+          })
+          return listed.commands.some((entry) => entry.state === 'queued')
+        },
+        5_000,
+      )
+      // 排队等待期间改掉默认目标；已入队的命令不能漂移到新 tab
+      await checkedCommand('tab.select', { handle: extra.handle })
+      const pinnedResponse = await pinned
+      expect(pinnedResponse.error).toBeUndefined()
+      expect(pinnedResponse.ok).toBe(true)
+      expect(pinnedResponse.result).toBe('pinned-result')
+      expect(await blocker).toMatchObject({ ok: true })
+
+      expect(
+        await checkedCommand<string | null>('eval', {
+          handle: home,
+          script: 'window.pinProbe || null',
+        }),
+      ).toBe('pinned-to-home')
+      expect(
+        await checkedCommand<string | null>('eval', {
+          handle: extra.handle,
+          script: 'window.pinProbe || null',
+        }),
+      ).toBe(null)
+    } finally {
+      if (blocker) await blocker
+      batchSignals.delete(signal)
+      await closeExtraTab(extra, home)
+      await loadSmokePage()
+    }
+  }, 90_000)
+
+  test('fill, storage and cookies accept empty values and default cookie scope', async () => {
+    const cookieName = 'autobrowser_live_default_scope'
+    const storageKey = 'autobrowser-live-empty'
+    try {
+      await loadSmokePage()
+      await checkedCommand('fill', { selector: '#name-input', value: 'about-to-be-cleared' })
+      expect(await checkedCommand('fill', { selector: '#name-input', value: '' })).toMatchObject({
+        found: true,
+        selector: '#name-input',
+      })
+      expect(
+        await checkedCommand<string>('eval', {
+          script: 'document.getElementById("name-input").value',
+        }),
+      ).toBe('')
+
+      for (const sessionOnly of [false, true]) {
+        expect(
+          await checkedCommand('storage', {
+            action: 'set',
+            key: storageKey,
+            value: '',
+            session: sessionOnly,
+          }),
+        ).toMatchObject({ key: storageKey, value: '', set: true })
+        expect(
+          await checkedCommand('storage', { action: 'get', key: storageKey, session: sessionOnly }),
+        ).toMatchObject({ key: storageKey, value: '' })
+        expect(
+          await checkedCommand<string | null>('eval', {
+            script: `${sessionOnly ? 'sessionStorage' : 'localStorage'}.getItem(${JSON.stringify(storageKey)})`,
+          }),
+        ).toBe('')
+      }
+
+      // 只给 name/value：不带 domain/path 时用当前页面 URL 作为 cookie 作用域
+      expect(
+        await checkedCommand('cookies', { action: 'set', name: cookieName, value: '' }),
+      ).toMatchObject({ set: true, name: cookieName, value: '', domain: '127.0.0.1' })
+      const listed = await checkedCommand<{
+        cookies: Array<{ name?: string; value?: string; domain?: string; path?: string }>
+      }>('cookies', { action: 'get' })
+      const stored = listed.cookies.filter((cookie) => cookie.name === cookieName)
+      expect(stored).toHaveLength(1)
+      expect(stored[0]).toMatchObject({ value: '', domain: '127.0.0.1', path: '/' })
+      expect(await checkedCommand('eval', { script: 'document.cookie' })).toContain(
+        `${cookieName}=`,
+      )
+    } finally {
+      await loadSmokePage()
+      await checkedCommand('cookies', { action: 'delete', name: cookieName })
+      for (const sessionOnly of [false, true]) {
+        await checkedCommand('storage', {
+          action: 'delete',
+          key: storageKey,
+          session: sessionOnly,
+        })
+      }
+      await loadSmokePage()
+    }
+  }, 90_000)
+
+  test('same ids in two shadow roots keep their own label for and aria-labelledby names', async () => {
+    interface ShadowClicks {
+      saveLabel: string
+      deleteLabel: string
+      saveHint: string
+      deleteHint: string
+    }
+    const readClicks = () =>
+      checkedCommand<ShadowClicks>('eval', {
+        script: `(() => {
+          const clicks = (hostId, index) => {
+            const host = document.getElementById(hostId);
+            return host.shadowRoot.querySelectorAll('input')[index].dataset.clicks || '0';
+          };
+          return {
+            saveLabel: clicks('save-host', 0),
+            deleteLabel: clicks('delete-host', 0),
+            saveHint: clicks('save-host', 1),
+            deleteHint: clicks('delete-host', 1),
+          };
+        })()`,
+      })
+    try {
+      await loadSmokePage()
+      // 两个 shadow root 复用同样的 id，只有 name index 按 tree scope 分桶才不会串名
+      await checkedCommand('eval', {
+        script: `(() => {
+          document.body.innerHTML = '';
+          const build = (hostId, labelText, hintText) => {
+            const host = document.createElement('div');
+            host.id = hostId;
+            const root = host.attachShadow({ mode: 'open' });
+            root.innerHTML = '<label for="field">' + labelText + '</label><input id="field"><span id="hint">' + hintText + '</span><input aria-labelledby="hint">';
+            for (const input of root.querySelectorAll('input')) {
+              input.addEventListener('click', () => {
+                input.dataset.clicks = String(Number(input.dataset.clicks || 0) + 1);
+              });
+            }
+            document.body.appendChild(host);
+          };
+          build('save-host', 'Save', 'Save note');
+          build('delete-host', 'Delete', 'Delete note');
+          return true;
+        })()`,
+      })
+
+      const snapshot = await checkedCommand<Snapshot>('snapshot')
+      const textboxes = snapshot.elements.filter((element) => element.role === 'textbox')
+      expect(textboxes.map((element) => element.name).sort()).toEqual([
+        'Delete',
+        'Delete note',
+        'Save',
+        'Save note',
+      ])
+      expect(await readClicks()).toEqual({
+        saveLabel: '0',
+        deleteLabel: '0',
+        saveHint: '0',
+        deleteHint: '0',
+      })
+
+      // label for 与 aria-labelledby 各自命中本 shadow root 的控件
+      await checkedCommand('find', {
+        strategy: 'role',
+        role: 'textbox',
+        name: 'Save',
+        exact: true,
+        action: 'click',
+      })
+      await checkedCommand('find', {
+        strategy: 'role',
+        role: 'textbox',
+        name: 'Delete note',
+        exact: true,
+        action: 'click',
+      })
+      expect(await readClicks()).toEqual({
+        saveLabel: '1',
+        deleteLabel: '0',
+        saveHint: '0',
+        deleteHint: '1',
+      })
+
+      const located = await checkedCommand<{ match: { ref: string; name: string } }>('find', {
+        strategy: 'role',
+        role: 'textbox',
+        name: 'Delete',
+        exact: true,
+      })
+      expect(located.match.name).toBe('Delete')
+      const deleteRef = located.match.ref
+      await checkedCommand('find', {
+        strategy: 'role',
+        role: 'textbox',
+        name: 'Save note',
+        exact: true,
+        action: 'click',
+      })
+      expect(await readClicks()).toEqual({
+        saveLabel: '1',
+        deleteLabel: '0',
+        saveHint: '1',
+        deleteHint: '1',
+      })
+      // find 返回的 ref 与 snapshot 的 ref 同源，按 ref 点击仍然命中另一个 shadow root 的控件
+      const snapshotted = await checkedCommand<Snapshot>('snapshot')
+      expect(snapshotted.elements.find((element) => element.name === 'Delete')?.ref).toBe(deleteRef)
+      expect(await checkedCommand('click', { selector: deleteRef })).toMatchObject({ found: true })
+      expect((await readClicks()).deleteLabel).toBe('1')
+    } finally {
+      await loadSmokePage()
+    }
+  }, 90_000)
+
+  test('routed fetch yields one HAR entry with millisecond timings, and unroute without url clears all', async () => {
+    interface HarEntry {
+      startedDateTime?: string
+      time?: number
+      request: { url: string }
+      response: { status: number; content: { text?: string } }
+      timings: Record<string, number>
+    }
+    await loadSmokePage()
+    let recording = false
+    const pattern = (suffix: string) => `/routed-probe-${suffix}`
+    try {
+      // 两条独立 mock 路由：省略 url 的 unroute 必须一次清空全部
+      const routed = await checkedCommand<{ route: { pattern?: string }; routes: unknown[] }>(
+        'network',
+        {
+          action: 'route',
+          url: pattern('a'),
+          body: '{"mocked":"a"}',
+          status: 200,
+          contentType: 'application/json',
+        },
+      )
+      expect(routed.route.pattern).toBe(pattern('a'))
+      await checkedCommand('network', {
+        action: 'route',
+        url: pattern('b'),
+        body: '{"mocked":"b"}',
+        status: 201,
+      })
+      expect(
+        await checkedCommand<{ routes: unknown[] }>('network', {
+          action: 'route',
+          subaction: 'list',
+        }),
+      ).toMatchObject({ routes: [{ pattern: pattern('a') }, { pattern: pattern('b') }] })
+
+      await checkedCommand('network', { action: 'har', subaction: 'start' })
+      recording = true
+      expect(
+        await checkedCommand('eval', {
+          script: `(async () => { const response = await fetch('${pattern('a')}', { cache: 'no-store' }); return { status: response.status, body: await response.text(), type: response.headers.get('content-type') }; })()`,
+        }),
+      ).toEqual({ status: 200, body: '{"mocked":"a"}', type: 'application/json' })
+
+      const stopped = await checkedCommand<{
+        har: { log: { entries: HarEntry[] } }
+      }>('network', { action: 'har', subaction: 'stop' })
+      recording = false
+      // Fetch 拦截与 Network 事件必须合并成同一条记录，不能出现重复 entry
+      const entries = stopped.har.log.entries.filter(
+        (entry) => new URL(entry.request.url).pathname === pattern('a'),
+      )
+      expect(entries).toHaveLength(1)
+      const entry = entries[0]!
+      expect(entry.response.status).toBe(200)
+      expect(entry.response.content.text).toBe('{"mocked":"a"}')
+      expect(Number.isNaN(Date.parse(String(entry.startedDateTime)))).toBe(false)
+
+      // 耗时单位必须是毫秒：既不为负、也不会因为秒/毫秒混用放大 1000 倍
+      expect(typeof entry.time).toBe('number')
+      expect(entry.time).toBeGreaterThanOrEqual(0)
+      expect(entry.time).toBeLessThan(30_000)
+      const timingValues = Object.values(entry.timings)
+      expect(timingValues.length).toBeGreaterThan(0)
+      for (const value of timingValues) {
+        expect(value).toBeGreaterThanOrEqual(-1)
+        expect(value).toBeLessThan(30_000)
+      }
+      console.info(
+        `[live-smoke] routed fetch HAR entry time=${entry.time}ms timings=${JSON.stringify(entry.timings)}`,
+      )
+
+      const requests = await checkedCommand<{
+        requests: Array<{ url?: string }>
+      }>('network', { action: 'requests', filter: pattern('a') })
+      expect(
+        (requests.requests || []).filter(
+          (request) => new URL(String(request.url)).pathname === pattern('a'),
+        ),
+      ).toHaveLength(1)
+
+      // 省略 url 的 unroute 清空全部路由，两个 URL 都应回到真实响应
+      expect(
+        await checkedCommand<{ routes: unknown[] }>('network', { action: 'unroute' }),
+      ).toMatchObject({ routes: [] })
+      for (const suffix of ['a', 'b']) {
+        expect(
+          await checkedCommand('eval', {
+            script: `fetch('${pattern(suffix)}', { cache: 'no-store' }).then(response => response.text())`,
+          }),
+        ).toBe(`real-probe-body:${suffix}`)
+      }
+      expect(
+        await checkedCommand<{ routes: unknown[] }>('network', {
+          action: 'route',
+          subaction: 'list',
+        }),
+      ).toMatchObject({ routes: [] })
+    } finally {
+      if (recording) await command('network', { action: 'har', subaction: 'stop' })
+      await command('network', { action: 'unroute' })
+      await loadSmokePage()
+    }
+  }, 90_000)
+
+  test('continued slow HTTP route has real CDP HAR phases on the wall-clock millisecond scale', async () => {
+    await loadSmokePage()
+    let recording = false
+    try {
+      await checkedCommand('network', { action: 'route', url: '/routed-probe-slow' })
+      await checkedCommand('network', { action: 'har', subaction: 'start' })
+      recording = true
+      const fetched = await checkedCommand<{ status: number; body: string; elapsedMs: number }>(
+        'eval',
+        {
+          script: `(async () => {
+            const started = performance.now();
+            const response = await fetch('/routed-probe-slow', { cache: 'no-store' });
+            const body = await response.text();
+            return { status: response.status, body, elapsedMs: performance.now() - started };
+          })()`,
+        },
+      )
+      expect(fetched).toMatchObject({ status: 200, body: 'slow-probe-body' })
+      expect(fetched.elapsedMs).toBeGreaterThanOrEqual(650)
+      const stopped = await checkedCommand<{
+        har: {
+          log: {
+            entries: Array<{
+              time: number
+              request: { url: string }
+              response: { status: number; content: { text: string } }
+              timings: Record<string, number>
+            }>
+          }
+        }
+      }>('network', { action: 'har', subaction: 'stop' })
+      recording = false
+      const entries = stopped.har.log.entries.filter(
+        (entry) => new URL(entry.request.url).pathname === '/routed-probe-slow',
+      )
+      expect(entries).toHaveLength(1)
+      const entry = entries[0]!
+      expect(entry.response).toMatchObject({ status: 200, content: { text: 'slow-probe-body' } })
+      // 验证 CDP ResourceTiming 阶段字段，而不只检查总耗时或 mock 的 fallback。
+      expect(Object.keys(entry.timings).sort()).toEqual([
+        'blocked',
+        'connect',
+        'dns',
+        'receive',
+        'send',
+        'ssl',
+        'wait',
+      ])
+      expect(entry.timings.wait).toBeGreaterThanOrEqual(200)
+      expect(entry.timings.receive).toBeGreaterThanOrEqual(150)
+      expect(entry.time / fetched.elapsedMs).toBeGreaterThan(0.5)
+      expect(entry.time / fetched.elapsedMs).toBeLessThan(2)
+      for (const value of Object.values(entry.timings)) {
+        expect(Number.isFinite(value)).toBe(true)
+        expect(value).toBeGreaterThanOrEqual(-1)
+        expect(value).toBeLessThan(fetched.elapsedMs * 2)
+      }
+      // ssl 包含在 connect 中，不重复求和；宽松比例容纳事件派发误差，却不能容忍千倍单位错误。
+      const phaseTotal = Object.entries(entry.timings)
+        .filter(([phase]) => phase !== 'ssl')
+        .reduce((sum, [, value]) => sum + Math.max(0, value), 0)
+      expect(phaseTotal / fetched.elapsedMs).toBeGreaterThan(0.5)
+      expect(phaseTotal / fetched.elapsedMs).toBeLessThan(2)
+      const recorded = await checkedCommand<{
+        requests: Array<{ url: string; routeAction?: string }>
+      }>('network', { action: 'requests', filter: '/routed-probe-slow' })
+      expect(recorded.requests).toHaveLength(1)
+      expect(recorded.requests[0]?.routeAction).toBe('continue')
+      console.info(
+        `[live-smoke] continued slow fetch wall=${fetched.elapsedMs}ms HAR=${entry.time}ms timings=${JSON.stringify(entry.timings)}`,
+      )
+    } finally {
+      if (recording) await command('network', { action: 'har', subaction: 'stop' })
+      await command('network', { action: 'unroute' })
+      await loadSmokePage()
+    }
+  }, 60_000)
+
+  test('completed local download refreshes terminal byte counts and end time', async () => {
+    await loadSmokePage()
+    // 下载仅写入 harness 的临时目录，afterAll 先关闭隔离 Chrome 再删除，失败时也不会留下用户文件。
+    const downloadPath = await mkdtemp(path.join(homeDir, 'downloads-'))
+    const downloadUrl = new URL('/download-probe', pageUrl).href
+    try {
+      await cdp!.send('Browser.setDownloadBehavior', { behavior: 'allow', downloadPath })
+      await checkedCommand('eval', {
+        script: `(() => {
+          const anchor = document.createElement('a');
+          anchor.href = ${JSON.stringify(downloadUrl)};
+          anchor.download = 'live-probe.txt';
+          document.body.appendChild(anchor);
+          anchor.click();
+          anchor.remove();
+          return true;
+        })()`,
+      })
+      interface Download {
+        url: string
+        filename: string
+        state: string
+        bytesReceived: number
+        totalBytes: number
+        endTime?: string | null
+      }
+      let completed: Download | undefined
+      await waitFor(
+        'the local download terminal snapshot',
+        async () => {
+          const listed = await checkedCommand<{ downloads: Download[] }>('downloads')
+          completed = listed.downloads.find((item) => item.url === downloadUrl)
+          return (
+            completed?.state === 'complete' &&
+            Boolean(completed.endTime) &&
+            completed.bytesReceived === Buffer.byteLength(harBody)
+          )
+        },
+        15_000,
+      )
+      expect(completed).toMatchObject({
+        state: 'complete',
+        bytesReceived: Buffer.byteLength(harBody),
+        totalBytes: Buffer.byteLength(harBody),
+      })
+      expect(Number.isFinite(Date.parse(completed!.endTime!))).toBe(true)
+      expect(completed!.filename).toBe(path.join(downloadPath, 'live-probe.txt'))
+      expect(await readFile(path.join(downloadPath, 'live-probe.txt'), 'utf8')).toBe(harBody)
+    } finally {
+      await cdp!.send('Browser.setDownloadBehavior', { behavior: 'deny' })
       await loadSmokePage()
     }
   }, 60_000)

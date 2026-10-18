@@ -1322,8 +1322,13 @@ class ObserveNode {
   checked = false
   disabled = false
   ownerDocument!: ObserveDocument
+  /** 显式 tree scope；缺省按 ownerDocument 判定，影子树节点天然落在各自 shadow root */
+  treeScope: ObserveDocument | null = null
   reads = new Map<string, number>()
   constructor(public tagName = 'BUTTON') {}
+  getRootNode() {
+    return this.treeScope ?? this.ownerDocument ?? null
+  }
   getAttribute(key: string) {
     this.reads.set(key, (this.reads.get(key) || 0) + 1)
     return this.attributes.get(key) ?? null
@@ -1343,6 +1348,7 @@ class ObserveNode {
       if (tag && this.tagName.toLowerCase() !== tag.toLowerCase()) return false
       if (part.includes(':not'))
         return this.tagName === 'INPUT' ? this.type !== 'hidden' : this.attributes.has('tabindex')
+      if (part === 'label[for]') return this.tagName === 'LABEL' && this.attributes.has('for')
       return (
         !attr ||
         (this.attributes.has(attr[1]!) && (!attr[2] || this.attributes.get(attr[1]!) === attr[2]))
@@ -1385,12 +1391,30 @@ class ObserveDocument {
     this.attach()
   }
   attach() {
-    for (const node of this.nodes) node.ownerDocument = this
+    const visit = (nodes: ObserveNode[]) => {
+      for (const node of nodes) {
+        node.ownerDocument = this
+        if (node.children.length) visit(node.children)
+      }
+    }
+    visit(this.nodes)
   }
   querySelectorAll(selector: string) {
     this.queries++
+    return this.matching(selector)
+  }
+  // 单独计数：名称索引若退化为逐 id 选择器查询，这里能直接观测到
+  querySelector(selector: string) {
+    this.queries++
+    return this.matching(selector)[0] ?? null
+  }
+  private matching(selector: string) {
     this.attach()
     return this.nodes.filter((node) => node.matches(selector))
+  }
+  getElementById(id: string) {
+    this.attach()
+    return this.nodes.find((node) => node.id === id) ?? null
   }
 }
 function expressionHarness(document: ObserveDocument) {
@@ -1838,6 +1862,155 @@ describe('executed observation expressions', () => {
       null,
     )
     expect(found.match!.ref).toBe(second.elements.at(-1)!.ref as string)
+  })
+
+  // 影子树里重复 id 是合法的，名称必须按 tree scope 解析，否则先出现的 label 会串到另一个 root。
+  function shadowHostWithLabelledButton(labelText: string) {
+    const button = new ObserveNode()
+    button.setAttribute('aria-labelledby', 'action')
+    const label = new ObserveNode('LABEL')
+    label.id = 'action'
+    label.innerText = labelText
+    const host = new ObserveNode('DIV')
+    host.shadowRoot = new ObserveDocument([button, label])
+    return host
+  }
+
+  test('shadow roots keep identical ids in separate name scopes', async () => {
+    const doc = new ObserveDocument([
+      shadowHostWithLabelledButton('Save'),
+      shadowHostWithLabelledButton('Delete'),
+    ])
+    const h = expressionHarness(doc)
+    const snapshot = (await h.domain.snapshotTab(1, null)) as ObservedSnapshot
+    expect(snapshot.elements.map((element) => element.name)).toEqual(['Save', 'Delete'])
+    expect(snapshot.elements.map((element) => element.text)).toEqual(['', ''])
+    for (const [index, name] of ['Save', 'Delete'].entries()) {
+      const found = await h.domain.findSemanticTarget(
+        1,
+        { strategy: 'exact-name', query: name, exact: true } as never,
+        null,
+      )
+      expect(found.match!.ref).toBe(snapshot.elements[index]!.ref as string)
+    }
+  })
+
+  test('label for associations stay inside their own shadow root', async () => {
+    function shadowHostWithLabelledInput(labelText: string) {
+      const input = new ObserveInput()
+      input.id = 'field'
+      const label = new ObserveNode('LABEL')
+      label.setAttribute('for', 'field')
+      label.innerText = labelText
+      const host = new ObserveNode('DIV')
+      host.shadowRoot = new ObserveDocument([input, label])
+      return host
+    }
+    const doc = new ObserveDocument([
+      shadowHostWithLabelledInput('Street'),
+      shadowHostWithLabelledInput('City'),
+    ])
+    const h = expressionHarness(doc)
+    const snapshot = (await h.domain.snapshotTab(1, null)) as ObservedSnapshot
+    expect(snapshot.elements.map((element) => element.name)).toEqual(['Street', 'City'])
+    const found = await h.domain.findSemanticTarget(
+      1,
+      { strategy: 'label', query: 'City', exact: true } as never,
+      null,
+    )
+    expect(found.match!.ref).toBe(snapshot.elements[1]!.ref as string)
+  })
+
+  test('same-document name references keep resolving for light DOM and shadow DOM', async () => {
+    const title = new ObserveNode('H1')
+    title.id = 'section-title'
+    title.innerText = 'Payment details'
+    const input = new ObserveInput()
+    input.setAttribute('aria-labelledby', 'section-title')
+    const inputLabel = new ObserveNode('LABEL')
+    inputLabel.setAttribute('for', 'card-number')
+    inputLabel.innerText = 'Card number'
+    const cardNumber = new ObserveInput()
+    cardNumber.id = 'card-number'
+    const shadowInput = new ObserveInput()
+    shadowInput.setAttribute('aria-label', 'Shadow field')
+    const host = new ObserveNode('DIV')
+    host.shadowRoot = new ObserveDocument([shadowInput])
+    const doc = new ObserveDocument([title, input, inputLabel, cardNumber, host])
+    const h = expressionHarness(doc)
+    const snapshot = (await h.domain.snapshotTab(1, null)) as ObservedSnapshot
+    expect(snapshot.elements.map((element) => element.name)).toEqual([
+      'Payment details',
+      'Card number',
+      'Shadow field',
+    ])
+    const found = await h.domain.findSemanticTarget(
+      1,
+      { strategy: 'label', query: 'Card number', exact: true } as never,
+      null,
+    )
+    expect(found.match!.ref).toBe(snapshot.elements[1]!.ref as string)
+  })
+
+  test('subtree snapshots resolve same-document references outside the subtree', async () => {
+    const label = new ObserveNode('LABEL')
+    label.id = 'panel-title'
+    label.innerText = 'Shipping panel'
+    const input = new ObserveInput()
+    input.setAttribute('aria-labelledby', 'panel-title')
+    const panel = new ObserveNode('DIV')
+    panel.id = 'panel'
+    panel.children = [input]
+    const doc = new ObserveDocument([label, input, panel])
+    const h = expressionHarness(doc)
+    const scoped = (await h.domain.snapshotTab(1, null, { selector: '#panel' })) as ObservedSnapshot
+    expect(scoped.elements.map((element) => element.name)).toEqual(['Shipping panel'])
+  })
+
+  test('subtree snapshots backfill out-of-subtree labels once per tree scope', async () => {
+    const label = new ObserveNode('LABEL')
+    label.setAttribute('for', 'field')
+    label.innerText = 'Shipping panel'
+    const panel = new ObserveNode('DIV')
+    panel.id = 'panel'
+    const inputs = Array.from({ length: 100 }, (_, index) => {
+      const input = new ObserveInput()
+      input.id = index === 0 ? 'field' : `field-${index}`
+      panel.children.push(input)
+      return input
+    })
+    const doc = new ObserveDocument([label, panel])
+    const h = expressionHarness(doc)
+    const scoped = (await h.domain.snapshotTab(1, null, { selector: '#panel' })) as ObservedSnapshot
+    expect(scoped.elements).toHaveLength(100)
+    expect(scoped.elements[0]!.name).toBe('Shipping panel')
+    expect(scoped.elements.slice(1).every((element) => element.name === '')).toBe(true)
+    // 100 个 input 只允许触发一次 label[for] 补全，不得逐 id 扫描 root
+    expect(doc.queries).toBeLessThanOrEqual(8)
+    expect(inputs).toHaveLength(100)
+  })
+
+  test('full-page name resolution keeps root queries constant as labelled candidates grow', async () => {
+    const run = async (count: number) => {
+      const doc = new ObserveDocument()
+      for (let index = 0; index < count; index += 1) {
+        const button = new ObserveNode()
+        button.id = `button-${index}`
+        doc.nodes.push(button)
+      }
+      const h = expressionHarness(doc)
+      const snapshot = (await h.domain.snapshotTab(1, null)) as ObservedSnapshot
+      expect(snapshot.elements).toHaveLength(count)
+      const found = await h.domain.findSemanticTarget(
+        1,
+        { strategy: 'role', role: 'button', candidates: 3 } as never,
+        null,
+      )
+      expect(found.candidates).toHaveLength(Math.min(3, count))
+      return doc.queries
+    }
+    // 覆盖整棵树的 scope 未命中即负结果，查询数与候选数量无关
+    expect(await run(100)).toBe(await run(1))
   })
 
   test('final defensive cap bounds oversized metadata and every summary array', async () => {

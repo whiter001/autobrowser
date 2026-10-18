@@ -14,6 +14,16 @@ export interface RequestCommandOptions {
   token?: string | null
 }
 
+export class CommandRequestError extends Error {
+  constructor(
+    readonly phase: 'fetch' | 'response',
+    cause: unknown,
+  ) {
+    super(cause instanceof Error ? cause.message : String(cause), { cause })
+    this.name = 'CommandRequestError'
+  }
+}
+
 export function shouldOpenInNewTab(payload: CommandResponse): boolean {
   if (payload.ok !== false) {
     return false
@@ -54,13 +64,20 @@ export async function requestCommandRaw(
     headers.authorization = `Bearer ${options.token}`
   }
 
-  const response = await fetch(`${baseUrl}/command`, {
-    method: 'POST',
-    headers,
-    body: JSON.stringify({ command, args }),
-  })
+  const body = JSON.stringify({ command, args })
+  let response: Response
+  try {
+    response = await fetch(`${baseUrl}/command`, { method: 'POST', headers, body })
+  } catch (error) {
+    throw new CommandRequestError('fetch', error)
+  }
 
-  return (await response.json()) as CommandResponse
+  try {
+    return (await response.json()) as CommandResponse
+  } catch (error) {
+    // 收到响应后，读取/解码失败不能再作为“尚未送达”的证据。
+    throw new CommandRequestError('response', error)
+  }
 }
 
 export async function getStatus(

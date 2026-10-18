@@ -293,6 +293,119 @@ describe('command specs', () => {
     ).not.toThrow()
   })
 
+  test('accepts empty content values while keeping locators required', () => {
+    // 清空字段/剪贴板/存储是合法语义：空串与纯空白都必须能通过参数校验
+    expect(() => validateCommandArgs('fill', { selector: '#a', value: '' })).not.toThrow()
+    expect(() => validateCommandArgs('fill', { selector: '#a', value: '   ' })).not.toThrow()
+    expect(() => validateCommandArgs('type', { selector: '#a', value: '' })).not.toThrow()
+    expect(() => validateCommandArgs('type', { selector: '#a', value: ' ' })).not.toThrow()
+    expect(() => validateCommandArgs('select', { selector: '#a', value: '' })).not.toThrow()
+    expect(() =>
+      validateCommandArgs('find', { strategy: 'text', query: 'x', action: 'fill', value: '' }),
+    ).not.toThrow()
+    expect(() =>
+      validateCommandArgs('find', { strategy: 'text', query: 'x', action: 'type', value: '  ' }),
+    ).not.toThrow()
+    expect(() =>
+      validateCommandArgs('storage', { action: 'set', key: 'k', value: '' }),
+    ).not.toThrow()
+    expect(() =>
+      validateCommandArgs('cookies', { action: 'set', name: 'n', value: '' }),
+    ).not.toThrow()
+    expect(() => validateCommandArgs('clipboard', { action: 'write', text: '' })).not.toThrow()
+    expect(() => validateCommandArgs('keyboard', { action: 'type', text: '' })).not.toThrow()
+
+    // 参数缺失与定位符仍按原契约报错
+    expect(() => validateCommandArgs('fill', { selector: '#a' })).toThrow(
+      'invalid command arguments for fill: value must be a non-empty string',
+    )
+    expect(() => validateCommandArgs('fill', { selector: ' ', value: 'x' })).toThrow(
+      'invalid command arguments for fill: selector must be a non-empty string',
+    )
+    expect(() => validateCommandArgs('fill', { value: 'x' })).toThrow(
+      'invalid command arguments for fill: selector must be a non-empty string',
+    )
+    expect(() => validateCommandArgs('select', { selector: '#a', value: 42 })).toThrow(
+      'invalid command arguments for select: value must be a string',
+    )
+    expect(() =>
+      validateCommandArgs('find', { strategy: 'text', query: 'x', action: 'fill' }),
+    ).toThrow('invalid command arguments for find: value must be a non-empty string')
+    expect(() => validateCommandArgs('keyboard', { action: 'type' })).toThrow(
+      'invalid command arguments for keyboard: text must be a non-empty string',
+    )
+    expect(() => validateCommandArgs('cookies', { action: 'set', name: '', value: 'x' })).toThrow(
+      'invalid command arguments for cookies: name must be a non-empty string',
+    )
+  })
+
+  test('requires explicit state write content while preserving empty strings', () => {
+    for (const [command, args, field] of [
+      ['cookies', { action: 'set', name: 'n' }, 'value'],
+      ['storage', { action: 'set', key: 'k' }, 'value'],
+      ['clipboard', { action: 'write' }, 'text'],
+    ] as const) {
+      expect(() => validateCommandArgs(command, args)).toThrow(field)
+      for (const value of [undefined, null, 42]) {
+        expect(() => validateCommandArgs(command, { ...args, [field]: value })).toThrow(field)
+      }
+      for (const value of ['', '   ']) {
+        expect(() => validateCommandArgs(command, { ...args, [field]: value })).not.toThrow()
+      }
+    }
+    for (const [command, field] of [
+      ['cookies', 'name'],
+      ['storage', 'key'],
+    ] as const) {
+      expect(() => validateCommandArgs(command, { action: 'set', value: '' })).toThrow(field)
+      for (const value of [undefined, null, '', '   ', 42]) {
+        expect(() =>
+          validateCommandArgs(command, { action: 'set', value: '', [field]: value }),
+        ).toThrow(field)
+      }
+    }
+  })
+
+  test('keeps non-write state shapes optional and rejects data-only storage writes', () => {
+    for (const command of ['cookies', 'storage']) {
+      for (const action of ['get', 'list', 'clear', 'delete']) {
+        expect(() => validateCommandArgs(command, { action })).not.toThrow()
+        expect(() => validateCommandArgs(command, { action, value: '' })).not.toThrow()
+      }
+    }
+    expect(() => validateCommandArgs('clipboard', { action: 'read' })).not.toThrow()
+    expect(() => validateCommandArgs('clipboard', { action: 'read', text: '' })).not.toThrow()
+    for (const data of [{ k: 'v' }, []]) {
+      expect(() => validateCommandArgs('storage', { action: 'set', data })).toThrow('key')
+      expect(() => validateCommandArgs('storage', { action: 'set', key: 'k', data })).toThrow(
+        'value',
+      )
+      expect(() =>
+        validateCommandArgs('storage', { action: 'set', key: 'k', value: '', data }),
+      ).not.toThrow()
+    }
+  })
+
+  test('allows empty keyboard content only for text actions, never keys', () => {
+    for (const action of ['type', 'inserttext', 'keydown', 'keyup']) {
+      expect(() => validateCommandArgs('keyboard', { action })).toThrow()
+      expect(() => validateCommandArgs('keyboard', { action, text: 'Enter' })).not.toThrow()
+      for (const text of ['', '   ']) {
+        const validate = () => validateCommandArgs('keyboard', { action, text })
+        if (action === 'type' || action === 'inserttext') expect(validate).not.toThrow()
+        else expect(validate).toThrow('text must be a non-empty string')
+      }
+    }
+  })
+
+  test('allows clearing every network route without a url', () => {
+    expect(() => validateCommandArgs('network', { action: 'unroute' })).not.toThrow()
+    expect(() => validateCommandArgs('network', { action: 'unroute', url: '**/api' })).not.toThrow()
+    expect(() => validateCommandArgs('network', { action: 'route' })).toThrow(
+      'invalid command arguments for network: url must be a non-empty string',
+    )
+  })
+
   test('validates extended find strategies, position, and candidates', () => {
     for (const strategy of ['placeholder', 'alt', 'title', 'test-id', 'exact-name']) {
       expect(() => validateCommandArgs('find', { strategy, query: 'x' })).not.toThrow()
