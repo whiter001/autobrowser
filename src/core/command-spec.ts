@@ -952,6 +952,16 @@ function validateCommandArgsShape(command: string, args: unknown): void {
       readOptionalNonNegativeIntegerField(normalizedArgs, 'since', command)
       readBooleanField(normalizedArgs, 'allEpochs', command)
       readStringField(normalizedArgs, 'action', command, { required: false })
+      if (command === 'console') {
+        const level = readStringField(normalizedArgs, 'level', command, { required: false })
+        if (level !== undefined && !['error', 'warning', 'info', 'debug'].includes(level)) {
+          throw createCommandArgsValidationError(
+            command,
+            'level must be error, warning, info, or debug',
+            { field: 'level', value: level },
+          )
+        }
+      }
       return
     case 'target':
       readStringField(normalizedArgs, 'action', command)

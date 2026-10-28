@@ -124,6 +124,16 @@ export function getRecordedCommandFromStatus(
   }
 }
 
+function containsRedactedValue(value: unknown): boolean {
+  if (value === '[redacted]') {
+    return true
+  }
+  if (Array.isArray(value)) {
+    return value.some(containsRedactedValue)
+  }
+  return isRecord(value) && Object.values(value).some(containsRedactedValue)
+}
+
 export async function buildCliConfigStatus(homeDir: string): Promise<Record<string, unknown>> {
   const config = await readJsonFile<Record<string, unknown> | null>(getConfigPath(homeDir), null)
   return {
@@ -332,7 +342,9 @@ async function handleServer(rest: string[], context: CommandContext): Promise<nu
 
     try {
       await stopBackgroundServer(
-        persistedConnectionInfo.ipcPort,
+        context.flags.ipcPortExplicitlySet
+          ? context.flags.ipcPort
+          : persistedConnectionInfo.ipcPort,
         persistedConnectionInfo.token,
         context.dependencies.findProcessIdByPort,
         context.dependencies.killProcess,
@@ -409,6 +421,13 @@ async function handleReplay(rest: string[], context: CommandContext): Promise<nu
 
   if (!lastCommand) {
     process.stderr.write('No recorded command available to replay.\n')
+    return 1
+  }
+
+  if (containsRedactedValue(lastCommand.args)) {
+    process.stderr.write(
+      'The recorded command contains redacted arguments and cannot be replayed safely.\n',
+    )
     return 1
   }
 

@@ -1,52 +1,34 @@
-# 使用 `autobrowser.cmd` 的 Windows 示例
+# Windows 启动示例
 
-本页记录的是仓库内的 `autobrowser.cmd` 启动器。
+Windows 链接流程提供两个入口：
 
-它的设计刻意保持极简：只通过示例里固定的 Bun 路径，把参数转发给本地的 `dist/autobrowser.js` 构建产物。
+- `autobrowser.exe`：原生启动器，供 cmd.exe 和 PowerShell 使用。
+- `autobrowser`：sh 包装器，供 Git Bash、WSL 等 POSIX shell 使用。
 
-如果你是直接在仓库里运行，请先执行 `bun run build:cli`，这样启动器才会有可指向的构建产物。
+原生启动器通过 argv 数组把参数交给 Bun 和本地 `dist/autobrowser.js`，不经过批处理 `%*`，因此不会额外展开参数中的 `%VARIABLE%`。旧的 `autobrowser.cmd` 会在重新链接时移除。
 
-## 这个示例覆盖什么
-
-- 将 Windows 参数转发给构建后的 CLI
-- 尽量让示例启动器保持很小
-- 展示启动器使用的 Windows 批处理文件形式
-
-## 前置条件
+## 构建并链接
 
 ```powershell
 bun run build:cli
+bun run link:bun
 ```
 
-构建完成后，根目录的 `autobrowser.cmd` 就可以运行本地 CLI 产物了。
-
-## 示例流程
-
-用一个明确的命令来运行启动器，例如 help：
+`link:bun` 会把启动器放到 Bun 可执行文件旁边。确认该目录已加入 PATH 后，在 cmd.exe 或 PowerShell 中运行：
 
 ```powershell
-autobrowser.cmd help
+autobrowser.exe help
+autobrowser.exe status
+autobrowser.exe connect
+autobrowser.exe tab list
 ```
 
-按需通过启动器传递任意 CLI 命令：
+Git Bash 中使用无扩展名入口：
 
-```powershell
-autobrowser.cmd status
-autobrowser.cmd connect
-autobrowser.cmd tab list
+```bash
+autobrowser status
+autobrowser open https://example.com
+autobrowser snapshot
 ```
 
-你也可以转发一个完整流程：
-
-```powershell
-autobrowser.cmd server
-autobrowser.cmd open https://example.com
-autobrowser.cmd snapshot
-```
-
-如果你想更接近已安装的 Windows 包装器行为，可以在链接完成后直接从 PATH 使用 `autobrowser.cmd`；这个示例文件之所以单独保留，是为了让它保持仓库本地化。
-
-## 说明
-
-- `autobrowser.cmd` 只是一个方便的启动器，不是已安装后的包包装器。
-- 系统 PATH 里的安装版包装器，仍然来自 `bun link` 或直接的 Windows 链接步骤。
+cmd.exe 自身会在启动程序前展开 `%VARIABLE%`，进程无法还原这类调用方替换。复杂或多行 JavaScript 优先通过 `eval --file <path>` 或 `eval --stdin` 输入。

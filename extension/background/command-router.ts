@@ -1912,20 +1912,27 @@ export function createCommandRouter({
             return { cleared: before - state.session.consoleMessages.length }
           }
           const since = readNumberArg(args, 'since', 0)
+          const level = readStringArg(args, 'level')
+          const maxLevelRank = level ? ['error', 'warning', 'info', 'debug'].indexOf(level) : null
           const currentEpoch = targetTabId === null ? null : getPageEpoch(state, targetTabId)
           const messages = (
             targetTabId === null
               ? state.session.consoleMessages
               : state.session.consoleMessages.filter((message) => message.tabId === targetTabId)
-          ).filter(
-            (message) =>
+          ).filter((message) => {
+            const type = String(message.type || '')
+            const levelRank =
+              type === 'error' ? 0 : type === 'warning' ? 1 : type === 'debug' ? 3 : 2
+            return (
               message.timestamp >= since &&
+              (maxLevelRank === null || levelRank <= maxLevelRank) &&
               (args.allEpochs === true ||
                 currentEpoch === null ||
                 message.pageEpoch == null ||
-                message.pageEpoch === currentEpoch),
-          )
-          // 分页作用在 tabId 过滤 + 折叠之后的结果上，折叠逻辑本身不动
+                message.pageEpoch === currentEpoch)
+            )
+          })
+          // level 必须在折叠和分页前过滤，total/pagination 才与返回结果一致
           const { items, pagination } = paginateList(
             foldConsoleMessages(messages),
             pageIdx,

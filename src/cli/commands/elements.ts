@@ -154,15 +154,21 @@ async function handleType(rest: string[], context: CommandContext): Promise<numb
     return 0
   }
 
-  // --submit 是标志位而非输入内容，从文本参数里剔出来
+  // -- 后的内容一律是文本，允许输入字面量 --submit
+  const separatorIndex = rest.indexOf('--')
+  const optionParts = rest.slice(1, separatorIndex < 0 ? undefined : separatorIndex)
+  const literalParts = separatorIndex < 0 ? [] : rest.slice(separatorIndex + 1)
   let submit = false
-  const valueParts = rest.slice(1).filter((part) => {
-    if (part === '--submit') {
-      submit = true
-      return false
-    }
-    return true
-  })
+  const valueParts = [
+    ...optionParts.filter((part) => {
+      if (part === '--submit') {
+        submit = true
+        return false
+      }
+      return true
+    }),
+    ...literalParts,
+  ]
   if (valueParts.length === 0) {
     return writeCommandError('missing value for type')
   }

@@ -104,6 +104,7 @@ function parseCli(argv: string[]): ParsedCli {
     server: `http://127.0.0.1:${DEFAULT_IPC_PORT}`,
     relayPort: DEFAULT_RELAY_PORT,
     ipcPort: DEFAULT_IPC_PORT,
+    ipcPortExplicitlySet: false,
     extensionId: null,
     autoConnect: false,
     browserCommand: null,
@@ -120,6 +121,10 @@ function parseCli(argv: string[]): ParsedCli {
 
   for (let index = 0; index < argv.length; index += 1) {
     const value = argv[index]
+    if (value === '--') {
+      args.push(...argv.slice(index))
+      break
+    }
     if (value === '--json') {
       flags.json = true
       continue
@@ -173,6 +178,7 @@ function parseCli(argv: string[]): ParsedCli {
 
     if (value === '--ipc-port') {
       flags.ipcPort = parsePortFlag(readFlagValue(argv, index, value), value)
+      flags.ipcPortExplicitlySet = true
       if (!serverExplicitlySet) {
         flags.server = `http://127.0.0.1:${flags.ipcPort}`
       }
@@ -212,6 +218,11 @@ function parseCli(argv: string[]): ParsedCli {
     }
 
     args.push(value)
+  }
+
+  const inputSources = [flags.stdin, flags.file !== null, flags.base64].filter(Boolean).length
+  if (inputSources > 1) {
+    throw new Error('--stdin, --file, and --base64 cannot be combined')
   }
 
   return { flags, args }

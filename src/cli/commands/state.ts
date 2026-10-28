@@ -109,11 +109,28 @@ const handleStorage = createActionCommand({
   helpPath: ['storage'],
   allowed: STORAGE_ACTIONS,
   handle: async (rest, context, action) => {
-    // --session 切换到 sessionStorage（per-tab per-origin），其余参数位置保持不变
-    const sessionOnly = rest.includes('--session')
-    const args = rest.filter((value) => value !== '--session')
+    // --session 只解析 -- 之前的选项，之后允许 key/value 使用同名字面量
+    const separatorIndex = rest.indexOf('--')
+    const optionArgs = separatorIndex < 0 ? rest : rest.slice(0, separatorIndex)
+    const literalArgs = separatorIndex < 0 ? [] : rest.slice(separatorIndex + 1)
+    const sessionOnly = optionArgs.includes('--session')
+    const args = [...optionArgs.filter((value) => value !== '--session'), ...literalArgs]
+    if (helpRequested(args[0], context, ['storage', action])) {
+      return 0
+    }
+    if (action === 'set' && args.length === 1 && args[0]) {
+      return writeCommandError('missing value for storage set')
+    }
+    const expectedCount = action === 'set' ? 2 : action === 'clear' ? 0 : 1
+    const validCount = action === 'get' ? args.length <= 1 : args.length === expectedCount
+    if (!validCount) {
+      return writeCommandError(`storage ${action} expects ${expectedCount} argument(s)`)
+    }
 
-    if (action === 'get') {
+    if (action === 'get' || action === 'delete') {
+      if (action === 'delete' && !args[0]) {
+        return writeCommandError('missing key for storage delete')
+      }
       await requestAndWrite(context, 'storage', {
         action,
         key: args[0],
@@ -130,29 +147,9 @@ const handleStorage = createActionCommand({
       return 0
     }
 
-    if (action === 'delete') {
-      const key = args[0]
-      if (!key) {
-        return context.writeHelp(['storage', 'delete'])
-      }
-
-      await requestAndWrite(context, 'storage', {
-        action,
-        key,
-        ...(sessionOnly ? { session: true } : {}),
-      })
-      return 0
-    }
-
-    if (helpRequested(args[0], context, ['storage', 'set'])) {
-      return 0
-    }
     const [key, value] = args
     if (!key) {
-      return context.writeHelp(['storage', 'set'])
-    }
-    if (value === undefined) {
-      return writeCommandError('missing value for storage set')
+      return writeCommandError('missing key for storage set')
     }
 
     await requestAndWrite(context, 'storage', {

@@ -60,7 +60,9 @@ const HELP_ROOT = helpNode(
       [helpNode('stop', 'Stop the background servers.', 'autobrowser server stop')],
     ),
     helpNode('status', 'Show server status.', 'autobrowser status'),
-    helpNode('replay', 'Replay the last recorded command.', 'autobrowser replay'),
+    helpNode('replay', 'Replay the last recorded command.', 'autobrowser replay', [
+      'Commands containing redacted arguments are rejected instead of replaying placeholder values.',
+    ]),
     helpNode('config', 'Show persisted CLI connection settings.', 'autobrowser config'),
     helpNode(
       'connect',

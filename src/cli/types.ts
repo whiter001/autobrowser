@@ -6,6 +6,7 @@ export interface CliFlags {
   server: string
   relayPort: number
   ipcPort: number
+  ipcPortExplicitlySet: boolean
   extensionId: string | null
   autoConnect: boolean
   browserCommand: string | null

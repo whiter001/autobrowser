@@ -1890,6 +1890,38 @@ describe('command router list pagination', () => {
     })
   })
 
+  test('console filters level before folding and paginating results', async () => {
+    const { router, state } = createMinimalRouter()
+    for (const [index, type] of ['log', 'error', 'debug', 'warning', 'log'].entries()) {
+      state.session.consoleMessages.push({
+        type,
+        text: `msg ${index + 1}`,
+        timestamp: index + 1,
+        tabId: 1,
+      })
+    }
+
+    const first = (await router.handleCommand({
+      command: 'console',
+      args: { tabId: 1, level: 'warning', pageSize: 1, pageIdx: 0 },
+    })) as { messages: Array<{ type: string }>; pagination: Record<string, unknown> }
+    expect(first.messages.map((message) => message.type)).toEqual(['error'])
+    expect(first.pagination).toMatchObject({ totalPages: 2, hasNextPage: true, endIndex: 1 })
+
+    const second = (await router.handleCommand({
+      command: 'console',
+      args: { tabId: 1, level: 'warning', pageSize: 1, pageIdx: 1 },
+    })) as { messages: Array<{ type: string }>; pagination: Record<string, unknown> }
+    expect(second.messages.map((message) => message.type)).toEqual(['warning'])
+    expect(second.pagination).toMatchObject({
+      currentPage: 1,
+      totalPages: 2,
+      hasNextPage: false,
+      hasPreviousPage: true,
+      endIndex: 2,
+    })
+  })
+
   test('console falls back to the first page with invalidPage for an out-of-range pageIdx', async () => {
     const { router, state } = createMinimalRouter()
     state.session.consoleMessages.push(

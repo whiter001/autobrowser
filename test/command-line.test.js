@@ -750,6 +750,50 @@ describe('cli helpers', () => {
     }
   })
 
+  test('rejects usage errors instead of silently succeeding', async () => {
+    const cases = [
+      { argv: ['click'], message: 'missing value for click' },
+      { argv: ['cookies', 'invalid-action'], message: 'unsupported cookies action' },
+      { argv: ['click', '#field', 'extra'], message: 'unexpected extra argument' },
+      { argv: ['back', 'extra'], message: 'unexpected argument for back' },
+      { argv: ['screenshot', '--formt', 'jpeg'], message: 'unsupported screenshot option' },
+      { argv: ['wait', '#field', '--bogus'], message: 'unsupported wait option' },
+      {
+        argv: ['wait', '--text', 'a', '--url', 'b'],
+        message: 'wait modes cannot be combined',
+      },
+      { argv: ['tab', 'list', '--filter'], message: 'missing value for --filter' },
+      { argv: ['reload', '--wait-until'], message: 'reload --wait-until must be' },
+      {
+        argv: ['eval', '--file', 'script.js', '--stdin'],
+        message: '--stdin, --file, and --base64 cannot be combined',
+      },
+    ]
+
+    for (const testCase of cases) {
+      const result = await runCli(testCase.argv)
+      expect(result.exitCode).toBe(1)
+      expect(result.fetchCalls).toHaveLength(0)
+      expect(result.stderr).toContain(testCase.message)
+    }
+  })
+
+  test('passes flag-shaped text literally after a separator', async () => {
+    const typed = await runCli(['type', '#field', '--', '--submit'])
+    expect(typed.exitCode).toBe(0)
+    expect(typed.fetchCalls[0].body).toEqual({
+      command: 'type',
+      args: { selector: '#field', value: '--submit' },
+    })
+
+    const stored = await runCli(['storage', 'set', 'flag', '--', '--session'])
+    expect(stored.exitCode).toBe(0)
+    expect(stored.fetchCalls[0].body).toEqual({
+      command: 'storage',
+      args: { action: 'set', key: 'flag', value: '--session' },
+    })
+  })
+
   test('rejects unsupported network request flags before dispatching commands', async () => {
     const result = await runCli(['network', 'requests', '--filtter', 'api'])
 
@@ -2374,6 +2418,61 @@ describe('cli command routing', () => {
     expect(result.stdout).toContain('background')
   })
 
+  test('replay refuses redacted arguments without dispatching a command', async () => {
+    const result = await runCli(['replay'], undefined, {
+      fetchImpl: async (url) => {
+        if (String(url).endsWith('/status')) {
+          return Response.json({
+            snapshot: {
+              lastCommand: {
+                command: 'batch',
+                args: {
+                  steps: [
+                    { command: 'eval', args: { script: '[redacted]' } },
+                    { command: 'snapshot', args: {} },
+                  ],
+                },
+              },
+            },
+          })
+        }
+        throw new Error('redacted replay must not dispatch')
+      },
+    })
+
+    expect(result.exitCode).toBe(1)
+    expect(result.fetchCalls).toHaveLength(1)
+    expect(String(result.fetchCalls[0].url)).toBe('http://127.0.0.1:57979/status')
+    expect(result.stderr).toContain('cannot be replayed safely')
+  })
+
+  test('server stop prefers an explicit ipc port over persisted connection ports', async () => {
+    const homeDir = await mkdtemp(path.join(os.tmpdir(), 'autobrowser-stop-explicit-port-'))
+    const stateDir = path.join(homeDir, '.autobrowser')
+    await mkdir(stateDir, { recursive: true })
+    await writeFile(
+      path.join(stateDir, 'state.json'),
+      JSON.stringify({ token: 'stop-token', relayPort: 49011, ipcPort: 49012 }),
+    )
+
+    const result = await runCli(
+      ['--ipc-port', '49112', 'server', 'stop'],
+      { ok: true, result: { stopping: true } },
+      {
+        homeDir,
+        fetchImpl: async (url, init = {}) => {
+          expect(String(url)).toBe('http://127.0.0.1:49112/shutdown')
+          expect(init.headers?.authorization).toBe('Bearer stop-token')
+          return Response.json({ ok: true, result: { stopping: true } })
+        },
+      },
+    )
+
+    expect(result.exitCode).toBeUndefined()
+    expect(result.fetchCalls).toHaveLength(1)
+    expect(String(result.fetchCalls[0].url)).toBe('http://127.0.0.1:49112/shutdown')
+  })
+
   test('server stop asks the background server to shut down', async () => {
     const homeDir = await mkdtemp(path.join(os.tmpdir(), 'autobrowser-stop-test-'))
     const stateDir = path.join(homeDir, '.autobrowser')
@@ -2848,11 +2947,14 @@ describe('cli command routing', () => {
       },
     })
     expect(JSON.parse(result.stdout)).toMatchObject({
-      path: outputPath,
-      mimeType: 'image/jpeg',
-      format: 'jpeg',
-      full: true,
-      annotate: true,
+      ok: true,
+      result: {
+        path: outputPath,
+        mimeType: 'image/jpeg',
+        format: 'jpeg',
+        full: true,
+        annotate: true,
+      },
     })
     expect((await readFile(outputPath)).toString()).toBe('screenshot-bytes')
   })
@@ -2900,7 +3002,7 @@ describe('cli command routing', () => {
       },
     )
 
-    const savedPath = JSON.parse(result.stdout).path
+    const savedPath = JSON.parse(result.stdout).result.path
     const screenshotCall = result.fetchCalls.find((call) => call.body?.command === 'screenshot')
     expect(result.exitCode).toBe(0)
     expect(result.fetchCalls.length).toBeGreaterThanOrEqual(1)
@@ -2928,7 +3030,7 @@ describe('cli command routing', () => {
       },
     })
 
-    const savedPath = JSON.parse(result.stdout).path
+    const savedPath = JSON.parse(result.stdout).result.path
     expect(result.exitCode).toBe(0)
     expect(result.fetchCalls).toHaveLength(1)
     expect(result.fetchCalls[0].body).toEqual({
@@ -3894,31 +3996,33 @@ describe('cli network/session command forwarding', () => {
     })
   })
 
-  test('filters console messages by level on the CLI side', async () => {
+  test('forwards console level filtering to the paginated extension query', async () => {
     const payload = {
       ok: true,
       result: {
         messages: [
           { type: 'error', text: 'e', timestamp: 1 },
           { type: 'warning', text: 'w', timestamp: 2 },
-          { type: 'log', text: 'l', timestamp: 3 },
-          { type: 'debug', text: 'd', timestamp: 4 },
         ],
+        pagination: { currentPage: 0, totalPages: 2, hasNextPage: true },
       },
     }
 
-    const filtered = await runCli(['console', '--level', 'warning'], payload)
+    const filtered = await runCli(['console', '--level', 'warning', '--page-size', '1'], payload)
     expect(filtered.exitCode).toBe(0)
+    expect(filtered.fetchCalls[0].body).toEqual({
+      command: 'console',
+      args: { action: 'list', level: 'warning', pageSize: 1 },
+    })
     const filteredOutput = JSON.parse(filtered.stdout)
-    // warning 级别包含更严重的 error，排除 log/debug
     expect(filteredOutput.result.messages.map((message) => message.type)).toEqual([
       'error',
       'warning',
     ])
+    expect(filteredOutput.result.pagination).toEqual(payload.result.pagination)
 
     const unfiltered = await runCli(['console'], payload)
-    const unfilteredOutput = JSON.parse(unfiltered.stdout)
-    expect(unfilteredOutput.result.messages).toHaveLength(4)
+    expect(unfiltered.fetchCalls[0].body.args).not.toHaveProperty('level')
   })
 })
 

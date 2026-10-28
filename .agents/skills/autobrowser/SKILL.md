@@ -88,6 +88,12 @@ autobrowser 是一个面向 Chrome/Edge 的浏览器自动化 CLI，通过本地
 - 已发送命令断连时结果可能未知，不会自动重放。先检查 `status`、`command list` 与页面实际状态，确认副作用后再决定是否重试；取消/超时阻止后续 batch 步骤，但不能撤销已发生的操作或所有在途 CDP 调用。
 - batch 显式 `retries` 可能重复失败步骤已发生的副作用，不是幂等保证。提交、付款、删除等动作不要仅因报错就重放。
 
+## CLI 参数与回放
+
+- `--file`、`--stdin`、`--base64` 互斥；未知选项、冲突模式和缺参会返回非零退出码，不要把帮助文本或退出码 0 当成命令已执行。
+- 需要输入与选项同名的字面量时，在 `--` 后传值，例如 `type '#field' -- '--submit'`。
+- `replay` 会拒绝包含 `[redacted]` 的历史命令，防止把脱敏占位符当成真实参数执行；需要重放敏感操作时重新检查页面并显式构造命令。
+
 ## eval 使用边界
 
 - `eval` 适合执行小段页面上下文 JS，用于只读提取、状态检查或轻量验证。
@@ -110,16 +116,24 @@ autobrowser 是一个面向 Chrome/Edge 的浏览器自动化 CLI，通过本地
 - HAR 中断后先用 `network har status` 检查 checkpoint，再用 `network har recover [output.har]` 导出。
 - 在旧扩展上，`network har stop` 可能只返回元数据；CLI 会自动兜底重建 HAR。
 - 如果页面看起来空白或不对，先确认是不是登录页、验证码页，或者虚拟滚动列表。
-- 如果命令报 `command not found` 或退出码 127，这是链接产物或 PATH 的问题，**不是 autobrowser 不可用**：先确认 `bun` 目录在当前 shell 的 PATH 里；Windows 上改用 `autobrowser.cmd <子命令>`（包装器用绝对路径，任意目录下都可用，不要用依赖当前目录的相对路径调用）。这是 shell 解析问题，修好之后继续用 autobrowser，不要因此换方案。
+- 如果命令报 `command not found` 或退出码 127，这是链接产物或 PATH 的问题，**不是 autobrowser 不可用**：先确认 `bun` 目录在当前 shell 的 PATH 里；Windows 的 cmd.exe / PowerShell 改用 `autobrowser.exe <子命令>`，Git Bash 使用 `autobrowser <子命令>`。这是 shell 解析问题，修好之后继续用 autobrowser，不要因此换方案。
 - 对于类似 x.com 的 SPA 列表页，优先从 `article` 等可见节点读取内容，不要直接相信 `get text body`。
 - `eval` 超时或页面内异常时保持原任务目标，不要换方案；先用 `status`、`snapshot`、`console`、`errors` 诊断页面状态和脚本问题，再围绕原任务重试。
 
 ## AI 专属原则 (AI-Agent Exclusives)
 
 - ❗ **当 autobrowser 命令失败（如超时、找不到元素、被弹窗拦截、引用过期）时，明确禁止去尝试编写 Python/Selenium/Puppeteer 等其他框架脚本作为替代方案。**
-- ❗ **同样地，`command not found` / 退出码 127 也不算 autobrowser 不可用**，它只是 shell 找不到包装器。按回退策略里的排查顺序换一种调用方式（Windows 上用 `autobrowser.cmd`）后继续使用 autobrowser。
+- ❗ **同样地，`command not found` / 退出码 127 也不算 autobrowser 不可用**，它只是 shell 找不到包装器。按回退策略里的排查顺序换一种调用方式（Windows 上用 `autobrowser.exe`，Git Bash 用 `autobrowser`）后继续使用 autobrowser。
 - 失败通常意味着当前持有的页面状态已陈旧、网络缓慢或存在未处理的各类弹窗。应该仔细阅读报错和执行建议。
 - 遇到错误时，先通过 `status` 获取控制面状态；页面仍可响应时再运行 `snapshot`。页面卡死时用 `command list`、`tab list` 和 `target clear` 恢复目标后继续使用 autobrowser。
+
+## 问题跟踪
+
+- 执行中发现或复现 autobrowser 工具本身的问题时，先用 `gf issue list -R whiter001/autobrowser --platform github` 检查是否已有对应 issue，避免重复提交。
+- 确认是新问题后，用 `gf issue create -R whiter001/autobrowser --platform github` 提交；没有 gf 时可使用 `gh issue create`。
+- issue 应包含完整命令、实际输出、预期行为、运行环境和初步根因；区分已复现问题与代码审查推测。
+- 网络超时或响应丢失时先查询是否已创建成功，不要盲目重复 POST。
+- 修复后回 issue 评论验证结果并关闭；仅提出优化方向但未确认的问题，明确标注为建议。
 
 ## 更新约定
 

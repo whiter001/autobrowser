@@ -462,6 +462,12 @@ export function parseWaitArgs(rest: string[]): WaitArgs {
   }
 
   const positionals: string[] = []
+  const setType = (type: string): void => {
+    if (waitArgs.type && waitArgs.type !== type) {
+      throw new Error(`wait modes cannot be combined: ${waitArgs.type} and ${type}`)
+    }
+    waitArgs.type = type
+  }
 
   for (let index = 0; index < rest.length; index += 1) {
     const value = rest[index]
@@ -488,7 +494,7 @@ export function parseWaitArgs(rest: string[]): WaitArgs {
       if (rawText === undefined) {
         throw new Error('missing text value')
       }
-      waitArgs.type = 'text'
+      setType('text')
       waitArgs.text = rawText
       index += 1
       continue
@@ -504,7 +510,7 @@ export function parseWaitArgs(rest: string[]): WaitArgs {
       if (rawUrl === undefined) {
         throw new Error('missing url value')
       }
-      waitArgs.type = 'url'
+      setType('url')
       waitArgs.url = rawUrl
       index += 1
       continue
@@ -515,7 +521,7 @@ export function parseWaitArgs(rest: string[]): WaitArgs {
       if (rawFn === undefined) {
         throw new Error('missing fn value')
       }
-      waitArgs.type = 'fn'
+      setType('fn')
       waitArgs.fn = rawFn
       index += 1
       continue
@@ -529,25 +535,37 @@ export function parseWaitArgs(rest: string[]): WaitArgs {
             `unsupported --load value: ${rawLoadState} (expected load or networkidle)`,
           )
         }
-        waitArgs.type = rawLoadState
+        setType(rawLoadState)
         index += 1
       } else {
-        waitArgs.type = 'networkidle'
+        setType('networkidle')
       }
       continue
     }
 
     if (value === '--ms') {
       const rawMs = rest[index + 1]
-      waitArgs.type = 'time'
+      setType('time')
       waitArgs.ms = parseNumberArg(rawMs, 'ms', { min: 0, integer: true })
       index += 1
       continue
     }
 
-    if (!value.startsWith('--')) {
-      positionals.push(value)
+    if (value === '--') {
+      positionals.push(...rest.slice(index + 1))
+      break
     }
+
+    if (value.startsWith('--')) {
+      throw new Error(`unsupported wait option: ${value}`)
+    }
+    positionals.push(value)
+  }
+
+  if (waitArgs.type && positionals.length > 0) {
+    throw new Error(
+      `unexpected positional argument with wait --${waitArgs.type}: ${positionals[0]}`,
+    )
   }
 
   if (!waitArgs.type && positionals.length > 0) {
@@ -813,26 +831,28 @@ export function parseScreenshotArgs(rest: string[]): ScreenshotArgs {
       continue
     }
 
+    if (value.startsWith('--')) {
+      throw new Error(`unsupported screenshot option: ${value}`)
+    }
+
     // @eN 形式的 agent ref 不可能是文件路径，直接识别为元素目标；
     // 其余位置参数按惯例第一个是输出路径、第二个是元素 selector
-    if (!value.startsWith('--')) {
-      if (value.startsWith('@') && !screenshotArgs.element) {
-        screenshotArgs.element = value
-        continue
-      }
-
-      if (!screenshotArgs.path) {
-        screenshotArgs.path = value
-        continue
-      }
-
-      if (!screenshotArgs.element) {
-        screenshotArgs.element = value
-        continue
-      }
-
-      throw new Error(`unexpected extra argument for screenshot: ${value}`)
+    if (value.startsWith('@') && !screenshotArgs.element) {
+      screenshotArgs.element = value
+      continue
     }
+
+    if (!screenshotArgs.path) {
+      screenshotArgs.path = value
+      continue
+    }
+
+    if (!screenshotArgs.element) {
+      screenshotArgs.element = value
+      continue
+    }
+
+    throw new Error(`unexpected extra argument for screenshot: ${value}`)
   }
 
   if (screenshotArgs.element && screenshotArgs.full) {

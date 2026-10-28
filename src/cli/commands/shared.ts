@@ -19,9 +19,12 @@ export function readRequiredArg(
   context: CommandContext,
   helpPath: string[],
 ): string | undefined {
-  if (isHelpToken(value) || !value) {
+  if (isHelpToken(value)) {
     context.writeHelp(helpPath)
     return undefined
+  }
+  if (!value) {
+    throw new Error(`missing value for ${helpPath.join(' ')}`)
   }
 
   return value
@@ -33,9 +36,14 @@ export function readAllowedArg<T extends string>(
   helpPath: string[],
   allowed: readonly T[],
 ): T | undefined {
-  if (isHelpToken(value) || !value || !allowed.includes(value as T)) {
+  if (isHelpToken(value)) {
     context.writeHelp(helpPath)
     return undefined
+  }
+  if (!value || !allowed.includes(value as T)) {
+    throw new Error(
+      `unsupported ${helpPath.join(' ')} action: ${value || '(empty)'} (expected ${allowed.join('|')})`,
+    )
   }
 
   return value as T
@@ -70,6 +78,9 @@ export function createNoArgRequestCommand(options: {
     if (helpRequested(rest[0], context, options.helpPath)) {
       return 0
     }
+    if (rest.length > 0) {
+      throw new Error(`unexpected argument for ${options.helpPath.join(' ')}: ${rest[0]}`)
+    }
 
     await requestAndWrite(context, options.command, options.args ?? {})
     return 0
@@ -82,9 +93,13 @@ export function createSingleArgRequestCommand(options: {
   argName: string
 }): CommandHandler {
   return async (rest, context) => {
-    const value = readRequiredArg(rest[0], context, options.helpPath)
+    const args = rest[0] === '--' ? rest.slice(1) : rest
+    const value = readRequiredArg(args[0], context, options.helpPath)
     if (!value) {
       return 0
+    }
+    if (args.length > 1) {
+      throw new Error(`unexpected extra argument for ${options.helpPath.join(' ')}: ${args[1]}`)
     }
 
     await requestAndWrite(context, options.command, {

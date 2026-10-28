@@ -465,11 +465,14 @@ async function handleScreenshot(rest: string[], context: CommandContext): Promis
 
   if (context.flags.json) {
     context.writeResult({
-      path: outputPath,
-      mimeType,
-      format: screenshotArgs.format,
-      full: screenshotArgs.full,
-      annotate: screenshotArgs.annotate,
+      ok: true,
+      result: {
+        path: outputPath,
+        mimeType,
+        format: screenshotArgs.format,
+        full: screenshotArgs.full,
+        annotate: screenshotArgs.annotate,
+      },
     })
     return 0
   }
@@ -488,7 +491,24 @@ const handleReload: CommandHandler = async (rest, context) => {
   for (let index = 0; index < rest.length; index += 1) {
     const value = rest[index]
     if (value === '--wait-until') {
-      args.waitUntil = rest[++index]
+      const waitUntil = rest[index + 1]
+      if (
+        ![
+          'none',
+          'commit',
+          'domcontentloaded',
+          'interactive',
+          'load',
+          'networkidle',
+          'domquiet',
+        ].includes(waitUntil || '')
+      ) {
+        return writeCommandError(
+          'reload --wait-until must be none|commit|domcontentloaded|interactive|load|networkidle|domquiet',
+        )
+      }
+      args.waitUntil = waitUntil
+      index += 1
       continue
     }
     if (value === '--timeout-ms') {
@@ -679,23 +699,6 @@ async function handleWait(rest: string[], context: CommandContext): Promise<numb
   return 0
 }
 
-const CONSOLE_LEVEL_ORDER = ['error', 'warning', 'info', 'debug'] as const
-
-function consoleTypeRank(type: string): number {
-  // CDP consoleAPICalled 的 type 细分很多（log/dir/table/...），除 error/warning/debug 外
-  // 一律归入 info，与 Playwright 的 level 语义对齐
-  if (type === 'error') {
-    return 0
-  }
-  if (type === 'warning') {
-    return 1
-  }
-  if (type === 'debug') {
-    return 3
-  }
-  return 2
-}
-
 const handleConsole: CommandHandler = async (rest, context) => {
   if (helpRequested(rest[0], context, ['console'])) {
     return 0
@@ -708,27 +711,12 @@ const handleConsole: CommandHandler = async (rest, context) => {
 
   const payload = await context.requestCommand(context.flags.server, 'console', {
     action: consoleArgs.action || 'list',
+    ...(consoleArgs.level ? { level: consoleArgs.level } : {}),
     ...(consoleArgs.since !== undefined ? { since: consoleArgs.since } : {}),
     ...(consoleArgs.allEpochs ? { allEpochs: true } : {}),
     ...(consoleArgs.pageIdx !== undefined ? { pageIdx: consoleArgs.pageIdx } : {}),
     ...(consoleArgs.pageSize !== undefined ? { pageSize: consoleArgs.pageSize } : {}),
   })
-  // --level 语义与 Playwright 一致：每个级别包含更严重的消息（error < warning < info < debug）
-  if (consoleArgs.level && payload.ok && isRecord(payload.result)) {
-    const maxRank = CONSOLE_LEVEL_ORDER.indexOf(consoleArgs.level)
-    const messages = Array.isArray(payload.result.messages) ? payload.result.messages : []
-    context.writeResult({
-      ...payload,
-      result: {
-        ...payload.result,
-        messages: messages.filter((message) =>
-          isRecord(message) ? consoleTypeRank(String(message.type || '')) <= maxRank : true,
-        ),
-      },
-    })
-    return 0
-  }
-
   context.writeResult(payload)
   return 0
 }

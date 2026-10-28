@@ -15,7 +15,7 @@
 
 运行 `autobrowser help` 可以查看完整命令树。`src/cli.ts` 里的 help 输出是权威来源，也会说明根级标志位，例如 `--tab`、`--frame` 和 `--auto-connect`。
 
-如果你想看一个使用最小 `autobrowser.cmd` 转发器的 Windows 启动示例，请参见 [`docs/windows-demo.md`](docs/windows-demo.md)。
+如果你想看 Windows 原生 exe 与 sh 启动示例，请参见 [`docs/windows-demo.md`](docs/windows-demo.md)。
 
 ## 安装
 

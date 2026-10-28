@@ -12,6 +12,6 @@
 
 - [`overview.md`](overview.md) — 核心流程、常用命令和功能地图。
 - [`install.md`](install.md) — 未打包扩展的安装、已保存连接配置以及兜底路径。
-- [`windows-demo.md`](windows-demo.md) — 面向 Windows 的启动示例，使用最小化的 `autobrowser.cmd` 转发器。
+- [`windows-demo.md`](windows-demo.md) — 面向 Windows 的原生 exe 与 sh 启动示例。
 - [`bun-link.md`](bun-link.md) — Bun 包装器行为和 link 脚本细节。
 - [`agent-design.md`](agent-design.md) — 面向 agent 的路线图、协议缺口和下一步建议调整。

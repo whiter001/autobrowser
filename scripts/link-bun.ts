@@ -1,8 +1,11 @@
-import { access, chmod, writeFile } from 'node:fs/promises'
+import { access, chmod, rm, writeFile } from 'node:fs/promises'
+import { execFile } from 'node:child_process'
+import { promisify } from 'node:util'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import os from 'node:os'
 
+const execFileAsync = promisify(execFile)
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
 const rootDir = path.resolve(__dirname, '..')
@@ -26,7 +29,7 @@ const bunDir = path.dirname(bunPath)
 const isWindows = os.platform() === 'win32'
 
 // 无扩展名的 sh 包装器：Git Bash / WSL 这类 POSIX shell 只会按字面名查找，
-// 不会把 autobrowser 补成 autobrowser.cmd，所以 Windows 上也必须放一份
+// Windows 上另提供原生 exe，避免批处理 %* 二次展开脚本参数
 const shWrapper = `#!/usr/bin/env sh
 exec ${JSON.stringify(bunPath)} ${JSON.stringify(distEntry)} "$@"
 `
@@ -34,13 +37,24 @@ exec ${JSON.stringify(bunPath)} ${JSON.stringify(distEntry)} "$@"
 const written: string[] = []
 
 if (isWindows) {
-  const cmdPath = path.join(bunDir, 'autobrowser.cmd')
-  await writeFile(
-    cmdPath,
-    `@echo off\r\nsetlocal\r\n${JSON.stringify(bunPath)} ${JSON.stringify(distEntry)} %*\r\n`,
-    'utf8',
+  const executablePath = path.join(bunDir, 'autobrowser.exe')
+  await execFileAsync(
+    bunPath,
+    [
+      'build',
+      path.join(rootDir, 'scripts', 'windows-launcher.ts'),
+      '--compile',
+      `--outfile=${executablePath}`,
+      '--define',
+      `AUTOBROWSER_BUN_PATH=${JSON.stringify(bunPath.replaceAll('\\', '/'))}`,
+      '--define',
+      `AUTOBROWSER_DIST_ENTRY=${JSON.stringify(distEntry.replaceAll('\\', '/'))}`,
+    ],
+    { cwd: rootDir },
   )
-  written.push(cmdPath)
+  // 旧批处理会把 %VARIABLE% 当环境变量展开，不能继续留在 PATH 中误导调用方。
+  await rm(path.join(bunDir, 'autobrowser.cmd'), { force: true })
+  written.push(executablePath)
 }
 
 const shPath = path.join(bunDir, 'autobrowser')

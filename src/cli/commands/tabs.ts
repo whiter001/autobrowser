@@ -21,7 +21,12 @@ async function handleTab(rest: string[], context: CommandContext): Promise<numbe
         continue
       }
       if (value === '--filter') {
-        args.filter = tabArgs[++index]
+        const filter = tabArgs[index + 1]
+        if (filter === undefined) {
+          throw new Error('missing value for --filter')
+        }
+        args.filter = filter
+        index += 1
         continue
       }
       if (value === '--page' || value === '--page-idx') {
