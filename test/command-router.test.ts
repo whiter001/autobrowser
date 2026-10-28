@@ -68,7 +68,13 @@ function createMinimalRouter(overrides?: {
   getRequestDetail?: () => Promise<unknown>
   clickSelector?: (tabId: unknown, selector: unknown) => Promise<unknown>
   typeIntoSelector?: (tabId: unknown, selector: unknown) => Promise<unknown>
+  sendDebuggerCommand?: (
+    tabId: number,
+    method: string,
+    params?: Record<string, unknown>,
+  ) => Promise<unknown>
 }) {
+  const cdpCalls: Array<{ tabId: number; method: string; params?: Record<string, unknown> }> = []
   const snapshotCalls: Array<{ tabId: unknown; frameSelector: unknown; options?: unknown }> = []
   const feedCalls: Array<{
     tabId: unknown
@@ -92,6 +98,11 @@ function createMinimalRouter(overrides?: {
     frameSelector: unknown
   }> = []
   const downloadsCalls: Array<{ method: string; args: unknown[] }> = []
+  const dropCalls: Array<{ args: unknown[] }> = []
+  const mouseCalls: Array<{ method: string; args: unknown[] }> = []
+  const elementToolCalls: Array<{ method: string; args: unknown[] }> = []
+  const tracingCalls: Array<{ action: string; tabId: unknown }> = []
+  const videoCalls: Array<{ action: string; args: unknown[] }> = []
 
   const state = {
     targeting: {
@@ -108,6 +119,8 @@ function createMinimalRouter(overrides?: {
       consoleMessages: [] as unknown[],
       pageErrors: [] as unknown[],
       emulation: new Map<number, Record<string, unknown>>(),
+      actionLog: [] as Array<Record<string, unknown>>,
+      autoSnapshot: false,
     },
   }
 
@@ -128,6 +141,12 @@ function createMinimalRouter(overrides?: {
           return { navigated: true, url }
         }),
       evaluateScript: async () => undefined,
+      generateLocator: async (...args: unknown[]) => {
+        elementToolCalls.push({ method: 'locator', args })
+      },
+      highlightElement: async (...args: unknown[]) => {
+        elementToolCalls.push({ method: 'highlight', args })
+      },
       clickSelector: async (_tabId: unknown, selector: unknown) => {
         clickCalls.push({ tabId: _tabId, selector })
         if (overrides?.clickSelector) return overrides.clickSelector(_tabId, selector)
@@ -178,6 +197,18 @@ function createMinimalRouter(overrides?: {
       scrollElement: async () => undefined,
       scrollIntoViewSelector: async () => undefined,
       dragElement: async () => undefined,
+      dropData: async (...args: unknown[]) => {
+        dropCalls.push({ args })
+      },
+      mouseMove: async (...args: unknown[]) => {
+        mouseCalls.push({ method: 'move', args })
+      },
+      mouseButton: async (...args: unknown[]) => {
+        mouseCalls.push({ method: 'button', args })
+      },
+      mouseWheel: async (...args: unknown[]) => {
+        mouseCalls.push({ method: 'wheel', args })
+      },
       uploadFiles: async () => undefined,
       navigateBack: async () => undefined,
       navigateForward: async () => undefined,
@@ -347,13 +378,67 @@ function createMinimalRouter(overrides?: {
       removeScript: async (id: string) => ({ removed: id, scripts: [] }),
       removeAllScripts: async () => ({ removed: ['script_1'], scripts: [] }),
     } as never,
+    tracing: {
+      start: async (tabId: unknown) => {
+        tracingCalls.push({ action: 'start', tabId })
+        return { recording: true }
+      },
+      status: async (tabId: unknown) => {
+        tracingCalls.push({ action: 'status', tabId })
+        return { recording: false }
+      },
+      stop: async (tabId: unknown) => {
+        tracingCalls.push({ action: 'stop', tabId })
+        return { recording: false, data: '{"events":[]}', base64Encoded: false }
+      },
+    },
+    video: {
+      start: async (...args: unknown[]) => {
+        videoCalls.push({ action: 'start', args })
+        return { recording: true }
+      },
+      status: async (...args: unknown[]) => {
+        videoCalls.push({ action: 'status', args })
+        return { recording: true }
+      },
+      stop: async (...args: unknown[]) => {
+        videoCalls.push({ action: 'stop', args })
+        return { recording: false, data: 'VklERU8=', chapters: [] }
+      },
+      chapter: async (...args: unknown[]) => {
+        videoCalls.push({ action: 'chapter', args })
+        return { added: true }
+      },
+      showActions: async (...args: unknown[]) => {
+        videoCalls.push({ action: 'show-actions', args })
+        return { showActions: true }
+      },
+      hideActions: async (...args: unknown[]) => {
+        videoCalls.push({ action: 'hide-actions', args })
+        return { showActions: false }
+      },
+      handleAction: async (...args: unknown[]) => {
+        videoCalls.push({ action: 'handle-action', args })
+      },
+    },
     listTabs: (overrides?.listTabs ?? (async () => [])) as never,
     getTargetTab: (overrides?.getTargetTab ?? (async () => ({ id: 1 }))) as never,
+    sendDebuggerCommand: async (
+      tabId: number,
+      method: string,
+      params?: Record<string, unknown>,
+    ) => {
+      cdpCalls.push({ tabId, method, params })
+      if (overrides?.sendDebuggerCommand)
+        return await overrides.sendDebuggerCommand(tabId, method, params)
+      return { answered: true }
+    },
   } as never)
 
   return {
     router,
     state,
+    cdpCalls,
     snapshotCalls,
     feedCalls,
     navigateCalls,
@@ -368,6 +453,11 @@ function createMinimalRouter(overrides?: {
     listRequestsCalls,
     searchCalls,
     downloadsCalls,
+    dropCalls,
+    mouseCalls,
+    elementToolCalls,
+    tracingCalls,
+    videoCalls,
   }
 }
 
@@ -2544,5 +2634,175 @@ describe('command target pinning', () => {
     await expect(queued).rejects.toMatchObject({ code: 'MODAL_OPEN' })
     await stuck
     expect(clickCalls).toEqual([])
+  })
+})
+
+describe('raw CDP command', () => {
+  test('forwards tab-scoped methods, params and results', async () => {
+    const { router, cdpCalls } = createMinimalRouter({
+      getTargetTab: async () => ({ id: 7 }),
+      sendDebuggerCommand: async () => ({ value: 42 }),
+    })
+    const result = await router.handleCommand({
+      command: 'cdp',
+      args: {
+        tabId: 7,
+        method: 'Runtime.evaluate',
+        params: { expression: '6 * 7', returnByValue: true },
+      },
+    })
+    expect(cdpCalls).toEqual([
+      {
+        tabId: 7,
+        method: 'Runtime.evaluate',
+        params: { expression: '6 * 7', returnByValue: true },
+      },
+    ])
+    expect(result).toMatchObject({ method: 'Runtime.evaluate', result: { value: 42 } })
+  })
+
+  test('propagates debugger failures', async () => {
+    const failure = Object.assign(new Error('CDP failed'), { code: 'CDP_ERROR' })
+    const { router } = createMinimalRouter({
+      sendDebuggerCommand: async () => {
+        throw failure
+      },
+    })
+    await expect(
+      router.handleCommand({ command: 'cdp', args: { method: 'Runtime.enable' } }),
+    ).rejects.toBe(failure)
+  })
+})
+
+describe('coordinate mouse and drop routing', () => {
+  test('forwards drop data and frame targets', async () => {
+    const { router, dropCalls } = createMinimalRouter()
+    await router.handleCommand({
+      command: 'drop',
+      args: {
+        selector: '#drop',
+        frame: '@f1',
+        data: { 'text/plain': 'hello' },
+        files: [{ name: 'a.txt', mimeType: 'text/plain', dataBase64: 'YQ==' }],
+      },
+    })
+    expect(dropCalls[0]!.args.slice(0, 5)).toEqual([
+      1,
+      '#drop',
+      { 'text/plain': 'hello' },
+      [{ name: 'a.txt', mimeType: 'text/plain', dataBase64: 'YQ==' }],
+      '@f1',
+    ])
+  })
+
+  test('forwards coordinates, button and wheel deltas', async () => {
+    const { router, mouseCalls } = createMinimalRouter()
+    await router.handleCommand({ command: 'mousemove', args: { x: 10, y: 20 } })
+    await router.handleCommand({ command: 'mousedown', args: { button: 'right' } })
+    await router.handleCommand({ command: 'mousewheel', args: { deltaX: 0, deltaY: 100 } })
+    await router.handleCommand({ command: 'mouseup', args: {} })
+    expect(mouseCalls.map((call) => call.method)).toEqual(['move', 'button', 'wheel', 'button'])
+    expect(mouseCalls[0]!.args.slice(1, 3)).toEqual([10, 20])
+    expect(mouseCalls[1]!.args.slice(1, 3)).toEqual([true, 'right'])
+    expect(mouseCalls[2]!.args.slice(1, 3)).toEqual([0, 100])
+    expect(mouseCalls[3]!.args.slice(1, 3)).toEqual([false, 'left'])
+  })
+})
+
+describe('element tooling routing', () => {
+  test('forwards locator and highlight targets', async () => {
+    const { router, elementToolCalls } = createMinimalRouter()
+    await router.handleCommand({ command: 'locator', args: { selector: '@e1', frame: '@f1' } })
+    await router.handleCommand({
+      command: 'highlight',
+      args: { selector: '@e1', style: '2px solid red', frame: '@f1' },
+    })
+    expect(elementToolCalls[0]).toMatchObject({ method: 'locator' })
+    expect(elementToolCalls[0]!.args.slice(1, 3)).toEqual(['@e1', '@f1'])
+    expect(elementToolCalls[1]).toMatchObject({ method: 'highlight' })
+    expect(elementToolCalls[1]!.args.slice(1, 5)).toEqual(['@e1', '2px solid red', false, '@f1'])
+  })
+})
+
+describe('diagnostics and automatic snapshots', () => {
+  test('records successful and failed actions without argument values', async () => {
+    const { router, state } = createMinimalRouter()
+    await router.handleCommand({ command: 'click', args: { selector: '#safe' }, id: 'command-1' })
+    await expect(
+      router.handleCommand({ command: 'click', args: { selector: '#missing' }, id: 'command-2' }),
+    ).rejects.toMatchObject({ code: 'STALE_REFERENCE' })
+    const timeline = await router.handleCommand({ command: 'actions', args: { action: 'list' } })
+    expect(timeline).toMatchObject({
+      actions: [
+        { id: 'command-1', command: 'click', ok: true },
+        { id: 'command-2', command: 'click', ok: false },
+      ],
+    })
+    expect(JSON.stringify(timeline)).not.toContain('#safe')
+    expect(JSON.stringify(timeline)).not.toContain('#missing')
+    expect(state.session.actionLog).toHaveLength(3)
+    await expect(
+      router.handleCommand({ command: 'actions', args: { action: 'clear' } }),
+    ).resolves.toMatchObject({
+      cleared: true,
+      count: 3,
+    })
+  })
+
+  test('attaches snapshots only after enabled actions and preserves results on snapshot failure', async () => {
+    const { router, state } = createMinimalRouter()
+    await router.handleCommand({ command: 'set', args: { type: 'auto-snapshot', enabled: true } })
+    expect(state.session.autoSnapshot).toBe(true)
+    const clicked = await router.handleCommand({ command: 'click', args: { selector: '#ok' } })
+    expect(clicked).toMatchObject({ found: true, snapshot: { snapshotId: 'snapshot-1' } })
+    await expect(
+      router.handleCommand({ command: 'snapshot', args: {} }),
+    ).resolves.not.toHaveProperty('snapshot.snapshotId')
+  })
+
+  test('returns snapshotError without replacing the successful action', async () => {
+    const { router } = createMinimalRouter({
+      snapshotTab: async () => {
+        throw new Error('snapshot failed')
+      },
+    })
+    await router.handleCommand({ command: 'set', args: { type: 'auto-snapshot', enabled: true } })
+    await expect(
+      router.handleCommand({ command: 'click', args: { selector: '#ok' } }),
+    ).resolves.toMatchObject({
+      found: true,
+      snapshotError: 'snapshot failed',
+    })
+  })
+
+  test('forwards tracing lifecycle actions', async () => {
+    const { router, tracingCalls } = createMinimalRouter()
+    await router.handleCommand({ command: 'tracing', args: { action: 'start' } })
+    await router.handleCommand({ command: 'tracing', args: { action: 'status' } })
+    await router.handleCommand({ command: 'tracing', args: { action: 'stop' } })
+    expect(tracingCalls.map((call) => call.action)).toEqual(['start', 'status', 'stop'])
+  })
+
+  test('forwards video lifecycle and non-blocking action callouts', async () => {
+    const { router, state, videoCalls } = createMinimalRouter()
+    state.targeting.targetTabId = 1
+    await router.handleCommand({ command: 'video', args: { action: 'start', maxDurationMs: 1000 } })
+    await router.handleCommand({
+      command: 'video',
+      args: { action: 'chapter', title: 'Chapter', description: 'Details', durationMs: 500 },
+    })
+    await router.handleCommand({
+      command: 'video',
+      args: { action: 'show-actions', durationMs: 600, highlightStyle: '2px solid red' },
+    })
+    await router.handleCommand({ command: 'click', args: { selector: '#ok' } })
+    await router.handleCommand({ command: 'video', args: { action: 'hide-actions' } })
+    await router.handleCommand({ command: 'video', args: { action: 'stop' } })
+    expect(
+      videoCalls.filter((call) => call.action !== 'handle-action').map((call) => call.action),
+    ).toEqual(['start', 'chapter', 'show-actions', 'hide-actions', 'stop'])
+    expect(
+      videoCalls.some((call) => call.action === 'handle-action' && call.args[0] === 'click'),
+    ).toBe(true)
   })
 })

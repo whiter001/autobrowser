@@ -30,6 +30,7 @@ const SMOKE_PAGE_HTML = `<!doctype html>
     <button id="regression-click" onclick="this.dataset.clicks = String(Number(this.dataset.clicks || 0) + 1)">Top click</button>
     <div id="editable" contenteditable="true"></div>
     <input id="form-input" type="text" />
+    <div id="drop-zone" style="width:200px;height:60px;border:1px solid">Drop here</div>
     <iframe id="offset-frame" style="display:block; margin:45px 0 0 170px; border:13px solid black; width:340px; height:150px"
       srcdoc="<!doctype html><html><body style='margin:20px'><button id='regression-click' data-clicks='0' onclick='this.dataset.clicks = String(Number(this.dataset.clicks) + 1)'>Frame click</button></body></html>"></iframe>
     <script>
@@ -45,6 +46,14 @@ const SMOKE_PAGE_HTML = `<!doctype html>
       button.addEventListener('click', () => {
         count += 1;
         counter.textContent = String(count);
+      });
+      const dropZone = document.getElementById('drop-zone');
+      dropZone.addEventListener('dragover', event => event.preventDefault());
+      dropZone.addEventListener('drop', event => {
+        event.preventDefault();
+        dropZone.dataset.text = event.dataTransfer.getData('text/plain');
+        const file = event.dataTransfer.files[0];
+        if (file) file.text().then(text => { dropZone.dataset.fileText = text; });
       });
     </script>
   </body>
@@ -777,6 +786,103 @@ suite('live browser smoke test', () => {
     })
     expect(evalResponse.ok).toBe(true)
     expect(evalResponse.result).toBe('1')
+  }, 30_000)
+
+  test('executes raw tab-scoped CDP methods', async () => {
+    const response = await command('cdp', {
+      method: 'Runtime.evaluate',
+      params: { expression: '6 * 7', returnByValue: true },
+    })
+    expect(response.ok).toBe(true)
+    const result = response.result as {
+      method?: string
+      result?: { result?: { value?: number } }
+    }
+    expect(result.method).toBe('Runtime.evaluate')
+    expect(result.result?.result?.value).toBe(42)
+  }, 30_000)
+
+  test('records tracing, action timeline and automatic snapshots', async () => {
+    await checkedCommand('set', { type: 'auto-snapshot', enabled: true })
+    const clicked = await checkedCommand<{ snapshot?: { elements?: unknown[] } }>('click', {
+      selector: '#increment',
+    })
+    expect(Array.isArray(clicked.snapshot?.elements)).toBe(true)
+    await checkedCommand('set', { type: 'auto-snapshot', enabled: false })
+
+    const timeline = await checkedCommand<{ actions: Array<{ command: string; ok: boolean }> }>(
+      'actions',
+      { action: 'list' },
+    )
+    expect(timeline.actions.some((entry) => entry.command === 'click' && entry.ok)).toBe(true)
+    expect(JSON.stringify(timeline)).not.toContain('#increment')
+
+    await checkedCommand('tracing', { action: 'start' })
+    const trace = await checkedCommand<{ data: string; base64Encoded: boolean }>('tracing', {
+      action: 'stop',
+    })
+    expect(trace.data.length).toBeGreaterThan(0)
+  }, 30_000)
+
+  test('supports coordinate mouse input and text/file drops', async () => {
+    const point = await checkedCommand<{ x: number; y: number }>('eval', {
+      script: `(() => {
+        const rect = document.getElementById('increment').getBoundingClientRect();
+        return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
+      })()`,
+    })
+    await checkedCommand('mousemove', point)
+    await checkedCommand('mousedown', { button: 'left' })
+    await checkedCommand('mouseup', { button: 'left' })
+    expect(
+      await checkedCommand<string>('eval', {
+        script: 'document.getElementById("counter").textContent',
+      }),
+    ).toBe('1')
+
+    await checkedCommand('drop', {
+      selector: '#drop-zone',
+      data: { 'text/plain': 'dropped text' },
+      files: [{ name: 'note.txt', mimeType: 'text/plain', dataBase64: 'ZmlsZSBkcm9w' }],
+    })
+    expect(
+      await checkedCommand<string>('eval', {
+        script: 'document.getElementById("drop-zone").dataset.text',
+      }),
+    ).toBe('dropped text')
+    await checkedCommand('wait', {
+      fn: 'document.getElementById("drop-zone").dataset.fileText === "file drop"',
+      timeout: 5000,
+    })
+  }, 30_000)
+
+  test('evaluates elements, generates locators and restores highlights', async () => {
+    const locator = await checkedCommand<{ selector: string; unique: boolean }>('locator', {
+      selector: '#increment',
+    })
+    expect(locator.selector).toBe('#increment')
+    expect(locator.unique).toBe(true)
+    expect(
+      await checkedCommand<string>('eval', {
+        element: locator.selector,
+        script: 'el => el.textContent',
+      }),
+    ).toBe('Increment')
+
+    await checkedCommand('highlight', { selector: locator.selector, style: '3px dashed red' })
+    expect(
+      await checkedCommand<string>('eval', {
+        element: locator.selector,
+        script: 'el => el.style.outline',
+      }),
+    ).toBe('3px dashed red')
+    await checkedCommand('highlight', { selector: locator.selector, hide: true })
+    expect(
+      await checkedCommand<string>('eval', {
+        element: locator.selector,
+        script: 'el => el.style.outline',
+      }),
+    ).toBe('')
   }, 30_000)
 
   test('fill sets the input value', async () => {

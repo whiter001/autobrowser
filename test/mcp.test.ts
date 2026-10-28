@@ -41,6 +41,17 @@ const KNOWN_TOOL_NAMES = [
   'dialog',
   'cookies',
   'storage',
+  'locator',
+  'highlight',
+  'drop',
+  'mouse_move',
+  'mouse_down',
+  'mouse_up',
+  'mouse_wheel',
+  'video',
+  'tracing',
+  'actions',
+  'auto_snapshot',
   'fill_form',
 ]
 
@@ -69,7 +80,7 @@ function okResult(result: unknown): CommandResponse {
 }
 
 describe('AutobrowserMcpServer.listTools', () => {
-  test('exposes all 29 tools with object-typed input schemas', () => {
+  test('exposes all 41 tools with object-typed input schemas', () => {
     const server = new AutobrowserMcpServer({ requestCommand: async () => okResult({}) })
     const tools = server.listTools()
 
@@ -146,6 +157,38 @@ describe('AutobrowserMcpServer.callTool', () => {
         command: 'cdp',
         args: { method: 'Runtime.evaluate', params: { expression: '6 * 7' }, tabId: 't2' },
       },
+    ])
+  })
+
+  test('drop and mouse tools forward structured args and supported targets', async () => {
+    const mock = recordingRequestCommand(okResult({}))
+    const server = new AutobrowserMcpServer({ requestCommand: mock })
+    await server.callTool('drop', {
+      selector: '#drop',
+      data: { 'text/plain': 'hello' },
+      tab: 't2',
+      frame: '@f1',
+    })
+    await server.callTool('mouse_move', { x: 10, y: 20, tab: 't2', frame: '@f1' })
+    expect(mock.calls).toEqual([
+      {
+        command: 'drop',
+        args: { selector: '#drop', data: { 'text/plain': 'hello' }, tabId: 't2', frame: '@f1' },
+      },
+      { command: 'mousemove', args: { x: 10, y: 20, tabId: 't2' } },
+    ])
+  })
+
+  test('element eval, locator and highlight forward target options', async () => {
+    const mock = recordingRequestCommand(okResult({}))
+    const server = new AutobrowserMcpServer({ requestCommand: mock })
+    await server.callTool('eval', { script: 'el => el.textContent', element: '@e1', frame: '@f1' })
+    await server.callTool('locator', { selector: '@e1', tab: 't2', frame: '@f1' })
+    await server.callTool('highlight', { selector: '@e1', style: '2px solid red', hide: false })
+    expect(mock.calls).toEqual([
+      { command: 'eval', args: { script: 'el => el.textContent', element: '@e1', frame: '@f1' } },
+      { command: 'locator', args: { selector: '@e1', tabId: 't2', frame: '@f1' } },
+      { command: 'highlight', args: { selector: '@e1', style: '2px solid red', hide: false } },
     ])
   })
 
@@ -406,6 +449,63 @@ describe('AutobrowserMcpServer.callTool', () => {
       width: 800,
       height: 600,
     })
+  })
+
+  test('writes WebM and chapter sidecar files', async () => {
+    const tempHome = await mkdtemp(path.join(os.tmpdir(), 'autobrowser-mcp-video-'))
+    const previousHome = process.env.AUTOBROWSER_HOME
+    process.env.AUTOBROWSER_HOME = tempHome
+    try {
+      const mock = recordingRequestCommand(
+        okResult({
+          recording: false,
+          data: Buffer.from('video').toString('base64'),
+          bytes: 5,
+          chapters: [{ title: 'One' }],
+        }),
+      )
+      const server = new AutobrowserMcpServer({ requestCommand: mock })
+      const result = await server.callTool('video', { action: 'stop', tab: 't2' })
+      expect(mock.calls).toEqual([{ command: 'video', args: { action: 'stop', tabId: 't2' } }])
+      const savedPath = (result.structuredContent as { path: string }).path
+      const chaptersPath = (result.structuredContent as { chaptersPath: string }).chaptersPath
+      expect(savedPath).toContain(path.join(tempHome, '.autobrowser', 'videos'))
+      expect((await stat(savedPath)).size).toBe(5)
+      expect((await stat(chaptersPath)).size).toBeGreaterThan(0)
+      expect(result.structuredContent).not.toHaveProperty('data')
+    } finally {
+      if (previousHome === undefined) delete process.env.AUTOBROWSER_HOME
+      else process.env.AUTOBROWSER_HOME = previousHome
+      await rm(tempHome, { recursive: true, force: true })
+    }
+  })
+
+  test('writes traces to disk and forwards diagnostic controls', async () => {
+    const tempHome = await mkdtemp(path.join(os.tmpdir(), 'autobrowser-mcp-trace-'))
+    const previousHome = process.env.AUTOBROWSER_HOME
+    process.env.AUTOBROWSER_HOME = tempHome
+    try {
+      const mock = recordingRequestCommand(
+        okResult({ recording: false, data: '{"events":[]}', base64Encoded: false, bytes: 12 }),
+      )
+      const server = new AutobrowserMcpServer({ requestCommand: mock })
+      await server.callTool('auto_snapshot', { enabled: true, tab: 't2' })
+      await server.callTool('actions', { action: 'clear' })
+      const result = await server.callTool('tracing', { action: 'stop', tab: 't2' })
+      expect(mock.calls).toEqual([
+        { command: 'set', args: { type: 'auto-snapshot', enabled: true, tabId: 't2' } },
+        { command: 'actions', args: { action: 'clear' } },
+        { command: 'tracing', args: { action: 'stop', tabId: 't2' } },
+      ])
+      const savedPath = (result.structuredContent as { path: string }).path
+      expect(savedPath).toContain(path.join(tempHome, '.autobrowser', 'tracing'))
+      expect((await stat(savedPath)).size).toBe(Buffer.byteLength('{"events":[]}'))
+      expect(result.structuredContent).not.toHaveProperty('data')
+    } finally {
+      if (previousHome === undefined) delete process.env.AUTOBROWSER_HOME
+      else process.env.AUTOBROWSER_HOME = previousHome
+      await rm(tempHome, { recursive: true, force: true })
+    }
   })
 
   test('writes screenshots over 2MB to disk instead of inlining base64', async () => {

@@ -489,11 +489,19 @@ const MCP_TOOLS: McpToolDefinition[] = [
     inputSchema: {
       type: 'object',
       properties: {
-        script: { type: 'string', description: 'The JavaScript source to execute.' },
+        script: {
+          type: 'string',
+          description:
+            'JavaScript source; with element, use a function such as el => el.textContent.',
+        },
+        element: {
+          type: 'string',
+          description: 'Optional CSS/@eN target passed to the script as el.',
+        },
       },
       required: ['script'],
     },
-    toArgs: (args) => ({ script: args.script }),
+    toArgs: (args) => ({ script: args.script, ...onlyDefined(args, ['element']) }),
   },
   {
     name: 'cdp',
@@ -678,6 +686,184 @@ const MCP_TOOLS: McpToolDefinition[] = [
       required: ['action'],
     },
     toArgs: (args) => ({ action: args.action, ...onlyDefined(args, ['key', 'value', 'session']) }),
+  },
+  {
+    name: 'locator',
+    description: 'Generate and verify a unique data-testid, id, CSS path or agent-ref locator.',
+    command: 'locator',
+    inputSchema: {
+      type: 'object',
+      properties: { selector: { type: 'string', description: 'CSS selector or @eN element ref.' } },
+      required: ['selector'],
+    },
+    toArgs: (args) => ({ selector: args.selector }),
+  },
+  {
+    name: 'highlight',
+    description:
+      'Highlight an element without changing layout. Use hide with a selector to restore it, or hide without a selector to clear all.',
+    command: 'highlight',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        selector: { type: 'string', description: 'CSS selector or @eN element ref.' },
+        style: {
+          type: 'string',
+          description: 'CSS outline shorthand; cannot be combined with hide.',
+        },
+        hide: {
+          type: 'boolean',
+          description: 'Restore previous outlines instead of highlighting.',
+        },
+      },
+    },
+    toArgs: (args) => onlyDefined(args, ['selector', 'style', 'hide']),
+  },
+  {
+    name: 'drop',
+    description: 'Drop text data or base64-encoded files onto an element, including inside frames.',
+    command: 'drop',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        selector: { type: 'string', description: 'CSS selector or @eN element ref.' },
+        data: {
+          type: 'object',
+          additionalProperties: { type: 'string' },
+          description: 'MIME type to text data, for example {"text/plain":"hello"}.',
+        },
+        files: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              name: { type: 'string' },
+              mimeType: { type: 'string' },
+              dataBase64: {
+                type: 'string',
+                description: 'Base64 file content; max 32MiB per file.',
+              },
+            },
+            required: ['name', 'mimeType', 'dataBase64'],
+          },
+          description: 'Files to drop; maximum 64MiB total.',
+        },
+      },
+      required: ['selector'],
+    },
+    toArgs: (args) => ({ selector: args.selector, ...onlyDefined(args, ['data', 'files']) }),
+  },
+  {
+    name: 'mouse_move',
+    description: 'Move the mouse to viewport coordinates in the target tab.',
+    command: 'mousemove',
+    inputSchema: {
+      type: 'object',
+      properties: { x: { type: 'number' }, y: { type: 'number' } },
+      required: ['x', 'y'],
+    },
+    toArgs: (args) => ({ x: args.x, y: args.y }),
+  },
+  {
+    name: 'mouse_down',
+    description: 'Press a mouse button at the current position; follow with mouse_up.',
+    command: 'mousedown',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        button: { type: 'string', enum: ['left', 'right', 'middle', 'back', 'forward'] },
+      },
+    },
+    toArgs: (args) => onlyDefined(args, ['button']),
+  },
+  {
+    name: 'mouse_up',
+    description: 'Release a mouse button at the current position.',
+    command: 'mouseup',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        button: { type: 'string', enum: ['left', 'right', 'middle', 'back', 'forward'] },
+      },
+    },
+    toArgs: (args) => onlyDefined(args, ['button']),
+  },
+  {
+    name: 'mouse_wheel',
+    description: 'Scroll by deltaX/deltaY at the current mouse position.',
+    command: 'mousewheel',
+    inputSchema: {
+      type: 'object',
+      properties: { deltaX: { type: 'number' }, deltaY: { type: 'number' } },
+      required: ['deltaX', 'deltaY'],
+    },
+    toArgs: (args) => ({ deltaX: args.deltaX, deltaY: args.deltaY }),
+  },
+  {
+    name: 'video',
+    description:
+      'Record WebM video with chapters and action callouts; stop writes video and chapter files (64MiB limit).',
+    command: 'video',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        action: {
+          type: 'string',
+          enum: ['start', 'stop', 'status', 'chapter', 'show-actions', 'hide-actions'],
+        },
+        maxDurationMs: { type: 'integer', minimum: 1, maximum: 3600000 },
+        title: { type: 'string' },
+        description: { type: 'string' },
+        durationMs: { type: 'integer', minimum: 0 },
+        position: { type: 'string', description: 'CSS position declarations for action callouts.' },
+        highlightStyle: { type: 'string', description: 'CSS outline for the action target.' },
+      },
+      required: ['action'],
+    },
+    toArgs: (args) => ({
+      action: args.action,
+      ...onlyDefined(args, [
+        'maxDurationMs',
+        'title',
+        'description',
+        'durationMs',
+        'position',
+        'highlightStyle',
+      ]),
+    }),
+  },
+  {
+    name: 'tracing',
+    description: 'Start, check or stop a CDP trace; stop writes the trace to a file (32MiB limit).',
+    command: 'tracing',
+    inputSchema: {
+      type: 'object',
+      properties: { action: { type: 'string', enum: ['start', 'stop', 'status'] } },
+      required: ['action'],
+    },
+    toArgs: (args) => ({ action: args.action }),
+  },
+  {
+    name: 'actions',
+    description: 'Read or clear the bounded command timeline; argument values are not recorded.',
+    command: 'actions',
+    inputSchema: {
+      type: 'object',
+      properties: { action: { type: 'string', enum: ['list', 'clear'] } },
+      required: ['action'],
+    },
+    toArgs: (args) => ({ action: args.action }),
+  },
+  {
+    name: 'auto_snapshot',
+    description: 'Enable or disable snapshots after successful navigation and input actions.',
+    command: 'set',
+    inputSchema: {
+      type: 'object',
+      properties: { enabled: { type: 'boolean' } },
+      required: ['enabled'],
+    },
+    toArgs: (args) => ({ type: 'auto-snapshot', enabled: args.enabled }),
   },
   {
     name: 'fill_form',
@@ -885,6 +1071,37 @@ async function writeOversizedScreenshot(
   }
 }
 
+async function toVideoResult(result: Record<string, unknown>): Promise<CallToolResult> {
+  if (typeof result.data !== 'string') return toSuccessResult(result)
+  const { data, ...summary } = result
+  const directory = path.join(getHomeDir(), '.autobrowser', 'videos')
+  await mkdir(directory, { recursive: true })
+  const filePath = path.join(directory, `video-${Date.now()}.webm`)
+  await writeFile(filePath, data, 'base64')
+  let chaptersPath: string | undefined
+  if (Array.isArray(result.chapters) && result.chapters.length) {
+    chaptersPath = filePath.replace(/\.webm$/i, '') + '.chapters.json'
+    await writeFile(chaptersPath, `${JSON.stringify(result.chapters, null, 2)}\n`)
+  }
+  return {
+    content: [{ type: 'text', text: `video saved to ${filePath}` }],
+    structuredContent: { ...summary, path: filePath, chaptersPath },
+  }
+}
+
+async function toTracingResult(result: Record<string, unknown>): Promise<CallToolResult> {
+  if (typeof result.data !== 'string') return toSuccessResult(result)
+  const { data, ...summary } = result
+  const directory = path.join(getHomeDir(), '.autobrowser', 'tracing')
+  await mkdir(directory, { recursive: true })
+  const filePath = path.join(directory, `trace-${Date.now()}.json`)
+  await writeFile(filePath, data, result.base64Encoded === true ? 'base64' : 'utf8')
+  return {
+    content: [{ type: 'text', text: `trace saved to ${filePath}` }],
+    structuredContent: { ...summary, path: filePath },
+  }
+}
+
 export interface McpServerDependencies {
   name?: string
   version?: string
@@ -964,6 +1181,22 @@ export class AutobrowserMcpServer {
         suggestedAction: error?.suggestedAction,
         details: error?.details,
       })
+    }
+
+    if (definition.command === 'video' && isRecord(payload.result)) {
+      try {
+        return await toVideoResult(payload.result)
+      } catch (error) {
+        return toErrorResult(undefined, error instanceof Error ? error.message : String(error))
+      }
+    }
+
+    if (definition.command === 'tracing' && isRecord(payload.result)) {
+      try {
+        return await toTracingResult(payload.result)
+      } catch (error) {
+        return toErrorResult(undefined, error instanceof Error ? error.message : String(error))
+      }
     }
 
     if (

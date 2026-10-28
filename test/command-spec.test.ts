@@ -59,6 +59,12 @@ describe('command specs', () => {
     expect(commandSupportsFrameTarget('frame')).toBe(false)
     expect(commandSupportsTabTarget('feed')).toBe(true)
     expect(commandSupportsFrameTarget('feed')).toBe(true)
+    expect(commandSupportsTabTarget('cdp')).toBe(true)
+    expect(commandSupportsFrameTarget('cdp')).toBe(false)
+    expect(commandSupportsFrameTarget('drop')).toBe(true)
+    expect(commandSupportsFrameTarget('mousemove')).toBe(false)
+    expect(commandSupportsFrameTarget('locator')).toBe(true)
+    expect(commandSupportsFrameTarget('highlight')).toBe(true)
   })
 
   test('does not apply ambient page targets to tab management commands', () => {
@@ -459,6 +465,70 @@ describe('command specs', () => {
         action: 'locate',
       }),
     ).not.toThrow()
+  })
+
+  test('validates diagnostics and automatic snapshot commands', () => {
+    expect(commandSupportsTabTarget('actions')).toBe(true)
+    expect(commandSupportsTabTarget('tracing')).toBe(true)
+    expect(commandSupportsFrameTarget('tracing')).toBe(false)
+    expect(() => validateCommandArgs('actions', { action: 'list' })).not.toThrow()
+    expect(() => validateCommandArgs('tracing', { action: 'start' })).not.toThrow()
+    expect(() => validateCommandArgs('tracing', { action: 'record' })).toThrow('unsupported action')
+    expect(() =>
+      validateCommandArgs('video', { action: 'start', maxDurationMs: 1000 }),
+    ).not.toThrow()
+    expect(() => validateCommandArgs('video', { action: 'chapter', title: 'One' })).not.toThrow()
+    expect(() => validateCommandArgs('video', { action: 'chapter' })).toThrow(
+      'title must be a non-empty string',
+    )
+    expect(() => validateCommandArgs('set', { type: 'auto-snapshot', enabled: true })).not.toThrow()
+  })
+
+  test('validates element eval, locator and highlight options', () => {
+    expect(() =>
+      validateCommandArgs('eval', { script: 'el => el.textContent', element: '@e1' }),
+    ).not.toThrow()
+    expect(() => validateCommandArgs('locator', { selector: '@e1' })).not.toThrow()
+    expect(() => validateCommandArgs('highlight', { selector: '@e1' })).not.toThrow()
+    expect(() => validateCommandArgs('highlight', { hide: true })).not.toThrow()
+    expect(() => validateCommandArgs('highlight', {})).toThrow(
+      'selector is required unless hide is set',
+    )
+    expect(() => validateCommandArgs('highlight', { hide: true, style: '1px solid red' })).toThrow(
+      'style cannot be combined with hide',
+    )
+  })
+
+  test('validates coordinate mouse and drop payloads', () => {
+    expect(() => validateCommandArgs('mousemove', { x: 10, y: 20 })).not.toThrow()
+    expect(() => validateCommandArgs('mousedown', { button: 'right' })).not.toThrow()
+    expect(() => validateCommandArgs('mouseup', {})).not.toThrow()
+    expect(() => validateCommandArgs('mousewheel', { deltaX: 0, deltaY: 100 })).not.toThrow()
+    expect(() => validateCommandArgs('mousedown', { button: 'middle-right' })).toThrow(
+      'unsupported mouse button',
+    )
+    expect(() => validateCommandArgs('mousemove', { x: NaN, y: 0 })).toThrow(
+      'x must be a finite number',
+    )
+    expect(() =>
+      validateCommandArgs('drop', {
+        selector: '#drop',
+        data: { 'text/plain': 'hello' },
+        files: [{ name: 'a.txt', mimeType: 'text/plain', dataBase64: 'YQ==' }],
+      }),
+    ).not.toThrow()
+    expect(() => validateCommandArgs('drop', { selector: '#drop' })).toThrow(
+      'drop requires data or files',
+    )
+    expect(() =>
+      validateCommandArgs('drop', { selector: '#drop', data: { 'text/plain': 1 } }),
+    ).toThrow('data values must be strings')
+    expect(() =>
+      validateCommandArgs('drop', {
+        selector: '#drop',
+        files: [{ name: 'bad', mimeType: 'text/plain', dataBase64: 'not base64' }],
+      }),
+    ).toThrow('dataBase64 is invalid')
   })
 
   test('validates tab-scoped CDP methods and object params', () => {

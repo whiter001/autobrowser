@@ -13,6 +13,7 @@ const build = await Bun.build({
     path.join(extensionDir, 'background.ts'),
     path.join(extensionDir, 'connect.ts'),
     path.join(extensionDir, 'options.ts'),
+    path.join(extensionDir, 'offscreen-recorder.ts'),
   ],
   outdir: outputDir,
   target: 'browser',
@@ -30,5 +31,9 @@ manifest.key = EXTENSION_PUBLIC_KEY
 await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, 'utf8')
 await copyFile(path.join(extensionDir, 'connect.html'), path.join(outputDir, 'connect.html'))
 await copyFile(path.join(extensionDir, 'options.html'), path.join(outputDir, 'options.html'))
+await copyFile(
+  path.join(extensionDir, 'offscreen-recorder.html'),
+  path.join(outputDir, 'offscreen-recorder.html'),
+)
 
 console.log('Chrome extension built successfully to chrome/')

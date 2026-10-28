@@ -598,8 +598,9 @@ describe('cli helpers', () => {
     expect(result.exitCode).toBe(0)
     expect(result.fetchCalls).toHaveLength(0)
     expect(result.stdout).toContain(
-      'autobrowser eval [--stdin|--file <path>|--base64] [--timeout-ms <ms>] [--expr] <script>',
+      'autobrowser eval [--stdin|--file <path>|--base64] [--timeout-ms <ms>] [--element <selector>] [--expr] <script>',
     )
+    expect(result.stdout).toContain('--element <selector>')
     expect(result.stdout).toContain('--expr <script>')
     expect(result.stdout).toContain('--timeout-ms <ms>')
     expect(result.stdout).toContain('--file <path>  read complex or multiline script source')
@@ -637,12 +638,139 @@ describe('cli helpers', () => {
 
     const flagged = await runCli(['cdp', 'Page.getLayoutMetrics', '--params', '{}'])
     expect(flagged.exitCode).toBe(0)
-    expect(flagged.fetchCalls[0].body.args).toEqual({ method: 'Runtime.evaluate', params: {} })
+    expect(flagged.fetchCalls[0].body.args).toEqual({ method: 'Page.getLayoutMetrics', params: {} })
 
     const invalid = await runCli(['cdp', 'Runtime.evaluate', '[]'])
     expect(invalid.exitCode).toBe(1)
     expect(invalid.fetchCalls).toHaveLength(0)
     expect(invalid.stderr).toContain('CDP params must be a JSON object')
+  })
+
+  test('routes coordinate mouse commands and file/text drops', async () => {
+    const move = await runCli(['mousemove', '15', '25'])
+    expect(move.fetchCalls[0].body).toEqual({ command: 'mousemove', args: { x: 15, y: 25 } })
+    const down = await runCli(['mousedown', 'right'])
+    expect(down.fetchCalls[0].body).toEqual({ command: 'mousedown', args: { button: 'right' } })
+    const wheel = await runCli(['mousewheel', '0', '100'])
+    expect(wheel.fetchCalls[0].body).toEqual({
+      command: 'mousewheel',
+      args: { deltaX: 0, deltaY: 100 },
+    })
+    const up = await runCli(['mouseup'])
+    expect(up.fetchCalls[0].body).toEqual({ command: 'mouseup', args: { button: 'left' } })
+
+    const textDrop = await runCli(['drop', '#target', '--data', 'text/plain=hello'])
+    expect(textDrop.fetchCalls[0].body).toEqual({
+      command: 'drop',
+      args: { selector: '#target', data: { 'text/plain': 'hello' }, files: [] },
+    })
+    const dir = await mkdtemp(path.join(os.tmpdir(), 'autobrowser-drop-'))
+    const filePath = path.join(dir, 'note.txt')
+    await writeFile(filePath, 'file contents')
+    const fileDrop = await runCli(['drop', '#target', `--path=${filePath}`])
+    expect(fileDrop.fetchCalls[0].body.args.files).toEqual([
+      {
+        name: 'note.txt',
+        mimeType: 'text/plain',
+        dataBase64: Buffer.from('file contents').toString('base64'),
+      },
+    ])
+  })
+
+  test('routes element eval, locator and highlight commands', async () => {
+    const evalResult = await runCli(['eval', '--element', '@e1', '--expr', 'el => el.textContent'])
+    expect(evalResult.fetchCalls[0].body).toEqual({
+      command: 'eval',
+      args: { script: 'el => el.textContent', element: '@e1' },
+    })
+    const locator = await runCli(['generate-locator', '@e1'])
+    expect(locator.fetchCalls[0].body).toEqual({ command: 'locator', args: { selector: '@e1' } })
+    const highlight = await runCli(['highlight', '@e1', '--style', '2px dashed red'])
+    expect(highlight.fetchCalls[0].body).toEqual({
+      command: 'highlight',
+      args: { selector: '@e1', style: '2px dashed red' },
+    })
+    const clear = await runCli(['highlight', '--hide'])
+    expect(clear.fetchCalls[0].body).toEqual({ command: 'highlight', args: { hide: true } })
+  })
+
+  test('routes tracing, action log and automatic snapshot controls', async () => {
+    const start = await runCli(['tracing', 'start'])
+    expect(start.fetchCalls[0].body).toEqual({ command: 'tracing', args: { action: 'start' } })
+    const actions = await runCli(['actions', 'clear'])
+    expect(actions.fetchCalls[0].body).toEqual({ command: 'actions', args: { action: 'clear' } })
+    const automatic = await runCli(['set', 'auto-snapshot', 'on'])
+    expect(automatic.fetchCalls[0].body).toEqual({
+      command: 'set',
+      args: { type: 'auto-snapshot', enabled: true },
+    })
+
+    const dir = await mkdtemp(path.join(os.tmpdir(), 'autobrowser-trace-cli-'))
+    const output = path.join(dir, 'trace.json')
+    const stopped = await runCli(['tracing', 'stop', output], {
+      ok: true,
+      result: { recording: false, data: '{"events":[]}', base64Encoded: false, bytes: 12 },
+    })
+    expect(stopped.exitCode).toBe(0)
+    expect(JSON.parse(stopped.stdout).result.path).toBe(output)
+    expect(await readFile(output, 'utf8')).toBe('{"events":[]}')
+  })
+
+  test('routes video lifecycle and writes WebM with chapter sidecar', async () => {
+    const started = await runCli(['video', 'start', '--max-duration-ms', '1000'])
+    expect(started.fetchCalls[0].body).toEqual({
+      command: 'video',
+      args: { action: 'start', maxDurationMs: 1000 },
+    })
+    const chapter = await runCli([
+      'video',
+      'chapter',
+      'One',
+      '--description',
+      'Details',
+      '--duration',
+      '500',
+    ])
+    expect(chapter.fetchCalls[0].body.args).toEqual({
+      action: 'chapter',
+      title: 'One',
+      description: 'Details',
+      durationMs: 500,
+    })
+    const callouts = await runCli([
+      'video',
+      'show-actions',
+      '--duration',
+      '600',
+      '--highlight-style',
+      '2px solid red',
+    ])
+    expect(callouts.fetchCalls[0].body.args).toEqual({
+      action: 'show-actions',
+      durationMs: 600,
+      highlightStyle: '2px solid red',
+    })
+
+    const dir = await mkdtemp(path.join(os.tmpdir(), 'autobrowser-video-cli-'))
+    const output = path.join(dir, 'capture.webm')
+    const stopped = await runCli(['video', 'stop', output], {
+      ok: true,
+      result: {
+        recording: false,
+        data: Buffer.from('video').toString('base64'),
+        bytes: 5,
+        chapters: [{ title: 'One' }],
+      },
+    })
+    expect(stopped.exitCode).toBe(0)
+    expect(JSON.parse(stopped.stdout).result.path).toBe(output)
+    expect(JSON.parse(stopped.stdout).result.chaptersPath).toBe(
+      path.join(dir, 'capture.chapters.json'),
+    )
+    expect((await readFile(output)).toString()).toBe('video')
+    expect(JSON.parse(await readFile(path.join(dir, 'capture.chapters.json'), 'utf8'))).toEqual([
+      { title: 'One' },
+    ])
   })
 
   test('documents configurable HAR limits in help output', async () => {
