@@ -40,6 +40,24 @@ export function* responseChunks(text: string): Generator<string> {
   }
 }
 
+export function parseTransferredResponse(text: string, id: string): Record<string, unknown> {
+  let response: unknown
+  try {
+    response = JSON.parse(text)
+  } catch {
+    throw new ResponseTransferError('Transferred response is not valid JSON')
+  }
+  if (
+    !response ||
+    typeof response !== 'object' ||
+    Array.isArray(response) ||
+    (response as Record<string, unknown>).type !== 'response' ||
+    (response as Record<string, unknown>).id !== id
+  )
+    throw new ResponseTransferError('Transferred response envelope does not match its request')
+  return response as Record<string, unknown>
+}
+
 interface IncomingTransfer {
   totalBytes: number
   receivedBytes: number
@@ -122,22 +140,9 @@ export class ResponseAssembler {
       const text = transfer.chunks.join('')
       if (responseByteLength(text) !== transfer.totalBytes)
         throw new ResponseTransferError('Reassembled response byteLength does not match totalBytes')
-      let response: unknown
-      try {
-        response = JSON.parse(text)
-      } catch {
-        throw new ResponseTransferError('Transferred response is not valid JSON')
-      }
-      if (
-        !response ||
-        typeof response !== 'object' ||
-        Array.isArray(response) ||
-        (response as Record<string, unknown>).type !== 'response' ||
-        (response as Record<string, unknown>).id !== id
-      )
-        throw new ResponseTransferError('Transferred response envelope does not match its request')
+      const response = parseTransferredResponse(text, id)
       this.release(id)
-      return response as Record<string, unknown>
+      return response
     } catch (error) {
       this.release(id)
       throw error

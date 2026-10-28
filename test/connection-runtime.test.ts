@@ -158,8 +158,10 @@ describe('connection runtime', () => {
       expect(observed.bytes).toBeGreaterThan(16 * 1024 * 1024)
       expect(observed.maxFrame).toBeLessThan(512 * 1024)
       expect(state.connection.socket?.readyState).toBe(WebSocket.OPEN)
-      await expect(relay.dispatchCommand('snapshot')).resolves.toEqual({ healthy: true })
-      await expect(relay.dispatchCommand('title')).rejects.toMatchObject({
+      expect(await relay.dispatchCommand('snapshot')).toEqual({ healthy: true })
+      const titleOutcome = await relay.dispatchCommand('title').catch((error: unknown) => error)
+      expect(state.connection.lastSocketClose).toBeNull()
+      expect(titleOutcome).toMatchObject({
         code: 'TEST_ERROR',
         suggestedAction: 'Use snapshot to inspect the page.',
       })

@@ -15,7 +15,7 @@ import type {
 } from './types.js'
 import { serializeCommandError } from './errors.js'
 import { getPageEpoch } from './targeting.js'
-import { createResponseSender } from '../../src/core/response-transfer.js'
+import { createUploadResponseSender } from './response-upload.js'
 
 interface NetworkDomain {
   handleRequestPaused: (tabId: number, params: unknown) => Promise<void>
@@ -500,7 +500,12 @@ export function createConnectionRuntime({
       )
 
       state.connection.socket = socket
-      const responseSender = createResponseSender(socket)
+      let supportsResponseUpload = false
+      const responseSender = createUploadResponseSender(socket, {
+        relayPort: () => state.connection.relayPort,
+        token: () => state.connection.token,
+        supportsUpload: () => supportsResponseUpload,
+      })
       const activeCommands = new Map<string, { cancelled: boolean }>()
 
       socket.addEventListener('open', () => {
@@ -542,6 +547,11 @@ export function createConnectionRuntime({
               error: { message: 'invalid JSON from server' },
             }),
           )
+          return
+        }
+
+        if (message?.type === 'hello') {
+          supportsResponseUpload = message.capabilities?.responseUpload === 1
           return
         }
 

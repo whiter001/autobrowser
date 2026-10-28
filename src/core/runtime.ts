@@ -13,7 +13,16 @@ import {
 } from './protocol.js'
 import { validateCommandArgs } from './command-spec.js'
 import { getCommandRequestBudgetMs } from './command-budget.js'
-import { ResponseAssembler, ResponseTransferError } from './response-transfer.js'
+import {
+  parseTransferredResponse,
+  ResponseAssembler,
+  ResponseTransferError,
+} from './response-transfer.js'
+import {
+  ResponseUploadError,
+  ResponseUploadStore,
+  type ResponseUploadProgress,
+} from './response-upload.js'
 
 export interface TabInfo {
   id: number
@@ -257,6 +266,10 @@ export interface Runtime {
   detachExtension: (socket?: Bun.ServerWebSocket<ExtensionMetadata>) => void
   /** 处理来自扩展的原始消息（RPC 响应、事件、心跳） */
   handleExtensionMessage: (rawMessage: unknown) => void
+  /** 查询大响应已持久化的字节偏移 */
+  responseUploadOffset: (transferId: string) => ResponseUploadProgress
+  /** 写入一段大响应数据，完成后复用普通响应流程 */
+  uploadResponse: (transferId: string, request: Request) => Promise<ResponseUploadProgress>
   /** 向扩展分发命令并等待响应 */
   dispatchCommand: (command: string, args?: Record<string, unknown>) => Promise<unknown>
   /** 获取当前运行时的状态摘要 */
@@ -297,6 +310,7 @@ export async function createRuntime(options: RuntimeOptions = {}): Promise<Runti
   // pendingRequests maps CLI commands to extension responses
   const pendingRequests = new Map<string, PendingRequest>()
   const responseAssembler = new ResponseAssembler()
+  const responseUploads = await ResponseUploadStore.create(homeDir)
   const connectionWaiters = new Set<ConnectionWaiter>()
   const snapshot: Snapshot = createDefaultSnapshot()
 
@@ -464,6 +478,21 @@ export async function createRuntime(options: RuntimeOptions = {}): Promise<Runti
     schedulePersist()
   }
 
+  function rejectResponseTransfer(id: string, error: Error, reason: string): void {
+    const pending = pendingRequests.get(id)
+    if (!pending) return
+    clearTimeout(pending.timer)
+    pendingRequests.delete(id)
+    responseAssembler.release(id)
+    void responseUploads.releaseRequest(id)
+    pending.reject(error)
+    try {
+      runtime.extensionSocket?.send(JSON.stringify({ type: 'cancel', id, reason }))
+    } catch {
+      // 请求已经拒绝，取消仅用于让扩展尽早停止传输。
+    }
+  }
+
   function attachExtension(
     socket: Bun.ServerWebSocket<ExtensionMetadata>,
     meta: ExtensionMetadata = {},
@@ -471,6 +500,7 @@ export async function createRuntime(options: RuntimeOptions = {}): Promise<Runti
     const previousSocket = runtime.extensionSocket
     if (previousSocket && previousSocket !== socket) {
       responseAssembler.clear()
+      void responseUploads.clear()
       rejectPendingRequests(pendingRequests, 'extension connection replaced')
       // 扩展重连时旧 socket 还挂在运行时上：先通知旧连接被新实例顶替，再主动关闭，
       // 否则旧侧会把断开误判成网络故障；detachExtension 会做身份校验，不会误伤新连接
@@ -516,6 +546,7 @@ export async function createRuntime(options: RuntimeOptions = {}): Promise<Runti
     snapshot.extension = null
     clearHeartbeatTimeout()
     responseAssembler.clear()
+    void responseUploads.clear()
     rejectPendingRequests(pendingRequests, 'extension disconnected')
     // 断开时立即唤醒等待连接的 waiter，否则它们只能干等超时
     // reject 内的 settle 会把 waiter 从 Set 删除，Set 迭代期间删除当前元素是安全的
@@ -600,21 +631,33 @@ export async function createRuntime(options: RuntimeOptions = {}): Promise<Runti
     const pending = pendingRequests.get(message.id)
     if (!pending) return
 
+    if (message.type === 'response.upload') {
+      try {
+        const upload = message as Record<string, unknown>
+        if (
+          typeof upload.transferId !== 'string' ||
+          typeof upload.totalBytes !== 'number' ||
+          typeof upload.sha256 !== 'string'
+        )
+          throw new ResponseTransferError('Invalid response upload metadata')
+        responseUploads.register({
+          requestId: message.id,
+          transferId: upload.transferId,
+          totalBytes: upload.totalBytes,
+          sha256: upload.sha256,
+        })
+      } catch (error) {
+        rejectResponseTransfer(message.id, error as Error, 'invalid response upload')
+      }
+      return
+    }
+
     if (typeof message.type === 'string' && message.type.startsWith('response.')) {
       try {
         const response = responseAssembler.accept(message as Record<string, unknown>)
         if (response) handleExtensionMessage(response)
       } catch (error) {
-        clearTimeout(pending.timer)
-        pendingRequests.delete(message.id)
-        pending.reject(error as Error)
-        try {
-          runtime.extensionSocket?.send(
-            JSON.stringify({ type: 'cancel', id: message.id, reason: 'invalid response transfer' }),
-          )
-        } catch {
-          // 拒绝后即释放预算，取消只用于让发送端尽早停止。
-        }
+        rejectResponseTransfer(message.id, error as Error, 'invalid response transfer')
       }
       return
     }
@@ -623,6 +666,7 @@ export async function createRuntime(options: RuntimeOptions = {}): Promise<Runti
     clearTimeout(pending.timer)
     pendingRequests.delete(message.id)
     responseAssembler.release(message.id)
+    void responseUploads.releaseRequest(message.id)
     if (typeof message.ok !== 'boolean' || (message.ok === false && !isRecord(message.error))) {
       pending.reject(new ResponseTransferError('Invalid response envelope'))
       return
@@ -638,6 +682,64 @@ export async function createRuntime(options: RuntimeOptions = {}): Promise<Runti
     }
 
     pending.resolve(message.result)
+  }
+
+  function responseUploadOffset(transferId: string): ResponseUploadProgress {
+    const progress = responseUploads.offset(transferId)
+    if (!pendingRequests.has(progress.requestId)) {
+      void responseUploads.release(transferId)
+      throw new ResponseUploadError('Response upload request is no longer pending', 404)
+    }
+    return progress
+  }
+
+  async function uploadResponse(
+    transferId: string,
+    request: Request,
+  ): Promise<ResponseUploadProgress> {
+    try {
+      const result = await responseUploads.write(
+        transferId,
+        request.headers.get('content-range'),
+        request.headers.get('content-length'),
+        request.body,
+      )
+      responseUploadOffset(transferId)
+      if (result.done) {
+        let response: Record<string, unknown>
+        try {
+          response = parseTransferredResponse(result.text, result.requestId)
+        } catch (error) {
+          throw new ResponseUploadError(
+            error instanceof Error ? error.message : 'Invalid transferred response',
+            422,
+          )
+        }
+        handleExtensionMessage(response)
+      }
+      return {
+        requestId: result.requestId,
+        receivedBytes: result.receivedBytes,
+        totalBytes: result.totalBytes,
+      }
+    } catch (error) {
+      const uploadError =
+        error instanceof ResponseUploadError
+          ? error
+          : new ResponseUploadError(
+              error instanceof Error ? error.message : 'Response upload failed',
+              500,
+            )
+      if (![404, 408, 409].includes(uploadError.httpStatus)) {
+        try {
+          const progress = responseUploads.offset(transferId)
+          rejectResponseTransfer(progress.requestId, uploadError, 'response upload failed')
+        } catch {
+          // 上传登记已清理时，没有 pending 请求需要拒绝。
+        }
+      }
+      throw uploadError
+    }
   }
 
   interface CommandPayload {
@@ -675,6 +777,7 @@ export async function createRuntime(options: RuntimeOptions = {}): Promise<Runti
       const timer = setTimeout(() => {
         pendingRequests.delete(id)
         responseAssembler.release(id)
+        void responseUploads.releaseRequest(id)
         try {
           socket.send(JSON.stringify({ type: 'cancel', id, reason: 'relay timeout' }))
         } catch {
@@ -700,6 +803,7 @@ export async function createRuntime(options: RuntimeOptions = {}): Promise<Runti
           clearTimeout(timer)
           pendingRequests.delete(id)
           responseAssembler.release(id)
+          void responseUploads.releaseRequest(id)
           reject(
             createExtensionDisconnectedError(
               `extension disconnected while sending command: ${command}`,
@@ -710,6 +814,7 @@ export async function createRuntime(options: RuntimeOptions = {}): Promise<Runti
         clearTimeout(timer)
         pendingRequests.delete(id)
         responseAssembler.release(id)
+        void responseUploads.releaseRequest(id)
         reject(
           error instanceof Error
             ? error
@@ -741,6 +846,8 @@ export async function createRuntime(options: RuntimeOptions = {}): Promise<Runti
     attachExtension,
     detachExtension,
     handleExtensionMessage,
+    responseUploadOffset,
+    uploadResponse,
     dispatchCommand,
     snapshot: () => ({
       token: runtime.token,

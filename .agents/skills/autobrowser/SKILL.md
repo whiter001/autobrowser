@@ -64,7 +64,7 @@ autobrowser 是一个面向 Chrome/Edge 的浏览器自动化 CLI，通过本地
 - 未启动 HAR 时只自动监控网络元数据，不预取 body；`network request <id>` 按需通过 CDP 获取 body，历史请求或失效 CDP 会话可能无法补取，须查看获取失败信息。`--include-details` 只包含已存储的详情，不保证 body 完整。
 - HAR body 获取使用 4 个并发槽和每次 10 秒逻辑超时；底层 CDP 不可中止时仍占槽直到结束，不会因超时无限启动新请求。`stop` 只等待本次 capture 的有界任务。
 - `--har-max-body-bytes` 只限制 body 存储大小，不限制 CDP 下载或传输量。
-- `network har stop [output.har]` 的大结果会透明分块并重组后返回 HAR；传输超限明确报错，不静默截断。CLI 只会在面对较旧扩展时回退到重新组装网络请求。
+- `network har stop [output.har]` 等大结果在 relay 支持时走“WebSocket 控制消息 + 本地鉴权 HTTP 数据通道”：扩展发送响应元数据，HTTP 按字节范围上传，relay 落盘并校验 SHA-256 后重组；中断会从已确认偏移续传，15 秒无数据进度才判定传输停滞，整体仍受原命令预算约束。旧 relay 或小响应自动沿用 WebSocket 内联/分片协议，CLI/MCP 返回格式不变；传输超限明确报错，不静默截断。CLI 只会在面对较旧扩展时回退到重新组装网络请求。
 - `--har-unlimited` 不限制 autobrowser 自身保存的 body 大小，但不是绕过 CDP/传输资源上限；若浏览器 CDP 对 `Network.getResponseBody` 触发配额错误，HAR 仍会导出，并在对应 entry 的 `response.content.comment` 标明 body 获取失败原因。
 
 ## 等待语义
