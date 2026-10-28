@@ -56,6 +56,12 @@ autobrowser 是一个面向 Chrome/Edge 的浏览器自动化 CLI，通过本地
 - `state`
 - `network route` / `network unroute` / `network requests` / `network request` / `network har start` / `network har stop` / `network har status` / `network har recover`
 
+## 命名会话与清理边界
+
+- 默认会话继续使用原有 home、端口和真实浏览器登录态。隔离任务用 `session create <name>` 和 `session attach <name>`，后续命令把 `--session <name>` 放在命令名前；每个命名会话的 home、profile、端口、token 和 tab target 独立，不要跨会话复用连接信息。
+- `session list` 查看运行状态和目标 tab；`session detach <name>` 只停止 relay，保留浏览器 profile；`session close-all <name>` 关闭该会话标签页；`kill-all` 只停止登记的 autobrowser relay，不承诺终止所有浏览器进程。
+- `session delete-data <name>` 先停止对应 relay 再删除命名会话目录，重复执行返回已清理，默认会话禁止删除。遇到 `SESSION_DATA_LOCKED` 先关闭占用该 profile 的浏览器再重试，不要强删或改删其他目录。
+
 ## 可靠流程
 
 - `server` 会启动 relay 和 IPC 服务。

@@ -67,6 +67,27 @@ autobrowser connect
 
 如果本地后台服务尚未运行，`connect` 会自动先启动它。
 
+## 命名会话与生命周期
+
+默认会话仍使用原来的 `~/.autobrowser` 配置和浏览器登录态。需要隔离任务时，可以创建命名会话：
+
+```bash
+autobrowser session create research
+autobrowser session attach research
+autobrowser --session research open https://example.com
+autobrowser session list
+```
+
+每个命名会话都有独立的 home、浏览器 profile、relay/IPC 端口、token 和 tab target。`--session` 放在命令名前；`session attach <name>` 等价于启动并连接该会话，`session detach <name>` 只停止 relay，不删除登录数据。
+
+```bash
+autobrowser session close-all research   # 关闭该会话当前窗口的标签页
+autobrowser kill-all                     # 停止已登记的 autobrowser relay
+autobrowser session delete-data research # 停止 relay 并删除该会话数据
+```
+
+`delete-data` 只接受命名会话，重复执行会返回已清理，不会删除默认会话。如果返回 `SESSION_DATA_LOCKED`，先关闭仍占用该 profile 的浏览器，再重试清理；不要强制删除正在使用的 profile。
+
 ## 状态检查
 
 使用 `is` 查看元素状态：

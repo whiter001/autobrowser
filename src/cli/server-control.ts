@@ -376,6 +376,7 @@ export function buildServerLaunchArgs(
     ipcPort: number
   },
   extensionId: string,
+  session = '',
 ): string[] {
   return [
     process.argv[1],
@@ -387,6 +388,7 @@ export function buildServerLaunchArgs(
     String(ports.ipcPort),
     '--extension-id',
     extensionId,
+    ...(session ? ['--session', session] : []),
   ]
 }
 
@@ -410,8 +412,8 @@ function readPersistedToken(
 export async function readPersistedConnectionInfo(
   fallbackRelayPort: number,
   fallbackIpcPort: number,
+  homeDir: string = getHomeDir(),
 ): Promise<PersistedConnectionInfo | null> {
-  const homeDir = getHomeDir()
   const [stateResult, tokenFileResult] = await Promise.allSettled([
     readJsonFile<{
       token?: unknown

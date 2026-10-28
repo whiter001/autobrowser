@@ -4,8 +4,11 @@ import type { DetachedProcessHandle } from './server-control.js'
 export interface CliFlags {
   json: boolean
   server: string
+  session: string
   relayPort: number
   ipcPort: number
+  serverExplicitlySet: boolean
+  relayPortExplicitlySet: boolean
   ipcPortExplicitlySet: boolean
   extensionId: string | null
   autoConnect: boolean

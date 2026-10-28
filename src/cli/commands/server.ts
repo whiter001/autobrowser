@@ -1,6 +1,7 @@
 import { resolveExtensionId } from '../../core/config.js'
 import {
   getConfigPath,
+  getHomeDir,
   getStatePath,
   getTokenPath,
   isPortInUse,
@@ -20,6 +21,13 @@ import {
   type ServerSnapshotStatus,
 } from '../server-control.js'
 import { startServers } from '../../server.js'
+import {
+  createSession,
+  deleteSessionData,
+  listSessions,
+  readSession,
+  type SessionRecord,
+} from '../../core/sessions.js'
 import type { CommandContext, CommandRegistry } from './types.js'
 
 /** 优雅关闭时等待 state 持久化完成的兜底时长；超时则强制退出，避免 --serve 进程挂死 */
@@ -205,6 +213,7 @@ async function ensureBackgroundServer(
           ipcPort: context.flags.ipcPort,
         },
         extensionId,
+        context.flags.session,
       ),
     )
   } catch (error) {
@@ -296,6 +305,7 @@ async function handleServer(rest: string[], context: CommandContext): Promise<nu
     const servers = await startServers({
       relayPort: context.flags.relayPort,
       ipcPort: context.flags.ipcPort,
+      homeDir: context.homeDir,
       extensionId,
       onShutdown: () => {
         // 关闭流程已完成（连接断开、端口释放）：先落盘 state，再退出进程。
@@ -333,6 +343,7 @@ async function handleServer(rest: string[], context: CommandContext): Promise<nu
     const persistedConnectionInfo = await readPersistedConnectionInfo(
       context.flags.relayPort,
       context.flags.ipcPort,
+      context.homeDir,
     )
 
     if (!persistedConnectionInfo?.token) {
@@ -450,6 +461,155 @@ async function handleConfig(rest: string[], context: CommandContext): Promise<nu
   return 0
 }
 
+async function stopCurrentSession(
+  context: CommandContext,
+): Promise<{ stopped: boolean; alreadyStopped: boolean }> {
+  const connection = await readPersistedConnectionInfo(
+    context.flags.relayPort,
+    context.flags.ipcPort,
+    context.homeDir,
+  )
+  if (!connection?.token) return { stopped: false, alreadyStopped: true }
+  const status = await context.getStatus(`http://127.0.0.1:${connection.ipcPort}`).catch(() => null)
+  if (!isServerSnapshotStatus(status)) return { stopped: false, alreadyStopped: true }
+  await stopBackgroundServer(
+    connection.ipcPort,
+    connection.token,
+    context.dependencies.findProcessIdByPort,
+    context.dependencies.killProcess,
+  )
+  return { stopped: true, alreadyStopped: false }
+}
+
+async function stopSessionRecord(
+  context: CommandContext,
+  session: SessionRecord,
+): Promise<{ name: string; stopped: boolean; alreadyStopped: boolean }> {
+  const connection = await readPersistedConnectionInfo(
+    session.relayPort,
+    session.ipcPort,
+    session.homeDir,
+  )
+  if (!connection?.token) return { name: session.name, stopped: false, alreadyStopped: true }
+  const status = await context.getStatus(`http://127.0.0.1:${connection.ipcPort}`).catch(() => null)
+  if (!isServerSnapshotStatus(status)) {
+    return { name: session.name, stopped: false, alreadyStopped: true }
+  }
+  await stopBackgroundServer(
+    connection.ipcPort,
+    connection.token,
+    context.dependencies.findProcessIdByPort,
+    context.dependencies.killProcess,
+  )
+  return { name: session.name, stopped: true, alreadyStopped: false }
+}
+
+function requireSessionActionName(rest: string[], context: CommandContext): string | null {
+  return rest[1] || context.flags.session || null
+}
+
+async function handleSession(rest: string[], context: CommandContext): Promise<number | void> {
+  if (isHelpToken(rest[0])) return context.writeHelp(['session'])
+  const action = rest[0] || 'list'
+  const baseHomeDir = getHomeDir()
+
+  if (action === 'list') {
+    if (rest.length > 1) {
+      process.stderr.write(`unexpected argument for session list: ${rest[1]}\n`)
+      return 1
+    }
+    const sessions = await listSessions(baseHomeDir)
+    const items = []
+    for (const session of sessions) {
+      const status = await context
+        .getStatus(`http://127.0.0.1:${session.ipcPort}`)
+        .catch(() => null)
+      const running = isServerSnapshotOnPorts(status, session.relayPort, session.ipcPort)
+      const snapshot = running && isRecord(status.snapshot) ? status.snapshot : null
+      items.push({
+        ...session,
+        running,
+        extensionConnected: running && status.extensionConnected === true,
+        targetTabId: typeof snapshot?.targetTabId === 'number' ? snapshot.targetTabId : null,
+      })
+    }
+    context.writeResult({ ok: true, result: { sessions: items } })
+    return 0
+  }
+
+  if (action === 'create') {
+    const name = rest[1]
+    if (!name || rest.length > 2) {
+      process.stderr.write(
+        'usage: autobrowser session create <name> [--relay-port <n> --ipc-port <n>]\n',
+      )
+      return 1
+    }
+    const session = await createSession(baseHomeDir, name, {
+      ...(context.flags.relayPortExplicitlySet ? { relayPort: context.flags.relayPort } : {}),
+      ...(context.flags.ipcPortExplicitlySet ? { ipcPort: context.flags.ipcPort } : {}),
+    })
+    context.writeResult({ ok: true, result: session })
+    return 0
+  }
+
+  if (action === 'kill-all') {
+    if (rest.length > 1) {
+      process.stderr.write(`unexpected argument for kill-all: ${rest[1]}\n`)
+      return 1
+    }
+    const sessions = await listSessions(baseHomeDir)
+    const results = []
+    if (!context.flags.session) {
+      results.push({ name: 'default', ...(await stopCurrentSession(context)) })
+    }
+    for (const session of sessions) results.push(await stopSessionRecord(context, session))
+    context.writeResult({ ok: true, result: { sessions: results } })
+    return 0
+  }
+
+  const name =
+    requireSessionActionName(rest, context) || (action === 'delete-data' ? null : 'default')
+  if (!name) {
+    process.stderr.write(`${action} requires a session name or --session <name>\n`)
+    return 1
+  }
+  if (rest.length > 2) {
+    process.stderr.write(`unexpected extra argument for session ${action}: ${rest[2]}\n`)
+    return 1
+  }
+
+  if (action === 'attach') {
+    const server = await ensureBackgroundServer(context, { announceAlreadyRunning: false })
+    if (!server) return 1
+    await context.openConnectFlow({ ...server.status }, true)
+    return 0
+  }
+  if (action === 'detach') {
+    const result = await stopCurrentSession(context)
+    context.writeResult({ ok: true, result: { session: name, ...result } })
+    return 0
+  }
+  if (action === 'close-all') {
+    const payload = await context.requestCommand(context.flags.server, 'close', { all: true })
+    context.writeResult(payload)
+    return payload.ok === false ? 1 : 0
+  }
+  if (action === 'delete-data') {
+    const session = await readSession(baseHomeDir, name).catch((error) => {
+      if ((error as { code?: string }).code === 'SESSION_NOT_FOUND') return null
+      throw error
+    })
+    if (session) await stopSessionRecord(context, session)
+    const result = await deleteSessionData(baseHomeDir, name)
+    context.writeResult({ ok: true, result })
+    return 0
+  }
+
+  process.stderr.write(`unsupported session action: ${action}\n`)
+  return 1
+}
+
 export const serverCommandRegistry: CommandRegistry = {
   help: handleHelp,
   '--help': handleHelp,
@@ -459,4 +619,10 @@ export const serverCommandRegistry: CommandRegistry = {
   status: handleStatus,
   replay: handleReplay,
   config: handleConfig,
+  session: handleSession,
+  attach: async (rest, context) => await handleSession(['attach', ...rest], context),
+  detach: async (rest, context) => await handleSession(['detach', ...rest], context),
+  'close-all': async (rest, context) => await handleSession(['close-all', ...rest], context),
+  'kill-all': async (rest, context) => await handleSession(['kill-all', ...rest], context),
+  'delete-data': async (rest, context) => await handleSession(['delete-data', ...rest], context),
 }

@@ -27,6 +27,7 @@ import {
   isValidPort,
   writeJsonFile,
 } from './core/protocol.js'
+import { readSession } from './core/sessions.js'
 import { printHelp } from './cli/help.js'
 import { type ScreenshotArgs } from './cli/parse.js'
 import {
@@ -66,6 +67,7 @@ const SUPPORTED_GLOBAL_FLAGS = [
   '--frame',
   '--file',
   '--server',
+  '--session',
   '--relay-port',
   '--ipc-port',
   '--extension-id',
@@ -102,8 +104,11 @@ function parseCli(argv: string[]): ParsedCli {
   const flags: CliFlags = {
     json: true,
     server: `http://127.0.0.1:${DEFAULT_IPC_PORT}`,
+    session: '',
     relayPort: DEFAULT_RELAY_PORT,
     ipcPort: DEFAULT_IPC_PORT,
+    serverExplicitlySet: false,
+    relayPortExplicitlySet: false,
     ipcPortExplicitlySet: false,
     extensionId: null,
     autoConnect: false,
@@ -117,7 +122,6 @@ function parseCli(argv: string[]): ParsedCli {
   }
 
   const args: string[] = []
-  let serverExplicitlySet = false
 
   for (let index = 0; index < argv.length; index += 1) {
     const value = argv[index]
@@ -165,13 +169,20 @@ function parseCli(argv: string[]): ParsedCli {
 
     if (value === '--server') {
       flags.server = readFlagValue(argv, index, value)
-      serverExplicitlySet = true
+      flags.serverExplicitlySet = true
+      index += 1
+      continue
+    }
+
+    if (value === '--session' && args.length === 0) {
+      flags.session = readFlagValue(argv, index, value)
       index += 1
       continue
     }
 
     if (value === '--relay-port') {
       flags.relayPort = parsePortFlag(readFlagValue(argv, index, value), value)
+      flags.relayPortExplicitlySet = true
       index += 1
       continue
     }
@@ -179,7 +190,7 @@ function parseCli(argv: string[]): ParsedCli {
     if (value === '--ipc-port') {
       flags.ipcPort = parsePortFlag(readFlagValue(argv, index, value), value)
       flags.ipcPortExplicitlySet = true
-      if (!serverExplicitlySet) {
+      if (!flags.serverExplicitlySet) {
         flags.server = `http://127.0.0.1:${flags.ipcPort}`
       }
       index += 1
@@ -852,7 +863,27 @@ async function runMain(
 ): Promise<number | void> {
   const { flags, args } = parseCli(argv)
   const [command, ...rest] = args
-  const homeDir = getHomeDir()
+  if (
+    command === 'session' &&
+    ['attach', 'detach', 'close-all'].includes(rest[0] || '') &&
+    rest[1]
+  ) {
+    if (flags.session && flags.session !== rest[1]) {
+      throw new Error(`session argument ${rest[1]} conflicts with --session ${flags.session}`)
+    }
+    flags.session = rest[1]
+  }
+  const baseHomeDir = getHomeDir()
+  let homeDir = baseHomeDir
+  if (flags.session && command !== 'delete-data') {
+    const session = await readSession(baseHomeDir, flags.session)
+    homeDir = session.homeDir
+    if (!flags.relayPortExplicitlySet) flags.relayPort = session.relayPort
+    if (!flags.ipcPortExplicitlySet) flags.ipcPort = session.ipcPort
+    if (!flags.serverExplicitlySet && !flags.ipcPortExplicitlySet) {
+      flags.server = `http://127.0.0.1:${session.ipcPort}`
+    }
+  }
   const launchUrl = dependencies.openUrl ?? openUrl
   let connectPageOpened = false
   let commandToken: string | null | undefined
@@ -868,6 +899,7 @@ async function runMain(
     const persistedConnectionInfo = await readPersistedConnectionInfo(
       flags.relayPort,
       flags.ipcPort,
+      homeDir,
     )
 
     const token =
@@ -997,6 +1029,7 @@ async function runMain(
             ipcPort: flags.ipcPort,
           },
           extensionId,
+          flags.session,
         ),
       )
     } catch {
@@ -1199,6 +1232,7 @@ async function runMain(
     const persistedConnectionInfo = await readPersistedConnectionInfo(
       flags.relayPort,
       flags.ipcPort,
+      homeDir,
     )
     commandToken = persistedConnectionInfo?.token || null
     return commandToken

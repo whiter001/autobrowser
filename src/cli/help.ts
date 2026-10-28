@@ -29,6 +29,7 @@ const HELP_ROOT = helpNode(
   [
     '--json',
     '--server <url>',
+    '--session <name>  select a named session (before the command)',
     '--relay-port <port>',
     '--ipc-port <port>',
     '--tab <tN|id>',
@@ -58,6 +59,50 @@ const HELP_ROOT = helpNode(
       'autobrowser server [--serve] [--relay-port <port>] [--ipc-port <port>] [--extension-id <id>] [--browser-command <command>] [--browser-arg <arg>]',
       undefined,
       [helpNode('stop', 'Stop the background servers.', 'autobrowser server stop')],
+    ),
+    helpNode(
+      'session',
+      'Manage isolated named browser sessions and their lifecycle.',
+      'autobrowser session <list|create|attach|detach|close-all|kill-all|delete-data> [name]',
+      [
+        'Use autobrowser --session <name> <command> to run any command with that session home, ports, profile, token and tab target.',
+        'Named sessions use isolated profiles by default; the default session keeps the existing extension-first browser workflow.',
+        'attach/detach manage the relay, not the browser login profile. close-all closes tabs in the selected session; kill-all stops registered autobrowser relays only.',
+        'delete-data requires a named session, stops its relay and removes its data. It is idempotent and never deletes the default session; close a browser holding the profile lock before retrying.',
+      ],
+      [
+        helpNode(
+          'list',
+          'List named sessions, ports and running target state.',
+          'autobrowser session list',
+        ),
+        helpNode(
+          'create',
+          'Create an isolated session.',
+          'autobrowser session create <name> [--relay-port <n> --ipc-port <n>]',
+        ),
+        helpNode(
+          'attach',
+          'Start and connect a named session.',
+          'autobrowser session attach <name>',
+        ),
+        helpNode(
+          'detach',
+          'Stop a session relay without deleting data.',
+          'autobrowser session detach <name>',
+        ),
+        helpNode(
+          'close-all',
+          'Close all tabs in the selected session.',
+          'autobrowser session close-all <name>',
+        ),
+        helpNode('kill-all', 'Stop all registered autobrowser relays.', 'autobrowser kill-all'),
+        helpNode(
+          'delete-data',
+          'Stop and delete a named session; repeated cleanup is safe.',
+          'autobrowser session delete-data <name>',
+        ),
+      ],
     ),
     helpNode('status', 'Show server status.', 'autobrowser status'),
     helpNode('replay', 'Replay the last recorded command.', 'autobrowser replay', [
