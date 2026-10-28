@@ -331,6 +331,67 @@ describe('session set permission/ua/timezone/locale', () => {
     expect(localeCalls[0]?.params).toEqual({ locale: 'zh-CN' })
     expect(localeCalls[1]?.params).toEqual({ locale: '' })
   })
+
+  test('媒体特性和 print 仿真保留其他覆盖，reset 只清理目标项', async () => {
+    const { session, debuggerCalls } = createSessionEvalHarness()
+    const mediaCalls = () =>
+      debuggerCalls.filter((item) => item.method === 'Emulation.setEmulatedMedia')
+
+    await session.setMedia(7, 'dark')
+    await session.setMediaType(7, 'print')
+    await session.setMediaFeature(7, 'prefers-reduced-motion', 'reduce')
+    await session.setMediaFeature(7, 'forced-colors', 'active')
+    await session.setMediaFeature(7, 'prefers-contrast', 'more')
+
+    expect(mediaCalls().at(-1)?.params).toEqual({
+      media: 'print',
+      features: [
+        { name: 'prefers-color-scheme', value: 'dark' },
+        { name: 'prefers-reduced-motion', value: 'reduce' },
+        { name: 'forced-colors', value: 'active' },
+        { name: 'prefers-contrast', value: 'more' },
+      ],
+    })
+
+    await session.setMediaFeature(7, 'prefers-reduced-motion', null)
+    await session.setMediaFeature(7, 'forced-colors', null)
+    await session.setMediaFeature(7, 'prefers-contrast', null)
+    await session.setMediaType(7, null)
+    expect(mediaCalls().at(-1)?.params).toEqual({
+      features: [{ name: 'prefers-color-scheme', value: 'dark' }],
+    })
+
+    await session.setMedia(7, null)
+    expect(mediaCalls().at(-1)?.params).toEqual({ features: [] })
+  })
+
+  test('手机和桌面设备预设统一设置 viewport、DPR、mobile 和 UA', async () => {
+    const { session, debuggerCalls } = createSessionEvalHarness()
+
+    await session.setDevice(7, 'iphone-15')
+    expect(debuggerCalls[0]).toMatchObject({
+      method: 'Emulation.setDeviceMetricsOverride',
+      params: { width: 390, height: 844, deviceScaleFactor: 3, mobile: true },
+    })
+    expect(debuggerCalls[1]?.params?.userAgent).toContain('iPhone')
+
+    await session.setDevice(7, 'desktop-chrome')
+    expect(debuggerCalls[2]).toMatchObject({
+      method: 'Emulation.setDeviceMetricsOverride',
+      params: { width: 1280, height: 720, deviceScaleFactor: 1, mobile: false },
+    })
+    expect(debuggerCalls[3]?.params).toEqual({ userAgent: '' })
+
+    const callCount = debuggerCalls.length
+    await expect(session.setDevice(7, 'not-a-device')).rejects.toMatchObject({
+      code: 'INVALID_DEVICE_PRESET',
+    })
+    expect(debuggerCalls).toHaveLength(callCount)
+
+    await session.setDevice(7, null)
+    expect(debuggerCalls.at(-2)?.method).toBe('Emulation.clearDeviceMetricsOverride')
+    expect(debuggerCalls.at(-1)?.params).toEqual({ userAgent: '' })
+  })
 })
 
 function createEmulationHarness() {

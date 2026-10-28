@@ -16,19 +16,20 @@ export const DROP_MAX_FILE_BYTES = 32 * 1024 * 1024
 export const DROP_MAX_TOTAL_BYTES = 64 * 1024 * 1024
 
 const TAB_TARGET_COMMANDS = [
+  'actions',
   'back',
   'check',
   'click',
   'clipboard',
   'close',
+  'cdp',
   'console',
   'cookies',
   'dblclick',
   'dialog',
-  'cdp',
   'drag',
-  'errors',
   'drop',
+  'errors',
   'eval',
   'fill',
   'fillform',
@@ -39,17 +40,17 @@ const TAB_TARGET_COMMANDS = [
   'frame',
   'get',
   'goto',
-  'hover',
   'highlight',
+  'hover',
   'is',
   'keyboard',
-  'network',
-  'pdf',
   'locator',
   'mousemove',
   'mousedown',
   'mouseup',
   'mousewheel',
+  'network',
+  'pdf',
   'press',
   'reload',
   'screenshot',
@@ -61,8 +62,10 @@ const TAB_TARGET_COMMANDS = [
   'snapshot',
   'state',
   'storage',
+  'tracing',
   'type',
   'uncheck',
+  'video',
   'upload',
   'wait',
   'window',
@@ -73,21 +76,21 @@ const FRAME_TARGET_COMMANDS = [
   'click',
   'dblclick',
   'drag',
+  'drop',
   'eval',
   'fill',
   'fillform',
   'feed',
-  'drop',
   'find',
   'focus',
   'get',
+  'highlight',
   'hover',
   'is',
+  'locator',
   'screenshot',
-  'highlight',
   'scroll',
   'scrollintoview',
-  'locator',
   'search',
   'select',
   'snapshot',
@@ -617,12 +620,6 @@ function validateCommandArgsShape(command: string, args: unknown): void {
       readStringField(normalizedArgs, 'start', command)
       readStringField(normalizedArgs, 'end', command)
       return
-    case 'eval':
-      readStringField(normalizedArgs, 'script', command)
-      readOptionalNonNegativeNumberField(normalizedArgs, 'timeoutMs', command)
-      return
-    case 'feed': {
-      readStringField(normalizedArgs, 'selector', command, { required: false })
     case 'mousemove':
       readNumberField(normalizedArgs, 'x', command)
       readNumberField(normalizedArgs, 'y', command)
@@ -688,6 +685,9 @@ function validateCommandArgsShape(command: string, args: unknown): void {
       if (!selector && !hide)
         throw createCommandArgsValidationError(command, 'selector is required unless hide is set')
       if (hide && style)
+        throw createCommandArgsValidationError(command, 'style cannot be combined with hide')
+      return
+    }
     case 'eval':
       readStringField(normalizedArgs, 'script', command)
       readStringField(normalizedArgs, 'element', command, { required: false })
@@ -710,9 +710,6 @@ function validateCommandArgsShape(command: string, args: unknown): void {
     }
     case 'feed': {
       readStringField(normalizedArgs, 'selector', command, { required: false })
-        throw createCommandArgsValidationError(command, 'style cannot be combined with hide')
-      return
-    }
       readOptionalNonNegativeIntegerField(normalizedArgs, 'limit', command)
       readOptionalNonNegativeIntegerField(normalizedArgs, 'maxScrolls', command)
       readOptionalNonNegativeIntegerField(normalizedArgs, 'pauseMs', command)
@@ -796,21 +793,6 @@ function validateCommandArgsShape(command: string, args: unknown): void {
       }
 
       if (
-    case 'cdp': {
-      const method = readStringField(normalizedArgs, 'method', command)
-      if (
-        !/^[A-Z][A-Za-z0-9]{0,63}\.[a-z][A-Za-z0-9]{0,127}$/.test(method as string) ||
-        /^(?:Browser|Target|SystemInfo)\./.test(method as string) ||
-        method === 'Debugger.disable'
-      )
-        throw createCommandArgsValidationError(command, 'method must be a tab-scoped CDP method')
-      if (normalizedArgs.params !== undefined && !isRecord(normalizedArgs.params))
-        throw createCommandArgsValidationError(command, 'params must be an object', {
-          field: 'params',
-          value: normalizedArgs.params,
-        })
-      return
-    }
         !['locate', 'click', 'fill', 'type', 'hover', 'focus', 'check', 'uncheck', 'text'].includes(
           action,
         )
@@ -909,6 +891,24 @@ function validateCommandArgsShape(command: string, args: unknown): void {
           throw createCommandArgsValidationError(command, 'unsupported action', {
             field: 'action',
             value: action,
+          })
+        }
+      }
+      return
+    case 'dialog':
+      {
+        const action = readStringField(normalizedArgs, 'action', command, { required: false })
+        if (action && !['status', 'auto'].includes(action)) {
+          throw createCommandArgsValidationError(command, 'unsupported action', {
+            field: 'action',
+            value: action,
+          })
+        }
+      }
+      readBooleanField(normalizedArgs, 'accept', command)
+      readBooleanField(normalizedArgs, 'enabled', command)
+      readStringField(normalizedArgs, 'promptText', command, { required: false, allowEmpty: true })
+      return
     case 'actions':
       readStringField(normalizedArgs, 'action', command, { required: false })
       readOptionalNonNegativeIntegerField(normalizedArgs, 'pageIdx', command)
@@ -936,24 +936,6 @@ function validateCommandArgsShape(command: string, args: unknown): void {
       readStringField(normalizedArgs, 'highlightStyle', command, { required: false })
       return
     }
-          })
-        }
-      }
-      return
-    case 'dialog':
-      {
-        const action = readStringField(normalizedArgs, 'action', command, { required: false })
-        if (action && !['status', 'auto'].includes(action)) {
-          throw createCommandArgsValidationError(command, 'unsupported action', {
-            field: 'action',
-            value: action,
-          })
-        }
-      }
-      readBooleanField(normalizedArgs, 'accept', command)
-      readBooleanField(normalizedArgs, 'enabled', command)
-      readStringField(normalizedArgs, 'promptText', command, { required: false, allowEmpty: true })
-      return
     case 'downloads':
       readStringField(normalizedArgs, 'action', command, { required: false })
       readOptionalNonNegativeIntegerField(normalizedArgs, 'pageIdx', command)
@@ -988,7 +970,7 @@ function validateCommandArgsShape(command: string, args: unknown): void {
         readNumberField(normalizedArgs, 'height', command)
         readNumberField(normalizedArgs, 'deviceScaleFactor', command, { required: false })
         readBooleanField(normalizedArgs, 'mobile', command)
-      } else if (type === 'offline') {
+      } else if (type === 'offline' || type === 'auto-snapshot') {
         readBooleanField(normalizedArgs, 'enabled', command)
       } else if (type === 'headers') {
         readObjectOrArrayField(normalizedArgs, 'headers', command)
@@ -998,6 +980,28 @@ function validateCommandArgsShape(command: string, args: unknown): void {
         readNumberField(normalizedArgs, 'accuracy', command, { required: false })
       } else if (type === 'media') {
         readStringField(normalizedArgs, 'media', command, { required: false })
+      } else if (type === 'media-type') {
+        const value = readStringField(normalizedArgs, 'value', command, {
+          required: false,
+          allowEmpty: true,
+        })
+        if (value && !['print', 'screen'].includes(value))
+          throw createCommandArgsValidationError(command, 'media type must be print or screen')
+      } else if (type === 'reduced-motion' || type === 'forced-colors' || type === 'contrast') {
+        const value = readStringField(normalizedArgs, 'value', command, {
+          required: false,
+          allowEmpty: true,
+        })
+        const allowed =
+          type === 'reduced-motion'
+            ? ['reduce', 'no-preference']
+            : type === 'forced-colors'
+              ? ['active', 'none']
+              : ['more', 'less', 'custom', 'no-preference']
+        if (value && !allowed.includes(value))
+          throw createCommandArgsValidationError(command, `unsupported ${type} value`, { value })
+      } else if (type === 'device') {
+        readStringField(normalizedArgs, 'value', command, { required: false, allowEmpty: true })
       } else if (type === 'permission') {
         readStringField(normalizedArgs, 'name', command)
         readBooleanField(normalizedArgs, 'reset', command)

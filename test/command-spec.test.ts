@@ -554,6 +554,24 @@ describe('command specs', () => {
     )
   })
 
+  test('validates media emulation values and device resets', () => {
+    for (const [type, value] of [
+      ['media-type', 'print'],
+      ['reduced-motion', 'reduce'],
+      ['forced-colors', 'active'],
+      ['contrast', 'more'],
+      ['device', 'iphone-15'],
+    ])
+      expect(() => validateCommandArgs('set', { type, value })).not.toThrow()
+    expect(() => validateCommandArgs('set', { type: 'media-type', value: 'speech' })).toThrow(
+      'media type must be print or screen',
+    )
+    expect(() => validateCommandArgs('set', { type: 'reduced-motion', value: 'always' })).toThrow(
+      'unsupported reduced-motion value',
+    )
+    expect(() => validateCommandArgs('set', { type: 'device', value: '' })).not.toThrow()
+  })
+
   test('validates search command arguments', () => {
     expect(() => validateCommandArgs('search', {})).toThrow(
       'invalid command arguments for search: query must be a non-empty string',

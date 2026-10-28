@@ -694,6 +694,21 @@ describe('cli helpers', () => {
     expect(clear.fetchCalls[0].body).toEqual({ command: 'highlight', args: { hide: true } })
   })
 
+  test('routes media features and device presets with independent resets', async () => {
+    for (const [args, expected] of [
+      [['set', 'media-type', 'print'], { type: 'media-type', value: 'print' }],
+      [['set', 'reduced-motion', 'reduce'], { type: 'reduced-motion', value: 'reduce' }],
+      [['set', 'forced-colors', '--reset'], { type: 'forced-colors', value: '' }],
+      [['set', 'contrast', 'more'], { type: 'contrast', value: 'more' }],
+      [['set', 'device', 'iphone-15'], { type: 'device', value: 'iphone-15' }],
+      [['set', 'device', '--reset'], { type: 'device', value: '' }],
+    ]) {
+      const result = await runCli(args)
+      expect(result.exitCode).toBe(0)
+      expect(result.fetchCalls[0].body).toEqual({ command: 'set', args: expected })
+    }
+  })
+
   test('routes tracing, action log and automatic snapshot controls', async () => {
     const start = await runCli(['tracing', 'start'])
     expect(start.fetchCalls[0].body).toEqual({ command: 'tracing', args: { action: 'start' } })

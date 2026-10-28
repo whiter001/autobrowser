@@ -582,15 +582,15 @@ export function createPageInputDomain({
       }
       // 表达式必须保留直接求值语义；仅编译期确认存在顶层 return 时才按函数体重试，
       // 避免普通脚本被包装后不再返回表达式值，也避免其他错误导致脚本重复执行。
-      const { value } = await evaluateInTabContext(tabId, `(() => {\n${script}\n})()`, options)
+      const { value } = await evaluateInTabContext(
+        tabId,
+        `(() => {\n${effectiveScript}\n})()`,
+        options,
+      )
       return value
     }
   }
 
-  async function navigateTo(
-    tabId: TabInput,
-    url: string,
-    options: {
   async function generateLocator(tabId: TabInput, selector: string, frameSelector: FrameSelector) {
     const { resolvedSelector } = await resolveElementSelectorForTab(tabId, selector)
     const { value } = await evaluateInTabContext<
@@ -701,6 +701,10 @@ export function createPageInputDomain({
     return value
   }
 
+  async function navigateTo(
+    tabId: TabInput,
+    url: string,
+    options: {
       timeoutMs?: number
       wait?: boolean
       waitUntil?: string
@@ -1193,10 +1197,6 @@ export function createPageInputDomain({
     return { found: true, files: filePaths }
   }
 
-  async function navigateBack(tabId: TabInput) {
-    const tab = await getTargetTab(tabId)
-    invalidatePageRefs(state, tab.id)
-    const baselineEpoch = getPageEpoch(state, tab.id)
   async function dropData(
     tabId: TabInput,
     selector: string,
@@ -1297,6 +1297,10 @@ export function createPageInputDomain({
     return { scrolled: true, deltaX, deltaY, ...point }
   }
 
+  async function navigateBack(tabId: TabInput) {
+    const tab = await getTargetTab(tabId)
+    invalidatePageRefs(state, tab.id)
+    const baselineEpoch = getPageEpoch(state, tab.id)
     const history = await sendDebuggerCommand<{
       entries?: Array<{ id: number }>
       currentIndex?: number
@@ -1800,12 +1804,12 @@ export function createPageInputDomain({
     fillSelector,
     focusElement,
     getAttribute,
+    generateLocator,
+    highlightElement,
     hoverElement,
     insertTextOnce,
     insertTextSequentially,
     keyDownOnly,
-    generateLocator,
-    highlightElement,
     keyUpOnly,
     navigateBack,
     navigateForward,
@@ -1819,9 +1823,9 @@ export function createPageInputDomain({
     typeIntoSelector,
     uploadFiles,
     dragElement,
-  }
-}
     dropData,
     mouseMove,
     mouseButton,
     mouseWheel,
+  }
+}

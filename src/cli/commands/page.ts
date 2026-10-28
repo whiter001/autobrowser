@@ -268,18 +268,6 @@ async function handleEval(rest: string[], context: CommandContext): Promise<numb
   return 0
 }
 
-async function handleScript(rest: string[], context: CommandContext): Promise<number | void> {
-  const action = readAllowedArg(rest[0], context, ['script'], SCRIPT_ACTIONS)
-  if (!action) {
-    return 0
-  }
-
-  if (action === 'add') {
-    const scriptArgs = rest.slice(1)
-    if (helpRequested(scriptArgs[0], context, ['script', 'add'])) {
-      return 0
-    }
-
 async function handleCdp(rest: string[], context: CommandContext): Promise<number | void> {
   if (helpRequested(rest[0], context, ['cdp'])) return 0
   const method = rest[0]
@@ -299,6 +287,18 @@ async function handleCdp(rest: string[], context: CommandContext): Promise<numbe
   await requestAndWrite(context, 'cdp', { method, params })
   return 0
 }
+
+async function handleScript(rest: string[], context: CommandContext): Promise<number | void> {
+  const action = readAllowedArg(rest[0], context, ['script'], SCRIPT_ACTIONS)
+  if (!action) {
+    return 0
+  }
+
+  if (action === 'add') {
+    const scriptArgs = rest.slice(1)
+    if (helpRequested(scriptArgs[0], context, ['script', 'add'])) {
+      return 0
+    }
 
     // 源码输入与 eval 完全同一条管线：位置参数、--file、--stdin、--base64
     const source = (await context.resolveEvalScript(scriptArgs)).trim()
@@ -777,6 +777,7 @@ const handlePdf = createNoArgRequestCommand({ helpPath: ['pdf'], command: 'pdf' 
 
 export const pageCommandRegistry: CommandRegistry = {
   eval: handleEval,
+  cdp: handleCdp,
   script: handleScript,
   snapshot: handleSnapshot,
   search: handleSearch,
@@ -789,7 +790,6 @@ export const pageCommandRegistry: CommandRegistry = {
   quit: handleClose,
   exit: handleClose,
   window: handleWindow,
-  cdp: handleCdp,
   frame: handleFrame,
   is: handleIs,
   get: handleGet,

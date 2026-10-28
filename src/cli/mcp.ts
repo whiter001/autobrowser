@@ -866,6 +866,46 @@ const MCP_TOOLS: McpToolDefinition[] = [
     toArgs: (args) => ({ type: 'auto-snapshot', enabled: args.enabled }),
   },
   {
+    name: 'media_emulation',
+    description:
+      'Set or reset color scheme, print/screen media, reduced motion, forced colors or contrast for the target tab.',
+    command: 'set',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        type: {
+          type: 'string',
+          enum: ['color-scheme', 'media-type', 'reduced-motion', 'forced-colors', 'contrast'],
+        },
+        value: {
+          type: 'string',
+          description: 'Emulation value; omit or use an empty string to reset this item.',
+        },
+      },
+      required: ['type'],
+    },
+    toArgs: (args) =>
+      args.type === 'color-scheme'
+        ? { type: 'media', media: typeof args.value === 'string' ? args.value : '' }
+        : { type: args.type, value: typeof args.value === 'string' ? args.value : '' },
+  },
+  {
+    name: 'device',
+    description:
+      'Apply a coordinated viewport, DPR, mobile and user-agent preset, or reset device emulation.',
+    command: 'set',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        preset: { type: 'string', enum: ['iphone-15', 'pixel-10', 'desktop-chrome'] },
+      },
+    },
+    toArgs: (args) => ({
+      type: 'device',
+      value: typeof args.preset === 'string' ? args.preset : '',
+    }),
+  },
+  {
     name: 'fill_form',
     description:
       'Fill multiple form fields in one call; each field is filled in order and a failing field is reported in results without stopping the rest. ALWAYS prefer this tool over multiple individual fill calls when filling several fields.',

@@ -444,7 +444,7 @@ const HELP_ROOT = helpNode(
     helpNode(
       'set',
       'Adjust browser state.',
-      'autobrowser set <viewport|offline|auto-snapshot|headers|geo|media|permission|ua|timezone|locale>',
+      'autobrowser set <viewport|offline|auto-snapshot|headers|geo|media|media-type|reduced-motion|forced-colors|contrast|device|permission|ua|timezone|locale>',
       undefined,
       [
         helpNode(
@@ -466,8 +466,33 @@ const HELP_ROOT = helpNode(
         ),
         helpNode(
           'media',
-          'Set media emulation; omit the scheme to clear it.',
-          'autobrowser set media [scheme]',
+          'Set color-scheme emulation; omit the scheme to reset it.',
+          'autobrowser set media [dark|light]',
+        ),
+        helpNode(
+          'media-type',
+          'Emulate print or screen media; omit the value or use --reset to reset.',
+          'autobrowser set media-type [print|screen|--reset]',
+        ),
+        helpNode(
+          'reduced-motion',
+          'Emulate prefers-reduced-motion; omit the value or use --reset to reset.',
+          'autobrowser set reduced-motion [reduce|no-preference|--reset]',
+        ),
+        helpNode(
+          'forced-colors',
+          'Emulate forced-colors; omit the value or use --reset to reset.',
+          'autobrowser set forced-colors [active|none|--reset]',
+        ),
+        helpNode(
+          'contrast',
+          'Emulate prefers-contrast; omit the value or use --reset to reset.',
+          'autobrowser set contrast [more|less|custom|no-preference|--reset]',
+        ),
+        helpNode(
+          'device',
+          'Apply viewport, DPR, mobile and user-agent settings together.',
+          'autobrowser set device [iphone-15|pixel-10|desktop-chrome|--reset]',
         ),
         helpNode(
           'permission',

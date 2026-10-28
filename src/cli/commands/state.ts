@@ -32,9 +32,15 @@ const STORAGE_ACTIONS = ['get', 'set', 'clear', 'delete'] as const
 const SET_ACTIONS = [
   'viewport',
   'offline',
+  'auto-snapshot',
   'headers',
   'geo',
   'media',
+  'media-type',
+  'reduced-motion',
+  'forced-colors',
+  'contrast',
+  'device',
   'permission',
   'ua',
   'timezone',
@@ -203,6 +209,14 @@ async function handleSet(rest: string[], context: CommandContext): Promise<numbe
     return 0
   }
 
+  if (type === 'auto-snapshot') {
+    await requestAndWrite(context, 'set', {
+      type: 'auto-snapshot',
+      enabled: !['false', 'off', '0'].includes(subArgs[0] || ''),
+    })
+    return 0
+  }
+
   if (type === 'headers') {
     const headers = subArgs
       .join(' ')
@@ -259,6 +273,30 @@ async function handleSet(rest: string[], context: CommandContext): Promise<numbe
     await requestAndWrite(context, 'set', {
       type,
       value,
+    })
+    return 0
+  }
+
+  if (type === 'device') {
+    await requestAndWrite(context, 'set', {
+      type,
+      value: subArgs.includes('--reset') ? '' : subArgs[0] || '',
+    })
+    return 0
+  }
+
+  if (['reduced-motion', 'forced-colors', 'contrast'].includes(type)) {
+    await requestAndWrite(context, 'set', {
+      type,
+      value: subArgs.includes('--reset') ? '' : subArgs[0] || '',
+    })
+    return 0
+  }
+
+  if (type === 'media-type' || subArgs[0] === 'print' || subArgs[0] === 'screen') {
+    await requestAndWrite(context, 'set', {
+      type: 'media-type',
+      value: subArgs.includes('--reset') ? '' : subArgs[0] || '',
     })
     return 0
   }

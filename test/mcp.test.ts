@@ -52,6 +52,8 @@ const KNOWN_TOOL_NAMES = [
   'tracing',
   'actions',
   'auto_snapshot',
+  'media_emulation',
+  'device',
   'fill_form',
 ]
 
@@ -80,7 +82,7 @@ function okResult(result: unknown): CommandResponse {
 }
 
 describe('AutobrowserMcpServer.listTools', () => {
-  test('exposes all 41 tools with object-typed input schemas', () => {
+  test('exposes all 43 tools with object-typed input schemas', () => {
     const server = new AutobrowserMcpServer({ requestCommand: async () => okResult({}) })
     const tools = server.listTools()
 
@@ -449,6 +451,23 @@ describe('AutobrowserMcpServer.callTool', () => {
       width: 800,
       height: 600,
     })
+  })
+
+  test('media and device tools forward emulation values and resets', async () => {
+    const mock = recordingRequestCommand(okResult({}))
+    const server = new AutobrowserMcpServer({ requestCommand: mock })
+    await server.callTool('media_emulation', { type: 'color-scheme', value: 'dark', tab: 't2' })
+    await server.callTool('media_emulation', { type: 'media-type', value: 'print' })
+    await server.callTool('media_emulation', { type: 'reduced-motion' })
+    await server.callTool('device', { preset: 'iphone-15' })
+    await server.callTool('device', {})
+    expect(mock.calls).toEqual([
+      { command: 'set', args: { type: 'media', media: 'dark', tabId: 't2' } },
+      { command: 'set', args: { type: 'media-type', value: 'print' } },
+      { command: 'set', args: { type: 'reduced-motion', value: '' } },
+      { command: 'set', args: { type: 'device', value: 'iphone-15' } },
+      { command: 'set', args: { type: 'device', value: '' } },
+    ])
   })
 
   test('writes WebM and chapter sidecar files', async () => {

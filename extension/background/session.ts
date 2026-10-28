@@ -1,3 +1,4 @@
+import { getDevicePreset } from '../../src/core/devices.js'
 import { withFrameSelectorOptions } from './targeting.js'
 import type {
   EmulationOverrides,
@@ -383,20 +384,74 @@ export function createSessionDomain({
     return { geo: { latitude, longitude, accuracy } }
   }
 
-  async function setMedia(tabId: TabInput, media: string | null | undefined) {
+  async function applyMediaEmulation(
+    tabId: TabInput,
+    mediaType: string | null | undefined,
+    featureUpdates: Record<string, string | null>,
+  ) {
     const tab = await getTargetTab(tabId)
+    state.session.mediaEmulation ||= new Map()
+    const current = state.session.mediaEmulation.get(tab.id) || { features: {} }
+    const next = {
+      media: mediaType === undefined ? current.media : mediaType || undefined,
+      features: { ...current.features },
+    }
+    for (const [name, value] of Object.entries(featureUpdates)) {
+      if (value) next.features[name] = value
+      else delete next.features[name]
+    }
     await sendDebuggerCommand(tab.id, 'Emulation.setEmulatedMedia', {
-      features: media ? [{ name: 'prefers-color-scheme', value: media }] : [],
+      ...(next.media ? { media: next.media } : {}),
+      features: Object.entries(next.features).map(([name, value]) => ({ name, value })),
     })
-    // 空值恢复默认配色方案，不再视为生效中的覆盖
+    state.session.mediaEmulation.set(tab.id, next)
     updateEmulation(state, tab.id, (overrides) => {
-      if (media) {
-        overrides.media = true
-      } else {
-        delete overrides.media
-      }
+      if (next.media || Object.keys(next.features).length) overrides.media = true
+      else delete overrides.media
     })
+    return next
+  }
+
+  async function setMedia(tabId: TabInput, media: string | null | undefined) {
+    await applyMediaEmulation(tabId, undefined, { 'prefers-color-scheme': media || null })
     return { media }
+  }
+
+  async function setMediaType(tabId: TabInput, mediaType: string | null | undefined) {
+    const current = await applyMediaEmulation(tabId, mediaType || null, {})
+    return { mediaType: current.media || null }
+  }
+
+  async function setMediaFeature(tabId: TabInput, name: string, value: string | null | undefined) {
+    const current = await applyMediaEmulation(tabId, undefined, { [name]: value || null })
+    return { [name]: value || null, features: current.features }
+  }
+
+  async function setDevice(tabId: TabInput, name: string | null | undefined) {
+    const tab = await getTargetTab(tabId)
+    const preset = name ? getDevicePreset(name) : null
+    if (name && !preset) {
+      const error = new Error(`unknown device preset: ${name}`) as Error & { code?: string }
+      error.code = 'INVALID_DEVICE_PRESET'
+      throw error
+    }
+    if (preset) {
+      await sendDebuggerCommand(tab.id, 'Emulation.setDeviceMetricsOverride', {
+        width: preset.width,
+        height: preset.height,
+        deviceScaleFactor: preset.deviceScaleFactor,
+        mobile: preset.mobile,
+      })
+    } else {
+      await sendDebuggerCommand(tab.id, 'Emulation.clearDeviceMetricsOverride')
+    }
+    await setUserAgent(tab.id, preset?.userAgent || '')
+    updateEmulation(state, tab.id, (overrides) => {
+      delete overrides.viewport
+      if (name) overrides.device = name
+      else delete overrides.device
+    })
+    return { device: name || null, preset: preset || null }
   }
 
   async function setPermission(tabId: TabInput, name: string, reset = false) {
@@ -717,6 +772,9 @@ export function createSessionDomain({
     setHeaders,
     setLocale,
     setMedia,
+    setDevice,
+    setMediaType,
+    setMediaFeature,
     setOffline,
     setPermission,
     setTimezone,
