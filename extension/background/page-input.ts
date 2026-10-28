@@ -169,6 +169,7 @@ export function createPageInputDomain({
   evaluateInTabContext: evaluateInTabContextBase,
   sendDebuggerCommand,
 }: PageInputDependencies) {
+  const mousePositions = new Map<number, { x: number; y: number }>()
   const evaluateInTabContext = <TValue = unknown>(
     tabId: TabInput,
     expression: string,
@@ -1196,6 +1197,106 @@ export function createPageInputDomain({
       phase: 'settle',
       settled: settle.settled,
       ...(settle.settled ? {} : { settleReason: settle.settleReason || 'page did not settle' }),
+  async function dropData(
+    tabId: TabInput,
+    selector: string,
+    data: Record<string, string>,
+    files: Array<{ name: string; mimeType: string; dataBase64: string }>,
+    frameSelector: FrameSelector,
+    context?: CommandExecutionContext,
+  ) {
+    const { resolvedSelector } = await resolveElementSelectorForTab(tabId, selector)
+    const { value } = await evaluateInTabContext<{ found?: boolean; dropped?: boolean }>(
+      tabId,
+      `(() => {
+        const node = deepQuerySelector(document, ${JSON.stringify(resolvedSelector)});
+        if (!node) return { found: false };
+        const transfer = new DataTransfer();
+        const textData = ${JSON.stringify(data)};
+        for (const [mimeType, text] of Object.entries(textData)) transfer.setData(mimeType, text);
+        const files = ${JSON.stringify(files)};
+        for (const fileData of files) {
+          const binary = atob(fileData.dataBase64);
+          const bytes = new Uint8Array(binary.length);
+          for (let index = 0; index < binary.length; index++) bytes[index] = binary.charCodeAt(index);
+          transfer.items.add(new File([bytes], fileData.name, { type: fileData.mimeType }));
+        }
+        const rect = node.getBoundingClientRect();
+        const clientX = rect.left + rect.width / 2;
+        const clientY = rect.top + rect.height / 2;
+        for (const type of ['dragenter', 'dragover', 'drop']) {
+          node.dispatchEvent(new DragEvent(type, {
+            bubbles: true,
+            cancelable: true,
+            dataTransfer: transfer,
+            clientX,
+            clientY
+          }));
+        }
+        return { found: true, dropped: true };
+      })()`,
+      withFrameSelectorOptions(frameSelector, { commandContext: context }),
+    )
+    if (!value?.found) throw createElementNotFoundError(selector)
+    return { ...value, selector, textItems: Object.keys(data).length, fileCount: files.length }
+  }
+
+  async function mouseMove(
+    tabId: TabInput,
+    x: number,
+    y: number,
+    context?: CommandExecutionContext,
+  ) {
+    const tab = await getTargetTab(tabId)
+    await sendDebuggerCommand(
+      tab.id,
+      'Input.dispatchMouseEvent',
+      { type: 'mouseMoved', x, y },
+      context,
+    )
+    mousePositions.set(tab.id, { x, y })
+    return { moved: true, x, y }
+  }
+
+  async function mouseButton(
+    tabId: TabInput,
+    pressed: boolean,
+    button: string,
+    context?: CommandExecutionContext,
+  ) {
+    const tab = await getTargetTab(tabId)
+    const point = mousePositions.get(tab.id) || { x: 0, y: 0 }
+    await sendDebuggerCommand(
+      tab.id,
+      'Input.dispatchMouseEvent',
+      {
+        type: pressed ? 'mousePressed' : 'mouseReleased',
+        ...point,
+        button,
+        clickCount: 1,
+      },
+      context,
+    )
+    return { pressed, button, ...point }
+  }
+
+  async function mouseWheel(
+    tabId: TabInput,
+    deltaX: number,
+    deltaY: number,
+    context?: CommandExecutionContext,
+  ) {
+    const tab = await getTargetTab(tabId)
+    const point = mousePositions.get(tab.id) || { x: 0, y: 0 }
+    await sendDebuggerCommand(
+      tab.id,
+      'Input.dispatchMouseEvent',
+      { type: 'mouseWheel', ...point, deltaX, deltaY },
+      context,
+    )
+    return { scrolled: true, deltaX, deltaY, ...point }
+  }
+
     }
   }
 
@@ -1591,3 +1692,7 @@ export function createPageInputDomain({
     dragElement,
   }
 }
+    dropData,
+    mouseMove,
+    mouseButton,
+    mouseWheel,

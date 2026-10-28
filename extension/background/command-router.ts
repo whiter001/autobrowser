@@ -70,6 +70,11 @@ const DIALOG_BLOCKED_COMMANDS = new Set([
   'drag',
   'upload',
   'back',
+  'drop',
+  'mousemove',
+  'mousedown',
+  'mouseup',
+  'mousewheel',
   'forward',
   'reload',
   'frame',
@@ -211,6 +216,32 @@ interface PageInputDomain {
   ) => Promise<unknown>
   getAttribute: (
     tabId: TabInput,
+  dropData: (
+    tabId: TabInput,
+    selector: string,
+    data: Record<string, string>,
+    files: Array<{ name: string; mimeType: string; dataBase64: string }>,
+    frameSelector: FrameSelector,
+    context?: CommandExecutionContext,
+  ) => Promise<unknown>
+  mouseMove: (
+    tabId: TabInput,
+    x: number,
+    y: number,
+    context?: CommandExecutionContext,
+  ) => Promise<unknown>
+  mouseButton: (
+    tabId: TabInput,
+    pressed: boolean,
+    button: string,
+    context?: CommandExecutionContext,
+  ) => Promise<unknown>
+  mouseWheel: (
+    tabId: TabInput,
+    deltaX: number,
+    deltaY: number,
+    context?: CommandExecutionContext,
+  ) => Promise<unknown>
     selector: string,
     attrName: string,
     frameSelector: FrameSelector,
@@ -1568,6 +1599,60 @@ export function createCommandRouter({
     const feedLimit = readNumberArg(args, 'limit', 30)
     const feedDedupe = readStringArg(args, 'dedupe', 'url')
     const feedMaxScrolls = readNumberArg(args, 'maxScrolls', 20)
+  const AUTO_SNAPSHOT_COMMANDS = new Set([
+    'goto',
+    'open',
+    'back',
+    'forward',
+    'reload',
+    'click',
+    'dblclick',
+    'fill',
+    'fillform',
+    'type',
+    'press',
+    'keyboard',
+    'check',
+    'uncheck',
+    'select',
+    'drag',
+    'drop',
+    'mousemove',
+    'mousedown',
+    'mouseup',
+    'mousewheel',
+    'upload',
+  ])
+
+  function recordAction(
+    command: string,
+    request: { id?: string } | undefined,
+    tabId: number | null,
+    frame: string | null,
+    selector: string,
+    startedAt: number,
+    ok: boolean,
+    error: unknown,
+  ): void {
+    if (tabId !== null) void video.handleAction(command, tabId, frame, selector, ok).catch(() => {})
+    state.session.actionLog.push({
+      id: request?.id || null,
+      command,
+      tabId,
+      frame,
+      startedAt: new Date(startedAt).toISOString(),
+      finishedAt: new Date().toISOString(),
+      durationMs: Date.now() - startedAt,
+      ok,
+      error: ok
+        ? null
+        : typeof (error as { code?: unknown })?.code === 'string'
+          ? (error as { code: string }).code
+          : 'Command failed',
+    })
+    if (state.session.actionLog.length > 500)
+      state.session.actionLog.splice(0, state.session.actionLog.length - 500)
+  }
     const feedPauseMs = readNumberArg(args, 'pauseMs', 900)
     const feedStallRounds = readNumberArg(args, 'stallRounds', 3)
     const searchQuery = readStringArg(args, 'query')
@@ -1904,6 +1989,43 @@ export function createCommandRouter({
             return await session.storageSet(
               tabId,
               storageKey || '',
+        case 'drop':
+          return await pageInput.dropData(
+            tabId,
+            selector,
+            (args.data || {}) as Record<string, string>,
+            (args.files || []) as Array<{ name: string; mimeType: string; dataBase64: string }>,
+            frameSelector,
+            context,
+          )
+        case 'mousemove':
+          return await pageInput.mouseMove(
+            tabId,
+            readNumberArg(args, 'x'),
+            readNumberArg(args, 'y'),
+            context,
+          )
+        case 'mousedown':
+          return await pageInput.mouseButton(
+            tabId,
+            true,
+            readStringArg(args, 'button', 'left'),
+            context,
+          )
+        case 'mouseup':
+          return await pageInput.mouseButton(
+            tabId,
+            false,
+            readStringArg(args, 'button', 'left'),
+            context,
+          )
+        case 'mousewheel':
+          return await pageInput.mouseWheel(
+            tabId,
+            readNumberArg(args, 'deltaX'),
+            readNumberArg(args, 'deltaY'),
+            context,
+          )
               storageValue,
               frameSelector,
               sessionOnly,

@@ -12,6 +12,9 @@ export interface CommandArgsValidationError extends Error {
   details?: unknown
 }
 
+export const DROP_MAX_FILE_BYTES = 32 * 1024 * 1024
+export const DROP_MAX_TOTAL_BYTES = 64 * 1024 * 1024
+
 const TAB_TARGET_COMMANDS = [
   'back',
   'check',
@@ -25,6 +28,7 @@ const TAB_TARGET_COMMANDS = [
   'cdp',
   'drag',
   'errors',
+  'drop',
   'eval',
   'fill',
   'fillform',
@@ -40,6 +44,11 @@ const TAB_TARGET_COMMANDS = [
   'keyboard',
   'network',
   'pdf',
+  'locator',
+  'mousemove',
+  'mousedown',
+  'mouseup',
+  'mousewheel',
   'press',
   'reload',
   'screenshot',
@@ -67,6 +76,7 @@ const FRAME_TARGET_COMMANDS = [
   'fill',
   'fillform',
   'feed',
+  'drop',
   'find',
   'focus',
   'get',
@@ -610,6 +620,74 @@ function validateCommandArgsShape(command: string, args: unknown): void {
       return
     case 'feed': {
       readStringField(normalizedArgs, 'selector', command, { required: false })
+    case 'mousemove':
+      readNumberField(normalizedArgs, 'x', command)
+      readNumberField(normalizedArgs, 'y', command)
+      return
+    case 'mousedown':
+    case 'mouseup': {
+      const button =
+        readStringField(normalizedArgs, 'button', command, { required: false }) || 'left'
+      if (!['left', 'right', 'middle', 'back', 'forward'].includes(button))
+        throw createCommandArgsValidationError(command, 'unsupported mouse button', { button })
+      return
+    }
+    case 'mousewheel':
+      readNumberField(normalizedArgs, 'deltaX', command)
+      readNumberField(normalizedArgs, 'deltaY', command)
+      return
+    case 'drop': {
+      readStringField(normalizedArgs, 'selector', command)
+      const data = normalizedArgs.data
+      if (data !== undefined && !isRecord(data))
+        throw createCommandArgsValidationError(command, 'data must be an object')
+      if (isRecord(data) && Object.values(data).some((value) => typeof value !== 'string'))
+        throw createCommandArgsValidationError(command, 'data values must be strings')
+      const files = normalizedArgs.files
+      if (files !== undefined && !Array.isArray(files))
+        throw createCommandArgsValidationError(command, 'files must be an array')
+      let totalBytes = 0
+      for (const [index, file] of (Array.isArray(files) ? files : []).entries()) {
+        if (!isRecord(file) || typeof file.name !== 'string' || !file.name.trim())
+          throw createCommandArgsValidationError(command, `files[${index}].name must be non-empty`)
+        if (typeof file.mimeType !== 'string' || !file.mimeType.trim())
+          throw createCommandArgsValidationError(
+            command,
+            `files[${index}].mimeType must be non-empty`,
+          )
+        if (
+          typeof file.dataBase64 !== 'string' ||
+          file.dataBase64.length % 4 !== 0 ||
+          !/^[A-Za-z0-9+/]*={0,2}$/.test(file.dataBase64)
+        )
+          throw createCommandArgsValidationError(command, `files[${index}].dataBase64 is invalid`)
+        const bytes = Math.floor((file.dataBase64.length * 3) / 4)
+        if (bytes > DROP_MAX_FILE_BYTES)
+          throw createCommandArgsValidationError(command, `files[${index}] exceeds 32MiB`)
+        totalBytes += bytes
+      }
+      if (totalBytes > DROP_MAX_TOTAL_BYTES)
+        throw createCommandArgsValidationError(command, 'drop files exceed 64MiB')
+      if (
+        (!isRecord(data) || Object.keys(data).length === 0) &&
+        (!Array.isArray(files) || !files.length)
+      )
+        throw createCommandArgsValidationError(command, 'drop requires data or files')
+      return
+    }
+    case 'locator':
+      readStringField(normalizedArgs, 'selector', command)
+      return
+    case 'highlight': {
+      const selector = readStringField(normalizedArgs, 'selector', command, { required: false })
+      const hide = readBooleanField(normalizedArgs, 'hide', command)
+      const style = readStringField(normalizedArgs, 'style', command, { required: false })
+      if (!selector && !hide)
+        throw createCommandArgsValidationError(command, 'selector is required unless hide is set')
+      if (hide && style)
+        throw createCommandArgsValidationError(command, 'style cannot be combined with hide')
+      return
+    }
       readOptionalNonNegativeIntegerField(normalizedArgs, 'limit', command)
       readOptionalNonNegativeIntegerField(normalizedArgs, 'maxScrolls', command)
       readOptionalNonNegativeIntegerField(normalizedArgs, 'pauseMs', command)

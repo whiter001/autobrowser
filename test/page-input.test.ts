@@ -1352,3 +1352,127 @@ describe('page input cancellation keeps side effects out', () => {
     expect(mouseEvents.at(-1)).toBe('mouseReleased')
   })
 })
+
+describe('coordinate mouse and data drop', () => {
+  test('remembers mouse position for buttons and wheel events', async () => {
+    const calls: Array<{ method: string; params: Record<string, unknown> }> = []
+    const pageInput = createPageInputDomain({
+      state: createExtensionState(1),
+      getTargetTab: async () => ({ id: 1 }),
+      sendDebuggerCommand: async (
+        _tab: number,
+        method: string,
+        params: Record<string, unknown>,
+      ) => {
+        calls.push({ method, params })
+      },
+    } as never)
+    await pageInput.mouseMove(1, 15, 25)
+    await pageInput.mouseButton(1, true, 'right')
+    await pageInput.mouseWheel(1, 0, 100)
+    await pageInput.mouseButton(1, false, 'right')
+    expect(calls.map((call) => call.params)).toEqual([
+      { type: 'mouseMoved', x: 15, y: 25 },
+      { type: 'mousePressed', x: 15, y: 25, button: 'right', clickCount: 1 },
+      { type: 'mouseWheel', x: 15, y: 25, deltaX: 0, deltaY: 100 },
+      { type: 'mouseReleased', x: 15, y: 25, button: 'right', clickCount: 1 },
+    ])
+  })
+
+  test('builds text and file DataTransfer events in the target frame', async () => {
+    let expression = ''
+    let frame: unknown
+    const pageInput = createPageInputDomain({
+      state: createExtensionState(1),
+      resolveElementSelectorForTab: async () => ({ resolvedSelector: '#drop' }),
+      evaluateInTabContext: async (_tab: unknown, source: string, options: unknown) => {
+        expression = source
+        frame = options
+        return { value: { found: true, dropped: true } }
+      },
+    } as never)
+    const result = await pageInput.dropData(
+      1,
+      '#drop',
+      { 'text/plain': 'hello' },
+      [{ name: 'a.txt', mimeType: 'text/plain', dataBase64: 'YQ==' }],
+      '#frame',
+    )
+    expect(expression).toContain('new DataTransfer()')
+    expect(expression).toContain('"text/plain":"hello"')
+    expect(expression).toContain('YQ==')
+    expect(expression).toContain("['dragenter', 'dragover', 'drop']")
+    expect(frame).toMatchObject({ frameSelector: '#frame' })
+    expect(result).toMatchObject({ dropped: true, textItems: 1, fileCount: 1 })
+  })
+
+  test('keeps stale element guidance for a missing drop target', async () => {
+    const pageInput = createPageInput({ found: false })
+    await expectElementNotFound(
+      pageInput.dropData(1, '#missing', { 'text/plain': 'x' }, [], null),
+      '#missing',
+    )
+  })
+})
+
+describe('element eval, locator and highlight tools', () => {
+  function createElementToolInput(value: unknown, expressions: string[]) {
+    return createPageInputDomain({
+      state: createExtensionState(1),
+      resolveElementSelectorForTab: async () => ({
+        resolvedSelector: '[data-autobrowser-ref="e1"]',
+      }),
+      evaluateInTabContext: async (_tab: unknown, source: string) => {
+        expressions.push(source)
+        return { value }
+      },
+    } as never)
+  }
+
+  test('passes a resolved element to function scripts', async () => {
+    const expressions: string[] = []
+    const pageInput = createElementToolInput('element text', expressions)
+    await expect(
+      pageInput.evaluateScript(1, 'el => el.textContent', '#frame', undefined, '@e1'),
+    ).resolves.toBe('element text')
+    expect(expressions[0]).toContain('[data-autobrowser-ref=\\"e1\\"]')
+    expect(expressions[0]).toContain('return (el => el.textContent)(el)')
+  })
+
+  test('keeps stale guidance when element eval cannot find its target', async () => {
+    const pageInput = createElementToolInput({ __autobrowserElementNotFound: true }, [])
+    await expectElementNotFound(
+      pageInput.evaluateScript(1, 'el => el.textContent', null, undefined, '@e1'),
+      '@e1',
+    )
+  })
+
+  test('generates locators with test-id, id and CSS path fallbacks', async () => {
+    const expressions: string[] = []
+    const pageInput = createElementToolInput(
+      { found: true, selector: '#submit', strategy: 'id', unique: true },
+      expressions,
+    )
+    await expect(pageInput.generateLocator(1, '@e1', null)).resolves.toMatchObject({
+      selector: '#submit',
+      unique: true,
+    })
+    expect(expressions[0]).toContain('data-testid')
+    expect(expressions[0]).toContain('CSS.escape(node.id)')
+    expect(expressions[0]).toContain('nth-of-type')
+  })
+
+  test('stores and restores outlines per document and element', async () => {
+    const expressions: string[] = []
+    const pageInput = createElementToolInput(
+      { found: true, highlighted: true, count: 1 },
+      expressions,
+    )
+    await pageInput.highlightElement(1, '@e1', '3px dashed red', false, null)
+    await pageInput.highlightElement(1, undefined, undefined, true, null)
+    expect(expressions[0]).toContain('__autobrowserHighlights')
+    expect(expressions[0]).toContain('3px dashed red')
+    expect(expressions[0]).toContain('previous.outline')
+    expect(expressions[1]).toContain('for (const node of [...highlights.keys()]) restore(node)')
+  })
+})
