@@ -213,8 +213,8 @@ function parseSnapshotFieldSelectors(rest: string[]): {
   return { outputPath, selection }
 }
 
-// 从 eval 参数里抽走 --timeout-ms，其余原样交给 resolveEvalScript 当脚本内容
-function extractEvalTimeoutMs(rest: string[]): { scriptRest: string[]; timeoutMs?: number } {
+// 从 eval 参数里抽走执行选项，其余原样交给 resolveEvalScript 当脚本内容
+function extractEvalOptions(rest: string[]): { scriptRest: string[]; timeoutMs?: number } {
   const scriptRest: string[] = []
   let timeoutMs: number | undefined
 
@@ -222,6 +222,15 @@ function extractEvalTimeoutMs(rest: string[]): { scriptRest: string[]; timeoutMs
     const value = rest[index]
     if (value === '--timeout-ms') {
       timeoutMs = parseNumberArg(rest[index + 1], 'timeout ms', { min: 1, integer: true })
+      index += 1
+      continue
+    }
+    if (value === '--expr') {
+      const script = rest[index + 1]
+      if (script === undefined) {
+        throw new Error('missing value for --expr')
+      }
+      scriptRest.push(script)
       index += 1
       continue
     }
@@ -236,7 +245,7 @@ async function handleEval(rest: string[], context: CommandContext): Promise<numb
     return 0
   }
 
-  const { scriptRest, timeoutMs } = extractEvalTimeoutMs(rest)
+  const { scriptRest, timeoutMs } = extractEvalOptions(rest)
   const script = await context.resolveEvalScript(scriptRest)
   const args: Record<string, unknown> = { script }
   if (timeoutMs !== undefined) {

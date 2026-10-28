@@ -598,12 +598,29 @@ describe('cli helpers', () => {
     expect(result.exitCode).toBe(0)
     expect(result.fetchCalls).toHaveLength(0)
     expect(result.stdout).toContain(
-      'autobrowser eval [--stdin|--file <path>|--base64] [--timeout-ms <ms>] <script>',
+      'autobrowser eval [--stdin|--file <path>|--base64] [--timeout-ms <ms>] [--expr] <script>',
     )
+    expect(result.stdout).toContain('--expr <script>')
     expect(result.stdout).toContain('--timeout-ms <ms>')
     expect(result.stdout).toContain('--file <path>  read complex or multiline script source')
     expect(result.stdout).toContain('--stdin  read complex or multiline script source')
     expect(result.stdout).toContain('split work into smaller browser commands or script steps')
+  })
+
+  test('routes eval --expr as source instead of JavaScript syntax', async () => {
+    const script = 'JSON.stringify({ marker: "document", title: document.title })'
+    const result = await runCli(['eval', '--expr', script, '--timeout-ms', '5000'])
+
+    expect(result.exitCode).toBe(0)
+    expect(result.fetchCalls[0].body).toEqual({
+      command: 'eval',
+      args: { script, timeoutMs: 5000 },
+    })
+
+    const missing = await runCli(['eval', '--expr'])
+    expect(missing.exitCode).toBe(1)
+    expect(missing.fetchCalls).toHaveLength(0)
+    expect(missing.stderr).toContain('missing value for --expr')
   })
 
   test('documents configurable HAR limits in help output', async () => {

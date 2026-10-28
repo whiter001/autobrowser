@@ -550,15 +550,23 @@ export function createPageInputDomain({
     frameSelector: FrameSelector,
     timeoutMs?: number,
   ) {
-    const { value } = await evaluateInTabContext(
-      tabId,
-      script,
-      withFrameSelectorOptions(frameSelector, {
-        userGesture: true,
-        ...(typeof timeoutMs === 'number' ? { timeoutMs } : {}),
-      }),
-    )
-    return value
+    const options = withFrameSelectorOptions(frameSelector, {
+      userGesture: true,
+      ...(typeof timeoutMs === 'number' ? { timeoutMs } : {}),
+    })
+    try {
+      const { value } = await evaluateInTabContext(tabId, script, options)
+      return value
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      if (!/SyntaxError:\s*Illegal return statement/i.test(message)) {
+        throw error
+      }
+      // 表达式必须保留直接求值语义；仅编译期确认存在顶层 return 时才按函数体重试，
+      // 避免普通脚本被包装后不再返回表达式值，也避免其他错误导致脚本重复执行。
+      const { value } = await evaluateInTabContext(tabId, `(() => {\n${script}\n})()`, options)
+      return value
+    }
   }
 
   async function navigateTo(

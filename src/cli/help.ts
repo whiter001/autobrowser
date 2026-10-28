@@ -143,8 +143,9 @@ const HELP_ROOT = helpNode(
     helpNode(
       'eval',
       'Run a small page-context JavaScript snippet for read-only extraction or state checks.',
-      'autobrowser eval [--stdin|--file <path>|--base64] [--timeout-ms <ms>] <script>',
+      'autobrowser eval [--stdin|--file <path>|--base64] [--timeout-ms <ms>] [--expr] <script>',
       [
+        '--expr <script>  pass script source as an explicit option value',
         '--stdin  read complex or multiline script source from stdin',
         '--file <path>  read complex or multiline script source from file',
         '--base64',

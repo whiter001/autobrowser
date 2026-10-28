@@ -194,6 +194,44 @@ describe('production evaluate and debugger dispatch cancellation gates', () => {
   }
 })
 
+describe('evaluateScript top-level return compatibility', () => {
+  test('retries an illegal top-level return as an IIFE', async () => {
+    const expressions: string[] = []
+    const pageInput = createPageInputDomain({
+      evaluateInTabContext: async (_tabId: unknown, expression: string) => {
+        expressions.push(expression)
+        if (expressions.length === 1) {
+          throw new Error('page evaluation failed: SyntaxError: Illegal return statement')
+        }
+        return { value: { ok: true } }
+      },
+    } as never)
+
+    await expect(pageInput.evaluateScript(1, 'return { ok: true }', null)).resolves.toEqual({
+      ok: true,
+    })
+    expect(expressions).toHaveLength(2)
+    expect(expressions[0]?.endsWith('return { ok: true }')).toBe(true)
+    expect(expressions[1]?.endsWith('(() => {\nreturn { ok: true }\n})()')).toBe(true)
+  })
+
+  test('does not retry scripts after other evaluation errors', async () => {
+    const expressions: string[] = []
+    const pageInput = createPageInputDomain({
+      evaluateInTabContext: async (_tabId: unknown, expression: string) => {
+        expressions.push(expression)
+        throw new Error('page evaluation failed: ReferenceError: missing is not defined')
+      },
+    } as never)
+
+    await expect(pageInput.evaluateScript(1, 'missing', null)).rejects.toThrow(
+      'missing is not defined',
+    )
+    expect(expressions).toHaveLength(1)
+    expect(expressions[0]?.endsWith('missing')).toBe(true)
+  })
+})
+
 // 可取消的命令执行上下文：命令队列运行期通过 cancelled 表达取消/超时，
 // page-input 在每个新 CDP 副作用之前读取它
 function createCancellableContext() {

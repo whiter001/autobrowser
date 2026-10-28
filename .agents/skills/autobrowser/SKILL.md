@@ -91,7 +91,8 @@ autobrowser 是一个面向 Chrome/Edge 的浏览器自动化 CLI，通过本地
 ## eval 使用边界
 
 - `eval` 适合执行小段页面上下文 JS，用于只读提取、状态检查或轻量验证。
-- 复杂或多行源码优先通过 `eval --file <path>` 或 `eval --stdin` 传入，避免命令行转义干扰判断。
+- 单行源码可用 `eval --expr '<script>'` 显式传值，也继续支持位置参数。
+- 复杂或多行源码优先通过 `eval --file <path>` 或 `eval --stdin` 传入，避免命令行转义干扰判断；脚本可直接包含顶层 `return`，无需手工包装 IIFE。
 - `--timeout-ms <ms>` 只在确认脚本本身是长任务时使用；不要把它作为复杂流程失败后的默认处理。
 - 复杂交互优先拆成更小的 autobrowser 命令或脚本步骤，保留原任务目标逐步推进。
 
