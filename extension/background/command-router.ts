@@ -461,6 +461,21 @@ interface VideoDomain {
   ) => Promise<void>
 }
 
+interface WebMcpDomain {
+  list: (
+    tabId: TabInput,
+    frameSelector: FrameSelector,
+    context?: CommandExecutionContext,
+  ) => Promise<unknown>
+  call: (
+    tabId: TabInput,
+    frameSelector: FrameSelector,
+    name: string,
+    args: Record<string, unknown>,
+    context?: CommandExecutionContext,
+  ) => Promise<unknown>
+}
+
 interface CommandRouterDependencies {
   state: ExtensionState
   pageInput: PageInputDomain
@@ -471,6 +486,7 @@ interface CommandRouterDependencies {
   initScripts: InitScriptDomain
   tracing: TracingDomain
   video: VideoDomain
+  webmcp: WebMcpDomain
   listTabs: () => Promise<TabSummary[]>
   getTargetTab: (tabId: TabInput) => Promise<TabWithId>
   sendDebuggerCommand: <TResult = unknown>(
@@ -491,6 +507,7 @@ export function createCommandRouter({
   initScripts,
   tracing,
   video,
+  webmcp,
   listTabs,
   getTargetTab,
   sendDebuggerCommand,
@@ -1781,6 +1798,18 @@ export function createCommandRouter({
             })
           if (action === 'hide-actions') return await video.hideActions(tabId)
           throw new Error(`unsupported video action: ${action}`)
+        case 'webmcp':
+          if (action === 'list') return await webmcp.list(tabId, frameSelector, context)
+          if (action === 'call') {
+            return await webmcp.call(
+              tabId,
+              frameSelector,
+              readStringArg(args, 'name'),
+              readObjectArg(args, 'args') || {},
+              context,
+            )
+          }
+          throw new Error(`unsupported webmcp action: ${action}`)
         case 'tab.list': {
           let tabs = await listTabs()
           const filter = readStringArg(args, 'filter').toLowerCase()

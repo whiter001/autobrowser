@@ -103,6 +103,7 @@ function createMinimalRouter(overrides?: {
   const elementToolCalls: Array<{ method: string; args: unknown[] }> = []
   const tracingCalls: Array<{ action: string; tabId: unknown }> = []
   const videoCalls: Array<{ action: string; args: unknown[] }> = []
+  const webmcpCalls: Array<{ action: string; args: unknown[] }> = []
 
   const state = {
     targeting: {
@@ -421,6 +422,16 @@ function createMinimalRouter(overrides?: {
         videoCalls.push({ action: 'handle-action', args })
       },
     },
+    webmcp: {
+      list: async (...args: unknown[]) => {
+        webmcpCalls.push({ action: 'list', args })
+        return { tools: [], untrusted: true }
+      },
+      call: async (...args: unknown[]) => {
+        webmcpCalls.push({ action: 'call', args })
+        return { result: {}, untrusted: true }
+      },
+    },
     listTabs: (overrides?.listTabs ?? (async () => [])) as never,
     getTargetTab: (overrides?.getTargetTab ?? (async () => ({ id: 1 }))) as never,
     sendDebuggerCommand: async (
@@ -458,6 +469,7 @@ function createMinimalRouter(overrides?: {
     elementToolCalls,
     tracingCalls,
     videoCalls,
+    webmcpCalls,
   }
 }
 
@@ -2804,5 +2816,16 @@ describe('diagnostics and automatic snapshots', () => {
     expect(
       videoCalls.some((call) => call.action === 'handle-action' && call.args[0] === 'click'),
     ).toBe(true)
+  })
+
+  test('forwards WebMCP list and call targets and object args', async () => {
+    const { router, webmcpCalls } = createMinimalRouter()
+    await router.handleCommand({ command: 'webmcp', args: { action: 'list', frame: '@f1' } })
+    await router.handleCommand({
+      command: 'webmcp',
+      args: { action: 'call', name: 'lookup', args: { id: 42 }, frame: 'frame-id' },
+    })
+    expect(webmcpCalls[0]?.args.slice(0, 2)).toEqual([1, '@f1'])
+    expect(webmcpCalls[1]?.args.slice(0, 4)).toEqual([1, 'frame-id', 'lookup', { id: 42 }])
   })
 })

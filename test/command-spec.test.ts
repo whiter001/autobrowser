@@ -554,6 +554,22 @@ describe('command specs', () => {
     )
   })
 
+  test('validates WebMCP actions and object arguments', () => {
+    expect(commandSupportsTabTarget('webmcp')).toBe(true)
+    expect(commandSupportsFrameTarget('webmcp')).toBe(true)
+    expect(() => validateCommandArgs('webmcp', { action: 'list' })).not.toThrow()
+    expect(() =>
+      validateCommandArgs('webmcp', { action: 'call', name: 'lookup', args: { id: 1 } }),
+    ).not.toThrow()
+    expect(() => validateCommandArgs('webmcp', { action: 'call', name: 'lookup' })).not.toThrow()
+    expect(() => validateCommandArgs('webmcp', { action: 'call' })).toThrow(
+      'name must be a non-empty string',
+    )
+    expect(() =>
+      validateCommandArgs('webmcp', { action: 'call', name: 'lookup', args: [] }),
+    ).toThrow('args must be an object')
+  })
+
   test('validates media emulation values and device resets', () => {
     for (const [type, value] of [
       ['media-type', 'print'],

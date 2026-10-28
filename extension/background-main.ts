@@ -19,6 +19,7 @@ import { createPageObserveDomain } from './background/page-observe.js'
 import { createSessionDomain } from './background/session.js'
 import { createTracingDomain } from './background/tracing.js'
 import { createVideoDomain } from './background/video.js'
+import { createWebMcpDomain } from './background/webmcp.js'
 import { createExtensionState } from './background/state.js'
 import {
   assertFreshElementRef,
@@ -144,6 +145,12 @@ const video = createVideoDomain({
   },
 })
 
+const webmcp = createWebMcpDomain({
+  getTargetTab,
+  resolveFrameTarget,
+  sendDebuggerCommand,
+})
+
 const commandRouter = createCommandRouter({
   state,
   pageInput,
@@ -157,6 +164,7 @@ const commandRouter = createCommandRouter({
   sendDebuggerCommand,
   tracing,
   video,
+  webmcp,
 })
 
 const connection = createConnectionRuntime({

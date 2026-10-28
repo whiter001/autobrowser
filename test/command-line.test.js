@@ -646,6 +646,20 @@ describe('cli helpers', () => {
     expect(invalid.stderr).toContain('CDP params must be a JSON object')
   })
 
+  test('routes WebMCP discovery and object args with strict input validation', async () => {
+    const listed = await runCli(['webmcp', 'list'])
+    expect(listed.fetchCalls[0].body).toEqual({ command: 'webmcp', args: { action: 'list' } })
+    const called = await runCli(['webmcp', 'call', 'lookup', '--params', '{"id":42}'])
+    expect(called.fetchCalls[0].body).toEqual({
+      command: 'webmcp',
+      args: { action: 'call', name: 'lookup', args: { id: 42 } },
+    })
+    const invalid = await runCli(['webmcp', 'call', 'lookup', '[]'])
+    expect(invalid.exitCode).toBe(1)
+    expect(invalid.fetchCalls).toHaveLength(0)
+    expect(invalid.stderr).toContain('WebMCP args must be a JSON object')
+  })
+
   test('routes coordinate mouse commands and file/text drops', async () => {
     const move = await runCli(['mousemove', '15', '25'])
     expect(move.fetchCalls[0].body).toEqual({ command: 'mousemove', args: { x: 15, y: 25 } })

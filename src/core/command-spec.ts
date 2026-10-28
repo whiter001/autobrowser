@@ -68,6 +68,7 @@ const TAB_TARGET_COMMANDS = [
   'video',
   'upload',
   'wait',
+  'webmcp',
   'window',
 ] as const
 
@@ -99,6 +100,7 @@ const FRAME_TARGET_COMMANDS = [
   'uncheck',
   'upload',
   'wait',
+  'webmcp',
 ] as const
 
 const FRAME_TARGET_COMMAND_SET = new Set<string>(FRAME_TARGET_COMMANDS)
@@ -934,6 +936,18 @@ function validateCommandArgsShape(command: string, args: unknown): void {
       readOptionalNonNegativeIntegerField(normalizedArgs, 'maxDurationMs', command)
       readStringField(normalizedArgs, 'position', command, { required: false })
       readStringField(normalizedArgs, 'highlightStyle', command, { required: false })
+      return
+    }
+    case 'webmcp': {
+      const action = readStringField(normalizedArgs, 'action', command)
+      if (action !== 'list' && action !== 'call')
+        throw createCommandArgsValidationError(command, 'unsupported action', { action })
+      readStringField(normalizedArgs, 'name', command, { required: action === 'call' })
+      if (normalizedArgs.args !== undefined && !isRecord(normalizedArgs.args))
+        throw createCommandArgsValidationError(command, 'args must be an object', {
+          field: 'args',
+          value: normalizedArgs.args,
+        })
       return
     }
     case 'downloads':

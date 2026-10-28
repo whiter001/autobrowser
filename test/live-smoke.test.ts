@@ -802,6 +802,39 @@ suite('live browser smoke test', () => {
     expect(result.result?.result?.value).toBe(42)
   }, 30_000)
 
+  test('discovers and calls WebMCP tools when the browser supports the API', async () => {
+    const supported = await checkedCommand<boolean>('eval', {
+      script:
+        'Boolean(document.modelContext && document.modelContext.getTools && document.modelContext.executeTool)',
+    })
+    if (!supported) {
+      const response = await command('webmcp', { action: 'list' })
+      expect(response.ok).toBe(false)
+      expect(response.error).toMatchObject({ code: 'WEBMCP_UNSUPPORTED' })
+      return
+    }
+
+    await checkedCommand('eval', {
+      script: `document.modelContext.registerTool({
+        name: 'autobrowser_echo',
+        description: 'untrusted live smoke echo',
+        inputSchema: { type: 'object' },
+        annotations: { readOnlyHint: true },
+        execute: async args => ({ echoed: args.value })
+      })`,
+    })
+    const listed = await checkedCommand<{
+      tools: Array<{ name: string; frame: { id: string }; untrusted: boolean }>
+    }>('webmcp', { action: 'list' })
+    const tool = listed.tools.find((item) => item.name === 'autobrowser_echo')
+    expect(tool?.untrusted).toBe(true)
+    const called = await checkedCommand<{ untrusted: boolean; result: { echoed: number } }>(
+      'webmcp',
+      { action: 'call', name: 'autobrowser_echo', args: { value: 42 }, frame: tool?.frame.id },
+    )
+    expect(called).toMatchObject({ untrusted: true, result: { echoed: 42 } })
+  }, 30_000)
+
   test('records tracing, action timeline and automatic snapshots', async () => {
     await checkedCommand('set', { type: 'auto-snapshot', enabled: true })
     const clicked = await checkedCommand<{ snapshot?: { elements?: unknown[] } }>('click', {

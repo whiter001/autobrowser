@@ -34,6 +34,8 @@ const KNOWN_TOOL_NAMES = [
   'tab_close',
   'eval',
   'cdp',
+  'webmcp_list',
+  'webmcp_call',
   'console',
   'errors',
   'network_requests',
@@ -82,7 +84,7 @@ function okResult(result: unknown): CommandResponse {
 }
 
 describe('AutobrowserMcpServer.listTools', () => {
-  test('exposes all 43 tools with object-typed input schemas', () => {
+  test('exposes all 45 tools with object-typed input schemas', () => {
     const server = new AutobrowserMcpServer({ requestCommand: async () => okResult({}) })
     const tools = server.listTools()
 
@@ -158,6 +160,20 @@ describe('AutobrowserMcpServer.callTool', () => {
       {
         command: 'cdp',
         args: { method: 'Runtime.evaluate', params: { expression: '6 * 7' }, tabId: 't2' },
+      },
+    ])
+  })
+
+  test('WebMCP tools forward tab/frame targets and JSON object args', async () => {
+    const mock = recordingRequestCommand(okResult({ untrusted: true }))
+    const server = new AutobrowserMcpServer({ requestCommand: mock })
+    await server.callTool('webmcp_list', { tab: 't2', frame: '@f1' })
+    await server.callTool('webmcp_call', { name: 'lookup', args: { id: 42 }, frame: 'child' })
+    expect(mock.calls).toEqual([
+      { command: 'webmcp', args: { action: 'list', tabId: 't2', frame: '@f1' } },
+      {
+        command: 'webmcp',
+        args: { action: 'call', name: 'lookup', args: { id: 42 }, frame: 'child' },
       },
     ])
   })
