@@ -33,6 +33,7 @@ const KNOWN_TOOL_NAMES = [
   'tab_select',
   'tab_close',
   'eval',
+  'cdp',
   'console',
   'errors',
   'network_requests',
@@ -127,6 +128,24 @@ describe('AutobrowserMcpServer.callTool', () => {
     expect(result.isError).toBeFalsy()
     expect(mock.calls).toEqual([
       { command: 'goto', args: { url: 'https://example.com', tabId: 't1' } },
+    ])
+  })
+
+  test('cdp forwards method and object params with tab but no frame target', async () => {
+    const mock = recordingRequestCommand(okResult({ result: { value: 42 } }))
+    const server = new AutobrowserMcpServer({ requestCommand: mock })
+    const result = await server.callTool('cdp', {
+      method: 'Runtime.evaluate',
+      params: { expression: '6 * 7' },
+      tab: 't2',
+      frame: '@f1',
+    })
+    expect(result.isError).toBeFalsy()
+    expect(mock.calls).toEqual([
+      {
+        command: 'cdp',
+        args: { method: 'Runtime.evaluate', params: { expression: '6 * 7' }, tabId: 't2' },
+      },
     ])
   })
 

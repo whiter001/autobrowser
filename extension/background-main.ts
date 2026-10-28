@@ -124,6 +124,7 @@ const commandRouter = createCommandRouter({
   initScripts,
   listTabs,
   getTargetTab,
+  sendDebuggerCommand,
 })
 
 const connection = createConnectionRuntime({

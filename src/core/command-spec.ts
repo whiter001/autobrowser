@@ -22,6 +22,7 @@ const TAB_TARGET_COMMANDS = [
   'cookies',
   'dblclick',
   'dialog',
+  'cdp',
   'drag',
   'errors',
   'eval',
@@ -692,6 +693,21 @@ function validateCommandArgsShape(command: string, args: unknown): void {
       }
 
       if (
+    case 'cdp': {
+      const method = readStringField(normalizedArgs, 'method', command)
+      if (
+        !/^[A-Z][A-Za-z0-9]{0,63}\.[a-z][A-Za-z0-9]{0,127}$/.test(method as string) ||
+        /^(?:Browser|Target|SystemInfo)\./.test(method as string) ||
+        method === 'Debugger.disable'
+      )
+        throw createCommandArgsValidationError(command, 'method must be a tab-scoped CDP method')
+      if (normalizedArgs.params !== undefined && !isRecord(normalizedArgs.params))
+        throw createCommandArgsValidationError(command, 'params must be an object', {
+          field: 'params',
+          value: normalizedArgs.params,
+        })
+      return
+    }
         !['locate', 'click', 'fill', 'type', 'hover', 'focus', 'check', 'uncheck', 'text'].includes(
           action,
         )

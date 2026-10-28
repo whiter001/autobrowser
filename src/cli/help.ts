@@ -156,6 +156,15 @@ const HELP_ROOT = helpNode(
       ],
     ),
     helpNode(
+      'cdp',
+      'Execute a tab-scoped Chrome DevTools Protocol method with JSON params.',
+      'autobrowser cdp <Domain.method> [json|--params <json>]',
+      [
+        'Browser/Target/SystemInfo methods and Debugger.disable are rejected to preserve the tab debugging session.',
+        'CDP commands may have side effects; disconnected outcomes follow the normal unknown-result policy and are not automatically replayed.',
+      ],
+    ),
+    helpNode(
       'script',
       'Manage init scripts injected before page scripts on every navigation.',
       'autobrowser script <add|list|remove>',

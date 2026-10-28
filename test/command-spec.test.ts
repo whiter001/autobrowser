@@ -461,6 +461,29 @@ describe('command specs', () => {
     ).not.toThrow()
   })
 
+  test('validates tab-scoped CDP methods and object params', () => {
+    expect(() =>
+      validateCommandArgs('cdp', {
+        method: 'Runtime.evaluate',
+        params: { expression: 'document.title', returnByValue: true },
+      }),
+    ).not.toThrow()
+    for (const method of [
+      'Browser.close',
+      'Target.attachToTarget',
+      'SystemInfo.getInfo',
+      'Debugger.disable',
+      'runtime.evaluate',
+      'Runtime',
+    ])
+      expect(() => validateCommandArgs('cdp', { method })).toThrow(
+        'invalid command arguments for cdp: method must be a tab-scoped CDP method',
+      )
+    expect(() => validateCommandArgs('cdp', { method: 'Runtime.evaluate', params: [] })).toThrow(
+      'invalid command arguments for cdp: params must be an object',
+    )
+  })
+
   test('validates search command arguments', () => {
     expect(() => validateCommandArgs('search', {})).toThrow(
       'invalid command arguments for search: query must be a non-empty string',

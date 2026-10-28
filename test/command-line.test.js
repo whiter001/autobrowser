@@ -623,6 +623,28 @@ describe('cli helpers', () => {
     expect(missing.stderr).toContain('missing value for --expr')
   })
 
+  test('routes CDP JSON params and rejects non-object payloads', async () => {
+    const positional = await runCli([
+      'cdp',
+      'Runtime.evaluate',
+      '{"expression":"6 * 7","returnByValue":true}',
+    ])
+    expect(positional.exitCode).toBe(0)
+    expect(positional.fetchCalls[0].body).toEqual({
+      command: 'cdp',
+      args: { method: 'Runtime.evaluate', params: { expression: '6 * 7', returnByValue: true } },
+    })
+
+    const flagged = await runCli(['cdp', 'Page.getLayoutMetrics', '--params', '{}'])
+    expect(flagged.exitCode).toBe(0)
+    expect(flagged.fetchCalls[0].body.args).toEqual({ method: 'Runtime.evaluate', params: {} })
+
+    const invalid = await runCli(['cdp', 'Runtime.evaluate', '[]'])
+    expect(invalid.exitCode).toBe(1)
+    expect(invalid.fetchCalls).toHaveLength(0)
+    expect(invalid.stderr).toContain('CDP params must be a JSON object')
+  })
+
   test('documents configurable HAR limits in help output', async () => {
     const result = await runCli(['help', 'network', 'har', 'start'])
 

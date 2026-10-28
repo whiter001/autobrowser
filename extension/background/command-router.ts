@@ -469,6 +469,12 @@ export function createCommandRouter({
       }))
       .filter((field) => field.selector.trim().length > 0)
   }
+  sendDebuggerCommand: <TResult = unknown>(
+    tabId: number,
+    method: string,
+    params?: Record<string, unknown>,
+    context?: CommandExecutionContext,
+  ) => Promise<TResult>
 
   function readSavedStateArg(args: CommandArgs, key: string): SavedStateData | undefined {
     const value = args[key]
@@ -483,6 +489,7 @@ export function createCommandRouter({
   ): Array<{ name?: string; value?: unknown }> | Record<string, unknown> | undefined {
     const value = args[key]
     if (Array.isArray(value)) {
+  sendDebuggerCommand,
       return value.filter(
         (item): item is { name?: string; value?: unknown } =>
           Boolean(item) && typeof item === 'object',
@@ -1869,6 +1876,17 @@ export function createCommandRouter({
           }
           if (action === 'clear') {
             return await session.cookiesClear(tabId)
+        case 'cdp': {
+          const tab = await getTargetTab(tabId)
+          const method = readStringArg(args, 'method')
+          const result = await sendDebuggerCommand(
+            tab.id,
+            method,
+            (args.params || {}) as Record<string, unknown>,
+            context,
+          )
+          return { method, result }
+        }
           }
           if (action === 'delete') {
             if (!name || name === 'default') {

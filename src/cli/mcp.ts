@@ -496,6 +496,21 @@ const MCP_TOOLS: McpToolDefinition[] = [
     toArgs: (args) => ({ script: args.script }),
   },
   {
+    name: 'cdp',
+    description:
+      'Execute a tab-scoped Chrome DevTools Protocol method with object params. Browser/Target/SystemInfo methods and Debugger.disable are rejected. May have side effects; do not replay unknown outcomes.',
+    command: 'cdp',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        method: { type: 'string', description: 'CDP method, for example Runtime.evaluate.' },
+        params: { type: 'object', description: 'CDP method parameters (default {}).' },
+      },
+      required: ['method'],
+    },
+    toArgs: (args) => ({ method: args.method, ...onlyDefined(args, ['params']) }),
+  },
+  {
     name: 'console',
     description:
       'Return console messages recorded for the target tab (folded consecutive duplicates with repeatCount). Messages are paginated; an out-of-range pageIdx falls back to the first page with pagination.invalidPage: true. Use pageSize to control how many messages come back (default 50, max 200).',

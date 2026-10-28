@@ -268,6 +268,26 @@ async function handleScript(rest: string[], context: CommandContext): Promise<nu
       return 0
     }
 
+async function handleCdp(rest: string[], context: CommandContext): Promise<number | void> {
+  if (helpRequested(rest[0], context, ['cdp'])) return 0
+  const method = rest[0]
+  if (!method) return writeCommandError('missing CDP method')
+  let paramsText = '{}'
+  if (rest[1] === '--params') {
+    if (!rest[2]) return writeCommandError('missing value for --params')
+    if (rest.length > 3) return writeCommandError(`unexpected extra argument for cdp: ${rest[3]}`)
+    paramsText = rest[2]
+  } else {
+    paramsText = rest.slice(1).join(' ') || '{}'
+  }
+  const params = parseOrWriteError(() => JSON.parse(paramsText) as unknown)
+  if (params === undefined) return 1
+  if (!isRecord(params) || Array.isArray(params))
+    return writeCommandError('CDP params must be a JSON object')
+  await requestAndWrite(context, 'cdp', { method, params })
+  return 0
+}
+
     // 源码输入与 eval 完全同一条管线：位置参数、--file、--stdin、--base64
     const source = (await context.resolveEvalScript(scriptArgs)).trim()
     if (!source) {
@@ -757,6 +777,7 @@ export const pageCommandRegistry: CommandRegistry = {
   quit: handleClose,
   exit: handleClose,
   window: handleWindow,
+  cdp: handleCdp,
   frame: handleFrame,
   is: handleIs,
   get: handleGet,
