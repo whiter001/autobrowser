@@ -2712,6 +2712,39 @@ describe('cli command routing', () => {
     expect(attached.spawnCalls[0].args).toContain(String(record.ipcPort))
   })
 
+  test('Firefox status uses the configured WebDriver instead of the Chromium relay', async () => {
+    const result = await runCli(
+      ['--engine', 'firefox', '--webdriver-url', 'http://driver.test', 'status'],
+      undefined,
+      {
+        fetchImpl: async (url, init = {}) => {
+          if (String(url) === 'http://driver.test/session') {
+            expect(JSON.parse(init.body)).toMatchObject({
+              capabilities: { alwaysMatch: { browserName: 'firefox' } },
+            })
+            return Response.json({ value: { sessionId: 'firefox-session', capabilities: {} } })
+          }
+          return Response.json({ value: 'about:blank' })
+        },
+      },
+    )
+    expect(result.exitCode).toBe(0)
+    expect(result.spawnCalls).toHaveLength(0)
+    expect(
+      result.fetchCalls.every((call) => String(call.url).startsWith('http://driver.test')),
+    ).toBe(true)
+    expect(JSON.parse(result.stdout).result).toMatchObject({
+      engine: 'firefox',
+      sessionId: 'firefox-session',
+      connected: true,
+    })
+
+    const invalid = await runCli(['--engine', 'other', 'status'])
+    expect(invalid.exitCode).toBe(1)
+    expect(invalid.fetchCalls).toHaveLength(0)
+    expect(invalid.stderr).toContain('--engine must be chromium, firefox or webkit')
+  })
+
   test('server stop prefers an explicit ipc port over persisted connection ports', async () => {
     const homeDir = await mkdtemp(path.join(os.tmpdir(), 'autobrowser-stop-explicit-port-'))
     const stateDir = path.join(homeDir, '.autobrowser')

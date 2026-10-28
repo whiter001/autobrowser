@@ -28,6 +28,7 @@ import {
   writeJsonFile,
 } from './core/protocol.js'
 import { readSession } from './core/sessions.js'
+import { createWebDriverCommandHandler } from './cli/webdriver.js'
 import { printHelp } from './cli/help.js'
 import { type ScreenshotArgs } from './cli/parse.js'
 import {
@@ -68,6 +69,8 @@ const SUPPORTED_GLOBAL_FLAGS = [
   '--file',
   '--server',
   '--session',
+  '--engine',
+  '--webdriver-url',
   '--relay-port',
   '--ipc-port',
   '--extension-id',
@@ -105,6 +108,8 @@ function parseCli(argv: string[]): ParsedCli {
     json: true,
     server: `http://127.0.0.1:${DEFAULT_IPC_PORT}`,
     session: '',
+    engine: 'chromium',
+    webdriverUrl: '',
     relayPort: DEFAULT_RELAY_PORT,
     ipcPort: DEFAULT_IPC_PORT,
     serverExplicitlySet: false,
@@ -176,6 +181,22 @@ function parseCli(argv: string[]): ParsedCli {
 
     if (value === '--session' && args.length === 0) {
       flags.session = readFlagValue(argv, index, value)
+      index += 1
+      continue
+    }
+
+    if (value === '--engine' && args.length === 0) {
+      const engine = readFlagValue(argv, index, value)
+      if (engine !== 'chromium' && engine !== 'firefox' && engine !== 'webkit') {
+        throw new Error('--engine must be chromium, firefox or webkit')
+      }
+      flags.engine = engine
+      index += 1
+      continue
+    }
+
+    if (value === '--webdriver-url' && args.length === 0) {
+      flags.webdriverUrl = readFlagValue(argv, index, value)
       index += 1
       continue
     }
@@ -884,6 +905,16 @@ async function runMain(
       flags.server = `http://127.0.0.1:${session.ipcPort}`
     }
   }
+  const webDriverCommand =
+    flags.engine === 'chromium'
+      ? null
+      : createWebDriverCommandHandler({
+          engine: flags.engine,
+          driverUrl:
+            flags.webdriverUrl ||
+            (flags.engine === 'firefox' ? 'http://127.0.0.1:4444' : 'http://127.0.0.1:4723'),
+          homeDir,
+        })
   const launchUrl = dependencies.openUrl ?? openUrl
   let connectPageOpened = false
   let commandToken: string | null | undefined
@@ -1283,6 +1314,8 @@ async function runMain(
     } catch (error) {
       return createInvalidCommandArgsResponse(error)
     }
+
+    if (webDriverCommand) return await webDriverCommand(command, requestArgs)
 
     if (flags.autoConnect && !connectPageOpened) {
       await triggerAutoConnect(baseUrl)

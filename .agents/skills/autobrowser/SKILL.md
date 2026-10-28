@@ -56,6 +56,12 @@ autobrowser 是一个面向 Chrome/Edge 的浏览器自动化 CLI，通过本地
 - `state`
 - `network route` / `network unroute` / `network requests` / `network request` / `network har start` / `network har stop` / `network har status` / `network har recover`
 
+## 浏览器引擎与能力边界
+
+- 默认 `--engine chromium` 使用扩展 + CDP。Firefox/WebKit 使用标准 WebDriver，需先启动 geckodriver/safaridriver，再把 `--engine firefox|webkit` 放在命令名前；driver 地址可用 `--webdriver-url` 覆盖。
+- WebDriver 核心范围是导航、snapshot、click/fill/type/press、get/is、storage、cookies、视口 PNG screenshot 和 close/status。遇到 `BROWSER_CAPABILITY_UNSUPPORTED` 时改用已适配命令或回到 Chromium，不要把 CDP/network/tracing 等专属能力当成跨浏览器承诺。
+- `BROWSER_DRIVER_UNAVAILABLE` 先检查 driver 进程、URL 和 Safari 远程自动化设置；`WEBDRIVER_SESSION_INVALID` 表示旧会话已失效，适配层只会在执行前校验时重建，不会盲目重放副作用命令。
+
 ## 命名会话与清理边界
 
 - 默认会话继续使用原有 home、端口和真实浏览器登录态。隔离任务用 `session create <name>` 和 `session attach <name>`，后续命令把 `--session <name>` 放在命令名前；每个命名会话的 home、profile、端口、token 和 tab target 独立，不要跨会话复用连接信息。

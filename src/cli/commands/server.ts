@@ -387,6 +387,12 @@ async function handleConnect(rest: string[], context: CommandContext): Promise<n
     return context.writeHelp(['connect'])
   }
 
+  if (context.flags.engine !== 'chromium') {
+    const payload = await context.requestCommand(context.flags.server, 'status', {})
+    context.writeResult(payload)
+    return payload.ok === false ? 1 : 0
+  }
+
   let status = await context.getStatus(context.flags.server).catch(() => null)
   const hasReachableServerStatus = Boolean(status && isServerSnapshotStatus(status))
 
@@ -410,6 +416,12 @@ async function handleConnect(rest: string[], context: CommandContext): Promise<n
 async function handleStatus(rest: string[], context: CommandContext): Promise<number | void> {
   if (isHelpToken(rest[0])) {
     return context.writeHelp(['status'])
+  }
+
+  if (context.flags.engine !== 'chromium') {
+    const payload = await context.requestCommand(context.flags.server, 'status', {})
+    context.writeResult(payload)
+    return payload.ok === false ? 1 : 0
   }
 
   const status = await context.getCommandStatus(context.flags.server)
@@ -580,12 +592,28 @@ async function handleSession(rest: string[], context: CommandContext): Promise<n
   }
 
   if (action === 'attach') {
+    if (context.flags.engine !== 'chromium') {
+      const payload = await context.requestCommand(context.flags.server, 'status', {})
+      context.writeResult(payload)
+      return payload.ok === false ? 1 : 0
+    }
     const server = await ensureBackgroundServer(context, { announceAlreadyRunning: false })
     if (!server) return 1
     await context.openConnectFlow({ ...server.status }, true)
     return 0
   }
   if (action === 'detach') {
+    if (context.flags.engine !== 'chromium') {
+      context.writeResult({
+        ok: false,
+        error: {
+          code: 'BROWSER_CAPABILITY_UNSUPPORTED',
+          message: 'WebDriver has no relay to detach; use close-all to end the WebDriver session',
+          details: { engine: context.flags.engine, action: 'detach' },
+        },
+      })
+      return 1
+    }
     const result = await stopCurrentSession(context)
     context.writeResult({ ok: true, result: { session: name, ...result } })
     return 0
@@ -600,6 +628,13 @@ async function handleSession(rest: string[], context: CommandContext): Promise<n
       if ((error as { code?: string }).code === 'SESSION_NOT_FOUND') return null
       throw error
     })
+    if (session && context.flags.engine !== 'chromium') {
+      const payload = await context.requestCommand(context.flags.server, 'close', { all: true })
+      if (payload.ok === false) {
+        context.writeResult(payload)
+        return 1
+      }
+    }
     if (session) await stopSessionRecord(context, session)
     const result = await deleteSessionData(baseHomeDir, name)
     context.writeResult({ ok: true, result })

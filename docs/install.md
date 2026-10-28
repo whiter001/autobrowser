@@ -46,3 +46,41 @@ bun run build:chrome
 如果本地控制服务不存在，而你又在指向本地 IPC 端点，`connect` 会自动帮你启动它。若你希望在扩展断开连接时，CLI 主动打开扩展连接页，也可以加上 `--auto-connect`。
 
 `options` 页面仍然是手动兜底入口，并会显示连接诊断信息。
+
+## Firefox / WebKit（WebDriver）
+
+Firefox 和 WebKit 不使用上面的 Chromium 扩展或 CDP，而是通过标准 WebDriver 连接。先启动对应 driver，再在命令名前选择引擎：
+
+### Firefox
+
+安装并启动 [geckodriver](https://github.com/mozilla/geckodriver)：
+
+```bash
+geckodriver --port 4444
+autobrowser --engine firefox status
+autobrowser --engine firefox open https://example.com
+```
+
+默认连接 `http://127.0.0.1:4444`，可用 `--webdriver-url` 覆盖。
+
+### WebKit / Safari
+
+在 Safari 的「开发」菜单中允许「远程自动化」，并按 Apple 的要求初始化、启动 `safaridriver`：
+
+```bash
+safaridriver -p 4723
+autobrowser --engine webkit status
+autobrowser --engine webkit open https://example.com
+```
+
+WebKit 默认连接 `http://127.0.0.1:4723`。当前核心适配范围是 `goto/open/back/forward/reload`、`snapshot`、`click/fill/type/press`、`get/is`、`storage`、`cookies`、视口 PNG `screenshot` 和 `close/status`。`full`、标注截图、JPEG、显式 tab/frame 目标、network、tracing、CDP、video、WebMCP 等尚未适配的能力会返回 `BROWSER_CAPABILITY_UNSUPPORTED`，不会静默降级成模拟结果。
+
+WebDriver sessionId 按当前 home 和引擎保存并复用；命名会话之间不会共享 sessionId。可用 `--session <name>` 与 `--engine` 组合。`close-all` 会结束对应 WebDriver 会话，之后下次命令会创建新会话。
+
+仓库的可选真实浏览器 smoke 需要先启动 driver，再运行：
+
+```bash
+AUTOBROWSER_WEBDRIVER_LIVE=1 bun test test/webdriver-live.test.ts
+```
+
+可用 `AUTOBROWSER_FIREFOX_DRIVER_URL` 和 `AUTOBROWSER_WEBKIT_DRIVER_URL` 覆盖测试地址。未启用该环境变量时 smoke 会跳过，协议 mock 通过不代表本机真实浏览器已经验证。

@@ -88,6 +88,20 @@ autobrowser session delete-data research # 停止 relay 并删除该会话数据
 
 `delete-data` 只接受命名会话，重复执行会返回已清理，不会删除默认会话。如果返回 `SESSION_DATA_LOCKED`，先关闭仍占用该 profile 的浏览器，再重试清理；不要强制删除正在使用的 profile。
 
+## Firefox / WebKit
+
+默认 `--engine chromium` 保持扩展 + CDP 工作流。Firefox 和 WebKit 改用标准 WebDriver，启动 driver 后可在命令名前选择引擎：
+
+```bash
+geckodriver --port 4444
+autobrowser --engine firefox open https://example.com
+
+safaridriver -p 4723
+autobrowser --engine webkit open https://example.com
+```
+
+核心适配包括导航、snapshot、元素点击/填写/输入、状态读取、storage、cookies 和视口 PNG 截图。network、tracing、CDP、video、WebMCP 等 Chromium 能力，以及当前未适配的选项，会返回 `BROWSER_CAPABILITY_UNSUPPORTED`，不会用模拟结果冒充支持。安装、driver 配置和分引擎 smoke 见 [`docs/install.md`](docs/install.md#firefox--webkitwebdriver)。
+
 ## 状态检查
 
 使用 `is` 查看元素状态：

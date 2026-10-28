@@ -24,12 +24,14 @@ function helpNode(
 
 const HELP_ROOT = helpNode(
   'autobrowser',
-  'Browser automation CLI for controlling Chrome/Edge through a relay server and extension. Request budget defaults to 30s; explicit eval/navigation/click timeoutMs or wait timeout/ms adds 5s transport allowance (at least 30s). Batch combines step/retry/delay budgets; maximum 30 minutes including allowance. Feed uses scroll count (capped at 40) * pauseMs + 60s execution allowance + 5s transport allowance, at least the default budget; budgets over 30 minutes are rejected. Sent commands with unknown outcomes are not automatically replayed: inspect status, command list and page state before retrying.',
+  'Browser automation CLI for Chrome/Edge via extension and Firefox/WebKit via WebDriver. Request budget defaults to 30s; explicit eval/navigation/click timeoutMs or wait timeout/ms adds 5s transport allowance (at least 30s). Batch combines step/retry/delay budgets; maximum 30 minutes including allowance. Feed uses scroll count (capped at 40) * pauseMs + 60s execution allowance + 5s transport allowance, at least the default budget; budgets over 30 minutes are rejected. Sent commands with unknown outcomes are not automatically replayed: inspect status, command list and page state before retrying.',
   'autobrowser [command] [options]',
   [
     '--json',
     '--server <url>',
     '--session <name>  select a named session (before the command)',
+    '--engine <chromium|firefox|webkit>  use the extension or WebDriver (before the command)',
+    '--webdriver-url <url>  override geckodriver/safaridriver URL',
     '--relay-port <port>',
     '--ipc-port <port>',
     '--tab <tN|id>',

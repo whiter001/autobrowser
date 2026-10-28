@@ -5,6 +5,8 @@ export interface CliFlags {
   json: boolean
   server: string
   session: string
+  engine: 'chromium' | 'firefox' | 'webkit'
+  webdriverUrl: string
   relayPort: number
   ipcPort: number
   serverExplicitlySet: boolean
