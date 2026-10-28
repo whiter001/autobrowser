@@ -660,6 +660,36 @@ describe('cli helpers', () => {
     expect(invalid.stderr).toContain('WebMCP args must be a JSON object')
   })
 
+  test('routes feed collect with virtual-list limits and dedupe options', async () => {
+    const result = await runCli([
+      'feed',
+      'collect',
+      'article',
+      '--limit',
+      '30',
+      '--dedupe',
+      'url',
+      '--max-scrolls',
+      '10',
+      '--pause-ms',
+      '100',
+      '--stall-rounds',
+      '2',
+    ])
+    expect(result.exitCode).toBe(0)
+    expect(result.fetchCalls[0].body).toEqual({
+      command: 'feed',
+      args: {
+        selector: 'article',
+        limit: 30,
+        dedupe: 'url',
+        maxScrolls: 10,
+        pauseMs: 100,
+        stallRounds: 2,
+      },
+    })
+  })
+
   test('routes coordinate mouse commands and file/text drops', async () => {
     const move = await runCli(['mousemove', '15', '25'])
     expect(move.fetchCalls[0].body).toEqual({ command: 'mousemove', args: { x: 15, y: 25 } })

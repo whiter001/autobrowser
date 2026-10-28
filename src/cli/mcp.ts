@@ -165,6 +165,25 @@ const MCP_TOOLS: McpToolDefinition[] = [
     toArgs: (args) => onlyDefined(args, ['query', 'context', 'limit', 'startLine']),
   },
   {
+    name: 'feed',
+    description:
+      'Collect structured cards from a virtual list with scrolling and dedupe. Returns author, handle, time, text, url and mediaUrls. URL dedupe falls back to author/handle/text for cards without links; STALE_FEED_STATE means the page navigated and results were discarded.',
+    command: 'feed',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        selector: { type: 'string', description: 'Card selector (default article).' },
+        limit: { type: 'integer', minimum: 0, maximum: 200 },
+        dedupe: { type: 'string', enum: ['url', 'text', 'none'] },
+        maxScrolls: { type: 'integer', minimum: 0, maximum: 40 },
+        pauseMs: { type: 'integer', minimum: 0 },
+        stallRounds: { type: 'integer', minimum: 0 },
+      },
+    },
+    toArgs: (args) =>
+      onlyDefined(args, ['selector', 'limit', 'dedupe', 'maxScrolls', 'pauseMs', 'stallRounds']),
+  },
+  {
     name: 'find',
     description:
       'Find elements by role, text, label, placeholder, alt, title, test-id, or exact-name and optionally act. Read-only locate/text default to the first match. Write actions with multiple matches return AMBIGUOUS_TARGET and candidates unless position is explicit. Inspect candidates, narrow the query/exact match, or deliberately choose position before retrying.',

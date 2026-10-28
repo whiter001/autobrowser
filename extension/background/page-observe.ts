@@ -359,6 +359,15 @@ export interface CollectFeedOptions {
   stallRounds: number
 }
 
+export function feedItemDedupeKey(
+  strategy: FeedDedupeStrategy,
+  item: { url: string | null; author: string | null; handle: string | null; text: string },
+): string | null {
+  if (strategy === 'none') return null
+  if (strategy === 'url' && item.url?.trim()) return item.url.trim()
+  return [item.author || '', item.handle || '', item.text].join('|').trim()
+}
+
 export interface SnapshotTabOptions {
   /** CSS selector 或 @eN ref：只截取该元素子树 */
   selector?: string
@@ -1563,6 +1572,7 @@ ${PAGE_CONTEXT_TEXT_HELPERS_SOURCE}
 ${PAGE_CONTEXT_DEEP_DOM_HELPERS_SOURCE}
 
         const normalize = (value) => collapseWhitespace(value || '').trim();
+        const feedItemDedupeKey = ${feedItemDedupeKey.toString()};
 
         const isVisible = (node) => {
           if (!(node instanceof HTMLElement)) {
@@ -1640,11 +1650,12 @@ ${PAGE_CONTEXT_DEEP_DOM_HELPERS_SOURCE}
             const url = readUrl(node);
             const authorInfo = parseAuthorHandle(node.querySelector("[data-testid='User-Name']")?.innerText || '');
             const mediaUrls = readMediaUrls(node);
-            const dedupeKey = dedupe === 'none'
-              ? null
-              : dedupe === 'url'
-                ? normalize(url || '')
-                : normalize([authorInfo.author || '', authorInfo.handle || '', text].join('|'));
+            const dedupeKey = normalize(feedItemDedupeKey(dedupe, {
+              url,
+              author: authorInfo.author,
+              handle: authorInfo.handle,
+              text
+            }) || '');
 
             if (dedupeKey) {
               if (seen.has(dedupeKey)) {
@@ -1735,6 +1746,17 @@ ${PAGE_CONTEXT_DEEP_DOM_HELPERS_SOURCE}
       // 滚动采集可能远超默认 25s（maxScrolls * pauseMs），显式放宽 evaluate 上限避免被掐断
       withFrameSelectorOptions(frameSelector, { timeoutMs: maxScrolls * pauseMs + 60_000 }),
     )
+
+    // 长滚动可能跨越导航；旧 document 的卡片不能作为新 epoch 的采集结果交付。
+    if (getPageEpoch(state, tab.id) !== pageEpoch) {
+      const error = new Error(
+        `feed collection became stale: expected page epoch ${pageEpoch}, current page epoch ${getPageEpoch(state, tab.id)}`,
+      ) as Error & { code?: string; suggestedAction?: string }
+      error.code = 'STALE_FEED_STATE'
+      error.suggestedAction =
+        'Run feed collect again on the current page without navigating during collection.'
+      throw error
+    }
 
     // evaluate 抛异常时上层已 throw；这里只对空结果做结构兜底
     if (value && Array.isArray(value.items)) {

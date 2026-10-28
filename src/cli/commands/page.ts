@@ -452,11 +452,12 @@ async function handleSearch(rest: string[], context: CommandContext): Promise<nu
 }
 
 async function handleFeed(rest: string[], context: CommandContext): Promise<number | void> {
-  if (helpRequested(rest[0], context, ['feed'])) {
+  const feedRest = rest[0] === 'collect' ? rest.slice(1) : rest
+  if (helpRequested(feedRest[0], context, ['feed'])) {
     return 0
   }
 
-  const feedArgs = parseOrWriteError(() => parseFeedArgs(rest))
+  const feedArgs = parseOrWriteError(() => parseFeedArgs(feedRest))
   if (!feedArgs) {
     return 1
   }

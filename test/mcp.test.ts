@@ -15,6 +15,7 @@ const KNOWN_TOOL_NAMES = [
   'navigate',
   'snapshot',
   'search',
+  'feed',
   'find',
   'click',
   'dblclick',
@@ -84,7 +85,7 @@ function okResult(result: unknown): CommandResponse {
 }
 
 describe('AutobrowserMcpServer.listTools', () => {
-  test('exposes all 45 tools with object-typed input schemas', () => {
+  test('exposes all 46 tools with object-typed input schemas', () => {
     const server = new AutobrowserMcpServer({ requestCommand: async () => okResult({}) })
     const tools = server.listTools()
 
@@ -223,6 +224,34 @@ describe('AutobrowserMcpServer.callTool', () => {
       {
         command: 'snapshot',
         args: { roles: ['button', 'link'], selector: '@e4' },
+      },
+    ])
+  })
+
+  test('feed forwards collection limits, dedupe and frame target', async () => {
+    const mock = recordingRequestCommand(okResult({ items: [] }))
+    const server = new AutobrowserMcpServer({ requestCommand: mock })
+    await server.callTool('feed', {
+      selector: 'article',
+      limit: 30,
+      dedupe: 'url',
+      maxScrolls: 10,
+      pauseMs: 100,
+      stallRounds: 2,
+      frame: '@f1',
+    })
+    expect(mock.calls).toEqual([
+      {
+        command: 'feed',
+        args: {
+          selector: 'article',
+          limit: 30,
+          dedupe: 'url',
+          maxScrolls: 10,
+          pauseMs: 100,
+          stallRounds: 2,
+          frame: '@f1',
+        },
       },
     ])
   })

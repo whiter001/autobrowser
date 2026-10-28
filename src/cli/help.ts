@@ -250,14 +250,15 @@ const HELP_ROOT = helpNode(
     helpNode(
       'feed',
       'Collect structured cards from a virtual list or article feed.',
-      'autobrowser feed [selector] [--selector <css>] [--limit <n>] [--dedupe url|text|none] [--max-scrolls <n>] [--pause-ms <n>] [--stall-rounds <n>]',
+      'autobrowser feed [collect] [selector] [--selector <css>] [--limit <n>] [--dedupe url|text|none] [--max-scrolls <n>] [--pause-ms <n>] [--stall-rounds <n>]',
       [
         '--selector <css>',
         '--limit <n>',
-        '--dedupe <url|text|none>',
+        '--dedupe <url|text|none>  URL falls back to author/handle/text when a card has no link',
         '--max-scrolls <n>',
         '--pause-ms <n>',
-        '--stall-rounds <n>',
+        '--stall-rounds <n>  stop after repeated rounds without new cards or movement',
+        'Returns stopReason=limit|maxScrolls|stalled and pageEpoch; navigation during collection returns STALE_FEED_STATE instead of stale items.',
       ],
     ),
     helpNode('click', 'Click a selector.', 'autobrowser click <selector>'),

@@ -802,6 +802,37 @@ suite('live browser smoke test', () => {
     expect(result.result?.result?.value).toBe(42)
   }, 30_000)
 
+  test('collects structured virtual-list cards and dedupes items without URLs', async () => {
+    const html = `<!doctype html><body>
+      <article><div data-testid="User-Name">Ada · @ada</div><time datetime="2026-01-01"></time><div data-testid="tweetText">same text</div><img src="image.png"></article>
+      <article><div data-testid="User-Name">Ada · @ada</div><time datetime="2026-01-01"></time><div data-testid="tweetText">same text</div></article>
+      <article><div data-testid="User-Name">Bob · @bob</div><div data-testid="tweetText">linked</div><a href="/status/2">link</a></article>
+    </body>`
+    await checkedCommand('goto', { url: `data:text/html,${encodeURIComponent(html)}` })
+    const result = await checkedCommand<{
+      count: number
+      items: Array<{
+        author: string
+        handle: string
+        time: string | null
+        text: string
+        url: string | null
+        mediaUrls: string[]
+      }>
+    }>('feed', { selector: 'article', limit: 3, dedupe: 'url', maxScrolls: 0, pauseMs: 0 })
+    expect(result.count).toBe(2)
+    expect(result.items[0]).toMatchObject({
+      author: 'Ada',
+      handle: '@ada',
+      time: '2026-01-01',
+      text: 'same text',
+      mediaUrls: ['image.png'],
+    })
+    expect(result.items[1]?.url).toContain('/status/2')
+    await checkedCommand('goto', { url: pageUrl })
+    await checkedCommand('wait', { selector: '#increment', timeout: 15_000 })
+  }, 30_000)
+
   test('discovers and calls WebMCP tools when the browser supports the API', async () => {
     const supported = await checkedCommand<boolean>('eval', {
       script:
