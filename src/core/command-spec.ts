@@ -40,6 +40,7 @@ const TAB_TARGET_COMMANDS = [
   'get',
   'goto',
   'hover',
+  'highlight',
   'is',
   'keyboard',
   'network',
@@ -83,8 +84,10 @@ const FRAME_TARGET_COMMANDS = [
   'hover',
   'is',
   'screenshot',
+  'highlight',
   'scroll',
   'scrollintoview',
+  'locator',
   'search',
   'select',
   'snapshot',
@@ -685,6 +688,28 @@ function validateCommandArgsShape(command: string, args: unknown): void {
       if (!selector && !hide)
         throw createCommandArgsValidationError(command, 'selector is required unless hide is set')
       if (hide && style)
+    case 'eval':
+      readStringField(normalizedArgs, 'script', command)
+      readStringField(normalizedArgs, 'element', command, { required: false })
+      readOptionalNonNegativeNumberField(normalizedArgs, 'timeoutMs', command)
+      return
+    case 'cdp': {
+      const method = readStringField(normalizedArgs, 'method', command)
+      if (
+        !/^[A-Z][A-Za-z0-9]{0,63}\.[a-z][A-Za-z0-9]{0,127}$/.test(method as string) ||
+        /^(?:Browser|Target|SystemInfo)\./.test(method as string) ||
+        method === 'Debugger.disable'
+      )
+        throw createCommandArgsValidationError(command, 'method must be a tab-scoped CDP method')
+      if (normalizedArgs.params !== undefined && !isRecord(normalizedArgs.params))
+        throw createCommandArgsValidationError(command, 'params must be an object', {
+          field: 'params',
+          value: normalizedArgs.params,
+        })
+      return
+    }
+    case 'feed': {
+      readStringField(normalizedArgs, 'selector', command, { required: false })
         throw createCommandArgsValidationError(command, 'style cannot be combined with hide')
       return
     }
@@ -884,6 +909,33 @@ function validateCommandArgsShape(command: string, args: unknown): void {
           throw createCommandArgsValidationError(command, 'unsupported action', {
             field: 'action',
             value: action,
+    case 'actions':
+      readStringField(normalizedArgs, 'action', command, { required: false })
+      readOptionalNonNegativeIntegerField(normalizedArgs, 'pageIdx', command)
+      readOptionalNonNegativeIntegerField(normalizedArgs, 'pageSize', command)
+      return
+    case 'tracing': {
+      const action = readStringField(normalizedArgs, 'action', command)
+      if (!['start', 'stop', 'status'].includes(action as string))
+        throw createCommandArgsValidationError(command, 'unsupported action', { action })
+      return
+    }
+    case 'video': {
+      const action = readStringField(normalizedArgs, 'action', command)
+      if (
+        !['start', 'stop', 'status', 'chapter', 'show-actions', 'hide-actions'].includes(
+          action as string,
+        )
+      )
+        throw createCommandArgsValidationError(command, 'unsupported action', { action })
+      readStringField(normalizedArgs, 'title', command, { required: action === 'chapter' })
+      readStringField(normalizedArgs, 'description', command, { required: false })
+      readOptionalNonNegativeIntegerField(normalizedArgs, 'durationMs', command)
+      readOptionalNonNegativeIntegerField(normalizedArgs, 'maxDurationMs', command)
+      readStringField(normalizedArgs, 'position', command, { required: false })
+      readStringField(normalizedArgs, 'highlightStyle', command, { required: false })
+      return
+    }
           })
         }
       }

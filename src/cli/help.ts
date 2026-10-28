@@ -145,9 +145,10 @@ const HELP_ROOT = helpNode(
     helpNode(
       'eval',
       'Run a small page-context JavaScript snippet for read-only extraction or state checks.',
-      'autobrowser eval [--stdin|--file <path>|--base64] [--timeout-ms <ms>] [--expr] <script>',
+      'autobrowser eval [--stdin|--file <path>|--base64] [--timeout-ms <ms>] [--element <selector>] [--expr] <script>',
       [
         '--expr <script>  pass script source as an explicit option value',
+        '--element <selector>  pass the CSS/@eN target as el to a function such as el => el.textContent',
         '--stdin  read complex or multiline script source from stdin',
         '--file <path>  read complex or multiline script source from file',
         '--base64',
@@ -235,6 +236,37 @@ const HELP_ROOT = helpNode(
       'Send keyboard input.',
       'autobrowser keyboard <type|inserttext|keydown|keyup> <text>',
     ),
+    helpNode(
+      'mousemove',
+      'Move the mouse to viewport coordinates.',
+      'autobrowser mousemove <x> <y>',
+    ),
+    helpNode(
+      'mousedown',
+      'Press a mouse button at the current position.',
+      'autobrowser mousedown [button]',
+    ),
+    helpNode(
+      'mouseup',
+      'Release a mouse button at the current position.',
+      'autobrowser mouseup [button]',
+    ),
+    helpNode(
+      'mousewheel',
+      'Scroll at the current mouse position.',
+      'autobrowser mousewheel <deltaX> <deltaY>',
+    ),
+    helpNode(
+      'locator',
+      'Generate and verify a unique locator for an element (alias: generate-locator).',
+      'autobrowser locator <selector|@eN>',
+    ),
+    helpNode(
+      'highlight',
+      'Highlight elements without changing layout, or restore previous outlines.',
+      'autobrowser highlight [selector|@eN] [--style <outline>] [--hide]',
+      ['Use highlight <selector> --hide for one element or highlight --hide to clear all.'],
+    ),
     helpNode('hover', 'Hover a selector.', 'autobrowser hover <selector>'),
     helpNode('focus', 'Focus a selector.', 'autobrowser focus <selector>'),
     helpNode('select', 'Select an option.', 'autobrowser select <selector> <value>'),
@@ -251,6 +283,14 @@ const HELP_ROOT = helpNode(
       'autobrowser scrollintoview <selector>',
     ),
     helpNode('drag', 'Drag between elements.', 'autobrowser drag <startSelector> <endSelector>'),
+    helpNode(
+      'drop',
+      'Drop text data or local files onto an element.',
+      'autobrowser drop <selector> (--path <file> | --data <mimeType=text>)...',
+      [
+        'Single file limit 32MiB; total file limit 64MiB. Supports CSS selectors, @eN refs and frames.',
+      ],
+    ),
     helpNode(
       'upload',
       'Upload files through a file input.',
@@ -362,6 +402,29 @@ const HELP_ROOT = helpNode(
       ],
     ),
     helpNode(
+      'actions',
+      'Read or clear the bounded command timeline without storing command argument values.',
+      'autobrowser actions [list|clear] [--page <n>] [--page-size <n>]',
+    ),
+    helpNode(
+      'tracing',
+      'Record a CDP trace for the target tab (maximum 32MiB).',
+      'autobrowser tracing <start|status|stop> [output.json]',
+      [
+        'stop writes the trace to a file and returns its path; oversized traces fail instead of truncating.',
+      ],
+    ),
+    helpNode(
+      'video',
+      'Record the target tab as WebM with chapters and optional action callouts.',
+      'autobrowser video <start|status|stop|chapter|show-actions|hide-actions> [args]',
+      [
+        'start [--max-duration-ms <n>] (default 10 minutes, max 1 hour); stop [output.webm] (max 64MiB).',
+        'chapter <title> [--description <text>] [--duration <ms>] writes a JSON sidecar on stop.',
+        'show-actions [--duration <ms>] [--position <css>] [--highlight-style <outline>]; hide-actions disables callouts.',
+      ],
+    ),
+    helpNode(
       'console',
       'Read console output.',
       'autobrowser console [clear] [--level error|warning|info|debug] [--page <n>] [--page-size <n>] [--since <timestamp>] [--all-epochs]',
@@ -381,7 +444,7 @@ const HELP_ROOT = helpNode(
     helpNode(
       'set',
       'Adjust browser state.',
-      'autobrowser set <viewport|offline|headers|geo|media|permission|ua|timezone|locale>',
+      'autobrowser set <viewport|offline|auto-snapshot|headers|geo|media|permission|ua|timezone|locale>',
       undefined,
       [
         helpNode(
@@ -390,6 +453,11 @@ const HELP_ROOT = helpNode(
           'autobrowser set viewport [width] [height] [deviceScaleFactor] [mobile]',
         ),
         helpNode('offline', 'Toggle offline mode.', 'autobrowser set offline [false]'),
+        helpNode(
+          'auto-snapshot',
+          'Attach a snapshot after successful navigation and input actions (default off).',
+          'autobrowser set auto-snapshot [on|off]',
+        ),
         helpNode('headers', 'Set request headers.', 'autobrowser set headers <name:value,...>'),
         helpNode(
           'geo',

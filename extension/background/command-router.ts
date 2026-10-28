@@ -58,7 +58,9 @@ const DIALOG_BLOCKED_COMMANDS = new Set([
   'fillform',
   'find',
   'type',
+  'highlight',
   'hover',
+  'locator',
   'press',
   'keyboard',
   'focus',
@@ -100,6 +102,19 @@ interface PageInputDomain {
     script: string,
     frameSelector: FrameSelector,
     timeoutMs?: number,
+    elementSelector?: string,
+  ) => Promise<unknown>
+  generateLocator: (
+    tabId: TabInput,
+    selector: string,
+    frameSelector: FrameSelector,
+  ) => Promise<unknown>
+  highlightElement: (
+    tabId: TabInput,
+    selector: string | undefined,
+    style: string | undefined,
+    hide: boolean,
+    frameSelector: FrameSelector,
   ) => Promise<unknown>
   // 多步骤交互动作的末位可选参数是命令执行上下文，供动作内部逐段检查取消
   clickSelector: (
@@ -416,6 +431,36 @@ interface CommandRouterDependencies {
   session: SessionDomain
   network: NetworkDomain
   downloads: DownloadsDomain
+interface TracingDomain {
+  start: (tabId: TabInput) => Promise<unknown>
+  status: (tabId: TabInput) => Promise<unknown>
+  stop: (tabId: TabInput) => Promise<unknown>
+}
+
+interface VideoDomain {
+  start: (tabId: TabInput, maxDurationMs?: number) => Promise<unknown>
+  status: (tabId: TabInput) => Promise<unknown>
+  stop: (tabId: TabInput) => Promise<unknown>
+  chapter: (
+    tabId: TabInput,
+    title: string,
+    description?: string,
+    durationMs?: number,
+  ) => Promise<unknown>
+  showActions: (
+    tabId: TabInput,
+    options: { durationMs: number; position: string; highlightStyle?: string },
+  ) => Promise<unknown>
+  hideActions: (tabId: TabInput) => Promise<unknown>
+  handleAction: (
+    command: string,
+    tabId: number,
+    frameSelector: FrameSelector,
+    selector: string,
+    ok: boolean,
+  ) => Promise<void>
+}
+
   initScripts: InitScriptDomain
   listTabs: () => Promise<TabSummary[]>
   getTargetTab: (tabId: TabInput) => Promise<TabWithId>
@@ -1697,6 +1742,45 @@ export function createCommandRouter({
               tabs = tabs.filter((tab) => tab.windowId === currentWindowId)
             }
           }
+        case 'actions': {
+          if (action === 'clear') {
+            const count = state.session.actionLog.length
+            state.session.actionLog = []
+            return { cleared: true, count }
+          }
+          const actions = state.session.actionLog.filter(
+            (entry) => queryTargetTabId === null || entry.tabId === queryTargetTabId,
+          )
+          const { items, pagination } = paginateList(actions, pageIdx, pageSize)
+          return { actions: items, pagination }
+        }
+        case 'tracing':
+          if (action === 'start') return await tracing.start(tabId)
+          if (action === 'status') return await tracing.status(tabId)
+          if (action === 'stop') return await tracing.stop(tabId)
+          throw new Error(`unsupported tracing action: ${action}`)
+        case 'video':
+          if (action === 'start')
+            return await video.start(tabId, readOptionalNumberArg(args, 'maxDurationMs'))
+          if (action === 'status') return await video.status(tabId)
+          if (action === 'stop') return await video.stop(tabId)
+          if (action === 'chapter')
+            return await video.chapter(
+              tabId,
+              readStringArg(args, 'title'),
+              readOptionalStringArg(args, 'description'),
+              readOptionalNumberArg(args, 'durationMs'),
+            )
+          if (action === 'show-actions')
+            return await video.showActions(tabId, {
+              durationMs: readNumberArg(args, 'durationMs', 600),
+              position: readStringArg(args, 'position', 'top:16px;right:16px;'),
+              ...(readOptionalStringArg(args, 'highlightStyle')
+                ? { highlightStyle: readStringArg(args, 'highlightStyle') }
+                : {}),
+            })
+          if (action === 'hide-actions') return await video.hideActions(tabId)
+          throw new Error(`unsupported video action: ${action}`)
           if (filter) {
             tabs = tabs.filter((tab) =>
               `${tab.handle || ''} ${tab.title} ${tab.url}`.toLowerCase().includes(filter),
@@ -1784,7 +1868,29 @@ export function createCommandRouter({
           return await pageObserve.collectFeed(
             tabId,
             {
+            readOptionalStringArg(args, 'element'),
               selector: feedSelector?.trim() || 'article',
+        case 'locator':
+          return await pageInput.generateLocator(tabId, selector, frameSelector)
+        case 'highlight':
+          return await pageInput.highlightElement(
+            tabId,
+            readOptionalStringArg(args, 'selector'),
+            readOptionalStringArg(args, 'style'),
+            readBooleanArg(args, 'hide'),
+            frameSelector,
+          )
+        case 'cdp': {
+          const tab = await getTargetTab(tabId)
+          const method = readStringArg(args, 'method')
+          const result = await sendDebuggerCommand(
+            tab.id,
+            method,
+            (args.params || {}) as Record<string, unknown>,
+            context,
+          )
+          return { method, result }
+        }
               limit: feedLimit,
               dedupe: feedDedupe as CollectFeedOptions['dedupe'],
               maxScrolls: feedMaxScrolls,

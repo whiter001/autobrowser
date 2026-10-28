@@ -33,17 +33,23 @@ autobrowser 是一个面向 Chrome/Edge 的浏览器自动化 CLI，通过本地
 - `command list` / `command cancel <id>` / `command reset`
 - `window new`
 - `frame <@fN|selector|top>`
-- `click` / `dblclick` / `fill` / `find` / `type` / `press` / `keyboard` / `hover` / `focus` / `select` / `check` / `uncheck` / `scroll` / `scrollintoview` / `drag` / `upload`
+- `click` / `dblclick` / `fill` / `find` / `type` / `press` / `keyboard` / `hover` / `focus` / `select` / `check` / `uncheck` / `scroll` / `scrollintoview` / `drag` / `drop` / `upload`
+- `mousemove` / `mousedown` / `mouseup` / `mousewheel`
+- `locator` / `highlight`
 - `is`
 - `get`
 - `wait`
 - `snapshot`
 - `screenshot`
 - `eval`
+- `cdp`
 - `cookies`
 - `storage`
 - `console`
 - `errors`
+- `actions`
+- `tracing`
+- `video`
 - `set`
 - `pdf`
 - `clipboard`
@@ -66,6 +72,13 @@ autobrowser 是一个面向 Chrome/Edge 的浏览器自动化 CLI，通过本地
 - `--har-max-body-bytes` 只限制 body 存储大小，不限制 CDP 下载或传输量。
 - `network har stop [output.har]` 等大结果在 relay 支持时走“WebSocket 控制消息 + 本地鉴权 HTTP 数据通道”：扩展发送响应元数据，HTTP 按字节范围上传，relay 落盘并校验 SHA-256 后重组；中断会从已确认偏移续传，15 秒无数据进度才判定传输停滞，整体仍受原命令预算约束。旧 relay 或小响应自动沿用 WebSocket 内联/分片协议，CLI/MCP 返回格式不变；传输超限明确报错，不静默截断。CLI 只会在面对较旧扩展时回退到重新组装网络请求。
 - `--har-unlimited` 不限制 autobrowser 自身保存的 body 大小，但不是绕过 CDP/传输资源上限；若浏览器 CDP 对 `Network.getResponseBody` 触发配额错误，HAR 仍会导出，并在对应 entry 的 `response.content.comment` 标明 body 获取失败原因。
+
+## 诊断与自动 snapshot
+
+- `tracing start` / `tracing stop [output.json]` 记录目标 tab 的 CDP trace，最大 32MiB；超限明确失败，不静默截断。CLI/MCP 都把 trace 落盘并返回路径，避免大段数据进入模型上下文。
+- `video start` / `video stop [output.webm]` 使用 Chrome tabCapture + offscreen MediaRecorder 录制 WebM，默认最长 10 分钟、文件上限 64MiB。`video chapter <title>` 添加章节并输出 JSON sidecar；`video show-actions` / `video hide-actions` 控制后续动作 callout 和目标高亮。浏览器不支持 tabCapture 时按错误信息诊断，不伪造视频结果。
+- `actions [list|clear]` 查看或清理有界动作时间线，包含命令、目标、耗时和错误，但不保存参数值，密码、脚本、cookie 等不会进入日志。
+- `set auto-snapshot on|off` 控制动作后自动 snapshot，默认关闭；只覆盖导航和输入动作，snapshot 失败通过 `snapshotError` 返回，不覆盖原动作结果。开启后会显著增加输出，排查完应关闭。
 
 ## 等待语义
 
@@ -101,6 +114,10 @@ autobrowser 是一个面向 Chrome/Edge 的浏览器自动化 CLI，通过本地
 - 复杂或多行源码优先通过 `eval --file <path>` 或 `eval --stdin` 传入，避免命令行转义干扰判断；脚本可直接包含顶层 `return`，无需手工包装 IIFE。
 - `--timeout-ms <ms>` 只在确认脚本本身是长任务时使用；不要把它作为复杂流程失败后的默认处理。
 - 复杂交互优先拆成更小的 autobrowser 命令或脚本步骤，保留原任务目标逐步推进。
+- 针对单个元素执行函数脚本时用 `eval --element <selector|@eN> 'el => el.textContent'`，保留 stale/frame 检查。`locator <selector>` 会生成并验证唯一 locator；`highlight <selector> [--style <outline>]` 做不改布局的高亮，单元素恢复用 `highlight <selector> --hide`，全部恢复用 `highlight --hide`。
+- `cdp <Domain.method> [json]` 用于现有命令无法覆盖的 tab 级 CDP 场景，例如 `cdp Runtime.evaluate '{"expression":"6 * 7","returnByValue":true}'`；复杂参数也可使用 `--params '<json>'`。
+- CDP 仅允许 tab 级方法，拒绝 `Browser/Target/SystemInfo` 和 `Debugger.disable`。它可能产生页面副作用，断连后的未知结果不能盲目重放；优先使用语义明确的普通命令，不要把 CDP 当成默认操作方式。
+- 自定义 HTML5 拖放用 `drop <selector> --data 'text/plain=hello'`，本地文件用重复 `--path <file>`；单文件最大 32MiB、总计 64MiB。文件 input 仍优先 `upload`。坐标鼠标用 `mousemove` 定位后配套 `mousedown`/`mouseup`，`mousewheel` 在当前位置滚动。
 
 ## 常见回退策略
 

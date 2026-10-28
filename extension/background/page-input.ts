@@ -550,13 +550,30 @@ export function createPageInputDomain({
     script: string,
     frameSelector: FrameSelector,
     timeoutMs?: number,
+    elementSelector?: string,
   ) {
     const options = withFrameSelectorOptions(frameSelector, {
       userGesture: true,
       ...(typeof timeoutMs === 'number' ? { timeoutMs } : {}),
     })
+    let effectiveScript = script
+    if (elementSelector) {
+      const { resolvedSelector } = await resolveElementSelectorForTab(tabId, elementSelector)
+      effectiveScript = `(() => {
+        const el = deepQuerySelector(document, ${JSON.stringify(resolvedSelector)});
+        if (!el) return { __autobrowserElementNotFound: true };
+        return (${script})(el);
+      })()`
+    }
     try {
-      const { value } = await evaluateInTabContext(tabId, script, options)
+      const { value } = await evaluateInTabContext(tabId, effectiveScript, options)
+      if (
+        elementSelector &&
+        value &&
+        typeof value === 'object' &&
+        (value as Record<string, unknown>).__autobrowserElementNotFound === true
+      )
+        throw createElementNotFoundError(elementSelector)
       return value
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
@@ -574,6 +591,116 @@ export function createPageInputDomain({
     tabId: TabInput,
     url: string,
     options: {
+  async function generateLocator(tabId: TabInput, selector: string, frameSelector: FrameSelector) {
+    const { resolvedSelector } = await resolveElementSelectorForTab(tabId, selector)
+    const { value } = await evaluateInTabContext<
+      { found: false } | { found: true; selector: string; strategy: string; unique: true }
+    >(
+      tabId,
+      `(() => {
+        const node = deepQuerySelector(document, ${JSON.stringify(resolvedSelector)});
+        if (!node) return { found: false };
+        const isUnique = (selector) => {
+          try {
+            const matches = deepQuerySelectorAll(document, selector);
+            return matches.length === 1 && matches[0] === node;
+          } catch {
+            return false;
+          }
+        };
+        const testId = node.getAttribute('data-testid');
+        if (testId) {
+          const candidate = '[data-testid="' + CSS.escape(testId) + '"]';
+          if (isUnique(candidate)) return { found: true, selector: candidate, strategy: 'test-id', unique: true };
+        }
+        if (node.id) {
+          const candidate = '#' + CSS.escape(node.id);
+          if (isUnique(candidate)) return { found: true, selector: candidate, strategy: 'id', unique: true };
+        }
+        const segments = [];
+        let current = node;
+        for (let depth = 0; depth < 8 && current && current.nodeType === 1; depth++) {
+          const parent = current.parentElement;
+          if (!parent) break;
+          const tag = current.tagName.toLowerCase();
+          const siblings = Array.from(parent.children).filter((item) => item.tagName === current.tagName);
+          const index = siblings.indexOf(current);
+          segments.unshift(tag + (siblings.length > 1 ? ':nth-of-type(' + (index + 1) + ')' : ''));
+          const candidate = segments.join(' > ');
+          if (isUnique(candidate)) return { found: true, selector: candidate, strategy: 'css-path', unique: true };
+          current = parent;
+        }
+        const ref = node.getAttribute('data-autobrowser-ref');
+        if (ref) {
+          const candidate = '[data-autobrowser-ref="' + CSS.escape(ref) + '"]';
+          if (isUnique(candidate)) return { found: true, selector: candidate, strategy: 'agent-ref', unique: true };
+        }
+        return { found: false };
+      })()`,
+      withFrameSelectorOptions(frameSelector),
+    )
+    if (!value?.found) throw new Error(`unable to generate a unique locator for ${selector}`)
+    return value
+  }
+
+  async function highlightElement(
+    tabId: TabInput,
+    selector: string | undefined,
+    style: string | undefined,
+    hide: boolean,
+    frameSelector: FrameSelector,
+  ) {
+    const resolvedSelector = selector
+      ? (await resolveElementSelectorForTab(tabId, selector)).resolvedSelector
+      : null
+    const { value } = await evaluateInTabContext<{
+      found?: boolean
+      highlighted?: boolean
+      cleared?: number
+      count?: number
+    }>(
+      tabId,
+      `(() => {
+        const owner = document;
+        const highlights = owner.__autobrowserHighlights || new Map();
+        owner.__autobrowserHighlights = highlights;
+        const restore = (node) => {
+          const previous = highlights.get(node);
+          if (!previous) return;
+          node.style.outline = previous.outline;
+          node.style.outlineOffset = previous.outlineOffset;
+          highlights.delete(node);
+        };
+        const selector = ${JSON.stringify(resolvedSelector)};
+        if (${hide}) {
+          if (selector) {
+            const node = deepQuerySelector(document, selector);
+            if (!node) return { found: false };
+            restore(node);
+            return { found: true, cleared: 1, count: highlights.size };
+          }
+          const cleared = highlights.size;
+          for (const node of [...highlights.keys()]) restore(node);
+          return { found: true, cleared, count: 0 };
+        }
+        const node = deepQuerySelector(document, selector);
+        if (!node) return { found: false };
+        if (!highlights.has(node)) {
+          highlights.set(node, {
+            outline: node.style.outline,
+            outlineOffset: node.style.outlineOffset
+          });
+        }
+        node.style.outline = ${JSON.stringify(style || '2px solid #ff9800')};
+        node.style.outlineOffset = '2px';
+        return { found: true, highlighted: true, count: highlights.size };
+      })()`,
+      withFrameSelectorOptions(frameSelector),
+    )
+    if (!value?.found && selector) throw createElementNotFoundError(selector)
+    return value
+  }
+
       timeoutMs?: number
       wait?: boolean
       waitUntil?: string
@@ -1070,6 +1197,106 @@ export function createPageInputDomain({
     const tab = await getTargetTab(tabId)
     invalidatePageRefs(state, tab.id)
     const baselineEpoch = getPageEpoch(state, tab.id)
+  async function dropData(
+    tabId: TabInput,
+    selector: string,
+    data: Record<string, string>,
+    files: Array<{ name: string; mimeType: string; dataBase64: string }>,
+    frameSelector: FrameSelector,
+    context?: CommandExecutionContext,
+  ) {
+    const { resolvedSelector } = await resolveElementSelectorForTab(tabId, selector)
+    const { value } = await evaluateInTabContext<{ found?: boolean; dropped?: boolean }>(
+      tabId,
+      `(() => {
+        const node = deepQuerySelector(document, ${JSON.stringify(resolvedSelector)});
+        if (!node) return { found: false };
+        const transfer = new DataTransfer();
+        const textData = ${JSON.stringify(data)};
+        for (const [mimeType, text] of Object.entries(textData)) transfer.setData(mimeType, text);
+        const files = ${JSON.stringify(files)};
+        for (const fileData of files) {
+          const binary = atob(fileData.dataBase64);
+          const bytes = new Uint8Array(binary.length);
+          for (let index = 0; index < binary.length; index++) bytes[index] = binary.charCodeAt(index);
+          transfer.items.add(new File([bytes], fileData.name, { type: fileData.mimeType }));
+        }
+        const rect = node.getBoundingClientRect();
+        const clientX = rect.left + rect.width / 2;
+        const clientY = rect.top + rect.height / 2;
+        for (const type of ['dragenter', 'dragover', 'drop']) {
+          node.dispatchEvent(new DragEvent(type, {
+            bubbles: true,
+            cancelable: true,
+            dataTransfer: transfer,
+            clientX,
+            clientY
+          }));
+        }
+        return { found: true, dropped: true };
+      })()`,
+      withFrameSelectorOptions(frameSelector, { commandContext: context }),
+    )
+    if (!value?.found) throw createElementNotFoundError(selector)
+    return { ...value, selector, textItems: Object.keys(data).length, fileCount: files.length }
+  }
+
+  async function mouseMove(
+    tabId: TabInput,
+    x: number,
+    y: number,
+    context?: CommandExecutionContext,
+  ) {
+    const tab = await getTargetTab(tabId)
+    await sendDebuggerCommand(
+      tab.id,
+      'Input.dispatchMouseEvent',
+      { type: 'mouseMoved', x, y },
+      context,
+    )
+    mousePositions.set(tab.id, { x, y })
+    return { moved: true, x, y }
+  }
+
+  async function mouseButton(
+    tabId: TabInput,
+    pressed: boolean,
+    button: string,
+    context?: CommandExecutionContext,
+  ) {
+    const tab = await getTargetTab(tabId)
+    const point = mousePositions.get(tab.id) || { x: 0, y: 0 }
+    await sendDebuggerCommand(
+      tab.id,
+      'Input.dispatchMouseEvent',
+      {
+        type: pressed ? 'mousePressed' : 'mouseReleased',
+        ...point,
+        button,
+        clickCount: 1,
+      },
+      context,
+    )
+    return { pressed, button, ...point }
+  }
+
+  async function mouseWheel(
+    tabId: TabInput,
+    deltaX: number,
+    deltaY: number,
+    context?: CommandExecutionContext,
+  ) {
+    const tab = await getTargetTab(tabId)
+    const point = mousePositions.get(tab.id) || { x: 0, y: 0 }
+    await sendDebuggerCommand(
+      tab.id,
+      'Input.dispatchMouseEvent',
+      { type: 'mouseWheel', ...point, deltaX, deltaY },
+      context,
+    )
+    return { scrolled: true, deltaX, deltaY, ...point }
+  }
+
     const history = await sendDebuggerCommand<{
       entries?: Array<{ id: number }>
       currentIndex?: number
@@ -1197,106 +1424,6 @@ export function createPageInputDomain({
       phase: 'settle',
       settled: settle.settled,
       ...(settle.settled ? {} : { settleReason: settle.settleReason || 'page did not settle' }),
-  async function dropData(
-    tabId: TabInput,
-    selector: string,
-    data: Record<string, string>,
-    files: Array<{ name: string; mimeType: string; dataBase64: string }>,
-    frameSelector: FrameSelector,
-    context?: CommandExecutionContext,
-  ) {
-    const { resolvedSelector } = await resolveElementSelectorForTab(tabId, selector)
-    const { value } = await evaluateInTabContext<{ found?: boolean; dropped?: boolean }>(
-      tabId,
-      `(() => {
-        const node = deepQuerySelector(document, ${JSON.stringify(resolvedSelector)});
-        if (!node) return { found: false };
-        const transfer = new DataTransfer();
-        const textData = ${JSON.stringify(data)};
-        for (const [mimeType, text] of Object.entries(textData)) transfer.setData(mimeType, text);
-        const files = ${JSON.stringify(files)};
-        for (const fileData of files) {
-          const binary = atob(fileData.dataBase64);
-          const bytes = new Uint8Array(binary.length);
-          for (let index = 0; index < binary.length; index++) bytes[index] = binary.charCodeAt(index);
-          transfer.items.add(new File([bytes], fileData.name, { type: fileData.mimeType }));
-        }
-        const rect = node.getBoundingClientRect();
-        const clientX = rect.left + rect.width / 2;
-        const clientY = rect.top + rect.height / 2;
-        for (const type of ['dragenter', 'dragover', 'drop']) {
-          node.dispatchEvent(new DragEvent(type, {
-            bubbles: true,
-            cancelable: true,
-            dataTransfer: transfer,
-            clientX,
-            clientY
-          }));
-        }
-        return { found: true, dropped: true };
-      })()`,
-      withFrameSelectorOptions(frameSelector, { commandContext: context }),
-    )
-    if (!value?.found) throw createElementNotFoundError(selector)
-    return { ...value, selector, textItems: Object.keys(data).length, fileCount: files.length }
-  }
-
-  async function mouseMove(
-    tabId: TabInput,
-    x: number,
-    y: number,
-    context?: CommandExecutionContext,
-  ) {
-    const tab = await getTargetTab(tabId)
-    await sendDebuggerCommand(
-      tab.id,
-      'Input.dispatchMouseEvent',
-      { type: 'mouseMoved', x, y },
-      context,
-    )
-    mousePositions.set(tab.id, { x, y })
-    return { moved: true, x, y }
-  }
-
-  async function mouseButton(
-    tabId: TabInput,
-    pressed: boolean,
-    button: string,
-    context?: CommandExecutionContext,
-  ) {
-    const tab = await getTargetTab(tabId)
-    const point = mousePositions.get(tab.id) || { x: 0, y: 0 }
-    await sendDebuggerCommand(
-      tab.id,
-      'Input.dispatchMouseEvent',
-      {
-        type: pressed ? 'mousePressed' : 'mouseReleased',
-        ...point,
-        button,
-        clickCount: 1,
-      },
-      context,
-    )
-    return { pressed, button, ...point }
-  }
-
-  async function mouseWheel(
-    tabId: TabInput,
-    deltaX: number,
-    deltaY: number,
-    context?: CommandExecutionContext,
-  ) {
-    const tab = await getTargetTab(tabId)
-    const point = mousePositions.get(tab.id) || { x: 0, y: 0 }
-    await sendDebuggerCommand(
-      tab.id,
-      'Input.dispatchMouseEvent',
-      { type: 'mouseWheel', ...point, deltaX, deltaY },
-      context,
-    )
-    return { scrolled: true, deltaX, deltaY, ...point }
-  }
-
     }
   }
 
@@ -1677,6 +1804,8 @@ export function createPageInputDomain({
     insertTextOnce,
     insertTextSequentially,
     keyDownOnly,
+    generateLocator,
+    highlightElement,
     keyUpOnly,
     navigateBack,
     navigateForward,
