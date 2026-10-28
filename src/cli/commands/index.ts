@@ -1,4 +1,5 @@
 import { batchCommandRegistry } from './batch.js'
+import { collectCommandRegistry } from './collect.js'
 import { elementCommandRegistry } from './elements.js'
 import { diagnosticsCommandRegistry } from './diagnostics.js'
 import { fillFormCommandRegistry } from './fillform.js'
@@ -13,6 +14,7 @@ import type { CommandRegistry } from './types.js'
 export const COMMAND_REGISTRY: CommandRegistry = {
   mcp: handleMcpCommand,
   ...batchCommandRegistry,
+  ...collectCommandRegistry,
   ...fillFormCommandRegistry,
   ...serverCommandRegistry,
   ...tabCommandRegistry,

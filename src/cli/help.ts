@@ -261,6 +261,18 @@ const HELP_ROOT = helpNode(
         'Returns stopReason=limit|maxScrolls|stalled and pageEpoch; navigation during collection returns STALE_FEED_STATE instead of stale items.',
       ],
     ),
+    helpNode(
+      'collect',
+      'Run resumable structured feed or network-first collection with JSONL checkpoints.',
+      'autobrowser collect <run|resume> <spec-or-checkpoint.json>',
+      [
+        'Spec: {name, mode:"feed"|"network", startUrl?, output, maxPages?, feed?|network?}.',
+        'feed options: selector/limit/dedupe/maxScrolls/pauseMs/stallRounds/nextSelector/waitTimeoutMs.',
+        'network options: urlPattern/itemsPath/nextPath; reads real JSON response bodies and follows the next cursor.',
+        'Each completed page atomically updates JSONL and the checkpoint. Failures preserve context; resume continues without duplicating items.',
+        'Page results may contain sensitive data; checkpoints never include cookies or tokens. Currently requires the Chromium extension.',
+      ],
+    ),
     helpNode('click', 'Click a selector.', 'autobrowser click <selector>'),
     helpNode('dblclick', 'Double-click a selector.', 'autobrowser dblclick <selector>'),
     helpNode('fill', 'Fill a selector with text.', 'autobrowser fill <selector> <value>'),

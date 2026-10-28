@@ -690,6 +690,46 @@ describe('cli helpers', () => {
     })
   })
 
+  test('collect run executes a network-first spec and writes JSONL through the CLI', async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), 'autobrowser-collect-cli-'))
+    const specPath = path.join(directory, 'task.json')
+    await writeFile(
+      specPath,
+      JSON.stringify({
+        name: 'cli-api',
+        mode: 'network',
+        startUrl: 'https://example.com',
+        output: 'items.jsonl',
+        network: { urlPattern: '/api/items', itemsPath: 'data.items' },
+      }),
+    )
+    const result = await runCli(['collect', 'run', specPath], undefined, {
+      fetchImpl: async (_url, init = {}) => {
+        const { command, args } = JSON.parse(init.body)
+        if (command === 'goto') return Response.json({ ok: true, result: { url: args.url } })
+        if (command === 'network' && args.action === 'requests') {
+          return Response.json({ ok: true, result: { requests: [{ id: 'r1' }] } })
+        }
+        if (command === 'network' && args.action === 'request') {
+          return Response.json({
+            ok: true,
+            result: {
+              request: {
+                responseBody: JSON.stringify({ data: { items: [{ id: 42 }] } }),
+                pageEpoch: 2,
+              },
+            },
+          })
+        }
+        throw new Error(`unexpected command ${command}`)
+      },
+    })
+    expect(result.exitCode).toBe(0)
+    const item = JSON.parse((await readFile(path.join(directory, 'items.jsonl'), 'utf8')).trim())
+    expect(item).toMatchObject({ id: 42, _meta: { task: 'cli-api', mode: 'network' } })
+    expect(JSON.parse(result.stdout).result).toMatchObject({ status: 'completed', itemCount: 1 })
+  })
+
   test('routes coordinate mouse commands and file/text drops', async () => {
     const move = await runCli(['mousemove', '15', '25'])
     expect(move.fetchCalls[0].body).toEqual({ command: 'mousemove', args: { x: 15, y: 25 } })
