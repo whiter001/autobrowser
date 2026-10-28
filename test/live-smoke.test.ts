@@ -1604,13 +1604,13 @@ suite('live browser smoke test', () => {
 
       // 动作真的发生在显式 handle 的 tab 上，默认目标 tab 不受影响
       expect(
-        await checkedCommand('eval', {
+        await checkedCommand<string>('eval', {
           handle: extra.handle,
           script: 'document.getElementById("counter").textContent',
         }),
       ).toBe('1')
       expect(
-        await checkedCommand('eval', {
+        await checkedCommand<string>('eval', {
           handle: home,
           script: 'document.getElementById("counter").textContent',
         }),
@@ -1744,7 +1744,7 @@ suite('live browser smoke test', () => {
       const stored = listed.cookies.filter((cookie) => cookie.name === cookieName)
       expect(stored).toHaveLength(1)
       expect(stored[0]).toMatchObject({ value: '', domain: '127.0.0.1', path: '/' })
-      expect(await checkedCommand('eval', { script: 'document.cookie' })).toContain(
+      expect(await checkedCommand<string>('eval', { script: 'document.cookie' })).toContain(
         `${cookieName}=`,
       )
     } finally {
@@ -1915,7 +1915,7 @@ suite('live browser smoke test', () => {
       await checkedCommand('network', { action: 'har', subaction: 'start' })
       recording = true
       expect(
-        await checkedCommand('eval', {
+        await checkedCommand<{ status: number; body: string; type: string | null }>('eval', {
           script: `(async () => { const response = await fetch('${pattern('a')}', { cache: 'no-store' }); return { status: response.status, body: await response.text(), type: response.headers.get('content-type') }; })()`,
         }),
       ).toEqual({ status: 200, body: '{"mocked":"a"}', type: 'application/json' })
@@ -1963,7 +1963,7 @@ suite('live browser smoke test', () => {
       ).toMatchObject({ routes: [] })
       for (const suffix of ['a', 'b']) {
         expect(
-          await checkedCommand('eval', {
+          await checkedCommand<string>('eval', {
             script: `fetch('${pattern(suffix)}', { cache: 'no-store' }).then(response => response.text())`,
           }),
         ).toBe(`real-probe-body:${suffix}`)
