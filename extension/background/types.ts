@@ -184,7 +184,13 @@ export interface EmulationOverrides {
   locale?: true
   timezone?: true
   media?: true
+  device?: string
   headers?: string[]
+}
+
+export interface MediaEmulationState {
+  media?: string
+  features: Record<string, string>
 }
 
 /** chrome.downloads 跟踪记录，字段对齐 DownloadItem，仅保留 agent 排障需要的子集 */
@@ -203,6 +209,18 @@ export interface DownloadRecord {
   error?: string | null
 }
 
+export interface ActionRecord {
+  id: string | null
+  command: string
+  tabId: number | null
+  frame: string | null
+  startedAt: string
+  finishedAt: string
+  durationMs: number
+  ok: boolean
+  error: string | null
+}
+
 /** 页面会话级别的可观测状态 */
 export interface SessionState {
   /** 当前打开的 JS 对话框，按 tab 记录 */
@@ -213,11 +231,17 @@ export interface SessionState {
   pageErrors: PageErrorRecord[]
   /** 各 tab 生效中的仿真覆盖记录，meta 回显用；reset 命令会把对应键删除 */
   emulation: Map<number, EmulationOverrides>
+  /** 各 tab 当前媒体仿真值，用于单项更新时保留其他特性 */
+  mediaEmulation: Map<number, MediaEmulationState>
   /** 是否自动 accept alert/beforeunload（confirm/prompt 始终走 MODAL_OPEN 阻塞）；
    *  仅运行期内存状态，扩展重启后回到默认 true */
   dialogAutoAccept: boolean
   /** 有界 downloads 缓冲（200 条 FIFO），onCreated/onChanged 合并写入 */
   downloads: DownloadRecord[]
+  /** 最近动作时间线，仅保存元数据，不保存可能含秘密的命令参数 */
+  actionLog: ActionRecord[]
+  /** 动作成功后自动附加 snapshot，默认关闭以避免额外输出 */
+  autoSnapshot: boolean
 }
 
 export interface ExtensionState {

@@ -17,6 +17,8 @@ import { createInitScriptDomain } from './background/init-scripts.js'
 import { createPageInputDomain } from './background/page-input.js'
 import { createPageObserveDomain } from './background/page-observe.js'
 import { createSessionDomain } from './background/session.js'
+import { createTracingDomain } from './background/tracing.js'
+import { createVideoDomain } from './background/video.js'
 import { createExtensionState } from './background/state.js'
 import {
   assertFreshElementRef,
@@ -114,6 +116,34 @@ const session = createSessionDomain({
   storageLocalSet,
 })
 
+const tracing = createTracingDomain({
+  getTargetTab,
+  sendDebuggerCommand,
+})
+
+const video = createVideoDomain({
+  getTargetTab,
+  evaluateInTabContext,
+  browser: {
+    getMediaStreamId: async (tabId) =>
+      await chrome.tabCapture.getMediaStreamId({ consumerTabId: tabId }),
+    ensureOffscreen: async () => {
+      if (await chrome.offscreen.hasDocument()) return
+      await chrome.offscreen.createDocument({
+        url: 'offscreen-recorder.html',
+        reasons: ['USER_MEDIA'],
+        justification: 'Record the target tab as WebM video',
+      })
+    },
+    sendMessage: async (message) => await chrome.runtime.sendMessage(message),
+    addResultListener: (listener) => {
+      chrome.runtime.onMessage.addListener((message) => {
+        if (message?.type === 'autobrowser.video.result') listener(message)
+      })
+    },
+  },
+})
+
 const commandRouter = createCommandRouter({
   state,
   pageInput,
@@ -125,11 +155,15 @@ const commandRouter = createCommandRouter({
   listTabs,
   getTargetTab,
   sendDebuggerCommand,
+  tracing,
+  video,
 })
 
 const connection = createConnectionRuntime({
   state,
   network,
+  tracing,
+  video,
   listTabs,
   handleCommand: commandRouter.handleCommand,
   cancelCommand: commandRouter.cancelCommand,

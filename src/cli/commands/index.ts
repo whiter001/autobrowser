@@ -1,5 +1,6 @@
 import { batchCommandRegistry } from './batch.js'
 import { elementCommandRegistry } from './elements.js'
+import { diagnosticsCommandRegistry } from './diagnostics.js'
 import { fillFormCommandRegistry } from './fillform.js'
 import { pageCommandRegistry } from './page.js'
 import { serverCommandRegistry } from './server.js'
@@ -16,5 +17,6 @@ export const COMMAND_REGISTRY: CommandRegistry = {
   ...tabCommandRegistry,
   ...elementCommandRegistry,
   ...pageCommandRegistry,
+  ...diagnosticsCommandRegistry,
   ...stateCommandRegistry,
 }

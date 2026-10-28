@@ -25,6 +25,11 @@ interface NetworkDomain {
 interface ConnectionRuntimeDependencies {
   state: ExtensionState
   network: NetworkDomain
+  tracing?: {
+    handleEvent: (source: { tabId?: number }, method: string, params: unknown) => void
+    handleDetach: (tabId: number) => void
+  }
+  video?: { handleDetach: (tabId: number) => void }
   listTabs: () => Promise<TabSummary[]>
   handleCommand: (message: CommandMessage) => Promise<unknown>
   cancelCommand?: (id: string) => boolean
@@ -45,6 +50,8 @@ interface ConnectionRuntimeDependencies {
 export function createConnectionRuntime({
   state,
   network,
+  tracing,
+  video,
   listTabs,
   handleCommand,
   cancelCommand = () => false,
@@ -247,6 +254,7 @@ export function createConnectionRuntime({
 
   function setupDebuggerEventListeners() {
     chrome.debugger.onEvent.addListener((source, method, params) => {
+      tracing?.handleEvent(source, method, params)
       const navigationParams = params as {
         frame?: { parentId?: string | null }
       }
@@ -434,6 +442,8 @@ export function createConnectionRuntime({
         return
       }
 
+      tracing?.handleDetach(source.tabId)
+      video?.handleDetach(source.tabId)
       state.targeting.attachedTabs.delete(source.tabId)
     })
   }

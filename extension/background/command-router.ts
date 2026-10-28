@@ -70,13 +70,13 @@ const DIALOG_BLOCKED_COMMANDS = new Set([
   'scroll',
   'scrollintoview',
   'drag',
-  'upload',
-  'back',
   'drop',
   'mousemove',
   'mousedown',
   'mouseup',
   'mousewheel',
+  'upload',
+  'back',
   'forward',
   'reload',
   'frame',
@@ -216,21 +216,6 @@ interface PageInputDomain {
     frameSelector: FrameSelector,
     context?: CommandExecutionContext,
   ) => Promise<unknown>
-  navigateBack: (tabId: TabInput) => Promise<unknown>
-  navigateForward: (tabId: TabInput) => Promise<unknown>
-  reloadPage: (
-    tabId: TabInput,
-    options?: { timeoutMs?: number; waitUntil?: string },
-  ) => Promise<unknown>
-  switchToFrame: (tabId: TabInput, selector: string) => Promise<unknown>
-  checkIsState: (
-    tabId: TabInput,
-    selector: string,
-    stateType: string,
-    frameSelector: FrameSelector,
-  ) => Promise<unknown>
-  getAttribute: (
-    tabId: TabInput,
   dropData: (
     tabId: TabInput,
     selector: string,
@@ -257,6 +242,21 @@ interface PageInputDomain {
     deltaY: number,
     context?: CommandExecutionContext,
   ) => Promise<unknown>
+  navigateBack: (tabId: TabInput) => Promise<unknown>
+  navigateForward: (tabId: TabInput) => Promise<unknown>
+  reloadPage: (
+    tabId: TabInput,
+    options?: { timeoutMs?: number; waitUntil?: string },
+  ) => Promise<unknown>
+  switchToFrame: (tabId: TabInput, selector: string) => Promise<unknown>
+  checkIsState: (
+    tabId: TabInput,
+    selector: string,
+    stateType: string,
+    frameSelector: FrameSelector,
+  ) => Promise<unknown>
+  getAttribute: (
+    tabId: TabInput,
     selector: string,
     attrName: string,
     frameSelector: FrameSelector,
@@ -372,6 +372,13 @@ interface SessionDomain {
     accuracy?: number,
   ) => Promise<unknown>
   setMedia: (tabId: TabInput, media: string | null | undefined) => Promise<unknown>
+  setMediaType: (tabId: TabInput, mediaType: string | null | undefined) => Promise<unknown>
+  setMediaFeature: (
+    tabId: TabInput,
+    name: string,
+    value: string | null | undefined,
+  ) => Promise<unknown>
+  setDevice: (tabId: TabInput, name: string | null | undefined) => Promise<unknown>
   setPermission: (tabId: TabInput, name: string, reset?: boolean) => Promise<unknown>
   setUserAgent: (tabId: TabInput, userAgent: string | null | undefined) => Promise<unknown>
   setTimezone: (tabId: TabInput, timezone: string | null | undefined) => Promise<unknown>
@@ -424,13 +431,6 @@ interface DownloadsDomain {
   clearDownloads: () => unknown
 }
 
-interface CommandRouterDependencies {
-  state: ExtensionState
-  pageInput: PageInputDomain
-  pageObserve: PageObserveDomain
-  session: SessionDomain
-  network: NetworkDomain
-  downloads: DownloadsDomain
 interface TracingDomain {
   start: (tabId: TabInput) => Promise<unknown>
   status: (tabId: TabInput) => Promise<unknown>
@@ -461,9 +461,24 @@ interface VideoDomain {
   ) => Promise<void>
 }
 
+interface CommandRouterDependencies {
+  state: ExtensionState
+  pageInput: PageInputDomain
+  pageObserve: PageObserveDomain
+  session: SessionDomain
+  network: NetworkDomain
+  downloads: DownloadsDomain
   initScripts: InitScriptDomain
+  tracing: TracingDomain
+  video: VideoDomain
   listTabs: () => Promise<TabSummary[]>
   getTargetTab: (tabId: TabInput) => Promise<TabWithId>
+  sendDebuggerCommand: <TResult = unknown>(
+    tabId: number,
+    method: string,
+    params?: Record<string, unknown>,
+    context?: CommandExecutionContext,
+  ) => Promise<TResult>
 }
 
 export function createCommandRouter({
@@ -474,8 +489,11 @@ export function createCommandRouter({
   network,
   downloads,
   initScripts,
+  tracing,
+  video,
   listTabs,
   getTargetTab,
+  sendDebuggerCommand,
 }: CommandRouterDependencies) {
   // 同一 tab 的 chrome.debugger.sendCommand 互斥，多 CLI 并发时必须按 tab 串行执行
   const commandQueue = createCommandQueue()
@@ -545,12 +563,6 @@ export function createCommandRouter({
       }))
       .filter((field) => field.selector.trim().length > 0)
   }
-  sendDebuggerCommand: <TResult = unknown>(
-    tabId: number,
-    method: string,
-    params?: Record<string, unknown>,
-    context?: CommandExecutionContext,
-  ) => Promise<TResult>
 
   function readSavedStateArg(args: CommandArgs, key: string): SavedStateData | undefined {
     const value = args[key]
@@ -565,7 +577,6 @@ export function createCommandRouter({
   ): Array<{ name?: string; value?: unknown }> | Record<string, unknown> | undefined {
     const value = args[key]
     if (Array.isArray(value)) {
-  sendDebuggerCommand,
       return value.filter(
         (item): item is { name?: string; value?: unknown } =>
           Boolean(item) && typeof item === 'object',
@@ -1588,6 +1599,60 @@ export function createCommandRouter({
     'target',
     'command',
   ])
+  const AUTO_SNAPSHOT_COMMANDS = new Set([
+    'goto',
+    'open',
+    'back',
+    'forward',
+    'reload',
+    'click',
+    'dblclick',
+    'fill',
+    'fillform',
+    'type',
+    'press',
+    'keyboard',
+    'check',
+    'uncheck',
+    'select',
+    'drag',
+    'drop',
+    'mousemove',
+    'mousedown',
+    'mouseup',
+    'mousewheel',
+    'upload',
+  ])
+
+  function recordAction(
+    command: string,
+    request: { id?: string } | undefined,
+    tabId: number | null,
+    frame: string | null,
+    selector: string,
+    startedAt: number,
+    ok: boolean,
+    error: unknown,
+  ): void {
+    if (tabId !== null) void video.handleAction(command, tabId, frame, selector, ok).catch(() => {})
+    state.session.actionLog.push({
+      id: request?.id || null,
+      command,
+      tabId,
+      frame,
+      startedAt: new Date(startedAt).toISOString(),
+      finishedAt: new Date().toISOString(),
+      durationMs: Date.now() - startedAt,
+      ok,
+      error: ok
+        ? null
+        : typeof (error as { code?: unknown })?.code === 'string'
+          ? (error as { code: string }).code
+          : 'Command failed',
+    })
+    if (state.session.actionLog.length > 500)
+      state.session.actionLog.splice(0, state.session.actionLog.length - 500)
+  }
 
   async function executeCommand(
     command: string,
@@ -1644,60 +1709,6 @@ export function createCommandRouter({
     const feedLimit = readNumberArg(args, 'limit', 30)
     const feedDedupe = readStringArg(args, 'dedupe', 'url')
     const feedMaxScrolls = readNumberArg(args, 'maxScrolls', 20)
-  const AUTO_SNAPSHOT_COMMANDS = new Set([
-    'goto',
-    'open',
-    'back',
-    'forward',
-    'reload',
-    'click',
-    'dblclick',
-    'fill',
-    'fillform',
-    'type',
-    'press',
-    'keyboard',
-    'check',
-    'uncheck',
-    'select',
-    'drag',
-    'drop',
-    'mousemove',
-    'mousedown',
-    'mouseup',
-    'mousewheel',
-    'upload',
-  ])
-
-  function recordAction(
-    command: string,
-    request: { id?: string } | undefined,
-    tabId: number | null,
-    frame: string | null,
-    selector: string,
-    startedAt: number,
-    ok: boolean,
-    error: unknown,
-  ): void {
-    if (tabId !== null) void video.handleAction(command, tabId, frame, selector, ok).catch(() => {})
-    state.session.actionLog.push({
-      id: request?.id || null,
-      command,
-      tabId,
-      frame,
-      startedAt: new Date(startedAt).toISOString(),
-      finishedAt: new Date().toISOString(),
-      durationMs: Date.now() - startedAt,
-      ok,
-      error: ok
-        ? null
-        : typeof (error as { code?: unknown })?.code === 'string'
-          ? (error as { code: string }).code
-          : 'Command failed',
-    })
-    if (state.session.actionLog.length > 500)
-      state.session.actionLog.splice(0, state.session.actionLog.length - 500)
-  }
     const feedPauseMs = readNumberArg(args, 'pauseMs', 900)
     const feedStallRounds = readNumberArg(args, 'stallRounds', 3)
     const searchQuery = readStringArg(args, 'query')
@@ -1730,17 +1741,6 @@ export function createCommandRouter({
           return {
             connected: true,
             tabs: await listTabs(),
-          }
-        case 'tab.list': {
-          let tabs = await listTabs()
-          const filter = readStringArg(args, 'filter').toLowerCase()
-          if (args.active === true) tabs = tabs.filter((tab) => tab.active)
-          if (args.currentWindow === true) {
-            const targetId = queryTargetTabId
-            const currentWindowId = tabs.find((tab) => tab.id === targetId)?.windowId
-            if (typeof currentWindowId === 'number') {
-              tabs = tabs.filter((tab) => tab.windowId === currentWindowId)
-            }
           }
         case 'actions': {
           if (action === 'clear') {
@@ -1781,6 +1781,17 @@ export function createCommandRouter({
             })
           if (action === 'hide-actions') return await video.hideActions(tabId)
           throw new Error(`unsupported video action: ${action}`)
+        case 'tab.list': {
+          let tabs = await listTabs()
+          const filter = readStringArg(args, 'filter').toLowerCase()
+          if (args.active === true) tabs = tabs.filter((tab) => tab.active)
+          if (args.currentWindow === true) {
+            const targetId = queryTargetTabId
+            const currentWindowId = tabs.find((tab) => tab.id === targetId)?.windowId
+            if (typeof currentWindowId === 'number') {
+              tabs = tabs.filter((tab) => tab.windowId === currentWindowId)
+            }
+          }
           if (filter) {
             tabs = tabs.filter((tab) =>
               `${tab.handle || ''} ${tab.title} ${tab.url}`.toLowerCase().includes(filter),
@@ -1857,19 +1868,8 @@ export function createCommandRouter({
             script,
             frameSelector,
             readOptionalNumberArg(args, 'timeoutMs'),
-          )
-        case 'snapshot':
-          return await pageObserve.snapshotTab(tabId, frameSelector, {
-            selector: selector.trim() || undefined,
-            ...(snapshotRoles.length > 0 ? { roles: snapshotRoles } : {}),
-            ...(snapshotChanged ? { changed: true } : {}),
-          })
-        case 'feed':
-          return await pageObserve.collectFeed(
-            tabId,
-            {
             readOptionalStringArg(args, 'element'),
-              selector: feedSelector?.trim() || 'article',
+          )
         case 'locator':
           return await pageInput.generateLocator(tabId, selector, frameSelector)
         case 'highlight':
@@ -1891,6 +1891,17 @@ export function createCommandRouter({
           )
           return { method, result }
         }
+        case 'snapshot':
+          return await pageObserve.snapshotTab(tabId, frameSelector, {
+            selector: selector.trim() || undefined,
+            ...(snapshotRoles.length > 0 ? { roles: snapshotRoles } : {}),
+            ...(snapshotChanged ? { changed: true } : {}),
+          })
+        case 'feed':
+          return await pageObserve.collectFeed(
+            tabId,
+            {
+              selector: feedSelector?.trim() || 'article',
               limit: feedLimit,
               dedupe: feedDedupe as CollectFeedOptions['dedupe'],
               maxScrolls: feedMaxScrolls,
@@ -1978,6 +1989,43 @@ export function createCommandRouter({
           return await pageInput.scrollIntoViewSelector(tabId, selector, frameSelector, context)
         case 'drag':
           return await pageInput.dragElement(tabId, start, end, frameSelector, context)
+        case 'drop':
+          return await pageInput.dropData(
+            tabId,
+            selector,
+            (args.data || {}) as Record<string, string>,
+            (args.files || []) as Array<{ name: string; mimeType: string; dataBase64: string }>,
+            frameSelector,
+            context,
+          )
+        case 'mousemove':
+          return await pageInput.mouseMove(
+            tabId,
+            readNumberArg(args, 'x'),
+            readNumberArg(args, 'y'),
+            context,
+          )
+        case 'mousedown':
+          return await pageInput.mouseButton(
+            tabId,
+            true,
+            readStringArg(args, 'button', 'left'),
+            context,
+          )
+        case 'mouseup':
+          return await pageInput.mouseButton(
+            tabId,
+            false,
+            readStringArg(args, 'button', 'left'),
+            context,
+          )
+        case 'mousewheel':
+          return await pageInput.mouseWheel(
+            tabId,
+            readNumberArg(args, 'deltaX'),
+            readNumberArg(args, 'deltaY'),
+            context,
+          )
         case 'upload':
           return await pageInput.uploadFiles(tabId, selector, files, frameSelector, context)
         case 'back':
@@ -2067,17 +2115,6 @@ export function createCommandRouter({
           }
           if (action === 'clear') {
             return await session.cookiesClear(tabId)
-        case 'cdp': {
-          const tab = await getTargetTab(tabId)
-          const method = readStringArg(args, 'method')
-          const result = await sendDebuggerCommand(
-            tab.id,
-            method,
-            (args.params || {}) as Record<string, unknown>,
-            context,
-          )
-          return { method, result }
-        }
           }
           if (action === 'delete') {
             if (!name || name === 'default') {
@@ -2095,43 +2132,6 @@ export function createCommandRouter({
             return await session.storageSet(
               tabId,
               storageKey || '',
-        case 'drop':
-          return await pageInput.dropData(
-            tabId,
-            selector,
-            (args.data || {}) as Record<string, string>,
-            (args.files || []) as Array<{ name: string; mimeType: string; dataBase64: string }>,
-            frameSelector,
-            context,
-          )
-        case 'mousemove':
-          return await pageInput.mouseMove(
-            tabId,
-            readNumberArg(args, 'x'),
-            readNumberArg(args, 'y'),
-            context,
-          )
-        case 'mousedown':
-          return await pageInput.mouseButton(
-            tabId,
-            true,
-            readStringArg(args, 'button', 'left'),
-            context,
-          )
-        case 'mouseup':
-          return await pageInput.mouseButton(
-            tabId,
-            false,
-            readStringArg(args, 'button', 'left'),
-            context,
-          )
-        case 'mousewheel':
-          return await pageInput.mouseWheel(
-            tabId,
-            readNumberArg(args, 'deltaX'),
-            readNumberArg(args, 'deltaY'),
-            context,
-          )
               storageValue,
               frameSelector,
               sessionOnly,
@@ -2305,6 +2305,10 @@ export function createCommandRouter({
           if (readStringArg(args, 'type') === 'offline') {
             return await session.setOffline(tabId, enabled)
           }
+          if (readStringArg(args, 'type') === 'auto-snapshot') {
+            state.session.autoSnapshot = enabled
+            return { autoSnapshot: enabled }
+          }
           if (readStringArg(args, 'type') === 'headers') {
             return await session.setHeaders(tabId, headers)
           }
@@ -2313,6 +2317,21 @@ export function createCommandRouter({
           }
           if (readStringArg(args, 'type') === 'media') {
             return await session.setMedia(tabId, media)
+          }
+          if (readStringArg(args, 'type') === 'media-type') {
+            return await session.setMediaType(tabId, value || null)
+          }
+          if (readStringArg(args, 'type') === 'reduced-motion') {
+            return await session.setMediaFeature(tabId, 'prefers-reduced-motion', value || null)
+          }
+          if (readStringArg(args, 'type') === 'forced-colors') {
+            return await session.setMediaFeature(tabId, 'forced-colors', value || null)
+          }
+          if (readStringArg(args, 'type') === 'contrast') {
+            return await session.setMediaFeature(tabId, 'prefers-contrast', value || null)
+          }
+          if (readStringArg(args, 'type') === 'device') {
+            return await session.setDevice(tabId, value || null)
           }
           if (readStringArg(args, 'type') === 'permission') {
             return await session.setPermission(tabId, name, readBooleanArg(args, 'reset', false))
@@ -2361,7 +2380,21 @@ export function createCommandRouter({
         pinnedTabId === null
           ? frameSelector
           : resolveEffectiveFrameSelector(state, { id: pinnedTabId }, frameSelector) || 'top'
-      const result = await runCommand()
+      let result = await runCommand()
+      if (state.session.autoSnapshot && AUTO_SNAPSHOT_COMMANDS.has(command) && isRecord(result)) {
+        const actionResult = result
+        try {
+          result = {
+            ...actionResult,
+            snapshot: await pageObserve.snapshotTab(tabId, executionFrame, {}),
+          }
+        } catch (error) {
+          result = {
+            ...actionResult,
+            snapshotError: error instanceof Error ? error.message : String(error),
+          }
+        }
+      }
       // frame 命令回显切换后的 frame；普通页面命令回显开始执行时的 frame。
       const metaFrame =
         command === 'frame' && pinnedTabId !== null
@@ -2377,21 +2410,47 @@ export function createCommandRouter({
     // metadata 也在队列槽内完成，不能让后继 frame 切换污染前一命令的响应。
     // batch 子步骤（skipQueue）在 batch 自己的队列槽内执行，重入队列会死锁。
     const runsInQueue = !skipQueue && !CONTROL_COMMANDS.has(command) && !networkControl
-    return runsInQueue
-      ? await commandQueue.enqueue(
-          resolveCommandQueueKey(tabId),
-          async (queueContext) => {
-            context = queueContext
-            return await runWithMeta()
-          },
-          {
-            ...request,
-            deadlineAt:
-              request?.deadlineAt ??
-              new Date(Date.now() + getCommandRequestBudgetMs(command, args)).toISOString(),
-          },
-        )
-      : await runWithMeta()
+    const actionStartedAt = Date.now()
+    try {
+      const result = runsInQueue
+        ? await commandQueue.enqueue(
+            resolveCommandQueueKey(tabId),
+            async (queueContext) => {
+              context = queueContext
+              return await runWithMeta()
+            },
+            {
+              ...request,
+              deadlineAt:
+                request?.deadlineAt ??
+                new Date(Date.now() + getCommandRequestBudgetMs(command, args)).toISOString(),
+            },
+          )
+        : await runWithMeta()
+      recordAction(
+        command,
+        request,
+        queryTargetTabId,
+        frameSelector || null,
+        selector,
+        actionStartedAt,
+        true,
+        null,
+      )
+      return result
+    } catch (error) {
+      recordAction(
+        command,
+        request,
+        queryTargetTabId,
+        frameSelector || null,
+        selector,
+        actionStartedAt,
+        false,
+        error,
+      )
+      throw error
+    }
   }
 
   async function handleCommand(message: CommandMessage) {
