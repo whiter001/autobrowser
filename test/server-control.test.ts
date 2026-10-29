@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from 'bun:test'
 import { createServer, type Server, type ServerResponse } from 'node:http'
 import { getStatus } from '../src/cli/client.js'
-import { waitForServerStatus } from '../src/cli/server-control.js'
+import { buildServerLaunchArgs, waitForServerStatus } from '../src/cli/server-control.js'
 
 const status = { relayPort: 12345, ipcPort: 12346, extensionConnected: false }
 
@@ -165,5 +165,31 @@ describe('server status polling deadlines', () => {
       status,
     )
     expect(requests).toBe(2)
+  })
+})
+
+describe('background server launch arguments', () => {
+  test('places named session and global options before the server command', () => {
+    expect(
+      buildServerLaunchArgs({ relayPort: 58000, ipcPort: 58001 }, 'extension-id', 'work'),
+    ).toEqual([
+      process.argv[1],
+      '--session',
+      'work',
+      '--relay-port',
+      '58000',
+      '--ipc-port',
+      '58001',
+      '--extension-id',
+      'extension-id',
+      'server',
+      '--serve',
+    ])
+  })
+
+  test('keeps the default session launch free of a session flag', () => {
+    const args = buildServerLaunchArgs({ relayPort: 57978, ipcPort: 57979 }, 'extension-id')
+    expect(args).not.toContain('--session')
+    expect(args.indexOf('server')).toBeGreaterThan(args.indexOf('--extension-id'))
   })
 })

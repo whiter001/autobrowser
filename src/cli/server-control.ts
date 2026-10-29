@@ -380,15 +380,15 @@ export function buildServerLaunchArgs(
 ): string[] {
   return [
     process.argv[1],
-    'server',
-    '--serve',
+    ...(session ? ['--session', session] : []),
     '--relay-port',
     String(ports.relayPort),
     '--ipc-port',
     String(ports.ipcPort),
     '--extension-id',
     extensionId,
-    ...(session ? ['--session', session] : []),
+    'server',
+    '--serve',
   ]
 }
 
