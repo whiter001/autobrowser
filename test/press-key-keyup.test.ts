@@ -3,7 +3,7 @@ import { createPageInputDomain } from '../extension/background/page-input.js'
 import { createExtensionState } from '../extension/background/state.js'
 
 function createPressHarness(options: { failKeyDown?: boolean; failKeyUp?: boolean } = {}) {
-  const calls: Array<{ method: string; type?: string }> = []
+  const calls: Array<{ method: string; type?: string; params?: Record<string, unknown> }> = []
 
   const pageInput = createPageInputDomain({
     state: createExtensionState(9222),
@@ -22,7 +22,7 @@ function createPressHarness(options: { failKeyDown?: boolean; failKeyUp?: boolea
     },
     sendDebuggerCommand: async (_tabId, method, params) => {
       const type = (params as { type?: string } | undefined)?.type
-      calls.push({ method, type })
+      calls.push({ method, type, params: params as Record<string, unknown> | undefined })
       if (method === 'Input.dispatchKeyEvent' && type === 'keyDown' && options.failKeyDown) {
         throw new Error('keyDown failed')
       }
@@ -57,5 +57,36 @@ describe('pressKey keyUp fallback', () => {
 
     await expect(pageInput.pressKey(1, 'Enter')).resolves.toEqual({ key: 'Enter', pressed: true })
     expect(calls.map((call) => call.type)).toEqual(['keyDown', 'keyUp'])
+  })
+
+  test('sends Enter virtual key codes required by component keyboard handlers', async () => {
+    const { pageInput, calls } = createPressHarness()
+
+    await pageInput.pressKey(1, 'Enter')
+
+    for (const call of calls) {
+      expect(call.params).toMatchObject({
+        key: 'Enter',
+        code: 'Enter',
+        windowsVirtualKeyCode: 13,
+        nativeVirtualKeyCode: 13,
+      })
+    }
+  })
+
+  test('sends letter key code and modifiers for Control+A', async () => {
+    const { pageInput, calls } = createPressHarness()
+
+    await pageInput.pressKey(1, 'Control+A')
+
+    for (const call of calls) {
+      expect(call.params).toMatchObject({
+        key: 'A',
+        code: 'KeyA',
+        modifiers: 2,
+        windowsVirtualKeyCode: 65,
+        nativeVirtualKeyCode: 65,
+      })
+    }
   })
 })

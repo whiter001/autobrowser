@@ -415,6 +415,66 @@ export function createPageInputDomain({
     })
   }
 
+  const SPECIAL_KEY_DEFINITIONS: Record<string, { key?: string; code: string; keyCode: number }> = {
+    Enter: { code: 'Enter', keyCode: 13 },
+    NumpadEnter: { code: 'NumpadEnter', keyCode: 13 },
+    Tab: { code: 'Tab', keyCode: 9 },
+    Escape: { code: 'Escape', keyCode: 27 },
+    Esc: { key: 'Escape', code: 'Escape', keyCode: 27 },
+    Backspace: { code: 'Backspace', keyCode: 8 },
+    Delete: { code: 'Delete', keyCode: 46 },
+    Insert: { code: 'Insert', keyCode: 45 },
+    ArrowLeft: { code: 'ArrowLeft', keyCode: 37 },
+    ArrowUp: { code: 'ArrowUp', keyCode: 38 },
+    ArrowRight: { code: 'ArrowRight', keyCode: 39 },
+    ArrowDown: { code: 'ArrowDown', keyCode: 40 },
+    Home: { code: 'Home', keyCode: 36 },
+    End: { code: 'End', keyCode: 35 },
+    PageUp: { code: 'PageUp', keyCode: 33 },
+    PageDown: { code: 'PageDown', keyCode: 34 },
+    Shift: { code: 'ShiftLeft', keyCode: 16 },
+    Control: { code: 'ControlLeft', keyCode: 17 },
+    Alt: { code: 'AltLeft', keyCode: 18 },
+    Meta: { code: 'MetaLeft', keyCode: 91 },
+    CapsLock: { code: 'CapsLock', keyCode: 20 },
+    NumLock: { code: 'NumLock', keyCode: 144 },
+    ScrollLock: { code: 'ScrollLock', keyCode: 145 },
+    Pause: { code: 'Pause', keyCode: 19 },
+    PrintScreen: { code: 'PrintScreen', keyCode: 44 },
+    ContextMenu: { code: 'ContextMenu', keyCode: 93 },
+    Space: { key: ' ', code: 'Space', keyCode: 32 },
+    ' ': { code: 'Space', keyCode: 32 },
+    ';': { code: 'Semicolon', keyCode: 186 },
+    '=': { code: 'Equal', keyCode: 187 },
+    ',': { code: 'Comma', keyCode: 188 },
+    '-': { code: 'Minus', keyCode: 189 },
+    '.': { code: 'Period', keyCode: 190 },
+    '/': { code: 'Slash', keyCode: 191 },
+    '`': { code: 'Backquote', keyCode: 192 },
+    '[': { code: 'BracketLeft', keyCode: 219 },
+    '\\': { code: 'Backslash', keyCode: 220 },
+    ']': { code: 'BracketRight', keyCode: 221 },
+    "'": { code: 'Quote', keyCode: 222 },
+  }
+
+  function getKeyboardKeyDescriptor(keyName: string) {
+    const special = SPECIAL_KEY_DEFINITIONS[keyName]
+    if (special) return { key: special.key || keyName, ...special }
+
+    if (/^[a-z]$/i.test(keyName)) {
+      const upper = keyName.toUpperCase()
+      return { key: keyName, code: `Key${upper}`, keyCode: upper.charCodeAt(0) }
+    }
+    if (/^[0-9]$/.test(keyName)) {
+      return { key: keyName, code: `Digit${keyName}`, keyCode: keyName.charCodeAt(0) }
+    }
+    const functionKey = /^F([1-9]|1[0-9]|2[0-4])$/.exec(keyName)
+    if (functionKey) {
+      return { key: keyName, code: keyName, keyCode: 111 + Number(functionKey[1]) }
+    }
+    return { key: keyName, code: keyName, keyCode: 0 }
+  }
+
   async function dispatchKeyEvent(
     tabId: number,
     keyName: string,
@@ -422,15 +482,20 @@ export function createPageInputDomain({
     type: 'keyDown' | 'keyUp',
     context?: CommandExecutionContext,
   ): Promise<void> {
+    const descriptor = getKeyboardKeyDescriptor(keyName)
     context?.throwIfCancelled()
+    // Ant Design 等组件依赖 keyCode；CDP 仅传 key/code 时该值为 0，
+    // 必须同时提供虚拟键码才能与手动键盘输入保持一致。
     await sendDebuggerCommand(
       tabId,
       'Input.dispatchKeyEvent',
       {
         type,
-        key: keyName,
-        code: keyName,
+        key: descriptor.key,
+        code: descriptor.code,
         modifiers,
+        windowsVirtualKeyCode: descriptor.keyCode,
+        nativeVirtualKeyCode: descriptor.keyCode,
       },
       context,
     )
