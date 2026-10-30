@@ -69,7 +69,10 @@ export function getCommandRequestBudgetMs(
       if (!Array.isArray(steps)) return defaultTimeoutMs
       if (steps.length > MAX_BATCH_NODES) invalidBudget(name, 'too many batch steps')
       let total = 0
-      for (const step of steps) {
+      // 收集每步的名义预算，超限时给出可诊断的明细，而不是只报一个总上限。
+      const stepBudgets: Array<{ index: number; command: string; budgetMs: number }> = []
+      for (let stepIndex = 0; stepIndex < steps.length; stepIndex += 1) {
+        const step = steps[stepIndex]
         const record = step && typeof step === 'object' ? (step as Record<string, unknown>) : {}
         const childName =
           typeof step === 'string' ? step.trim() : String(record.command ?? '').trim()
@@ -78,7 +81,22 @@ export function getCommandRequestBudgetMs(
             ? (record.args as Record<string, unknown>)
             : {}
         const budget = visit(childName, childArgs, depth + 1)
-        total = bounded(total + budget * (retries + 1) + delay * retries, 'batch request budget')
+        const stepTotal = budget * (retries + 1) + delay * retries
+        stepBudgets.push({ index: stepIndex + 1, command: childName, budgetMs: stepTotal })
+        total += stepTotal
+      }
+      if (total > MAX_REQUEST_TIMEOUT_MS) {
+        // 超限时列出占预算最多的几步，帮助调用方定位是该拆 batch 还是减小某步的 timeoutMs。
+        const top = [...stepBudgets]
+          .sort((a, b) => b.budgetMs - a.budgetMs)
+          .slice(0, 5)
+          .map((s) => `#${s.index} ${s.command}=${s.budgetMs}ms`)
+          .join(', ')
+        invalidBudget(
+          name,
+          `batch request budget must not exceed ${MAX_REQUEST_TIMEOUT_MS}ms ` +
+            `(total ${total}ms across ${stepBudgets.length} steps; largest: ${top})`,
+        )
       }
       return Math.max(defaultTimeoutMs, total)
     }

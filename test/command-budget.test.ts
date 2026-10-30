@@ -54,6 +54,22 @@ describe('bounded command budgets', () => {
         steps: ['snapshot'],
       }),
     ).toThrow('batch request budget')
+
+    // 超限时错误信息应带每步预算明细，便于定位是拆 batch 还是减小某步 timeoutMs。
+    const manySteps = [
+      ...Array.from({ length: 60 }, () => ({ command: 'eval', args: { script: '1+1' } })),
+      { command: 'eval', args: { script: 'x', timeoutMs: 260_000 } },
+    ]
+    let detail = ''
+    try {
+      getCommandRequestBudgetMs('batch', { steps: manySteps })
+    } catch (error) {
+      detail = error instanceof Error ? error.message : String(error)
+    }
+    expect(detail).toContain('batch request budget must not exceed')
+    expect(detail).toContain('61 steps')
+    expect(detail).toContain('eval=265000ms')
+    expect(detail).toContain('eval=30000ms')
     expect(() => validateCommandArgs('batch', { steps: [], retries: 1e100 })).toThrow('retries')
     expect(() => validateCommandArgs('batch', { steps: [], retryDelayMs: 2 ** 32 })).toThrow()
     expect(() => validateCommandArgs('wait', { ms: Infinity })).toThrow()
