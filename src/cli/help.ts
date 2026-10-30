@@ -117,6 +117,15 @@ const HELP_ROOT = helpNode(
     helpNode('replay', 'Replay the last recorded command.', 'autobrowser replay', [
       'Commands containing redacted arguments are rejected instead of replaying placeholder values.',
     ]),
+    helpNode(
+      'skill',
+      'Sync or inspect the agent SKILL.md shipped with this package.',
+      'autobrowser skill <sync|status>',
+      [
+        'sync copies the package SKILL.md to ~/.agents/skills/autobrowser/SKILL.md (override with AUTOBROWSER_SKILL_DIR).',
+        'status reports whether the installed SKILL.md matches the packaged one without writing.',
+      ],
+    ),
     helpNode('config', 'Show persisted CLI connection settings.', 'autobrowser config'),
     helpNode(
       'connect',

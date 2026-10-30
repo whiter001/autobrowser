@@ -18,6 +18,7 @@
     "dist",
     "chrome",
     "docs",
+    ".agents",
     "scripts/npm-postinstall.mjs",
     "scripts/npm-postinstall.d.mts",
     "README.md"

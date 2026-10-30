@@ -5,6 +5,7 @@ import { diagnosticsCommandRegistry } from './diagnostics.js'
 import { fillFormCommandRegistry } from './fillform.js'
 import { pageCommandRegistry } from './page.js'
 import { serverCommandRegistry } from './server.js'
+import { skillCommandRegistry } from './skill.js'
 import { stateCommandRegistry } from './state.js'
 import { tabCommandRegistry } from './tabs.js'
 import { webmcpCommandRegistry } from './webmcp.js'
@@ -17,6 +18,7 @@ export const COMMAND_REGISTRY: CommandRegistry = {
   ...collectCommandRegistry,
   ...fillFormCommandRegistry,
   ...serverCommandRegistry,
+  ...skillCommandRegistry,
   ...tabCommandRegistry,
   ...elementCommandRegistry,
   ...pageCommandRegistry,
