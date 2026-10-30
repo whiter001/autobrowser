@@ -1604,6 +1604,13 @@ export function createCommandRouter({
           ? result.url
           : null
     const effectiveMeta = effectiveUrl ? { ...meta, url: effectiveUrl } : meta
+    // 回落到非活动标签页时，在结果主体（而非仅 meta）给出可见提示，避免 agent 忽略。
+    // meta.target.note 保留供程序化判断；targetFallback 是给调用方/人看的显式信号。
+    const targetFallback =
+      meta.target && !meta.target.explicit && meta.target.note ? meta.target.note : null
+    if (targetFallback) {
+      return { ...result, targetFallback, meta: effectiveMeta }
+    }
     return { ...result, meta: effectiveMeta }
   }
 

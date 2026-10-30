@@ -495,7 +495,11 @@ describe('command router batch handling', () => {
           label: null,
           response: {
             ok: true,
-            result: { snapshotId: 'snapshot-1', meta: fallbackTabMeta() },
+            result: {
+              snapshotId: 'snapshot-1',
+              targetFallback: 'fell back to last non-active tab',
+              meta: fallbackTabMeta(),
+            },
           },
         },
         {
@@ -508,6 +512,7 @@ describe('command router batch handling', () => {
             result: {
               navigated: true,
               url: 'https://example.com',
+              targetFallback: 'fell back to last non-active tab',
               meta: fallbackTabMeta({ url: 'https://example.com' }),
             },
           },
@@ -582,6 +587,7 @@ describe('command router batch handling', () => {
       condition: 'selector-stable',
       selector: 'article',
       state: 'stable',
+      targetFallback: 'fell back to last non-active tab',
       meta: fallbackTabMeta(),
     })
   })
@@ -682,7 +688,11 @@ describe('command router batch handling', () => {
           label: null,
           response: {
             ok: true,
-            result: { snapshotId: 'snapshot-1', meta: fallbackTabMeta() },
+            result: {
+              snapshotId: 'snapshot-1',
+              targetFallback: 'fell back to last non-active tab',
+              meta: fallbackTabMeta(),
+            },
           },
         },
       ],
@@ -756,7 +766,11 @@ describe('command router batch handling', () => {
           label: null,
           response: {
             ok: true,
-            result: { snapshotId: 'snapshot-1', meta: fallbackTabMeta() },
+            result: {
+              snapshotId: 'snapshot-1',
+              targetFallback: 'fell back to last non-active tab',
+              meta: fallbackTabMeta(),
+            },
           },
         },
         {
@@ -766,7 +780,12 @@ describe('command router batch handling', () => {
           label: null,
           response: {
             ok: true,
-            result: { found: true, selector: '#btn', meta: fallbackTabMeta() },
+            result: {
+              found: true,
+              selector: '#btn',
+              targetFallback: 'fell back to last non-active tab',
+              meta: fallbackTabMeta(),
+            },
           },
         },
       ],
@@ -810,7 +829,11 @@ describe('command router batch handling', () => {
           label: null,
           response: {
             ok: true,
-            result: { snapshotId: 'snapshot-1', meta: fallbackTabMeta() },
+            result: {
+              snapshotId: 'snapshot-1',
+              targetFallback: 'fell back to last non-active tab',
+              meta: fallbackTabMeta(),
+            },
           },
         },
         {
@@ -1141,6 +1164,7 @@ describe('command router batch handling', () => {
 
     expect(result).toEqual({
       wait: { waited: true, condition: 'url', url: '#/outNet' },
+      targetFallback: 'fell back to last non-active tab',
       meta: fallbackTabMeta(),
     })
     expect(waitUrlCalls).toEqual([{ url: '#/outNet', timeout: 5000 }])
@@ -1158,6 +1182,7 @@ describe('command router network/session extensions', () => {
 
     expect(result).toEqual({
       routes: [{ id: 'route_1', pattern: '**/api/*', abort: true }],
+      targetFallback: 'fell back to last non-active tab',
       meta: fallbackTabMeta(),
     })
   })
@@ -1205,7 +1230,12 @@ describe('command router network/session extensions', () => {
       command: 'cookies',
       args: { action: 'delete', name: 'session' },
     })
-    expect(result).toEqual({ deleted: 1, name: 'session', meta: fallbackTabMeta() })
+    expect(result).toEqual({
+      deleted: 1,
+      name: 'session',
+      targetFallback: 'fell back to last non-active tab',
+      meta: fallbackTabMeta(),
+    })
 
     await expect(
       router.handleCommand({ command: 'cookies', args: { action: 'delete' } }),
@@ -1234,7 +1264,13 @@ describe('command router network/session extensions', () => {
       args: { action: 'delete', key: 'draft', session: true },
     })
 
-    expect(result).toEqual({ key: 'draft', deleted: true, session: true, meta: fallbackTabMeta() })
+    expect(result).toEqual({
+      key: 'draft',
+      deleted: true,
+      session: true,
+      targetFallback: 'fell back to last non-active tab',
+      meta: fallbackTabMeta(),
+    })
   })
 
   test('routes set permission/ua/timezone/locale to the session domain', async () => {
@@ -1245,26 +1281,48 @@ describe('command router network/session extensions', () => {
         command: 'set',
         args: { type: 'permission', name: 'geolocation' },
       }),
-    ).resolves.toEqual({ permission: 'geolocation', setting: 'granted', meta: fallbackTabMeta() })
+    ).resolves.toEqual({
+      permission: 'geolocation',
+      setting: 'granted',
+      targetFallback: 'fell back to last non-active tab',
+      meta: fallbackTabMeta(),
+    })
 
     await expect(
       router.handleCommand({
         command: 'set',
         args: { type: 'permission', name: 'geolocation', reset: true },
       }),
-    ).resolves.toEqual({ permission: 'geolocation', setting: 'default', meta: fallbackTabMeta() })
+    ).resolves.toEqual({
+      permission: 'geolocation',
+      setting: 'default',
+      targetFallback: 'fell back to last non-active tab',
+      meta: fallbackTabMeta(),
+    })
 
     await expect(
       router.handleCommand({ command: 'set', args: { type: 'ua', value: 'My Agent 1.0' } }),
-    ).resolves.toEqual({ userAgent: 'My Agent 1.0', meta: fallbackTabMeta() })
+    ).resolves.toEqual({
+      userAgent: 'My Agent 1.0',
+      targetFallback: 'fell back to last non-active tab',
+      meta: fallbackTabMeta(),
+    })
 
     await expect(
       router.handleCommand({ command: 'set', args: { type: 'timezone', value: 'Asia/Shanghai' } }),
-    ).resolves.toEqual({ timezone: 'Asia/Shanghai', meta: fallbackTabMeta() })
+    ).resolves.toEqual({
+      timezone: 'Asia/Shanghai',
+      targetFallback: 'fell back to last non-active tab',
+      meta: fallbackTabMeta(),
+    })
 
     await expect(
       router.handleCommand({ command: 'set', args: { type: 'locale', value: '' } }),
-    ).resolves.toEqual({ locale: null, meta: fallbackTabMeta() })
+    ).resolves.toEqual({
+      locale: null,
+      targetFallback: 'fell back to last non-active tab',
+      meta: fallbackTabMeta(),
+    })
   })
 })
 
@@ -1408,6 +1466,7 @@ describe('command router playwright parity commands', () => {
       waited: true,
       condition: 'text-gone',
       text: 'Loading',
+      targetFallback: 'fell back to last non-active tab',
       meta: fallbackTabMeta(),
     })
   })
@@ -1455,6 +1514,7 @@ describe('command router playwright parity commands', () => {
       ],
       succeeded: 2,
       failed: 0,
+      targetFallback: 'fell back to last non-active tab',
       meta: fallbackTabMeta(),
     })
   })
@@ -1533,6 +1593,7 @@ describe('command router modal blocking', () => {
 
     const status = await router.handleCommand({ command: 'dialog', args: { action: 'status' } })
     expect(status).toEqual({
+      targetFallback: 'fell back to last non-active tab',
       meta: fallbackTabMeta({
         dialog: { type: dialog.type, message: dialog.message, openedAt: dialog.openedAt },
       }),
@@ -1548,6 +1609,7 @@ describe('command router modal blocking', () => {
     expect(consoleResult).toEqual({
       messages: [],
       pagination: singlePageInfo(0),
+      targetFallback: 'fell back to last non-active tab',
       meta: fallbackTabMeta({
         dialog: { type: dialog.type, message: dialog.message, openedAt: dialog.openedAt },
       }),
@@ -1816,6 +1878,7 @@ describe('command router console/errors tab isolation', () => {
         { type: 'warn', text: 'no tab', timestamp: 3, tabId: null },
       ],
       pagination: singlePageInfo(3),
+      targetFallback: 'fell back to last non-active tab',
       meta: fallbackTabMeta(),
     })
   })
