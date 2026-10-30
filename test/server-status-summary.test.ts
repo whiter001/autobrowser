@@ -40,4 +40,48 @@ describe('server status summary', () => {
     expect(summary).toContain('  t1 (11): 4')
     expect(summary).toContain('  t2 (22): 7')
   })
+
+  test('brief mode collapses per-tab page epochs into a single line', () => {
+    const summary = formatStatusSummary(
+      {
+        relayPort: 57978,
+        ipcPort: 57979,
+        startedAt: '2026-05-18T10:00:00.000Z',
+        extensionConnected: true,
+        snapshot: {
+          tabs: [
+            { id: 11, handle: 't1', title: 'List page' },
+            { id: 22, handle: 't2', title: 'Detail page' },
+          ],
+          activeTabId: 11,
+          targetTabId: 22,
+          pageEpochs: { 11: 4, 22: 7 },
+        },
+      },
+      true,
+    )
+
+    expect(summary).toContain('page epochs: 2 tabs')
+    expect(summary).not.toContain('  t1 (11): 4')
+    expect(summary).not.toContain('  t2 (22): 7')
+    // brief 仍保留核心连接与目标信息
+    expect(summary).toContain('extension: connected')
+    expect(summary).toContain('active: t1 - List page')
+    expect(summary).toContain('target: t2 - Detail page')
+  })
+
+  test('brief mode handles an empty page epochs map', () => {
+    const summary = formatStatusSummary(
+      {
+        relayPort: 57978,
+        ipcPort: 57979,
+        startedAt: '2026-05-18T10:00:00.000Z',
+        extensionConnected: false,
+        snapshot: { tabs: [], pageEpochs: {} },
+      },
+      true,
+    )
+
+    expect(summary).not.toContain('page epochs')
+  })
 })

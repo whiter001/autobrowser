@@ -106,7 +106,11 @@ const HELP_ROOT = helpNode(
         ),
       ],
     ),
-    helpNode('status', 'Show server status.', 'autobrowser status'),
+    helpNode(
+      'status',
+      'Show server status. Default output is full JSON; use --raw for a compact summary or --brief to also collapse per-tab page epochs.',
+      'autobrowser status [--raw|--brief]',
+    ),
     helpNode('replay', 'Replay the last recorded command.', 'autobrowser replay', [
       'Commands containing redacted arguments are rejected instead of replaying placeholder values.',
     ]),

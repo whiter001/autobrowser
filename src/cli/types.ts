@@ -3,6 +3,7 @@ import type { DetachedProcessHandle } from './server-control.js'
 
 export interface CliFlags {
   json: boolean
+  brief: boolean
   server: string
   session: string
   engine: 'chromium' | 'firefox' | 'webkit'

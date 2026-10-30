@@ -62,6 +62,7 @@ const JSON_INDENT = '  '
 const SUPPORTED_GLOBAL_FLAGS = [
   '--json',
   '--raw',
+  '--brief',
   '--stdin',
   '--base64',
   '--tab',
@@ -106,6 +107,7 @@ function parsePortFlag(value: string, flag: string): number {
 function parseCli(argv: string[]): ParsedCli {
   const flags: CliFlags = {
     json: true,
+    brief: false,
     server: `http://127.0.0.1:${DEFAULT_IPC_PORT}`,
     session: '',
     engine: 'chromium',
@@ -141,6 +143,12 @@ function parseCli(argv: string[]): ParsedCli {
 
     if (value === '--raw') {
       flags.json = false
+      continue
+    }
+
+    if (value === '--brief') {
+      flags.json = false
+      flags.brief = true
       continue
     }
 

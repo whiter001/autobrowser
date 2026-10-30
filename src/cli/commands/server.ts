@@ -33,7 +33,7 @@ import type { CommandContext, CommandRegistry } from './types.js'
 /** 优雅关闭时等待 state 持久化完成的兜底时长；超时则强制退出，避免 --serve 进程挂死 */
 const SHUTDOWN_WATCHDOG_MS = 5_000
 
-export function formatStatusSummary(status: Record<string, unknown>): string {
+export function formatStatusSummary(status: Record<string, unknown>, brief = false): string {
   const lines: string[] = ['autobrowser status']
   const relayPort = typeof status.relayPort === 'number' ? status.relayPort : null
   const ipcPort = typeof status.ipcPort === 'number' ? status.ipcPort : null
@@ -97,15 +97,20 @@ export function formatStatusSummary(status: Record<string, unknown>): string {
     .sort((left, right) => left[0] - right[0])
 
   if (pageEpochEntries.length > 0) {
-    lines.push('page epochs:')
-    for (const [tabId, epoch] of pageEpochEntries) {
-      if (typeof epoch !== 'number') {
-        continue
-      }
+    if (brief) {
+      // brief 模式只给汇总，不逐行列出每个 tab 的 epoch（内部簿记，排查连接问题时无用）。
+      lines.push(`page epochs: ${pageEpochEntries.length} tabs`)
+    } else {
+      lines.push('page epochs:')
+      for (const [tabId, epoch] of pageEpochEntries) {
+        if (typeof epoch !== 'number') {
+          continue
+        }
 
-      const tab = tabById.get(tabId)
-      const handle = typeof tab?.handle === 'string' ? tab.handle : `tab ${tabId}`
-      lines.push(`  ${handle} (${tabId}): ${Math.floor(epoch)}`)
+        const tab = tabById.get(tabId)
+        const handle = typeof tab?.handle === 'string' ? tab.handle : `tab ${tabId}`
+        lines.push(`  ${handle} (${tabId}): ${Math.floor(epoch)}`)
+      }
     }
   }
 
@@ -426,7 +431,7 @@ async function handleStatus(rest: string[], context: CommandContext): Promise<nu
 
   const status = await context.getCommandStatus(context.flags.server)
   if (!context.flags.json) {
-    process.stdout.write(formatStatusSummary(status))
+    process.stdout.write(formatStatusSummary(status, context.flags.brief))
     return 0
   }
 
