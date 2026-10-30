@@ -50,6 +50,9 @@ const HELP_ROOT = helpNode(
       'Execute commands in sequence with optional retries and continue-on-error.',
       'autobrowser batch [--stdin|--file <path>|--base64] <json-array|json-object>',
       [
+        'Step shape: an array of { "command": <name>, "args": { ... } }, e.g. [{"command":"eval","args":{"script":"1+1"}},{"command":"click","args":{"selector":"#btn"}},{"command":"wait","args":{"ms":500}}].',
+        "args keys mirror each command's CLI options; a step timeout uses args.timeoutMs (the CLI flag --timeout-ms maps to it).",
+        'Prefer --file/--stdin on Windows/PowerShell: inline JSON quoting gets mangled by the shell, and a JSON parse error usually means shell escaping, not a CLI bug.',
         'retries may repeat side effects from a failed step; retries are NOT an idempotency guarantee.',
         'The total budget combines step budgets, retries, delays and nested batches; maximum 30 minutes including transport allowance.',
         'Cancellation/deadline stops subsequent steps, but cannot undo side effects or abort all in-flight CDP work.',
