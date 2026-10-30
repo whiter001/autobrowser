@@ -31,6 +31,34 @@ npm i -g @whiter001/autobrowser
 
 装完后 `autobrowser` 命令就在 `PATH` 里了。本文档下面的示例都以这个命令为准；仓库开发者想直接跑源码，见文末的「从源码运行」。
 
+#### Windows 上的启动器
+
+npm 会为 `bin` 字段生成三个启动器：`autobrowser`（sh）、`autobrowser.cmd`、`autobrowser.ps1`。
+其中 `autobrowser.cmd` 有坑：PowerShell 调用 `.cmd` 时会先剥掉参数里的双引号，cmd.exe 再把裸露的
+`& | ^ < >` 当成命令分隔符，于是 URL 查询串和 `eval` 源码会被拆成多条命令。`.ps1` 与 sh 启动器没有这个问题。
+
+包的 `postinstall` 会在 Windows 上把这个 `.cmd` 改名成 `autobrowser.bat`：
+
+- PowerShell 解析同名命令时优先命中 `autobrowser.ps1`；
+- cmd.exe 按 PATHEXT（`.COM;.EXE;.BAT;.CMD`）优先命中 `autobrowser.bat`，而 cmd.exe 自己的解析会保护引号里的 `&`；
+- `autobrowser.cmd` 不再存在，显式调用会直接报找不到命令，而不是静默改写参数。
+
+npm 12 默认不执行 install 脚本（`allow-scripts` 默认不放行），这种情况下 `.cmd` 不会被改名。
+可以放行后重新执行一次：
+
+```bash
+npm config set allow-scripts=@whiter001/autobrowser --location=user
+npm rebuild -g @whiter001/autobrowser
+```
+
+或者手动改名（Windows 上 npm 的全局可执行文件目录就是 `npm prefix -g`）：
+
+```bash
+mv "$(npm prefix -g)/autobrowser.cmd" "$(npm prefix -g)/autobrowser.bat"
+```
+
+从源码开发时推荐用 `bun run link:bun`，它会直接生成原生 `autobrowser.exe`，见 [`docs/bun-link.md`](docs/bun-link.md)。
+
 ### 验证
 
 ```bash

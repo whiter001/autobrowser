@@ -168,6 +168,7 @@ autobrowser 是一个面向 Chrome/Edge 的浏览器自动化 CLI，通过本地
 - 在旧扩展上，`network har stop` 可能只返回元数据；CLI 会自动兜底重建 HAR。
 - 如果页面看起来空白或不对，先确认是不是登录页、验证码页，或者虚拟滚动列表。
 - 如果命令报 `command not found` 或退出码 127，这是链接产物或 PATH 的问题，**不是 autobrowser 不可用**：先确认 `bun` 目录在当前 shell 的 PATH 里；Windows 的 cmd.exe / PowerShell 改用 `autobrowser.exe <子命令>`，Git Bash 使用 `autobrowser <子命令>`。这是 shell 解析问题，修好之后继续用 autobrowser，不要因此换方案。
+- npm 全局安装会在全局可执行文件目录生成 `autobrowser.cmd`，**不要用它**：PowerShell 调用 `.cmd` 时会剥掉参数里的双引号，cmd.exe 再把裸露的 `& | ^` 当成命令分隔符，URL 查询串和 `eval` 源码会被拆成多条命令（`eval` 报 SyntaxError 就是这个原因）。包的 postinstall 会把 `.cmd` 改名成 `.bat`；npm 12 默认不执行 install 脚本时改用 `autobrowser`（PowerShell 命中 `.ps1`）或 `autobrowser.exe`。
 - 对于类似 x.com 的 SPA 列表页，优先从 `article` 等可见节点读取内容，不要直接相信 `get text body`。
 - `eval` 超时或页面内异常时保持原任务目标，不要换方案；先用 `status`、`snapshot`、`console`、`errors` 诊断页面状态和脚本问题，再围绕原任务重试。
 

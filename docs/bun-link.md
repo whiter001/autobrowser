@@ -15,3 +15,24 @@ Windows 不再生成 `autobrowser.cmd`。旧的批处理 `%*` 会把参数里的
 2. Windows 的 cmd.exe 或 PowerShell 使用 `autobrowser.exe status`，Git Bash 使用 `autobrowser status`。启动器使用绝对路径，不依赖当前工作目录。
 
 这些问题属于链接产物或 shell 环境，不代表 autobrowser 不可用，不要因此改用其他浏览器方案。cmd.exe 会在启动任何程序前自行展开 `%VARIABLE%`，这是调用 shell 的行为；需要原样传递复杂 JavaScript 时，优先使用 `eval --file`、`eval --stdin` 或 Git Bash 入口。
+
+## npm 全局安装的 Windows 启动器
+
+npm 全局安装走的是另一条路径：`npm i -g @whiter001/autobrowser` 会按 `bin` 字段在全局可执行文件目录生成三个 shim（`autobrowser`、`autobrowser.cmd`、`autobrowser.ps1`），不经过 `scripts/link-bun.ts`。
+
+npm 生成的 `autobrowser.cmd` 用 `%*` 转发参数，参数在 PowerShell → cmd.exe 这一层就已经被破坏：PowerShell 调用 `.cmd` 时会先剥掉参数里的双引号，cmd.exe 再把裸露的 `& | ^ < >` 当成命令分隔符，于是 URL 查询串和 `eval` 源码会被拆成多条命令。这不是 `.cmd` 内容能补救的，参数在批处理脚本体执行之前就已经被切碎了。
+
+包的 `postinstall`（`scripts/npm-postinstall.mjs`）会在 Windows 全局安装时把这个 `.cmd` 改名成 `autobrowser.bat`：
+
+- PowerShell 解析同名命令时优先命中 `autobrowser.ps1`；
+- cmd.exe 按 PATHEXT（`.COM;.EXE;.BAT;.CMD`）优先命中 `autobrowser.bat`，cmd.exe 自己的解析会保护引号里的 `&`；
+- `autobrowser.cmd` 不再存在，显式调用会直接报找不到命令，而不是静默改写参数。
+
+npm 12 默认不执行 install 脚本（`allow-scripts` 默认不放行），这种安装下 `.cmd` 不会被改名，放行后重建一次即可：
+
+```bash
+npm config set allow-scripts=@whiter001/autobrowser --location=user
+npm rebuild -g @whiter001/autobrowser
+```
+
+只想用原生 exe 的话，在仓库里跑 `bun run link:bun` 即可，它会把 `autobrowser.exe` 放到 bun 目录并清掉同目录的旧 `.cmd`。

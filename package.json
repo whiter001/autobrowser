@@ -18,6 +18,8 @@
     "dist",
     "chrome",
     "docs",
+    "scripts/npm-postinstall.mjs",
+    "scripts/npm-postinstall.d.mts",
     "README.md"
   ],
   "type": "module",
@@ -44,6 +46,7 @@
     "build:chrome": "bun scripts/build-chrome.ts",
     "build": "bun run build:cli && bun run build:chrome",
     "link:bun": "bun scripts/link-bun.ts",
+    "postinstall": "node scripts/npm-postinstall.mjs",
     "prepublishOnly": "bun run build",
     "release": "npm publish --registry=https://registry.npmjs.org/ --access=public",
     "prepare": "husky"
