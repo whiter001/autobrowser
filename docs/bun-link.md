@@ -35,4 +35,6 @@ npm config set allow-scripts=@whiter001/autobrowser --location=user
 npm rebuild -g @whiter001/autobrowser
 ```
 
+**卸载残留**：npm 的 bin-links 只登记无扩展名、`.cmd`、`.ps1` 三种 shim，不登记 `.bat`。`npm uninstall -g` 不会删除改名产生的 `autobrowser.bat`，卸载后需手动清理 `$(npm prefix -g)/autobrowser.bat`。npm 7+ 也不为依赖卸载运行 `preuninstall`，所以这个残留无法靠 lifecycle 钩子自动清理。
+
 只想用原生 exe 的话，在仓库里跑 `bun run link:bun` 即可，它会把 `autobrowser.exe` 放到 bun 目录并清掉同目录的旧 `.cmd`。

@@ -83,6 +83,27 @@ describe('resolveGlobalBinDir', () => {
   test('returns null when npm did not expose a prefix', () => {
     expect(resolveGlobalBinDir({}, 'win32')).toBeNull()
   })
+
+  test('resolves a relative prefix against the process cwd', () => {
+    // npm 的 parseField 对 path 类型已经 resolve 过，正常不会传相对路径；
+    // 但 postinstall 的 cwd 是包安装目录，万一传入相对路径，不解析就会把 shim
+    // 写到包目录而不是全局 bin 目录，这里必须兜底成绝对路径。
+    const resolved = resolveGlobalBinDir({ npm_config_prefix: './my-npm' }, 'win32')
+    expect(resolved).not.toBeNull()
+    expect(path.isAbsolute(resolved!)).toBe(true)
+    expect(resolved).toBe(path.resolve('./my-npm'))
+  })
+
+  test('resolves a prefix that contains parent-directory segments', () => {
+    const resolved = resolveGlobalBinDir({ npm_config_prefix: 'D:\\npm\\..\\npm-global' }, 'win32')
+    expect(resolved).toBe(path.resolve('D:\\npm\\..\\npm-global'))
+  })
+
+  test('keeps an already-absolute prefix intact', () => {
+    expect(resolveGlobalBinDir({ npm_config_prefix: 'D:\\packages\\node\\modules' }, 'win32')).toBe(
+      path.resolve('D:\\packages\\node\\modules'),
+    )
+  })
 })
 
 describe('looksLikePackageCmdShim', () => {
@@ -102,6 +123,36 @@ describe('looksLikePackageCmdShim', () => {
 
   test('rejects empty content', () => {
     expect(looksLikePackageCmdShim('')).toBe(false)
+  })
+
+  test('rejects a backup file that only shares the bin path as a prefix', () => {
+    expect(
+      looksLikePackageCmdShim(
+        '%dp0%\\node_modules\\@whiter001\\autobrowser\\dist\\autobrowser.js.backup %*',
+      ),
+    ).toBe(false)
+  })
+
+  test('rejects a bin path that is a prefix of a longer file name', () => {
+    expect(looksLikePackageCmdShim('%dp0%\\node_modules\\pkg\\dist\\autobrowser.jsx %*')).toBe(
+      false,
+    )
+  })
+
+  test('accepts a foreign package only when the bin path is genuinely present', () => {
+    // 另一个包也可能把自己的可执行文件命名为 dist/autobrowser.js。
+    // 路径段边界检查只保证「这是一个完整的 bin 目标路径」，不保证「属于本包」；
+    // 真正防止误删其他包 shim 的是 npm bin-links 自己的 shim 冲突检查。
+    // 这里至少不能误伤把本包路径当子串、但实际指向别处的 shim。
+    expect(looksLikePackageCmdShim('%dp0%\\node_modules\\pkg\\dist\\autobrowser.js %*')).toBe(true)
+    expect(looksLikePackageCmdShim('%dp0%\\node_modules\\pkg\\dist\\autobrowser.js.bak %*')).toBe(
+      false,
+    )
+  })
+
+  test('accepts the bin path followed by a quote or end of line', () => {
+    expect(looksLikePackageCmdShim('"...\\dist\\autobrowser.js" %*')).toBe(true)
+    expect(looksLikePackageCmdShim('...\\dist\\autobrowser.js')).toBe(true)
   })
 })
 
@@ -183,7 +234,7 @@ describe('applyCmdShimRename', () => {
     const cmdPath = path.join(dir, CMD_SHIM_NAME)
     const batPath = path.join(dir, BAT_SHIM_NAME)
 
-    await applyCmdShimRename(dir, { cmdPath, batPath, cmdContent: NPM_CMD_SHIM })
+    await applyCmdShimRename({ cmdPath, batPath, cmdContent: NPM_CMD_SHIM })
 
     expect(await readFile(batPath, 'utf8')).toBe(NPM_CMD_SHIM)
   })

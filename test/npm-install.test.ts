@@ -8,10 +8,11 @@ import { BAT_SHIM_NAME, CMD_SHIM_NAME } from '../scripts/npm-postinstall.mjs'
 // 真实 npm 安装回归测试（opt-in）：
 //   AUTOBROWSER_NPM_INSTALL=1 bun test test/npm-install.test.ts
 //
-// npm 12 默认阻止 install scripts（allow-scripts 默认不放行），所以这里不假设
-// postinstall 一定被 npm 执行，而是分两步验证：
+// 本测试**不验证 npm 会自动执行 postinstall**——npm 12 默认阻止 install scripts
+// （allow-scripts 默认不放行），是否执行取决于用户的 npm 配置。这里分两步验证：
 //   1. 真实 npm install -g 之后，全局 bin 目录里确实有 npm 生成的 .cmd（问题现场）；
 //   2. 按 npm 的方式（同样的 env 与 cwd）执行 postinstall 之后，.cmd 消失、.bat 就位。
+// 即验证的是「npm 生成的产物 + postinstall 的修正逻辑」，而非 npm 的脚本调度。
 //
 // 默认 bun test 走 bun:test 的 skip 机制，不依赖 npm。
 
@@ -59,7 +60,7 @@ afterEach(async () => {
 
 describe('npm global install', () => {
   test.skipIf(process.env.AUTOBROWSER_NPM_INSTALL !== '1')(
-    'npm generates a .cmd shim and the postinstall replaces it with a .bat shim',
+    'npm generates a .cmd shim and the postinstall logic replaces it with a .bat shim',
     async () => {
       const workspace = await makeTempDir('autobrowser-npm-')
       const prefix = path.join(workspace, 'prefix')
@@ -72,7 +73,8 @@ describe('npm global install', () => {
             name: 'autobrowser-npm-install-probe',
             version: '0.0.0',
             bin: { autobrowser: 'dist/autobrowser.js' },
-            scripts: { postinstall: 'node ../npm-postinstall.mjs' },
+            // postinstall 的 cwd 是包安装目录，脚本路径必须相对于包根，不能指向包外。
+            scripts: { postinstall: 'node npm-postinstall.mjs' },
           },
           null,
           2,
@@ -105,9 +107,10 @@ describe('npm global install', () => {
       const cmdPath = path.join(binDir, CMD_SHIM_NAME)
       const batPath = path.join(binDir, BAT_SHIM_NAME)
 
-      // npm 生成的 .cmd 确实存在，这就是 issue #16 的问题现场。
+      // npm 生成的 .cmd 确实存在，且指向本包的 bin 目标，这就是 issue #16 的问题现场。
       const cmdContent = await readFile(cmdPath, 'utf8')
-      expect(cmdContent).toContain('autobrowser')
+      expect(cmdContent).toContain('dist\\autobrowser.js')
+      expect(cmdContent).toContain('%*')
       await expect(readFile(batPath, 'utf8')).rejects.toThrow()
 
       // 按 npm 的方式执行 postinstall：同样的 env、同样的 cwd。

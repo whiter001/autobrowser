@@ -43,6 +43,14 @@ npm 会为 `bin` 字段生成三个启动器：`autobrowser`（sh）、`autobrow
 - cmd.exe 按 PATHEXT（`.COM;.EXE;.BAT;.CMD`）优先命中 `autobrowser.bat`，而 cmd.exe 自己的解析会保护引号里的 `&`；
 - `autobrowser.cmd` 不再存在，显式调用会直接报找不到命令，而不是静默改写参数。
 
+> **行为变更**：改名后，任何**显式**写死 `autobrowser.cmd` 的调用方（脚本、CI 任务、VS Code task、npx 包装、旧文档示例）会从「参数被静默改写」变成「command not found」。原行为是静默产生错误结果，风险更高，所以这里选择显式报错。如果你的脚本里写死了 `autobrowser.cmd`，请改成 `autobrowser`（PowerShell 命中 `.ps1`，cmd.exe 命中 `.bat`）。
+
+> **卸载注意**：npm 的 bin-links 只登记无扩展名、`.cmd`、`.ps1` 三种 shim，**不登记 `.bat`**。所以 `npm uninstall -g @whiter001/autobrowser` 不会删除改名产生的 `autobrowser.bat`，它会成为指向已删除包的残留入口。卸载后请手动清理：
+>
+> ```bash
+> rm "$(npm prefix -g)/autobrowser.bat"
+> ```
+
 npm 12 默认不执行 install 脚本（`allow-scripts` 默认不放行），这种情况下 `.cmd` 不会被改名。
 可以放行后重新执行一次：
 

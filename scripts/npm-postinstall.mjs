@@ -17,6 +17,7 @@
 // 的可执行文件本身又要求 bun，这个修正步骤不该反过来把安装卡死。
 
 import { readFile, rm, writeFile } from 'node:fs/promises'
+import path from 'node:path'
 import { pathToFileURL } from 'node:url'
 
 /**
@@ -36,22 +37,37 @@ export const BAT_SHIM_NAME = 'autobrowser.bat'
  *
  * Windows 上 npm 把可执行文件直接放在 prefix 根目录，其他平台是 prefix/bin；
  * 这里只处理 Windows，因此返回 prefix 本身。
+ *
+ * npm 的 parseField 对 path 类型已经做过 resolve，正常情况下这里是绝对路径；
+ * 但这里再做一次 resolve 兜底——postinstall 的 cwd 是包安装目录，万一某个 npm
+ * 版本或调用方传进来相对路径，不解析就会把 shim 写到包目录里而不是全局 bin 目录。
  */
 export function resolveGlobalBinDir(env, platform) {
   if (platform !== 'win32') return null
   const prefix = env.npm_config_prefix
   if (!prefix) return null
-  return prefix
+  return path.resolve(prefix)
 }
 
 /**
  * 判断一份 .cmd 内容是不是 npm 为本包生成的 shim。
- * 只认本包可执行文件路径片段，避免误伤同名但属于别的包的启动器。
+ *
+ * npm 的 shim 里本包可执行文件总是以「<包目录>\dist\autobrowser.js」结尾，后面紧跟
+ * 空白、引号或行尾。用路径段边界匹配，避免把 dist\autobrowser.js.backup 或嵌套在
+ * 更长文件名里的同名片段误认成本包 shim。
  */
 export function looksLikePackageCmdShim(content, marker = PACKAGE_BIN_MARKER) {
   if (!content) return false
-  const normalized = content.replace(/\//g, '\\')
-  return normalized.toLowerCase().includes(marker.toLowerCase())
+  const normalized = content.replace(/\//g, '\\').toLowerCase()
+  const m = marker.toLowerCase()
+  let idx = normalized.indexOf(m)
+  while (idx !== -1) {
+    const after = normalized[idx + m.length]
+    // marker 后面必须是路径结束（空白、引号、行尾），不能是 .backup 这类后缀。
+    if (after === undefined || /[\s"'`]/.test(after)) return true
+    idx = normalized.indexOf(m, idx + 1)
+  }
+  return false
 }
 
 /**
@@ -82,7 +98,7 @@ export function planCmdShimRename({
  * 执行改名：先把 .cmd 的内容原样写到 .bat，再删掉 .cmd。
  * 两步分开是为了在写 .bat 失败时保留 .cmd，不至于让 cmd.exe 用户直接没有入口。
  */
-export async function applyCmdShimRename(binDir, { cmdPath, batPath, cmdContent }) {
+export async function applyCmdShimRename({ cmdPath, batPath, cmdContent }) {
   await writeFile(batPath, cmdContent, 'utf8')
   await rm(cmdPath, { force: true })
 }
@@ -117,7 +133,7 @@ export async function fixWindowsCmdShim({
   if (plan.action !== 'rename') return { applied: false, reason: plan.reason }
 
   try {
-    await applyCmdShimRename(plan.binDir, { cmdPath, batPath, cmdContent })
+    await applyCmdShimRename({ cmdPath, batPath, cmdContent })
   } catch (error) {
     logger.error?.(
       '[autobrowser] 修正 Windows 启动器失败：',
@@ -128,7 +144,7 @@ export async function fixWindowsCmdShim({
 
   logger.log?.(
     `[autobrowser] 已把 npm 生成的 ${CMD_SHIM_NAME} 改名为 ${BAT_SHIM_NAME}：` +
-      'cmd.exe 会解析 .cmd 并剥离参数引号，含 & | ^ 的参数会被拆开；.bat 与 .ps1 没有这个问题。',
+      'PowerShell 调用 .cmd 时会先剥掉参数里的双引号，cmd.exe 再把裸露的 & | ^ 当成命令分隔符；.bat 与 .ps1 没有这个问题。',
   )
   return { applied: true, reason: plan.reason }
 }

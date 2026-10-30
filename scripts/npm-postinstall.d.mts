@@ -31,10 +31,11 @@ export declare function planCmdShimRename(input: {
   marker?: string
 }): ShimFixPlan
 
-export declare function applyCmdShimRename(
-  binDir: string,
-  input: { cmdPath: string; batPath: string; cmdContent: string },
-): Promise<void>
+export declare function applyCmdShimRename(input: {
+  cmdPath: string
+  batPath: string
+  cmdContent: string
+}): Promise<void>
 
 export declare function fixWindowsCmdShim(input?: {
   platform?: string
