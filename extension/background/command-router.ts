@@ -18,6 +18,7 @@ import { serializeCommandError, type SerializedCommandError } from './errors.js'
 import { createCommandQueue, type CommandExecutionContext } from './command-queue.js'
 import { getCommandRequestBudgetMs } from '../../src/core/command-budget.js'
 import { DEFAULT_PAGE_SIZE, paginateList } from './pagination.js'
+import type { ExtensionControlDomain } from './extension-control.js'
 import { commandSupportsTabTarget, validateCommandArgs } from '../../src/core/command-spec.js'
 import type {
   CommandArgs,
@@ -504,6 +505,7 @@ interface WebMcpDomain {
 
 interface CommandRouterDependencies {
   state: ExtensionState
+  extensionControl: ExtensionControlDomain
   pageInput: PageInputDomain
   pageObserve: PageObserveDomain
   session: SessionDomain
@@ -527,6 +529,7 @@ interface CommandRouterDependencies {
 
 export function createCommandRouter({
   state,
+  extensionControl,
   pageInput,
   pageObserve,
   session,
@@ -1659,6 +1662,7 @@ export function createCommandRouter({
   }
 
   const CONTROL_COMMANDS = new Set([
+    'extension',
     'status',
     'tab.list',
     'tab.select',
@@ -1805,6 +1809,13 @@ export function createCommandRouter({
       // 排队期间可能新弹出对话框，入队前那次检查不够，执行前要针对固定后的 tab 再查一次
       await assertNoOpenDialog(command, tabId)
       switch (command) {
+        case 'extension':
+          if (action === 'info') return await extensionControl.info()
+          if (action === 'reload') return extensionControl.reload()
+          if (action === 'reconnect') return extensionControl.reconnect()
+          throw new Error(
+            `unsupported extension action: ${action} (expected info|reload|reconnect)`,
+          )
         case 'status':
           return {
             connected: true,

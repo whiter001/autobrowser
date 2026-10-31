@@ -516,6 +516,20 @@ function validateCommandArgsShape(command: string, args: unknown): void {
   readStringField(normalizedArgs, 'frame', command, { required: false })
 
   switch (command) {
+    case 'extension': {
+      const action = readStringField(normalizedArgs, 'action', command)
+      if (action !== 'info' && action !== 'reload' && action !== 'reconnect') {
+        throw createCommandArgsValidationError(
+          command,
+          'action must be info, reload or reconnect',
+          {
+            field: 'action',
+            value: action,
+          },
+        )
+      }
+      return
+    }
     case 'batch': {
       const steps = normalizedArgs.steps
       if (!Array.isArray(steps)) {

@@ -48,6 +48,8 @@
 - CLI 解析命令并转发到本地 IPC 服务。
 - 本地运行时再通过中继 socket 把命令转发给浏览器扩展。
 - 扩展负责当前标签页选择、frame 选择、DOM 查找、网络拦截和 snapshot 生成。
+- `extension info/reload/reconnect` 属于独立控制面，不绑定 tab、不进入页面队列；仅开放信息查询、固定的扩展重载和 relay 重连，不提供任意 Chrome API/消息执行能力。工厂注入回调及调度器，reload/reconnect 先走普通小 JSON 成功回执（`reloading:true` / `reconnecting:true`，`reconnectExpected:true`），默认延迟 50ms 执行，回调异常仅记录日志。reload 加载新代码，reconnect 复用现有连接重建逻辑、不重载代码；CLI 调用后需用 `status` 确认恢复，再用 `extension info` 确认实际加载的版本/构建，回执不代表重连已完成。
+- `extension info` 异步返回 `extensionId`、`version`、`buildTime`、`commit`、`userAgent`。版本始终来自运行时 manifest；构建脚本从 `package.json` 同步输出 manifest 版本，并在被 gitignore 的 `chrome/build-info.json` 写入 version、每次生成的 ISO buildTime、短 git commit（无 git/失败为 null），不修改源文件的生成时间。运行时读取缺失、失败或非法的构建字段回退 null，不能因旧构建缺文件产生未处理异常。版本/构建仅用于诊断；`capabilities` 继续负责功能协商与兼容判断，不以版本号代替。
 
 这已经能用，但面向 agent 的若干协议仍然不完整。
 

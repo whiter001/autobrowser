@@ -20,6 +20,7 @@ const NON_AMBIENT_ROUTER_COMMANDS = new Set([
   'downloads',
   'target',
   'command',
+  'extension',
 ])
 
 function uniqueSorted(values: Iterable<string>): string[] {
@@ -71,6 +72,22 @@ describe('command specs', () => {
     expect(getCommandSpec('tab.new')).toBeUndefined()
     expect(commandSupportsTabTarget('tab.select')).toBe(false)
     expect(commandSupportsFrameTarget('tab.close')).toBe(false)
+  })
+
+  test('validates extension actions without ambient tab or frame targeting', () => {
+    expect(commandSupportsTabTarget('extension')).toBe(false)
+    expect(commandSupportsFrameTarget('extension')).toBe(false)
+    for (const action of ['info', 'reload', 'reconnect']) {
+      expect(() => validateCommandArgs('extension', { action })).not.toThrow()
+    }
+    for (const action of [undefined, null, '', 123, 'restart', 'reload ']) {
+      expect(() => validateCommandArgs('extension', { action })).toThrow(
+        'invalid command arguments for extension:',
+      )
+    }
+    expect(() => validateCommandArgs('extension', { action: 'restart' })).toThrow(
+      'action must be info, reload or reconnect',
+    )
   })
 
   test('keeps command names unique', () => {

@@ -189,6 +189,19 @@ npm 全局安装的用户不需要再构建扩展：构建好的未打包扩展�
 bun run build:chrome
 ```
 
+已加载且在线的扩展在后续构建完成后，可以受控重载代码：
+
+```bash
+autobrowser extension reload
+# 稍等后确认恢复与实际加载的版本/构建
+autobrowser status
+autobrowser extension info
+```
+
+`extension info` 返回 `extensionId`、`version`、`buildTime`、`commit`、`userAgent`，用于重载后确认实际加载的版本与构建。构建输出的 manifest 版本与 `package.json` 同步；每次构建生成 ISO `buildTime` 和短 git `commit`（无 git 时为 `null`）。运行时 `version` 始终取 manifest；旧构建缺少构建信息、读取失败或字段非法时，`buildTime` / `commit` 回退 `null`。功能兼容仍通过 `capabilities` 协商，不根据版本号推断。
+
+`extension reload` 从磁盘重载扩展代码；`extension reconnect` 只重建扩展与 relay 的连接，不加载新代码，与刷新页面的 `reload` 也不同。两者先返回成功回执（`reloading:true` / `reconnecting:true`，并带 `reconnectExpected:true`），约 50ms 后异步执行；回执表示已安排操作，不表示恢复完成。稍等后用 `status` 确认重新连接，再继续页面命令。命令仅用于已连接的 Chromium 扩展，不绑定 tab、不进入页面队列；首次升级到支持此命令的版本仍需在 chrome://extensions 手动重新加载。
+
 加载完成后，运行 `autobrowser connect` 可以打开扩展连接页；它会自动保存 token 和中继端口，而你传入的 `--extension-id`、`--browser-command` 或 `--browser-arg` 也会保存在 `~/.autobrowser/config.json` 中供后续复用。仓库开发者如果还没跑 `bun run link:bun`，可以直接用 `bun run src/cli.ts connect` 代替；命令名其余部分完全一致。`options` 页面仍然可以作为手动兜底，并显示诊断信息。
 
 ## 网络

@@ -819,5 +819,6 @@ export function createConnectionRuntime({
   return {
     initialize,
     registerChromeListeners,
+    reconnect: requestReconnect,
   }
 }

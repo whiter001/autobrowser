@@ -114,6 +114,33 @@ const HELP_ROOT = helpNode(
       'Show server status. Default output is full JSON; use --raw for a compact summary or --brief to also collapse per-tab page epochs.',
       'autobrowser status [--raw|--brief]',
     ),
+    helpNode(
+      'extension',
+      'Inspect extension version/build info, reload code or rebuild only the relay connection. Reload/reconnect run asynchronously after acknowledgement; confirm recovery with status.',
+      'autobrowser extension <info|reload|reconnect>',
+      [
+        'Chromium extension only; no tab or frame target is required.',
+        'The acknowledgement reports reloading/reconnecting and reconnectExpected, not completed recovery. Run autobrowser status after a short delay, then extension info to confirm the version/build.',
+        'Capabilities negotiate feature compatibility; version/build info is diagnostic only.',
+      ],
+      [
+        helpNode(
+          'info',
+          'Show extensionId, version, buildTime, commit and userAgent. Missing or invalid build metadata is null; version always comes from the manifest.',
+          'autobrowser extension info',
+        ),
+        helpNode(
+          'reload',
+          'Reload extension code from disk after building; runs after acknowledgement. Confirm reconnection with status, then version/build with extension info.',
+          'autobrowser extension reload',
+        ),
+        helpNode(
+          'reconnect',
+          'Rebuild only the relay connection without reloading code; runs after acknowledgement. Confirm with status.',
+          'autobrowser extension reconnect',
+        ),
+      ],
+    ),
     helpNode('replay', 'Replay the last recorded command.', 'autobrowser replay', [
       'Commands containing redacted arguments are rejected instead of replaying placeholder values.',
     ]),

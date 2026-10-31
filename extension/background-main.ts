@@ -11,6 +11,8 @@ import {
 import { createCommandRouter } from './background/command-router.js'
 import type { CommandExecutionContext } from './background/command-queue.js'
 import { createConnectionRuntime } from './background/connection.js'
+import { createExtensionControl } from './background/extension-control.js'
+import { readExtensionBuildInfo } from './background/build-info.js'
 import { createDownloadsDomain } from './background/downloads.js'
 import { createFileTransferDomain } from './background/file-transfer.js'
 import { createMediaDomain } from './background/media.js'
@@ -156,8 +158,20 @@ const webmcp = createWebMcpDomain({
 const fileTransfer = createFileTransferDomain({ state })
 const media = createMediaDomain({ state, evaluateInTabContext })
 
+const extensionControl = createExtensionControl({
+  info: async () => ({
+    extensionId: chrome.runtime.id,
+    version: chrome.runtime.getManifest().version,
+    userAgent: navigator.userAgent,
+    ...(await readExtensionBuildInfo(chrome.runtime.getURL('build-info.json'))),
+  }),
+  reload: () => chrome.runtime.reload(),
+  reconnect: () => connection.reconnect(),
+})
+
 const commandRouter = createCommandRouter({
   state,
+  extensionControl,
   pageInput,
   pageObserve,
   session,

@@ -128,6 +128,17 @@ function createMinimalRouter(overrides?: {
 
   const router = createCommandRouter({
     state,
+    extensionControl: {
+      info: async () => ({
+        extensionId: 'test-extension',
+        version: '0.1.3',
+        buildTime: null,
+        commit: null,
+        userAgent: 'test-browser',
+      }),
+      reload: () => ({ reloading: true, reconnectExpected: true }),
+      reconnect: () => ({ reconnecting: true, reconnectExpected: true }),
+    },
     pageInput: {
       navigateTo:
         overrides?.navigateTo ??
@@ -1834,6 +1845,58 @@ describe('command router meta context', () => {
 })
 
 describe('command router recovery control plane', () => {
+  test('extension actions do not resolve a tab or wait for the page queue', async () => {
+    let entered!: () => void
+    const started = new Promise<void>((resolve) => {
+      entered = resolve
+    })
+    let targetCalls = 0
+    const { router, state } = createMinimalRouter({
+      getTargetTab: async () => {
+        targetCalls += 1
+        return { id: 1 }
+      },
+      navigateTo: async () => {
+        entered()
+        return await new Promise(() => {})
+      },
+    })
+    const stuck = router.handleCommand({
+      command: 'goto',
+      id: 'extension-stuck',
+      args: { url: 'https://stuck' },
+    })
+    await started
+    const callsBefore = targetCalls
+    state.session.dialogs.set(1, { open: true, type: 'confirm', message: 'blocked' } as DialogState)
+    try {
+      for (const action of ['reload', 'reconnect']) {
+        expect(await router.handleCommand({ command: 'extension', args: { action } })).toEqual({
+          [action === 'reload' ? 'reloading' : 'reconnecting']: true,
+          reconnectExpected: true,
+          meta: EMPTY_META,
+        })
+      }
+      expect(
+        await router.handleCommand({ command: 'extension', args: { action: 'info' } }),
+      ).toEqual({
+        extensionId: 'test-extension',
+        version: '0.1.3',
+        buildTime: null,
+        commit: null,
+        userAgent: 'test-browser',
+        meta: EMPTY_META,
+      })
+      expect(targetCalls).toBe(callsBefore)
+      await expect(
+        router.handleCommand({ command: 'extension', args: { action: 'restart' } }),
+      ).rejects.toThrow('action must be info, reload or reconnect')
+    } finally {
+      router.cancelCommand('extension-stuck')
+      await stuck.catch(() => {})
+    }
+  })
+
   test('tab control remains available while a page command is stuck', async () => {
     const { router, state } = createMinimalRouter({
       navigateTo: async () => new Promise(() => {}),
