@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "autobrowser bridge",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "Bridge Chrome DevTools Protocol traffic to the local autobrowser daemon.",
   "permissions": [
     "tabs",
