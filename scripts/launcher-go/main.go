@@ -11,6 +11,21 @@ import (
 	"syscall"
 )
 
+// 链接时由 go build -ldflags "-X main.defaultBunPath=..." 注入的默认值；
+// 为空表示沿用 PATH 与相对启动器的布局探测。
+var (
+	defaultBunPath   string
+	defaultDistEntry string
+)
+
+// resolveOverride 优先使用显式环境变量，其次使用编译期注入的默认值。
+func resolveOverride(envValue, embedded string) string {
+	if envValue != "" {
+		return envValue
+	}
+	return embedded
+}
+
 func resolveBun(override string) (string, error) {
 	name := "bun"
 	if runtime.GOOS == "windows" {
@@ -56,7 +71,7 @@ func bunArgs(distEntry string, args []string) []string {
 }
 
 func run() int {
-	bun, err := resolveBun(os.Getenv("AUTOBROWSER_BUN_PATH"))
+	bun, err := resolveBun(resolveOverride(os.Getenv("AUTOBROWSER_BUN_PATH"), defaultBunPath))
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "[autobrowser]", err)
 		return 1
@@ -66,7 +81,7 @@ func run() int {
 		fmt.Fprintln(os.Stderr, "[autobrowser] cannot locate launcher:", err)
 		return 1
 	}
-	dist, err := resolveDist(executable, os.Getenv("AUTOBROWSER_DIST_ENTRY"))
+	dist, err := resolveDist(executable, resolveOverride(os.Getenv("AUTOBROWSER_DIST_ENTRY"), defaultDistEntry))
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "[autobrowser]", err)
 		return 1

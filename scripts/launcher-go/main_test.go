@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -57,6 +58,14 @@ func TestDistOverride(t *testing.T) {
 	}
 }
 
+// fakeBunName 返回当前平台可被 LookPath 找到的 Bun 文件名。
+func fakeBunName() string {
+	if runtime.GOOS == "windows" {
+		return "bun.exe"
+	}
+	return "bun"
+}
+
 func TestBunOverrideAndPath(t *testing.T) {
 	executable, err := os.Executable()
 	if err != nil {
@@ -67,11 +76,7 @@ func TestBunOverrideAndPath(t *testing.T) {
 		t.Fatalf("Bun override ignored: %q, %v", got, err)
 	}
 	binDir := t.TempDir()
-	bunName := "bun"
-	if filepath.Ext(executable) == ".exe" {
-		bunName = "bun.exe"
-	}
-	fakeBun := filepath.Join(binDir, bunName)
+	fakeBun := filepath.Join(binDir, fakeBunName())
 	writeFixture(t, fakeBun)
 	t.Setenv("PATH", binDir)
 	got, err = resolveBun("")
@@ -96,5 +101,54 @@ func TestBunArgs(t *testing.T) {
 	got[1] = "changed"
 	if args[0] != "eval" {
 		t.Fatal("argument construction mutated input")
+	}
+}
+
+func TestResolveOverridePrefersEnvironment(t *testing.T) {
+	if got := resolveOverride("env", "embedded"); got != "env" {
+		t.Fatalf("environment override ignored: %q", got)
+	}
+	if got := resolveOverride("", "embedded"); got != "embedded" {
+		t.Fatalf("embedded default ignored: %q", got)
+	}
+	if got := resolveOverride("", ""); got != "" {
+		t.Fatalf("expected empty override: %q", got)
+	}
+}
+
+func TestEmbeddedDefaults(t *testing.T) {
+	oldBun, oldDist := defaultBunPath, defaultDistEntry
+	defer func() { defaultBunPath, defaultDistEntry = oldBun, oldDist }()
+
+	root := t.TempDir()
+	fakeBun := filepath.Join(root, fakeBunName())
+	writeFixture(t, fakeBun)
+	distFile := filepath.Join(root, "dist", "autobrowser.js")
+	writeFixture(t, distFile)
+	defaultBunPath = fakeBun
+	defaultDistEntry = distFile
+
+	bun, err := resolveBun(resolveOverride("", defaultBunPath))
+	if err != nil || bun != fakeBun {
+		t.Fatalf("embedded Bun default ignored: %q, %v", bun, err)
+	}
+	dist, err := resolveDist(filepath.Join(root, "autobrowser"), resolveOverride("", defaultDistEntry))
+	if err != nil || dist != distFile {
+		t.Fatalf("embedded dist default ignored: %q, %v", dist, err)
+	}
+}
+
+func TestEmbeddedDefaultsDoNotFallBackSilently(t *testing.T) {
+	oldBun, oldDist := defaultBunPath, defaultDistEntry
+	defer func() { defaultBunPath, defaultDistEntry = oldBun, oldDist }()
+
+	root := t.TempDir()
+	defaultBunPath = filepath.Join(root, "missing-bun")
+	defaultDistEntry = filepath.Join(root, "missing-dist.js")
+	if _, err := resolveBun(resolveOverride("", defaultBunPath)); err == nil {
+		t.Fatal("missing embedded Bun accepted")
+	}
+	if _, err := resolveDist(filepath.Join(root, "autobrowser"), resolveOverride("", defaultDistEntry)); err == nil {
+		t.Fatal("missing embedded dist accepted")
 	}
 }

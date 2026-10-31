@@ -21,7 +21,7 @@
 
 npm 全局安装的 postinstall 优先把预编译 Go 启动器复制到 Windows `<prefix>/autobrowser.exe` 或 POSIX `<prefix>/bin/autobrowser`，替换并清理 npm shim。支持 darwin/linux/windows x64/arm64；Go 只负责以参数数组启动 Bun + `dist/autobrowser.js`、保留 cwd/env/stdio 和退出码，浏览器业务仍在 Bun 中，不经过 cmd.exe、批处理、PowerShell 或 sh。Bun 路径可用 `AUTOBROWSER_BUN_PATH` 覆盖，dist 可用 `AUTOBROWSER_DIST_ENTRY` 覆盖。
 
-`bin` 仍指向 dist JS。禁用安装脚本时仍是旧 npm shim，需放行后 `npm rebuild -g @whiter001/autobrowser` 才有原生入口；缺少产物/不支持平台/非全局沿用旧修正，原生写入失败明确报错而不静默回退。源码 `link:bun` 保持原开发链接行为。调用方 shell 仍可能先展开参数，复杂 eval 推荐 `--file`、`--stdin` 或 `--base64`，不因原生入口而改变 CLI eval 语义。
+`bin` 仍指向 dist JS。禁用安装脚本时仍是旧 npm shim，需放行后 `npm rebuild -g @whiter001/autobrowser` 才有原生入口；缺少产物/不支持平台/非全局沿用旧修正，原生写入失败明确报错而不静默回退。源码 `link:bun` 同样用 Go 构建原生启动器（Windows `autobrowser.exe`，其他平台 `autobrowser`）并安装到 Bun 旁边，启动器嵌入当前 Bun 与仓库 dist 的绝对路径，因此源码开发链接也不需要额外环境变量；开发机需要 Go，Go 缺失时链接直接失败，不再生成 sh 包装器。调用方 shell 仍可能先展开参数，复杂 eval 推荐 `--file`、`--stdin` 或 `--base64`，不因原生入口而改变 CLI eval 语义。
 
 npm 未登记额外的 Windows `.exe` 与回退 `.bat`，卸载后须清理；POSIX 也检查替换后的 `<prefix>/bin/autobrowser` 是否残留。构建需 Go（`bun run build:launcher`，本机可加 `-- --current`），安装用户只需 Bun。
 

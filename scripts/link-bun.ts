@@ -1,9 +1,10 @@
-import { access, chmod, rm, writeFile } from 'node:fs/promises'
+import { access, chmod, rename, rm } from 'node:fs/promises'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import os from 'node:os'
+import { currentBuildEnv, launcherLdflags } from './build-launcher-go'
 
 const execFileAsync = promisify(execFile)
 const __filename = fileURLToPath(import.meta.url)
@@ -25,42 +26,47 @@ try {
   process.exit(1)
 }
 
-const bunDir = path.dirname(bunPath)
-const isWindows = os.platform() === 'win32'
-
-// 无扩展名的 sh 包装器：Git Bash / WSL 这类 POSIX shell 只会按字面名查找，
-// Windows 上另提供原生 exe，避免批处理 %* 二次展开脚本参数
-const shWrapper = `#!/usr/bin/env sh
-exec ${JSON.stringify(bunPath)} ${JSON.stringify(distEntry)} "$@"
-`
-
-const written: string[] = []
-
-if (isWindows) {
-  const executablePath = path.join(bunDir, 'autobrowser.exe')
-  await execFileAsync(
-    bunPath,
-    [
-      'build',
-      path.join(rootDir, 'scripts', 'windows-launcher.ts'),
-      '--compile',
-      `--outfile=${executablePath}`,
-      '--define',
-      `AUTOBROWSER_BUN_PATH=${JSON.stringify(bunPath.replaceAll('\\', '/'))}`,
-      '--define',
-      `AUTOBROWSER_DIST_ENTRY=${JSON.stringify(distEntry.replaceAll('\\', '/'))}`,
-    ],
-    { cwd: rootDir },
-  )
-  // 旧批处理会把 %VARIABLE% 当环境变量展开，不能继续留在 PATH 中误导调用方。
-  await rm(path.join(bunDir, 'autobrowser.cmd'), { force: true })
-  written.push(executablePath)
+try {
+  await execFileAsync('go', ['version'])
+} catch {
+  console.error('Go is required to build the native launcher. Install Go and add go to PATH.')
+  process.exit(1)
 }
 
-const shPath = path.join(bunDir, 'autobrowser')
-await writeFile(shPath, shWrapper, 'utf8')
-// writeFile 的 mode 只在新建文件时生效，已有文件必须显式 chmod
-await chmod(shPath, 0o755)
-written.push(shPath)
+const bunDir = path.dirname(bunPath)
+const isWindows = os.platform() === 'win32'
+const targetPath = path.join(bunDir, isWindows ? 'autobrowser.exe' : 'autobrowser')
+// 先写同目录临时文件再 rename，避免覆盖正在运行的入口时留下半个文件。
+const tempPath = path.join(bunDir, `.autobrowser-link-${process.pid}${isWindows ? '.exe' : ''}`)
 
-console.log(`Linked autobrowser ->\n${written.map((p) => `  ${p}`).join('\n')}`)
+try {
+  await execFileAsync(
+    'go',
+    [
+      'build',
+      '-trimpath',
+      '-ldflags',
+      launcherLdflags({ bunPath, distEntry }),
+      '-o',
+      tempPath,
+      '.',
+    ],
+    {
+      cwd: path.join(rootDir, 'scripts', 'launcher-go'),
+      // 显式指定宿主目标，避免外部 GOOS/GOARCH 交叉编译设置产出非本机二进制。
+      env: { ...process.env, ...currentBuildEnv() },
+    },
+  )
+  await chmod(tempPath, 0o755)
+  await rename(tempPath, targetPath)
+} finally {
+  await rm(tempPath, { force: true })
+}
+
+if (isWindows) {
+  // 旧的无扩展名 sh 入口和 .cmd 会让调用方继续走 shell 路径，链接时一并清理。
+  await rm(path.join(bunDir, 'autobrowser'), { force: true })
+  await rm(path.join(bunDir, 'autobrowser.cmd'), { force: true })
+}
+
+console.log(`Linked autobrowser ->\n  ${targetPath}`)

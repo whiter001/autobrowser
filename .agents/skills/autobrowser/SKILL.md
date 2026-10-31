@@ -184,8 +184,8 @@ autobrowser 是一个面向 Chrome/Edge 的浏览器自动化 CLI，通过本地
 - 设置默认下载目录需要独立 CDP browser endpoint；当前扩展的 tab session 和 `chrome.debugger.getTargets` 都无法提供该能力，不要反复尝试 `Page.setDownloadBehavior`。
 - 在旧扩展上，`network har stop` 可能只返回元数据；CLI 会自动兜底重建 HAR。
 - 如果页面看起来空白或不对，先确认是不是登录页、验证码页，或者虚拟滚动列表。
-- 如果命令报 `command not found` 或退出码 127，这是链接产物或 PATH 的问题，**不是 autobrowser 不可用**：先确认 `bun` 目录在当前 shell 的 PATH 里；Windows 的 cmd.exe / PowerShell 改用 `autobrowser.exe <子命令>`，Git Bash 使用 `autobrowser <子命令>`。这是 shell 解析问题，修好之后继续用 autobrowser，不要因此换方案。
-- npm 全局安装在 postinstall 中用 Go 原生入口替换 npm shim：Windows `<prefix>/autobrowser.exe`，POSIX `<prefix>/bin/autobrowser`，支持 macOS/Linux/Windows x64/arm64。Go 只用参数数组启动 Bun + `dist/autobrowser.js`，不重写业务、不经过 shell；仍需 PATH 中的 Bun 或 `AUTOBROWSER_BUN_PATH`，JS 路径可用 `AUTOBROWSER_DIST_ENTRY` 覆盖。`link:bun` 开发链接行为不变。
+- 如果命令报 `command not found` 或退出码 127，这是链接产物或 PATH 的问题，**不是 autobrowser 不可用**：先确认 `bun` 目录在当前 shell 的 PATH 里；Windows 使用 `autobrowser.exe <子命令>`（Windows 没有无扩展名入口），其他平台使用 `autobrowser <子命令>`。这是 shell 解析问题，修好之后继续用 autobrowser，不要因此换方案。
+- npm 全局安装在 postinstall 中用 Go 原生入口替换 npm shim：Windows `<prefix>/autobrowser.exe`，POSIX `<prefix>/bin/autobrowser`，支持 macOS/Linux/Windows x64/arm64。Go 只用参数数组启动 Bun + `dist/autobrowser.js`，不重写业务、不经过 shell；仍需 PATH 中的 Bun 或 `AUTOBROWSER_BUN_PATH`，JS 路径可用 `AUTOBROWSER_DIST_ENTRY` 覆盖。源码 `link:bun` 同样用 Go 构建原生启动器并嵌入当前 Bun 与仓库 dist 路径，开发机需要 Go。
 - 禁用 npm 安装脚本时仍是旧 shim，**不保证存在 exe**；放行脚本后 `npm rebuild -g @whiter001/autobrowser`。缺少预编译文件/不支持平台/非全局才沿用旧修正；原生复制失败会明确报错，不静默回退。不要显式调用 `autobrowser.cmd`，PowerShell → cmd.exe 会破坏引号和 `& | ^` 参数。原生入口也不能还原调用方 shell 的展开，复杂 eval 仍用 `--file`、`--stdin` 或 `--base64`。
 - 卸载 npm 包后清理 npm 未登记的 Windows `<prefix>/autobrowser.exe`、回退 `.bat`，POSIX 检查 `<prefix>/bin/autobrowser` 是否残留；prefix 可用 `npm prefix -g` 查询。
 - 对于类似 x.com 的 SPA 列表页，优先从 `article` 等可见节点读取内容，不要直接相信 `get text body`。
@@ -194,7 +194,7 @@ autobrowser 是一个面向 Chrome/Edge 的浏览器自动化 CLI，通过本地
 ## AI 专属原则 (AI-Agent Exclusives)
 
 - ❗ **当 autobrowser 命令失败（如超时、找不到元素、被弹窗拦截、引用过期）时，明确禁止去尝试编写 Python/Selenium/Puppeteer 等其他框架脚本作为替代方案。**
-- ❗ **同样地，`command not found` / 退出码 127 也不算 autobrowser 不可用**，它只是 shell 找不到包装器。按回退策略里的排查顺序换一种调用方式（Windows 上用 `autobrowser.exe`，Git Bash 用 `autobrowser`）后继续使用 autobrowser。
+- ❗ **同样地，`command not found` / 退出码 127 也不算 autobrowser 不可用**，它只是 shell 找不到启动器。按回退策略里的排查顺序换一种调用方式（Windows 上用 `autobrowser.exe`，其他平台用 `autobrowser`）后继续使用 autobrowser。
 - 失败通常意味着当前持有的页面状态已陈旧、网络缓慢或存在未处理的各类弹窗。应该仔细阅读报错和执行建议。
 - 遇到错误时，先通过 `status` 获取控制面状态；页面仍可响应时再运行 `snapshot`。页面卡死时用 `command list`、`tab list` 和 `target clear` 恢复目标后继续使用 autobrowser。
 
