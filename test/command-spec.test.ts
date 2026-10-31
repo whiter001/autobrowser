@@ -412,6 +412,25 @@ describe('command specs', () => {
     )
   })
 
+  test('validates timeouts for request detail and HAR stop or recover', () => {
+    for (const args of [
+      { action: 'request', requestId: '1:r1', timeoutMs: 60_000 },
+      { action: 'har', subaction: 'stop', timeoutMs: 60_000 },
+      { action: 'har', subaction: 'recover', timeoutMs: 60_000 },
+    ]) {
+      expect(() => validateCommandArgs('network', args)).not.toThrow()
+    }
+    expect(() =>
+      validateCommandArgs('network', { action: 'har', subaction: 'stop', timeoutMs: '60s' }),
+    ).toThrow('invalid command arguments for network: timeoutMs must be a finite number')
+    expect(() =>
+      validateCommandArgs('network', { action: 'requests', sort: 'newest' }),
+    ).not.toThrow()
+    expect(() => validateCommandArgs('network', { action: 'requests', sort: 'random' })).toThrow(
+      'sort must be oldest or newest',
+    )
+  })
+
   test('validates extended find strategies, position, and candidates', () => {
     for (const strategy of ['placeholder', 'alt', 'title', 'test-id', 'exact-name']) {
       expect(() => validateCommandArgs('find', { strategy, query: 'x' })).not.toThrow()
@@ -488,6 +507,10 @@ describe('command specs', () => {
     expect(() =>
       validateCommandArgs('eval', { script: 'el => el.textContent', element: '@e1' }),
     ).not.toThrow()
+    expect(() => validateCommandArgs('eval', { script: '1', maxResultBytes: 1024 })).not.toThrow()
+    expect(() => validateCommandArgs('eval', { script: '1', maxResultBytes: 0 })).toThrow(
+      'maxResultBytes must be a positive integer',
+    )
     expect(() => validateCommandArgs('locator', { selector: '@e1' })).not.toThrow()
     expect(() => validateCommandArgs('highlight', { selector: '@e1' })).not.toThrow()
     expect(() => validateCommandArgs('highlight', { hide: true })).not.toThrow()

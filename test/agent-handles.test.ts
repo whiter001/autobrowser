@@ -12,6 +12,13 @@ import {
   parseAgentTabHandle,
   resolveAgentFrameSelector,
 } from '../src/core/agent-handles.js'
+import { createExtensionState } from '../extension/background/state.js'
+import {
+  clearRemovedTabHandle,
+  getOrCreateTabHandle,
+  resolveTabHandle,
+  resolveTabInput,
+} from '../extension/background/targeting.js'
 
 describe('agent tab and frame handles', () => {
   test('formats and parses stable tab handles', () => {
@@ -43,5 +50,52 @@ describe('agent tab and frame handles', () => {
     expect(isStaleAgentFrameRef('@f4', 10)).toBe(false)
     expect(isStaleAgentFrameRef('@f4#p10', 10)).toBe(false)
     expect(isStaleAgentFrameRef('@f4#p10', 11)).toBe(true)
+  })
+})
+
+describe('stable tab handles across extension state instances', () => {
+  test('derives handles from chrome tabId regardless of registration order', () => {
+    const firstState = createExtensionState(1234)
+    const secondState = createExtensionState(1234)
+
+    // 两个 state 实例模拟 SW 重启前后：tabs.query 枚举顺序不同，handle 必须一致
+    expect(getOrCreateTabHandle(firstState, 13)).toBe('t13')
+    expect(getOrCreateTabHandle(firstState, 12)).toBe('t12')
+
+    expect(getOrCreateTabHandle(secondState, 12)).toBe('t12')
+    expect(getOrCreateTabHandle(secondState, 13)).toBe('t13')
+  })
+
+  test('keeps the same handle after the service worker loses its memory maps', () => {
+    const beforeRestart = createExtensionState(1234)
+    const handleBeforeRestart = getOrCreateTabHandle(beforeRestart, 12)
+    expect(handleBeforeRestart).toBe('t12')
+    expect(resolveTabHandle(beforeRestart, 't12')).toBe(12)
+
+    const afterRestart = createExtensionState(1234)
+    expect(getOrCreateTabHandle(afterRestart, 12)).toBe(handleBeforeRestart)
+    expect(resolveTabHandle(afterRestart, 't12')).toBe(12)
+  })
+
+  test('cleared handles of closed tabs never silently hit another tab', () => {
+    const state = createExtensionState(1234)
+    expect(getOrCreateTabHandle(state, 12)).toBe('t12')
+    expect(getOrCreateTabHandle(state, 42)).toBe('t42')
+
+    clearRemovedTabHandle(state, 12)
+
+    expect(state.targeting.tabHandles.has(12)).toBe(false)
+    expect(state.targeting.tabIdsByHandle.has('t12')).toBe(false)
+    expect(resolveTabHandle(state, 't12')).toBeNull()
+    // 数字兜底也不能把 t12 误判成 tabId
+    expect(resolveTabInput(state, 't12')).toBeNull()
+
+    // 新登记的 tab 不会复用旧 handle
+    expect(getOrCreateTabHandle(state, 13)).toBe('t13')
+    expect(resolveTabHandle(state, 't12')).toBeNull()
+
+    // 同一 tabId 再次登记（例如会话恢复）仍得到同一 handle
+    expect(getOrCreateTabHandle(state, 12)).toBe('t12')
+    expect(resolveTabHandle(state, 't12')).toBe(12)
   })
 })

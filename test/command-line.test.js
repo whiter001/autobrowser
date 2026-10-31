@@ -598,8 +598,9 @@ describe('cli helpers', () => {
     expect(result.exitCode).toBe(0)
     expect(result.fetchCalls).toHaveLength(0)
     expect(result.stdout).toContain(
-      'autobrowser eval [--stdin|--file <path>|--base64] [--timeout-ms <ms>] [--element <selector>] [--expr] <script>',
+      'autobrowser eval [--stdin|--file <path>|--base64] [--timeout-ms <ms>] [--max-result-bytes <n>] [--element <selector>] [--expr] <script>',
     )
+    expect(result.stdout).toContain('--max-result-bytes <n>')
     expect(result.stdout).toContain('--element <selector>')
     expect(result.stdout).toContain('--expr <script>')
     expect(result.stdout).toContain('--timeout-ms <ms>')
@@ -608,14 +609,22 @@ describe('cli helpers', () => {
     expect(result.stdout).toContain('split work into smaller browser commands or script steps')
   })
 
-  test('routes eval --expr as source instead of JavaScript syntax', async () => {
+  test('routes eval source, timeout and optional result size limit', async () => {
     const script = 'JSON.stringify({ marker: "document", title: document.title })'
-    const result = await runCli(['eval', '--expr', script, '--timeout-ms', '5000'])
+    const result = await runCli([
+      'eval',
+      '--expr',
+      script,
+      '--timeout-ms',
+      '5000',
+      '--max-result-bytes',
+      '1024',
+    ])
 
     expect(result.exitCode).toBe(0)
     expect(result.fetchCalls[0].body).toEqual({
       command: 'eval',
-      args: { script, timeoutMs: 5000 },
+      args: { script, timeoutMs: 5000, maxResultBytes: 1024 },
     })
 
     const missing = await runCli(['eval', '--expr'])
@@ -888,10 +897,21 @@ describe('cli helpers', () => {
     })
 
     expect(
-      parseNetworkHarStartArgs(['--har-max-requests', '5000', '--har-max-body-bytes', '1048576']),
+      parseNetworkHarStartArgs([
+        '--har-max-requests',
+        '5000',
+        '--har-max-body-bytes',
+        '1048576',
+        '--include-pattern',
+        'video.twimg.com',
+        '--exclude-pattern',
+        '/audio/',
+      ]),
     ).toEqual({
       maxRequests: 5000,
       maxBodyBytes: 1048576,
+      includePattern: 'video.twimg.com',
+      excludePattern: '/audio/',
     })
   })
 
@@ -1125,8 +1145,15 @@ describe('cli helpers', () => {
     expect(negative.stderr).toContain('invalid page idx')
   })
 
-  test('routes HAR start limits to the extension', async () => {
-    const result = await runCli(['network', 'har', 'start', '--har-unlimited'])
+  test('routes HAR start limits and capture filters to the extension', async () => {
+    const result = await runCli([
+      'network',
+      'har',
+      'start',
+      '--har-unlimited',
+      '--exclude-pattern',
+      '/audio/',
+    ])
 
     expect(result.exitCode).toBe(0)
     expect(result.fetchCalls).toHaveLength(1)
@@ -1137,6 +1164,7 @@ describe('cli helpers', () => {
         subaction: 'start',
         maxRequests: null,
         maxBodyBytes: null,
+        excludePattern: '/audio/',
       },
     })
   })
@@ -3926,6 +3954,8 @@ describe('cli command routing', () => {
       'POST',
       '--status',
       '2xx',
+      '--sort',
+      'newest',
     ])
 
     expect(result.exitCode).toBe(0)
@@ -3938,8 +3968,14 @@ describe('cli command routing', () => {
         type: 'xhr,fetch',
         method: 'POST',
         status: '2xx',
+        sort: 'newest',
       },
     })
+
+    const invalid = await runCli(['network', 'requests', '--sort', 'random'])
+    expect(invalid.exitCode).toBe(1)
+    expect(invalid.fetchCalls).toHaveLength(0)
+    expect(invalid.stderr).toContain('expected oldest|newest')
   })
 
   test('writes HAR output when stopping a recording', async () => {
@@ -3997,14 +4033,47 @@ describe('cli command routing', () => {
     expect(result.exitCode).toBe(0)
     expect(result.fetchCalls.length).toBeGreaterThanOrEqual(1)
 
-    const outputPath = JSON.parse(result.stdout).result
+    const output = JSON.parse(result.stdout)
+    const outputPath = output.result
     expect(outputPath.length).toBeGreaterThan(0)
+    expect(output.meta.har).toEqual({
+      recovered: false,
+      captureTabId: null,
+      requestCount: 1,
+      checkpoint: null,
+    })
 
     const harContent = await readFile(outputPath, 'utf8')
     expect(harContent).toContain('"version": "1.2"')
     expect(harContent).toContain('"creator"')
     expect(harContent).toContain('"https://example.com/"')
     expect(harContent).toContain('"entries": [')
+  })
+
+  test('warns on an empty HAR and forwards the stop timeout without failing the export', async () => {
+    const result = await runCli(['network', 'har', 'stop', '--timeout-ms', '60000'], {
+      ok: true,
+      result: {
+        captureTabId: 13,
+        requestCount: 0,
+        checkpoint: { saved: true },
+        har: { log: { entries: [] } },
+      },
+    })
+
+    expect(result.exitCode).toBe(0)
+    expect(result.fetchCalls[0].body).toEqual({
+      command: 'network',
+      args: { action: 'har', subaction: 'stop', timeoutMs: 60000 },
+    })
+    expect(result.stderr).toContain('HAR contains 0 entries')
+    expect(result.stderr).toContain('--tab <handle>')
+    expect(JSON.parse(result.stdout).meta.har).toEqual({
+      recovered: false,
+      captureTabId: 13,
+      requestCount: 0,
+      checkpoint: { saved: true },
+    })
   })
 
   test('reconstructs HAR output when stop only returns metadata', async () => {

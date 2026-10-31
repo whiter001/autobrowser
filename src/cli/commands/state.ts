@@ -22,9 +22,28 @@ import path from 'node:path'
 interface NetworkHarStopResult {
   har?: unknown
   recording?: boolean
+  captureTabId?: number | null
   requestCount?: number
   startedAt?: string
   stoppedAt?: string
+  checkpoint?: { saved?: boolean; error?: string }
+}
+
+function parseNetworkTimeoutArgs(rest: string[]): { timeoutMs?: number } {
+  const result: { timeoutMs?: number } = {}
+  for (let index = 0; index < rest.length; index += 1) {
+    const value = rest[index]
+    if (value === '--timeout-ms') {
+      result.timeoutMs = parseOptionalNumberArg(rest[index + 1], 'timeout ms', Number.NaN, {
+        min: 1,
+        integer: true,
+      })
+      index += 1
+      continue
+    }
+    throw new Error(`unsupported network option: ${value}`)
+  }
+  return result
 }
 
 const COOKIE_ACTIONS = ['list', 'get', 'set', 'clear', 'delete'] as const
@@ -518,9 +537,12 @@ async function handleNetwork(rest: string[], context: CommandContext): Promise<n
       return context.writeHelp(['network', 'request'])
     }
 
+    const timeoutArgs = parseOrWriteError(() => parseNetworkTimeoutArgs(rest.slice(2)))
+    if (!timeoutArgs) return 1
     await requestAndWrite(context, 'network', {
       action: 'request',
       requestId,
+      ...timeoutArgs,
     })
     return 0
   }
@@ -550,9 +572,15 @@ async function handleNetwork(rest: string[], context: CommandContext): Promise<n
     }
 
     if (subaction === 'stop' || subaction === 'recover') {
+      const outputPath = rest[2] && !rest[2].startsWith('--') ? rest[2] : null
+      const timeoutArgs = parseOrWriteError(() =>
+        parseNetworkTimeoutArgs(outputPath ? rest.slice(3) : rest.slice(2)),
+      )
+      if (!timeoutArgs) return 1
       const payload = await context.requestCommand(context.flags.server, 'network', {
         action: 'har',
         subaction,
+        ...timeoutArgs,
       })
 
       if (payload.ok === false) {
@@ -569,8 +597,29 @@ async function handleNetwork(rest: string[], context: CommandContext): Promise<n
               context.flags.server,
               typeof result?.startedAt === 'string' ? result.startedAt : null,
             )
-      const savedPath = await context.writeHarFile(har, rest[2] || null)
-      context.writeResult({ ok: true, result: savedPath })
+      const harLog = isRecord(har) && isRecord(har.log) ? har.log : null
+      const entries = harLog && Array.isArray(harLog.entries) ? harLog.entries : []
+      const requestCount =
+        typeof result?.requestCount === 'number' ? result.requestCount : entries.length
+      const savedPath = await context.writeHarFile(har, outputPath)
+      if (requestCount === 0) {
+        process.stderr.write(
+          `Warning: HAR contains 0 entries (capture tab: ${result?.captureTabId ?? 'unknown'}). ` +
+            'Verify the target with tab list, then restart capture with --tab <handle>.\n',
+        )
+      }
+      context.writeResult({
+        ok: true,
+        result: savedPath,
+        meta: {
+          har: {
+            recovered: subaction === 'recover',
+            captureTabId: result?.captureTabId ?? null,
+            requestCount,
+            checkpoint: result?.checkpoint ?? null,
+          },
+        },
+      })
       return 0
     }
   }

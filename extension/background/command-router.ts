@@ -103,6 +103,7 @@ interface PageInputDomain {
     frameSelector: FrameSelector,
     timeoutMs?: number,
     elementSelector?: string,
+    maxResultBytes?: number,
   ) => Promise<unknown>
   generateLocator: (
     tabId: TabInput,
@@ -412,7 +413,12 @@ interface NetworkDomain {
   getRequestDetail: (requestId: string, tabId?: number | null) => unknown
   startHar: (
     tabId: TabInput,
-    options?: { maxRequests?: number | null; maxBodyBytes?: number | null },
+    options?: {
+      maxRequests?: number | null
+      maxBodyBytes?: number | null
+      includePattern?: string
+      excludePattern?: string
+    },
   ) => Promise<unknown>
   stopHar: () => Promise<unknown>
   getHarStatus: () => Promise<unknown>
@@ -514,6 +520,20 @@ export function createCommandRouter({
 }: CommandRouterDependencies) {
   // 同一 tab 的 chrome.debugger.sendCommand 互斥，多 CLI 并发时必须按 tab 串行执行
   const commandQueue = createCommandQueue()
+  // 仅在 eval 真正开始执行后登记：队列任务会与队列脱钩，靠这份映射判断
+  // 取消的到底是"运行中的 eval"（可中断页面执行）还是普通命令/尚未开始的 eval
+  const runningEvalTabIds = new Map<string, number>()
+
+  /** 取消命令的统一入口：先脱钩队列；只有运行中的 eval 才定向中断页面侧执行。
+   *  terminateExecution 是 best-effort，底层拒绝不能冒泡成 unhandled rejection */
+  function cancelTrackedCommand(id: string): boolean {
+    const cancelled = commandQueue.cancel(id)
+    const evalTabId = runningEvalTabIds.get(id)
+    if (evalTabId !== undefined) {
+      void sendDebuggerCommand(evalTabId, 'Runtime.terminateExecution', {}).catch(() => {})
+    }
+    return cancelled
+  }
 
   function readStringArg(args: CommandArgs, key: string, fallback = ''): string {
     const value = args[key]
@@ -1880,7 +1900,7 @@ export function createCommandRouter({
           }
           if (action === 'cancel') {
             const commandId = readStringArg(args, 'commandId')
-            return { commandId, cancelled: commandQueue.cancel(commandId) }
+            return { commandId, cancelled: cancelTrackedCommand(commandId) }
           }
           if (action === 'reset') {
             const key =
@@ -1905,6 +1925,7 @@ export function createCommandRouter({
             frameSelector,
             readOptionalNumberArg(args, 'timeoutMs'),
             readOptionalStringArg(args, 'element'),
+            readOptionalNumberArg(args, 'maxResultBytes'),
           )
         case 'locator':
           return await pageInput.generateLocator(tabId, selector, frameSelector)
@@ -2314,6 +2335,8 @@ export function createCommandRouter({
                   typeof args.maxBodyBytes === 'number' || args.maxBodyBytes === null
                     ? (args.maxBodyBytes as number | null)
                     : undefined,
+                includePattern: readOptionalStringArg(args, 'includePattern'),
+                excludePattern: readOptionalStringArg(args, 'excludePattern'),
               })
             }
             if (subaction === 'stop') {
@@ -2453,7 +2476,19 @@ export function createCommandRouter({
             resolveCommandQueueKey(tabId),
             async (queueContext) => {
               context = queueContext
-              return await runWithMeta()
+              // eval 只在此刻（真正开始执行）才可中断；使用 pin 后的真实数字 tabId，
+              // 避免排队期间 target 漂移导致 terminate 打到别的 tab
+              const evalTabId = command === 'eval' ? pinnedTabId : null
+              const trackedEvalId =
+                evalTabId !== null && typeof request?.id === 'string' ? request.id : null
+              if (trackedEvalId !== null && evalTabId !== null) {
+                runningEvalTabIds.set(trackedEvalId, evalTabId)
+              }
+              try {
+                return await runWithMeta()
+              } finally {
+                if (trackedEvalId !== null) runningEvalTabIds.delete(trackedEvalId)
+              }
             },
             {
               ...request,
@@ -2497,7 +2532,7 @@ export function createCommandRouter({
   }
 
   function cancelCommand(id: string): boolean {
-    return commandQueue.cancel(id)
+    return cancelTrackedCommand(id)
   }
 
   return {

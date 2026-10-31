@@ -43,8 +43,11 @@ export function getOrCreateTabHandle(
     return existingHandle
   }
 
-  const handle = formatAgentTabHandle(state.targeting.nextTabHandleIndex)
-  state.targeting.nextTabHandleIndex += 1
+  // handle 由 Chrome tabId 单向派生，而不是由 SW 内存里的计数器顺序分配：
+  // MV3 service worker 重启后内存映射虽会清空，但 tabs.query 的枚举顺序不再影响
+  // 同一 tab 的 handle；tabId 在浏览器会话内不会被复用，因此已关闭 tab 的旧 handle
+  // 不会静默命中另一个 tab（映射缺失时仍走 STALE_TAB_HANDLE）。
+  const handle = formatAgentTabHandle(tabId)
   state.targeting.tabHandles.set(tabId, handle)
   state.targeting.tabIdsByHandle.set(handle, tabId)
   return handle

@@ -694,6 +694,21 @@ function validateCommandArgsShape(command: string, args: unknown): void {
       readStringField(normalizedArgs, 'script', command)
       readStringField(normalizedArgs, 'element', command, { required: false })
       readOptionalNonNegativeNumberField(normalizedArgs, 'timeoutMs', command)
+      {
+        // 缺省不限制结果大小；显式设置时必须是正整数
+        const maxResultBytes = readOptionalNonNegativeIntegerField(
+          normalizedArgs,
+          'maxResultBytes',
+          command,
+        )
+        if (maxResultBytes !== undefined && maxResultBytes < 1) {
+          throw createCommandArgsValidationError(
+            command,
+            'maxResultBytes must be a positive integer',
+            { field: 'maxResultBytes', value: maxResultBytes },
+          )
+        }
+      }
       return
     case 'cdp': {
       const method = readStringField(normalizedArgs, 'method', command)
@@ -1049,11 +1064,16 @@ function validateCommandArgsShape(command: string, args: unknown): void {
         readStringField(normalizedArgs, 'url', command, { required: false })
       } else if (action === 'request') {
         readStringField(normalizedArgs, 'requestId', command)
+        readOptionalNonNegativeNumberField(normalizedArgs, 'timeoutMs', command)
       } else if (action === 'har') {
         const subaction = readStringField(normalizedArgs, 'subaction', command)
         if (subaction === 'start') {
           readNumberField(normalizedArgs, 'maxRequests', command, { required: false })
           readNumberField(normalizedArgs, 'maxBodyBytes', command, { required: false })
+          readStringField(normalizedArgs, 'includePattern', command, { required: false })
+          readStringField(normalizedArgs, 'excludePattern', command, { required: false })
+        } else if (subaction === 'stop' || subaction === 'recover') {
+          readOptionalNonNegativeNumberField(normalizedArgs, 'timeoutMs', command)
         }
       } else if (action === 'requests') {
         readStringField(normalizedArgs, 'filter', command, { required: false })
@@ -1066,6 +1086,13 @@ function validateCommandArgsShape(command: string, args: unknown): void {
         readBooleanField(normalizedArgs, 'allTabs', command)
         readBooleanField(normalizedArgs, 'allEpochs', command)
         readBooleanField(normalizedArgs, 'includeDetails', command)
+        const sort = readStringField(normalizedArgs, 'sort', command, { required: false })
+        if (sort !== undefined && sort !== 'oldest' && sort !== 'newest') {
+          throw createCommandArgsValidationError(command, 'sort must be oldest or newest', {
+            field: 'sort',
+            value: sort,
+          })
+        }
       }
       return
     }

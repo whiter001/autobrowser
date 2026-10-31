@@ -208,7 +208,7 @@ const HELP_ROOT = helpNode(
     helpNode(
       'eval',
       'Run a small page-context JavaScript snippet for read-only extraction or state checks.',
-      'autobrowser eval [--stdin|--file <path>|--base64] [--timeout-ms <ms>] [--element <selector>] [--expr] <script>',
+      'autobrowser eval [--stdin|--file <path>|--base64] [--timeout-ms <ms>] [--max-result-bytes <n>] [--element <selector>] [--expr] <script>',
       [
         '--expr <script>  pass script source as an explicit option value',
         '--element <selector>  pass the CSS/@eN target as el to a function such as el => el.textContent',
@@ -216,6 +216,7 @@ const HELP_ROOT = helpNode(
         '--file <path>  read complex or multiline script source from file',
         '--base64',
         '--timeout-ms <ms>  page evaluation timeout in milliseconds',
+        '--max-result-bytes <n>  fail with EVAL_RESULT_TOO_LARGE when the JSON result exceeds n UTF-8 bytes (no limit by default; results are not truncated)',
         'For complex interactions, split work into smaller browser commands or script steps.',
       ],
     ),
@@ -655,12 +656,13 @@ const HELP_ROOT = helpNode(
         helpNode(
           'requests',
           'List captured requests.',
-          'autobrowser network requests [--filter <text>] [--type <xhr,fetch>] [--method <POST>] [--status <2xx>] [--all-tabs] [--all-epochs] [--include-details]',
+          'autobrowser network requests [--filter <text>] [--type <xhr,fetch>] [--method <POST>] [--status <2xx>] [--sort oldest|newest] [--all-tabs] [--all-epochs] [--include-details]',
           [
             '--filter <text>',
             '--type <xhr,fetch>',
             '--method <POST>',
             '--status <2xx>',
+            '--sort oldest|newest  newest lists the most recent requests first (default: oldest)',
             '--page <n>',
             '--page-size <n>',
             '--all-tabs',
@@ -677,8 +679,9 @@ const HELP_ROOT = helpNode(
         helpNode(
           'request',
           'Inspect a single request; without HAR only metadata is monitored automatically.',
-          'autobrowser network request <requestId>',
+          'autobrowser network request <requestId> [--timeout-ms <ms>]',
           [
+            '--timeout-ms <ms>',
             'Body is fetched on demand via CDP; historical/expired requests may report body retrieval failure.',
           ],
         ),
@@ -693,29 +696,34 @@ const HELP_ROOT = helpNode(
             helpNode(
               'start',
               'Start HAR capture with configurable limits.',
-              'autobrowser network har start [--har-max-requests <n>] [--har-max-body-bytes <n>] [--har-unlimited]',
+              'autobrowser network har start [--har-max-requests <n>] [--har-max-body-bytes <n>] [--har-unlimited] [--include-pattern <text>] [--exclude-pattern <text>]',
               [
-                '--har-max-requests <n>',
+                '--har-max-requests <n>  limits only this capture, not global request history',
                 '--har-max-body-bytes <n>  limits storage only, not CDP download/transfer bytes',
                 '--har-unlimited  does not bypass CDP or response transfer resource limits',
+                '--include-pattern <text>  capture only URLs containing this text',
+                '--exclude-pattern <text>  exclude URLs containing this text from this capture',
               ],
             ),
             helpNode(
               'status',
-              'Show live and checkpoint HAR state.',
+              'Show live and checkpoint HAR state, including recoverable and checkpoint errors.',
               'autobrowser network har status',
             ),
             helpNode(
               'recover',
               'Recover a HAR checkpoint and save it.',
-              'autobrowser network har recover [output.har]',
+              'autobrowser network har recover [output.har] [--timeout-ms <ms>]',
+              ['--timeout-ms <ms>'],
             ),
             helpNode(
               'stop',
               'Stop HAR capture and save it.',
-              'autobrowser network har stop [output.har]',
+              'autobrowser network har stop [output.har] [--timeout-ms <ms>]',
               [
+                '--timeout-ms <ms>',
                 'Waits only for this capture; large results are transparently chunked/reassembled or explicitly rejected for size, not silently truncated.',
+                'On timeout, check network har status and recover when checkpoint.recoverable is true.',
               ],
             ),
           ],

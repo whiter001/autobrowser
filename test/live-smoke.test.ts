@@ -2230,6 +2230,86 @@ suite('live browser smoke test', () => {
     }
   }, 60_000)
 
+  test('times out a stuck eval and keeps the tab responsive', async () => {
+    await loadSmokePage()
+    const timedOut = await command('eval', { script: 'while (true) {}', timeoutMs: 1_000 })
+    expect(timedOut.ok).toBe(false)
+    expect(timedOut.error).toMatchObject({ code: 'EVALUATION_TIMEOUT' })
+
+    const startedAt = Date.now()
+    expect(await checkedCommand<string>('eval', { script: 'document.title' })).toContain(
+      'autobrowser',
+    )
+    expect(Date.now() - startedAt).toBeLessThan(5_000)
+  }, 15_000)
+
+  test('bounds eval results and filters HAR without trimming global request history', async () => {
+    await loadSmokePage()
+    const tooLarge = await command('eval', { script: '"1234567890"', maxResultBytes: 5 })
+    expect(tooLarge.ok).toBe(false)
+    expect(tooLarge.error).toMatchObject({
+      code: 'EVAL_RESULT_TOO_LARGE',
+      details: { bytes: 12, maxResultBytes: 5 },
+    })
+    expect(await checkedCommand('eval', { script: '"1234567890"', maxResultBytes: 12 })).toBe(
+      '1234567890',
+    )
+
+    const before = await checkedCommand<{ total: number }>('network', {
+      action: 'requests',
+      allTabs: true,
+      allEpochs: true,
+    })
+    await checkedCommand('network', {
+      action: 'har',
+      subaction: 'start',
+      maxRequests: 1,
+      includePattern: '/',
+      excludePattern: 'slow',
+    })
+    await checkedCommand('eval', {
+      script: `(async () => {
+        await Promise.all([
+          fetch('/routed-probe-slow').then((response) => response.text()),
+          fetch('/download-probe').then((response) => response.text()),
+        ]);
+        return true;
+      })()`,
+    })
+    const stopped = await checkedCommand<{
+      captureTabId: number
+      requestCount: number
+      checkpoint: { saved: boolean }
+      har: { log: { entries: Array<{ request: { url: string } }> } }
+    }>('network', { action: 'har', subaction: 'stop' })
+    expect(stopped.captureTabId).toBeGreaterThan(0)
+    expect(stopped.requestCount).toBe(1)
+    expect(stopped.checkpoint.saved).toBe(true)
+    expect(stopped.har.log.entries).toHaveLength(1)
+    expect(stopped.har.log.entries[0]?.request.url).toContain('/download-probe')
+
+    const after = await checkedCommand<{
+      total: number
+      requests: Array<{ url: string }>
+    }>('network', { action: 'requests', allTabs: true, allEpochs: true })
+    expect(after.total).toBeGreaterThanOrEqual(before.total + 2)
+    expect(after.requests.some((request) => request.url.includes('/routed-probe-slow'))).toBe(true)
+    expect(after.requests.some((request) => request.url.includes('/download-probe'))).toBe(true)
+
+    const status = await checkedCommand<{
+      captureRequestCount: number
+      checkpoint: { recoverable: boolean }
+    }>('network', { action: 'har', subaction: 'status' })
+    expect(status.captureRequestCount).toBe(1)
+    expect(status.checkpoint.recoverable).toBe(true)
+    const recovered = await checkedCommand<{
+      requestCount: number
+      har: { log: { entries: unknown[] } }
+    }>('network', { action: 'har', subaction: 'recover' })
+    expect(recovered.requestCount).toBe(1)
+    expect(recovered.har.log.entries).toHaveLength(1)
+  }, 30_000)
+
   test('completed local download refreshes terminal byte counts and end time', async () => {
     await loadSmokePage()
     // 下载仅写入 harness 的临时目录，afterAll 先关闭隔离 Chrome 再删除，失败时也不会留下用户文件。

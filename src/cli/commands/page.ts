@@ -218,15 +218,25 @@ function extractEvalOptions(rest: string[]): {
   scriptRest: string[]
   timeoutMs?: number
   element?: string
+  maxResultBytes?: number
 } {
   const scriptRest: string[] = []
   let timeoutMs: number | undefined
   let element: string | undefined
+  let maxResultBytes: number | undefined
 
   for (let index = 0; index < rest.length; index += 1) {
     const value = rest[index]
     if (value === '--timeout-ms') {
       timeoutMs = parseNumberArg(rest[index + 1], 'timeout ms', { min: 1, integer: true })
+      index += 1
+      continue
+    }
+    if (value === '--max-result-bytes') {
+      maxResultBytes = parseNumberArg(rest[index + 1], 'max result bytes', {
+        min: 1,
+        integer: true,
+      })
       index += 1
       continue
     }
@@ -248,7 +258,7 @@ function extractEvalOptions(rest: string[]): {
     scriptRest.push(value)
   }
 
-  return { scriptRest, timeoutMs, element }
+  return { scriptRest, timeoutMs, element, maxResultBytes }
 }
 
 async function handleEval(rest: string[], context: CommandContext): Promise<number | void> {
@@ -256,13 +266,14 @@ async function handleEval(rest: string[], context: CommandContext): Promise<numb
     return 0
   }
 
-  const { scriptRest, timeoutMs, element } = extractEvalOptions(rest)
+  const { scriptRest, timeoutMs, element, maxResultBytes } = extractEvalOptions(rest)
   const script = await context.resolveEvalScript(scriptRest)
   const args: Record<string, unknown> = { script }
   if (timeoutMs !== undefined) {
     args.timeoutMs = timeoutMs
   }
   if (element !== undefined) args.element = element
+  if (maxResultBytes !== undefined) args.maxResultBytes = maxResultBytes
   const payload = await context.requestCommand(context.flags.server, 'eval', args)
   context.writeResult(payload)
   return 0

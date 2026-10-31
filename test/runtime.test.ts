@@ -809,6 +809,146 @@ describe('runtime snapshot', () => {
     const command = messages.find((message) => message.type === 'command')
     expect(command.deadlineAt).toBeString()
     expect(messages).toContainEqual({ type: 'cancel', id: command.id, reason: 'relay timeout' })
+
+    await expect(
+      runtime.dispatchCommand('network', { action: 'har', subaction: 'stop' }),
+    ).rejects.toMatchObject({
+      code: 'COMMAND_TIMEOUT',
+      suggestedAction: expect.stringContaining('network har recover'),
+    })
+  })
+
+  test('records the last success time without clearing the historical error', async () => {
+    const homeDir = await mkdtemp(path.join(os.tmpdir(), 'autobrowser-runtime-test-'))
+    tempDirs.push(homeDir)
+
+    const runtime = await createTestRuntime({ homeDir, requestTimeoutMs: 500 })
+    const socket = {
+      readyState: WebSocket.OPEN,
+      send(payload: string) {
+        const message = JSON.parse(payload)
+        queueMicrotask(() =>
+          runtime.handleExtensionMessage({
+            type: 'response',
+            id: message.id,
+            ok: true,
+            result: 'done',
+          }),
+        )
+        return 1
+      },
+    } as unknown as Bun.ServerWebSocket<{}>
+    runtime.attachExtension(socket)
+
+    expect(runtime.snapshot().snapshot.lastSuccessAt).toBeNull()
+
+    await expect(runtime.dispatchCommand('snapshot')).resolves.toBe('done')
+
+    const successAt = runtime.snapshot().snapshot.lastSuccessAt
+    expect(typeof successAt).toBe('string')
+    expect(Number.isNaN(Date.parse(successAt as string))).toBe(false)
+
+    // 成功不清理历史错误：lastError 仍保留最近一次失败的诊断信息
+    runtime.setError('synthetic failure')
+    const errorAt = runtime.snapshot().snapshot.lastError?.at as string
+    await delay(5)
+    await expect(runtime.dispatchCommand('snapshot')).resolves.toBe('done')
+
+    expect(runtime.snapshot().snapshot.lastError).toEqual({
+      message: 'synthetic failure',
+      at: errorAt,
+    })
+    // 每次成功只写一次成功时间
+    const secondSuccessAt = runtime.snapshot().snapshot.lastSuccessAt
+    expect(Date.parse(secondSuccessAt as string)).toBeGreaterThanOrEqual(
+      Date.parse(successAt as string),
+    )
+
+    const stateFilePath = path.join(homeDir, '.autobrowser', 'state.json')
+    const persistedState = await waitForStateFile<{
+      snapshot: { lastSuccessAt: string | null; lastError: { message: string } | null }
+    }>(stateFilePath, (state) => state.snapshot?.lastSuccessAt === secondSuccessAt)
+
+    expect(persistedState.snapshot.lastSuccessAt).toBe(secondSuccessAt)
+    expect(persistedState.snapshot.lastError?.message).toBe('synthetic failure')
+  })
+
+  test('does not record a success time when the command fails', async () => {
+    const homeDir = await mkdtemp(path.join(os.tmpdir(), 'autobrowser-runtime-test-'))
+    tempDirs.push(homeDir)
+
+    const runtime = await createTestRuntime({ homeDir, requestTimeoutMs: 500 })
+    const socket = {
+      readyState: WebSocket.OPEN,
+      send(payload: string) {
+        const message = JSON.parse(payload)
+        queueMicrotask(() =>
+          runtime.handleExtensionMessage({
+            type: 'response',
+            id: message.id,
+            ok: false,
+            error: { code: 'EXTENSION_ERROR', message: 'command failed' },
+          }),
+        )
+        return 1
+      },
+    } as unknown as Bun.ServerWebSocket<{}>
+    runtime.attachExtension(socket)
+
+    await expect(runtime.dispatchCommand('snapshot')).rejects.toMatchObject({
+      code: 'EXTENSION_ERROR',
+    })
+
+    expect(runtime.snapshot().snapshot.lastSuccessAt).toBeNull()
+
+    // 参数校验失败与等待连接失败都不算成功
+    await expect(runtime.dispatchCommand('goto', { url: 123 as never })).rejects.toMatchObject({
+      code: 'INVALID_COMMAND_ARGS',
+    })
+    runtime.detachExtension(socket)
+    await expect(runtime.dispatchCommand('snapshot')).rejects.toMatchObject({
+      code: 'EXTENSION_DISCONNECTED',
+    })
+    expect(runtime.snapshot().snapshot.lastSuccessAt).toBeNull()
+  })
+
+  test('restores the last success time from the persisted snapshot', async () => {
+    const homeDir = await mkdtemp(path.join(os.tmpdir(), 'autobrowser-runtime-test-'))
+    tempDirs.push(homeDir)
+
+    const runtime = await createTestRuntime({ homeDir, requestTimeoutMs: 500 })
+    const socket = {
+      readyState: WebSocket.OPEN,
+      send(payload: string) {
+        const message = JSON.parse(payload)
+        queueMicrotask(() =>
+          runtime.handleExtensionMessage({
+            type: 'response',
+            id: message.id,
+            ok: true,
+            result: 'done',
+          }),
+        )
+        return 1
+      },
+    } as unknown as Bun.ServerWebSocket<{}>
+    runtime.attachExtension(socket)
+    await runtime.dispatchCommand('snapshot')
+    const successAt = runtime.snapshot().snapshot.lastSuccessAt
+    await runtime.persist()
+    runtime.detachExtension(socket)
+
+    const restored = await createTestRuntime({ homeDir })
+    expect(restored.snapshot().snapshot.lastSuccessAt).toBe(successAt)
+
+    // 持久化里是非字符串时按 null 处理，不伪造成功时间
+    const stateFilePath = path.join(homeDir, '.autobrowser', 'state.json')
+    const persisted = JSON.parse(await readFile(stateFilePath, 'utf8'))
+    persisted.snapshot.lastSuccessAt = 12345
+    await writeFile(stateFilePath, JSON.stringify(persisted))
+
+    const invalidated = await createTestRuntime({ homeDir })
+    expect(invalidated.snapshot().snapshot.lastSuccessAt).toBeNull()
   })
 
   test('detaches the extension when heartbeats stop arriving', async () => {

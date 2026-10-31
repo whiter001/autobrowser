@@ -187,6 +187,8 @@ interface HarCapture {
   startedAt: string | null
   maxRequests: number | null
   maxBodyBytes: number | null
+  includePattern: string | null
+  excludePattern: string | null
   pending: Set<Promise<void>>
 }
 
@@ -326,12 +328,13 @@ function upsertNetworkRequest(
     state.network.requests.push(merged)
   }
 
-  // 先应用 HAR 配置的 maxRequests 限制，再应用全局硬上限，两者取较严格的一方
-  const harLimit = getHarMaxRequests(state)
-  const effectiveLimit =
-    harLimit === null ? GLOBAL_REQUEST_HARD_CAP : Math.min(harLimit, GLOBAL_REQUEST_HARD_CAP)
-  if (state.network.requests.length > effectiveLimit) {
-    const removed = state.network.requests.splice(0, state.network.requests.length - effectiveLimit)
+  // 全局缓冲只受硬上限约束：HAR 的 maxRequests 是某次 capture 的导出窗口，
+  // 若在这里裁剪会毁掉与 HAR 无关的跨 tab 历史（且 stop 后无法恢复）。
+  if (state.network.requests.length > GLOBAL_REQUEST_HARD_CAP) {
+    const removed = state.network.requests.splice(
+      0,
+      state.network.requests.length - GLOBAL_REQUEST_HARD_CAP,
+    )
     for (const item of removed) {
       if (item && typeof item.id === 'string') {
         evictedRequests.add(item)
@@ -703,6 +706,8 @@ export function createNetworkDomain({
   let checkpointTimer: ReturnType<typeof setTimeout> | null = null
   let capture: HarCapture | null = state.network.harRecording ? createCapture(null) : null
   let checkpointWrites: Promise<void> = Promise.resolve()
+  /** 当前 SW 内最近一次 checkpoint 写入失败的原因；status 用它解释「为什么 recover 可能拿不到数据」 */
+  let lastCheckpointError: string | null = null
   const bodyTasks = new WeakMap<NetworkRequestRecord, BodyFetchTask>()
   const bodyQueue: BodyFetchTask[] = []
   let activeBodyFetches = 0
@@ -781,26 +786,44 @@ export function createNetworkDomain({
     }
   }
 
-  function createCapture(tabId: number | null): HarCapture {
+  function createCapture(
+    tabId: number | null,
+    options: { includePattern?: string; excludePattern?: string } = {},
+  ): HarCapture {
     return {
       id: crypto.randomUUID(),
       tabId,
       startedAt: state.network.harStartedAt,
       maxRequests: getHarMaxRequests(state),
       maxBodyBytes: getHarMaxBodyBytes(state),
+      includePattern: options.includePattern || null,
+      excludePattern: options.excludePattern || null,
       pending: new Set(),
     }
   }
 
+  function captureMatchesUrl(session: HarCapture, url: string): boolean {
+    if (session.includePattern && !url.includes(session.includePattern)) return false
+    return !session.excludePattern || !url.includes(session.excludePattern)
+  }
+
   function captureRequests(session: HarCapture | null): NetworkRequestRecord[] {
-    return state.network.requests.filter((record) =>
+    const records = state.network.requests.filter((record) =>
       session
         ? (session.tabId === null || record.tabId === session.tabId) &&
+          captureMatchesUrl(session, String(record.url || '')) &&
           (record.harCaptureId === session.id ||
             (record.harCaptureId === undefined &&
               (!session.startedAt || String(record.startedAt || '') >= session.startedAt)))
         : true,
     )
+    const maxRequests = session?.maxRequests
+    // maxRequests 只收敛本次 capture 的导出窗口：按全局插入顺序取窗口内最新 N 条。
+    // 不裁剪全局缓冲，导出排序仍交给 buildHar。
+    if (typeof maxRequests !== 'number') {
+      return records
+    }
+    return maxRequests <= 0 ? [] : records.slice(-maxRequests)
   }
 
   function checkpointPayload(
@@ -810,6 +833,9 @@ export function createNetworkDomain({
   ): Record<string, unknown> {
     return {
       recording,
+      captureTabId: session?.tabId ?? null,
+      includePattern: session?.includePattern ?? null,
+      excludePattern: session?.excludePattern ?? null,
       startedAt: session?.startedAt ?? state.network.harStartedAt,
       maxRequests: session ? session.maxRequests : state.network.harMaxRequests,
       maxBodyBytes: session ? session.maxBodyBytes : state.network.harMaxBodyBytes,
@@ -826,7 +852,13 @@ export function createNetworkDomain({
       }),
     )
     checkpointWrites = write.catch(() => {})
-    await write
+    try {
+      await write
+      lastCheckpointError = null
+    } catch (error) {
+      lastCheckpointError = error instanceof Error ? error.message : String(error)
+      throw error
+    }
   }
 
   function scheduleHarCheckpoint(): void {
@@ -880,7 +912,10 @@ export function createNetworkDomain({
           ? summarizeStoredBody(request.postData, false, getHarMaxBodyBytes(state))
           : null
       const capturedHarId =
-        state.network.harRecording && capture && (capture.tabId === null || capture.tabId === tabId)
+        state.network.harRecording &&
+        capture &&
+        (capture.tabId === null || capture.tabId === tabId) &&
+        captureMatchesUrl(capture, String(request.url || ''))
           ? capture.id
           : ''
       const existing = state.network.requestMap.get(key)
@@ -1270,7 +1305,8 @@ export function createNetworkDomain({
         harCaptureId:
           state.network.harRecording &&
           capture &&
-          (capture.tabId === null || capture.tabId === tabId)
+          (capture.tabId === null || capture.tabId === tabId) &&
+          captureMatchesUrl(capture, networkRequest.url)
             ? capture.id
             : '',
       })
@@ -1450,9 +1486,11 @@ export function createNetworkDomain({
   }
 
   function listRequests(filters: Record<string, unknown> = {}): Record<string, unknown> {
-    const requests = state.network.requests.filter((record) =>
+    const filtered = state.network.requests.filter((record) =>
       matchesNetworkRequestFilters(record, filters),
     )
+    // newest 只在过滤之后反转，未排序时保持记录写入顺序（oldest）；不改动源数组
+    const requests = filters.sort === 'newest' ? [...filtered].reverse() : filtered
     const summarized = requests.map((record) =>
       summarizeNetworkRequest(record, filters.includeDetails === true),
     )
@@ -1498,7 +1536,12 @@ export function createNetworkDomain({
 
   async function startHar(
     tabId: TabInput,
-    options: { maxRequests?: number | null; maxBodyBytes?: number | null } = {},
+    options: {
+      maxRequests?: number | null
+      maxBodyBytes?: number | null
+      includePattern?: string
+      excludePattern?: string
+    } = {},
   ): Promise<Record<string, unknown>> {
     const tab = await getTargetTab(tabId)
     await sendDebuggerCommand(tab.id, 'Network.enable', {})
@@ -1508,10 +1551,13 @@ export function createNetworkDomain({
       options.maxRequests === undefined ? DEFAULT_HAR_MAX_REQUESTS : options.maxRequests
     state.network.harMaxBodyBytes =
       options.maxBodyBytes === undefined ? DEFAULT_HAR_MAX_BODY_BYTES : options.maxBodyBytes
-    capture = createCapture(tab.id)
+    capture = createCapture(tab.id, options)
     await writeHarCheckpoint()
     return {
       recording: true,
+      captureTabId: tab.id,
+      includePattern: capture.includePattern,
+      excludePattern: capture.excludePattern,
       startedAt: state.network.harStartedAt,
       maxRequests: state.network.harMaxRequests,
       maxBodyBytes: state.network.harMaxBodyBytes,
@@ -1546,13 +1592,16 @@ export function createNetworkDomain({
     }
     return {
       recording: false,
+      captureTabId: session?.tabId ?? null,
+      includePattern: session?.includePattern ?? null,
+      excludePattern: session?.excludePattern ?? null,
       startedAt,
       stoppedAt,
       requestCount: retained.length,
       har: buildHar(retained),
+      checkpoint: checkpointError ? { saved: false, error: checkpointError } : { saved: true },
       ...(checkpointError
         ? {
-            checkpoint: { saved: false, error: checkpointError },
             suggestedAction:
               'HAR export succeeded, but the checkpoint could not be saved. Use the returned HAR from this stop result; for long captures, restart with lower --har-max-body-bytes/--har-max-requests instead of --har-unlimited.',
           }
@@ -1562,19 +1611,30 @@ export function createNetworkDomain({
 
   async function getHarStatus(): Promise<Record<string, unknown>> {
     const checkpoint = await readHarCheckpoint()
+    const requestCount = Array.isArray(checkpoint?.requests) ? checkpoint.requests.length : 0
     return {
       recording: state.network.harRecording,
+      captureTabId: capture?.tabId ?? null,
+      captureRequestCount: captureRequests(capture).length,
       startedAt: state.network.harStartedAt,
       requestCount: state.network.requests.length,
       checkpoint: checkpoint
         ? {
             available: true,
+            recoverable: requestCount > 0,
             recording: checkpoint.recording === true,
+            captureTabId:
+              typeof checkpoint.captureTabId === 'number' ? checkpoint.captureTabId : null,
             startedAt: checkpoint.startedAt ?? null,
             updatedAt: checkpoint.updatedAt ?? null,
-            requestCount: Array.isArray(checkpoint.requests) ? checkpoint.requests.length : 0,
+            requestCount,
+            ...(lastCheckpointError ? { error: lastCheckpointError } : {}),
           }
-        : { available: false },
+        : {
+            available: false,
+            recoverable: false,
+            ...(lastCheckpointError ? { error: lastCheckpointError } : {}),
+          },
     }
   }
 
@@ -1589,6 +1649,7 @@ export function createNetworkDomain({
     return {
       recording: checkpoint.recording === true,
       recovered: true,
+      captureTabId: typeof checkpoint.captureTabId === 'number' ? checkpoint.captureTabId : null,
       startedAt: checkpoint.startedAt ?? null,
       stoppedAt: checkpoint.updatedAt ?? null,
       requestCount: requests.length,

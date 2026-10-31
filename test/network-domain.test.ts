@@ -26,7 +26,13 @@ describe('network domain HAR export', () => {
       sendDebuggerCommand: async () => ({}) as never,
       ...storage,
     })
-    await network.startHar(1)
+    expect(await network.startHar(1)).toMatchObject({ captureTabId: 1 })
+    expect(await network.getHarStatus()).toMatchObject({
+      captureTabId: 1,
+      captureRequestCount: 0,
+      requestCount: 1,
+      checkpoint: { available: true, recoverable: false, requestCount: 0 },
+    })
     state.network.requests.push({
       id: '1:r1',
       requestId: 'r1',
@@ -36,18 +42,62 @@ describe('network domain HAR export', () => {
       status: 200,
       startedAt: new Date().toISOString(),
     })
-    await network.stopHar()
+    expect(await network.stopHar()).toMatchObject({
+      captureTabId: 1,
+      checkpoint: { saved: true },
+    })
 
-    const recovered = await createNetworkDomain({
+    const recreated = createNetworkDomain({
       state: createExtensionState(57978),
       getTargetTab: async () => ({ id: 1 }) as never,
       sendRawDebuggerCommand: async () => ({}) as never,
       sendDebuggerCommand: async () => ({}) as never,
       ...storage,
-    }).recoverHar()
-    expect(recovered).toMatchObject({ recovered: true, requestCount: 1 })
+    })
+    expect(await recreated.getHarStatus()).toMatchObject({
+      checkpoint: { available: true, recoverable: true, captureTabId: 1, requestCount: 1 },
+    })
+    const recovered = await recreated.recoverHar()
+    expect(recovered).toMatchObject({ recovered: true, captureTabId: 1, requestCount: 1 })
     expect(recovered.startedAt).toBeString()
     expect(recovered.har).toBeObject()
+  })
+
+  test('capture include and exclude patterns filter HAR without deleting global history', async () => {
+    const state = createExtensionState(57978)
+    const network = createNetworkDomain({
+      state,
+      getTargetTab: async () => ({ id: 1 }) as never,
+      sendRawDebuggerCommand: async () => ({}) as never,
+      sendDebuggerCommand: async () => ({}) as never,
+    })
+    expect(
+      await network.startHar(1, {
+        includePattern: 'video.twimg.com',
+        excludePattern: '/audio/',
+      }),
+    ).toMatchObject({ includePattern: 'video.twimg.com', excludePattern: '/audio/' })
+
+    const urls = [
+      'https://video.twimg.com/video/1.m4s',
+      'https://video.twimg.com/audio/1.m4s',
+      'https://example.com/page.js',
+    ]
+    for (const [index, url] of urls.entries()) {
+      await network.handleEvent({ tabId: 1 }, 'Network.requestWillBeSent', {
+        requestId: `r${index}`,
+        request: { url, method: 'GET', headers: {} },
+      })
+    }
+
+    const result = (await network.stopHar()) as {
+      requestCount: number
+      har: { log: { entries: Array<{ request: { url: string } }> } }
+    }
+    expect(result.requestCount).toBe(1)
+    expect(result.har.log.entries.map((entry) => entry.request.url)).toEqual([urls[0]])
+    expect(state.network.requests.map((record) => record.url)).toEqual(urls)
+    expect(network.listRequests({ allTabs: true, allEpochs: true })).toMatchObject({ total: 3 })
   })
 
   test('stopHar returns a complete HAR payload without extra round trips', async () => {
@@ -269,6 +319,13 @@ describe('network domain HAR export', () => {
       error: 'Resource::kQuotaBytes quota exceeded',
     })
     expect(result.suggestedAction).toContain('HAR export succeeded')
+    expect(await network.getHarStatus()).toMatchObject({
+      checkpoint: {
+        available: false,
+        recoverable: false,
+        error: 'Resource::kQuotaBytes quota exceeded',
+      },
+    })
     expect(state.network.harRecording).toBe(false)
     expect(state.network.harMaxRequests).toBe(1000)
     expect(state.network.harMaxBodyBytes).toBe(256 * 1024)
@@ -879,7 +936,7 @@ describe('network domain fetch interception', () => {
     }
   }
 
-  test('mock 回写晚到时不复活已被缓冲上限淘汰的记录', async () => {
+  test('HAR 窗口上限不淘汰全局记录，迟到的 mock 回写仍落在原记录上', async () => {
     const { state, network, sendCalls, pauseFetch, sendNetworkRequest, releaseFulfill } =
       createInterceptionHarness({ deferFulfill: true })
     state.network.harMaxRequests = 1
@@ -889,16 +946,17 @@ describe('network domain fetch interception', () => {
     await flush()
     expect(state.network.requests.map((record) => record.id)).toEqual(['1:net-m'])
 
-    // 记录被新请求挤出缓冲后，迟到的 fulfill 结果不得把它重新插回来
+    // harMaxRequests 只约束 capture 导出窗口，新请求只追加，不挤出旧记录
     await sendNetworkRequest({ requestId: 'net-other', url: 'https://example.com/other' })
-    expect(state.network.requests.map((record) => record.id)).toEqual(['1:net-other'])
+    expect(state.network.requests.map((record) => record.id)).toEqual(['1:net-m', '1:net-other'])
 
     releaseFulfill()
     await paused
 
     expect(sendCalls.some((call) => call.method === 'Fetch.fulfillRequest')).toBeTrue()
-    expect(state.network.requests.map((record) => record.id)).toEqual(['1:net-other'])
-    expect(state.network.requestMap.size).toBe(1)
+    expect(state.network.requests.map((record) => record.id)).toEqual(['1:net-m', '1:net-other'])
+    expect(state.network.requestMap.get('1:net-m')?.status).toBe(200)
+    expect(state.network.requestMap.size).toBe(2)
   })
 
   test('mock 回写晚到时不污染复用同一 networkId 的新代次记录', async () => {
@@ -1211,7 +1269,7 @@ describe('network domain request list pagination', () => {
       sendRawDebuggerCommand: async <TResult = unknown>(): Promise<TResult> => ({}) as TResult,
       sendDebuggerCommand: async <TResult = unknown>(): Promise<TResult> => ({}) as TResult,
     })
-    return { network }
+    return { network, state }
   }
 
   test('paginates after filters with pageIdx/pageSize and reports hasNextPage', () => {
@@ -1268,6 +1326,54 @@ describe('network domain request list pagination', () => {
       totalPages: 1,
       invalidPage: false,
     })
+  })
+
+  test('lists the newest request first when sort=newest without touching stored order', () => {
+    const { network, state } = createListHarness()
+
+    const first = network.listRequests({ sort: 'newest', pageSize: 2 }) as {
+      total: number
+      requests: Array<{ id: string }>
+      pagination: Record<string, unknown>
+    }
+    // newest 在过滤之后、分页之前反转：第一页是最新两条，total 仍是过滤后的总数
+    expect(first.total).toBe(4)
+    expect(first.requests.map((request) => request.id)).toEqual(['2:r4', '1:r3'])
+    expect(first.pagination).toEqual({
+      currentPage: 0,
+      totalPages: 2,
+      hasNextPage: true,
+      hasPreviousPage: false,
+      startIndex: 0,
+      endIndex: 2,
+      invalidPage: false,
+    })
+
+    const second = network.listRequests({ sort: 'newest', pageSize: 2, pageIdx: 1 }) as {
+      total: number
+      requests: Array<{ id: string }>
+      pagination: Record<string, unknown>
+    }
+    expect(second.total).toBe(4)
+    expect(second.requests.map((request) => request.id)).toEqual(['1:r2', '1:r1'])
+    expect(second.pagination).toMatchObject({ currentPage: 1, hasNextPage: false })
+
+    // 与过滤组合时先过滤再反转
+    expect(
+      (
+        network.listRequests({ sort: 'newest', filter: '/api/' }) as {
+          requests: Array<{ id: string }>
+        }
+      ).requests.map((request) => request.id),
+    ).toEqual(['2:r4', '1:r2', '1:r1'])
+
+    // 排序只影响返回结果，不改变已存储的记录顺序
+    expect(state.network.requests.map((request) => request.id)).toEqual([
+      '1:r1',
+      '1:r2',
+      '1:r3',
+      '2:r4',
+    ])
   })
 
   test('suggests all-tabs and all-epochs when the default request list is empty', () => {
@@ -1690,48 +1796,62 @@ describe('network redirect hops', () => {
     expect((await network.getRequestDetail('2:chain')).request).toMatchObject({ tabId: 2 })
   })
 
-  test('maxRequests trims archived hops without breaking current lookup or indexes', async () => {
-    const { state, network, request, checkIndexes } = harness(2)
+  test('maxRequests 只限制 capture 导出窗口，全局历史与旧记录查询不受影响', async () => {
+    const { state, network, request, checkIndexes } = harness()
+    await network.startHar(1, { maxRequests: 2 })
     await request('https://example.com/start', 100)
     await request('https://example.com/middle', 101, moved)
-    const evictedId = state.network.requests[0]!.id!
+    const firstId = state.network.requests[0]!.id!
     await request('https://example.com/start', 102, found)
     checkIndexes()
-    expect(state.network.requests.map((record) => record.status)).toEqual([302, undefined])
-    await expect(network.getRequestDetail(evictedId)).rejects.toThrow('not found')
-    expect((await network.getRequestDetail('chain')).request).toMatchObject({
-      id: '1:chain',
-      url: 'https://example.com/start',
+    // 全局缓冲保留全部 3 跳，旧记录仍可按 id 查到
+    expect(state.network.requests.map((record) => record.status)).toEqual([301, 302, undefined])
+    expect((await network.getRequestDetail(firstId)).request).toMatchObject({
+      id: firstId,
+      status: 301,
+    })
+    await network.handleEvent({ tabId: 1 }, 'Network.responseReceived', {
+      requestId: 'chain',
+      timestamp: 103,
+      response: { status: 200, statusText: 'OK', mimeType: 'text/plain' },
     })
     await network.handleEvent({ tabId: 1 }, 'Network.loadingFinished', {
       requestId: 'chain',
-      timestamp: 103,
+      timestamp: 104,
     })
-    await network.stopHar()
-    expect((await network.getRequestDetail('chain')).request).toMatchObject({
-      responseBody: 'final body',
-    })
+    const result = (await network.stopHar()) as {
+      requestCount: number
+      har: { log: { entries: Array<{ response: { status: number } }> } }
+    }
+    // 导出只取窗口内最新 2 条
+    expect(result.requestCount).toBe(2)
+    expect(result.har.log.entries.map((entry) => entry.response.status)).toEqual([302, 200])
+    expect(state.network.requests).toHaveLength(3)
+    expect((await network.getRequestDetail(firstId)).request).toMatchObject({ status: 301 })
     checkIndexes()
   })
 
-  test('repeated redirect loops keep distinct hop ids after trimming', async () => {
-    const { state, network, request, checkIndexes } = harness(2)
+  test('repeated redirect loops keep distinct hop ids', async () => {
+    const { state, network, request, checkIndexes } = harness()
     await request('https://example.com/start', 100)
     const ids = new Set<string>()
     for (let hop = 1; hop <= 12; hop += 1) {
       await request('https://example.com/start', 100 + hop, moved)
-      const archivedId = state.network.requests[0]!.id!
+      // 归档记录就地替换上一跳，再追加新的当前跳
+      const archivedId = state.network.requests.at(-2)!.id!
       expect(ids.has(archivedId)).toBe(false)
       ids.add(archivedId)
       expect((await network.getRequestDetail('chain')).request).toMatchObject({ id: '1:chain' })
       checkIndexes()
     }
     expect(ids.size).toBe(12)
+    expect(state.network.requests).toHaveLength(13)
   })
 
   for (const terminal of ['Network.loadingFinished', 'Network.loadingFailed']) {
-    test(`late events for trimmed requests do not evict retained hops (${terminal})`, async () => {
-      const { state, network, request, checkIndexes } = harness(1)
+    test(`窗口外请求的迟到事件不破坏全局历史与导出窗口 (${terminal})`, async () => {
+      const { state, network, request, checkIndexes } = harness()
+      await network.startHar(1, { maxRequests: 1 })
       await request('https://example.com/old', 100)
       await network.handleEvent({ tabId: 1 }, 'Network.requestWillBeSent', {
         requestId: 'new',
@@ -1742,21 +1862,29 @@ describe('network redirect hops', () => {
         response: { status: 200 },
       })
       await network.handleEvent({ tabId: 1 }, terminal, { requestId: 'chain' })
-      expect(state.network.requests.map((record) => record.id)).toEqual(['1:new'])
+      // 窗口外的记录留在全局历史里，不会被 HAR 上限淘汰
+      expect(state.network.requests.map((record) => record.id)).toEqual(['1:chain', '1:new'])
       expect(state.network.inFlightByTab.get(1)?.has('chain')).toBe(false)
-      expect(state.network.pendingBodyFetches.size).toBe(0)
       checkIndexes()
+      const result = (await network.stopHar()) as {
+        requestCount: number
+        har: { log: { entries: Array<{ request: { url: string } }> } }
+      }
+      expect(result.requestCount).toBe(1)
+      expect(result.har.log.entries.map((entry) => entry.request.url)).toEqual([
+        'https://example.com/new',
+      ])
     })
   }
 
   for (const reject of [false, true]) {
-    test(`trimmed pending body cannot resurrect an evicted record (${reject ? 'failure' : 'success'})`, async () => {
+    test(`窗口外请求的 pending body 仍写回全局记录 (${reject ? 'failure' : 'success'})`, async () => {
       const state = createExtensionState(57978)
       state.network.harRecording = true
       state.network.harMaxRequests = 1
       let finish!: () => void
       const pending = new Promise<{ body: string }>((resolve, rejectBody) => {
-        finish = () => (reject ? rejectBody(new Error('evicted')) : resolve({ body: 'old' }))
+        finish = () => (reject ? rejectBody(new Error('cdp failed')) : resolve({ body: 'old' }))
       })
       const network = createNetworkDomain({
         state,
@@ -1774,10 +1902,22 @@ describe('network redirect hops', () => {
         request: { url: 'https://example.com/new' },
       })
       finish()
-      await network.stopHar()
-      expect(state.network.requests.map((record) => record.id)).toEqual(['1:new'])
-      expect([...state.network.requestMap.keys()]).toEqual(['1:new'])
-      expect([...state.network.requestIndex.entries()]).toEqual([['1:new', 0]])
+      const result = (await network.stopHar()) as {
+        requestCount: number
+        har: { log: { entries: unknown[] } }
+      }
+      expect(state.network.requests.map((record) => record.id)).toEqual(['1:old', '1:new'])
+      expect([...state.network.requestMap.keys()]).toEqual(['1:old', '1:new'])
+      expect([...state.network.requestIndex.entries()]).toEqual([
+        ['1:old', 0],
+        ['1:new', 1],
+      ])
+      expect(state.network.requestMap.get('1:old')).toMatchObject(
+        reject ? { responseBodyError: 'cdp failed' } : { responseBody: 'old' },
+      )
+      // 全局保留两条，导出窗口只取最新一条
+      expect(result.requestCount).toBe(1)
+      expect(result.har.log.entries).toHaveLength(1)
     })
   }
 })
@@ -1823,6 +1963,59 @@ describe('network body scheduler', () => {
     }
     return { state, network, calls, stored, request, flush }
   }
+
+  test('har maxRequests 不裁剪跨 tab 历史，stop 只导出窗口内最新 N 条且历史仍可查', async () => {
+    const { state, network, calls, request, flush } = harness()
+    // 已有多个 tab 的历史：capture 之前产生
+    await request('t1-old-1', 1)
+    await request('t1-old-2', 1)
+    await request('t2-old-1', 2)
+    const historyBefore = state.network.requests.map((record) => record.id)
+    expect(historyBefore).toHaveLength(3)
+
+    await network.startHar(1, { maxRequests: 2 })
+    await request('t1-new-1', 1)
+    await request('t2-new-1', 2)
+    await request('t1-new-2', 1)
+    await request('t1-new-3', 1)
+
+    // 新请求只追加：全局历史一条不丢，窗口上限不参与缓冲裁剪
+    expect(state.network.requests.map((record) => record.id)).toEqual([
+      ...historyBefore,
+      '1:t1-new-1',
+      '2:t2-new-1',
+      '1:t1-new-2',
+      '1:t1-new-3',
+    ])
+    expect(network.listRequests({ allTabs: true, allEpochs: true })).toMatchObject({ total: 7 })
+
+    // 放行所有 body 抓取，避免 stop 等待；每轮释放后可能继续 pump 出新任务
+    let resolvedCalls = 0
+    for (let round = 0; round < 10 && state.network.pendingBodyFetches.size > 0; round += 1) {
+      for (const call of calls.slice(resolvedCalls)) call.resolve({ body: 'body' })
+      resolvedCalls = calls.length
+      await flush()
+    }
+    expect(state.network.pendingBodyFetches.size).toBe(0)
+
+    const result = (await network.stopHar()) as {
+      requestCount: number
+      har: { log: { entries: Array<{ request: { url: string } }> } }
+    }
+    // capture 绑定 tab 1：只导出该 tab 窗口内最新 2 条
+    expect(result.requestCount).toBe(2)
+    expect(result.har.log.entries.map((entry) => entry.request.url).sort()).toEqual([
+      'https://example.com/t1-new-2',
+      'https://example.com/t1-new-3',
+    ])
+
+    // stop 之后跨 tab 历史仍完整可查
+    expect(state.network.requests).toHaveLength(7)
+    expect(state.network.requestMap.size).toBe(7)
+    expect(network.listRequests({ allTabs: true, allEpochs: true })).toMatchObject({ total: 7 })
+    expect(state.network.requestMap.get('1:t1-old-1')).toMatchObject({ id: '1:t1-old-1' })
+    expect(state.network.requestMap.get('2:t2-old-1')).toMatchObject({ id: '2:t2-old-1' })
+  })
 
   test('metadata remains automatic without HAR; detail lazily fetches and deduplicates body', async () => {
     const { state, network, calls, request } = harness()
@@ -1959,26 +2152,40 @@ describe('network body scheduler', () => {
     expect(oldRecord.responseBody).toBe('ol')
   })
 
-  test('queued evictions skip CDP and active evictions never resurrect records', async () => {
+  test('maxRequests only narrows the export window; queued body fetches keep running', async () => {
     const { state, network, calls, request, flush } = harness()
     await network.startHar(1, { maxRequests: 5 })
     for (let i = 0; i < 10; i += 1) await request(`r${i}`)
     expect(calls).toHaveLength(4)
-    for (const call of calls.slice()) call.resolve({ body: 'evicted' })
+    for (const call of calls.slice()) call.resolve({ body: 'body' })
     await flush()
-    expect(calls.map((call) => call.requestId)).not.toContain('r4')
-    expect(state.network.requests.map((record) => record.id)).toEqual([
-      '1:r5',
-      '1:r6',
-      '1:r7',
-      '1:r8',
-      '1:r9',
+    await flush()
+    // 窗口外的排队抓取不再因“淘汰”被跳过
+    expect(calls.map((call) => call.requestId)).toEqual([
+      'r0',
+      'r1',
+      'r2',
+      'r3',
+      'r4',
+      'r5',
+      'r6',
+      'r7',
     ])
-    for (const call of calls.slice(4)) call.resolve({ body: 'retained' })
+    for (const call of calls.slice(4)) call.resolve({ body: 'body' })
     await flush()
-    for (const call of calls.slice(8)) call.resolve({ body: 'retained' })
-    await network.stopHar()
-    expect(state.network.requests.every((record) => record.responseBody === 'retained')).toBe(true)
+    await flush()
+    expect(calls).toHaveLength(10)
+    for (const call of calls.slice(8)) call.resolve({ body: 'body' })
+    await flush()
+    const result = (await network.stopHar()) as {
+      requestCount: number
+      har: { log: { entries: unknown[] } }
+    }
+    // 全局保留 10 条（body 都已写回），HAR 只导出窗口内最新 5 条
+    expect(state.network.requests).toHaveLength(10)
+    expect(state.network.requests.every((record) => record.responseBody === 'body')).toBe(true)
+    expect(result.requestCount).toBe(5)
+    expect(result.har.log.entries).toHaveLength(5)
   })
 
   test('redirect archives never fetch the next hop body, including queued stale work', async () => {

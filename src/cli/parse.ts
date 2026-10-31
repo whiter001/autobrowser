@@ -60,6 +60,8 @@ export interface SearchArgs {
 export interface NetworkHarStartArgs {
   maxRequests: number | null
   maxBodyBytes: number | null
+  includePattern?: string
+  excludePattern?: string
 }
 
 const DEFAULT_HAR_MAX_REQUESTS = 1000
@@ -201,6 +203,21 @@ export function parseNetworkRequestsArgs(rest: string[]): Record<string, unknown
       continue
     }
 
+    if (value === '--sort') {
+      const sortValue = rest[index + 1]
+      if (sortValue === undefined) {
+        throw new Error('missing sort value')
+      }
+
+      if (sortValue !== 'oldest' && sortValue !== 'newest') {
+        throw new Error(`unsupported network sort: ${sortValue} (expected oldest|newest)`)
+      }
+
+      result.sort = sortValue
+      index += 1
+      continue
+    }
+
     if (value.startsWith('--')) {
       throw new Error(`unsupported network option: ${value}`)
     }
@@ -240,6 +257,15 @@ export function parseNetworkHarStartArgs(rest: string[]): NetworkHarStartArgs {
         min: 0,
         integer: true,
       })
+      index += 1
+      continue
+    }
+
+    if (value === '--include-pattern' || value === '--exclude-pattern') {
+      const pattern = rest[index + 1]
+      if (!pattern) throw new Error(`missing value for ${value}`)
+      if (value === '--include-pattern') result.includePattern = pattern
+      else result.excludePattern = pattern
       index += 1
       continue
     }

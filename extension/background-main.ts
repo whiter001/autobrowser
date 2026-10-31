@@ -511,11 +511,18 @@ async function evaluateInTabContext<TValue = unknown>(
     )
 
   let response: Awaited<ReturnType<typeof evaluate>>
+  const evaluationStartedAt = Date.now()
   try {
     response = await evaluate(executionContextId)
   } catch (error) {
     commandContext?.throwIfCancelled()
-    if (isEvaluationTimeoutError(error)) {
+    const message = error instanceof Error ? error.message : String(error)
+    // 部分 Chromium 在 Runtime.evaluate 到期时返回 Internal error，而不是超时文本；
+    // 只有确实耗尽本次预算才映射，避免把普通的内部错误误报为超时。
+    const internalErrorAtDeadline =
+      /internal error/i.test(message) &&
+      Date.now() - evaluationStartedAt >= Math.max(1, Math.floor(timeoutMs)) - 100
+    if (isEvaluationTimeoutError(error) || internalErrorAtDeadline) {
       throw createEvaluationTimeoutError(timeoutMs)
     }
     // 只有命中缓存的 world 才可能是缓存失效，清掉重建一次，再失败就原样抛出

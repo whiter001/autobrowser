@@ -49,6 +49,11 @@ export interface Snapshot {
   pageEpochs: Record<number, number>
   lastCommand: { command: string; args: unknown; at: string } | null
   lastError: { message: string; at: string } | null
+  /**
+   * 最近一次命令成功的时间。lastError 保留历史语义、不会因成功而清空；
+   * 调用方可比较两者判断当前是否仍有故障（lastError.at > lastSuccessAt）。
+   */
+  lastSuccessAt: string | null
 }
 
 export interface RuntimeOptions {
@@ -117,6 +122,7 @@ function createDefaultSnapshot(): Snapshot {
     pageEpochs: {},
     lastCommand: null,
     lastError: null,
+    lastSuccessAt: null,
   }
 }
 
@@ -329,6 +335,10 @@ export async function createRuntime(options: RuntimeOptions = {}): Promise<Runti
   if (persistedState?.snapshot && typeof persistedState.snapshot === 'object') {
     snapshot.lastCommand = normalizeLastCommand(persistedState.snapshot.lastCommand)
     snapshot.lastError = persistedState.snapshot.lastError ?? null
+    snapshot.lastSuccessAt =
+      typeof persistedState.snapshot.lastSuccessAt === 'string'
+        ? persistedState.snapshot.lastSuccessAt
+        : null
     snapshot.pageEpochs = normalizePageEpochs(persistedState.snapshot.pageEpochs)
   }
 
@@ -773,7 +783,7 @@ export async function createRuntime(options: RuntimeOptions = {}): Promise<Runti
       deadlineAt,
     }
 
-    return await new Promise((resolve, reject) => {
+    const result = await new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         pendingRequests.delete(id)
         responseAssembler.release(id)
@@ -790,7 +800,9 @@ export async function createRuntime(options: RuntimeOptions = {}): Promise<Runti
         timeoutError.code = 'COMMAND_TIMEOUT'
         timeoutError.details = { commandId: id, command, deadlineAt }
         timeoutError.suggestedAction =
-          "Run 'status', then 'command list'. Tab control remains available; use 'tab list', 'target clear', or 'tab close <tN>' to recover before retrying."
+          command === 'network' && args.action === 'har' && args.subaction === 'stop'
+            ? "The extension may still be finalizing the HAR. Run 'network har status', then use 'network har recover [output.har]' when checkpoint.recoverable is true; do not restart capture before checking."
+            : "Run 'status', then 'command list'. Tab control remains available; use 'tab list', 'target clear', or 'tab close <tN>' to recover before retrying."
         reject(timeoutError)
       }, budgetMs)
 
@@ -822,6 +834,13 @@ export async function createRuntime(options: RuntimeOptions = {}): Promise<Runti
         )
       }
     })
+
+    // 只有真正拿到扩展结果才算成功。参数校验失败、等待连接失败、超时、
+    // 传输失败都在上面的 reject 分支里，不会走到这里。
+    snapshot.lastSuccessAt = new Date().toISOString()
+    schedulePersist()
+
+    return result
   }
 
   async function exportSnapshot(): Promise<unknown> {

@@ -230,6 +230,34 @@ describe('evaluateScript top-level return compatibility', () => {
     expect(expressions).toHaveLength(1)
     expect(expressions[0]?.endsWith('missing')).toBe(true)
   })
+
+  test('enforces an opt-in UTF-8 result size limit without truncating', async () => {
+    const pageInput = createPageInputDomain({
+      evaluateInTabContext: async () => ({ value: '你好' }),
+    } as never)
+
+    await expect(
+      pageInput.evaluateScript(1, '"你好"', null, undefined, undefined, 8),
+    ).resolves.toBe('你好')
+    await expect(
+      pageInput.evaluateScript(1, '"你好"', null, undefined, undefined, 9),
+    ).resolves.toBe('你好')
+    await expect(
+      pageInput.evaluateScript(1, '"你好"', null, undefined, undefined, 7),
+    ).rejects.toMatchObject({
+      code: 'EVAL_RESULT_TOO_LARGE',
+      details: { bytes: 8, maxResultBytes: 7 },
+    })
+  })
+
+  test('does not impose a result size limit by default', async () => {
+    const value = 'x'.repeat(1024 * 1024)
+    const pageInput = createPageInputDomain({
+      evaluateInTabContext: async () => ({ value }),
+    } as never)
+
+    await expect(pageInput.evaluateScript(1, 'largeResult', null)).resolves.toBe(value)
+  })
 })
 
 // 可取消的命令执行上下文：命令队列运行期通过 cancelled 表达取消/超时，

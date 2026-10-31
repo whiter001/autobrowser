@@ -2,6 +2,8 @@
 
 > 来源：实际使用 autobrowser 访问瑞数 6 站点（`https://pmos.ah.sgcc.com.cn/`）的实操体验 + 代码检查。
 > 日期：2026-08-20
+>
+> 后续批次：[`usage-issues-2026-10-31.md`](usage-issues-2026-10-31.md)（抓取 HLS 视频流场景）。
 
 ## 一、已确认的问题（Bug）
 
@@ -61,7 +63,7 @@
 
 ### Issue 3: SPA（hash 路由）页面 reload 等待语义不完整
 
-**处理状态**: 部分处理（已新增 `reload --wait-for url <pattern>` / `reload --wait-for selector <sel>` 复用现有 wait 语义；hash reload 的 committed 判定仍待设计）
+**处理状态**: 已处理（`Page.navigatedWithinDocument` 会推进 pageEpoch，same-document/hash 导航可判定 committed；同时支持 `reload --wait-for url <pattern>` / `reload --wait-for selector <sel>`）
 
 - **严重程度**: 中
 - **环境**: 所有平台

@@ -199,15 +199,19 @@ CLI 也提供了网络检查与拦截命令：
 autobrowser network route <url> [--abort] [--body <json>] [--status <n>] [--content-type <mime>] [--header "Name: Value"] [--remove-headers <a,b>]
 autobrowser network route list
 autobrowser network unroute [url]
-autobrowser network requests [--filter api] [--type xhr,fetch] [--method POST] [--status 2xx]
-autobrowser network request <requestId>
-autobrowser network har start
-autobrowser network har stop [output.har]
+autobrowser network requests [--filter api] [--type xhr,fetch] [--method POST] [--status 2xx] [--sort newest]
+autobrowser network request <requestId> [--timeout-ms <ms>]
+autobrowser network har start [--include-pattern <text>] [--exclude-pattern <text>]
+autobrowser network har stop [output.har] [--timeout-ms <ms>]
 ```
 
 `route` 既可以 `--abort` 拦截请求，也可以用 `--body` mock 响应（默认 200 + `application/json`，可用 `--status`、`--content-type`、`--header` 调整），还可以用 `--remove-headers` 在放行前删除请求头。不带 url 的 `unroute` 会清空所有路由。
 
-未开启 HAR 时自动监控仅保存元数据，`network request <id>` 按需通过 CDP 补取 body；历史请求/失效会话可能无法补取，需查看失败信息，`--include-details` 只返回已存详情。HAR body 获取最多 4 个并发槽、单次 10 秒逻辑超时；不可中止的 CDP 工作仍占槽直到结束。`--har-max-body-bytes` 只限制存储，不限制 CDP 下载/传输量。`har stop` 只等待本次 capture，大结果透明分块重组；超出传输预算明确报错，不静默截断 HAR。
+未开启 HAR 时自动监控仅保存元数据，`network request <id>` 按需通过 CDP 补取 body；历史请求/失效会话可能无法补取，需查看失败信息，`--include-details` 只返回已存详情。HAR body 获取最多 4 个并发槽、单次 10 秒逻辑超时；不可中止的 CDP 工作仍占槽直到结束。`--har-max-requests` 只限制本次 capture 的导出数量，不裁剪全局历史；`--har-max-body-bytes` 只限制存储，不限制 CDP 下载/传输量。`har stop` 只等待本次 capture，大结果透明分块重组；超出传输预算明确报错，不静默截断 HAR。大采集可用 `network har stop [output.har] --timeout-ms <ms>` 延长预算；超时后先查 `network har status` 的 `checkpoint.recoverable`，再决定是否 `network har recover`。
+
+## 下载
+
+`downloads list` 查看下载记录，`downloads clear` 清空记录。设置默认下载目录需要独立的 CDP browser endpoint；当前扩展的 tab 级 session 无法调用该 browser 级能力。
 
 ## 截图
 

@@ -68,6 +68,7 @@ function createMinimalRouter(overrides?: {
   getRequestDetail?: () => Promise<unknown>
   clickSelector?: (tabId: unknown, selector: unknown) => Promise<unknown>
   typeIntoSelector?: (tabId: unknown, selector: unknown) => Promise<unknown>
+  evaluateScript?: (tabId: unknown, script: unknown) => Promise<unknown>
   sendDebuggerCommand?: (
     tabId: number,
     method: string,
@@ -89,6 +90,7 @@ function createMinimalRouter(overrides?: {
   const waitTextCalls: Array<{ text: unknown; gone?: unknown }> = []
   const typeCalls: Array<{ tabId: unknown; selector: unknown; value: unknown; submit?: unknown }> =
     []
+  const evalCalls: Array<{ tabId: unknown; script: unknown }> = []
   const cookieGetCalls: Array<{ tabId: unknown; filters: unknown }> = []
   const clickCalls: Array<{ tabId: unknown; selector: unknown }> = []
   const listRequestsCalls: Array<Record<string, unknown>> = []
@@ -112,7 +114,6 @@ function createMinimalRouter(overrides?: {
       tabHandles: new Map<number, string>(),
       selectedFrames: new Map<number, string>(),
       pageEpochs: new Map<number, number>(),
-      nextTabHandleIndex: 1,
     },
     session: {
       dialogs: new Map<number, DialogState>(),
@@ -141,7 +142,11 @@ function createMinimalRouter(overrides?: {
           }
           return { navigated: true, url }
         }),
-      evaluateScript: async () => undefined,
+      evaluateScript: async (tabId: unknown, script: unknown) => {
+        evalCalls.push({ tabId, script })
+        if (overrides?.evaluateScript) return overrides.evaluateScript(tabId, script)
+        return undefined
+      },
       generateLocator: async (...args: unknown[]) => {
         elementToolCalls.push({ method: 'locator', args })
       },
@@ -459,6 +464,7 @@ function createMinimalRouter(overrides?: {
     screenshotCalls,
     waitTextCalls,
     typeCalls,
+    evalCalls,
     cookieGetCalls,
     clickCalls,
     listRequestsCalls,
@@ -1856,6 +1862,124 @@ describe('command router recovery control plane', () => {
       args: { action: 'cancel', commandId: 'stuck' },
     })
     expect(cancelled).toMatchObject({ commandId: 'stuck', cancelled: true })
+  })
+})
+
+describe('command router eval cancellation', () => {
+  test('terminates a running eval and lets subsequent tab commands run', async () => {
+    let releaseEval!: (value: unknown) => void
+    let evalEntered!: () => void
+    const evalStarted = new Promise<void>((resolve) => {
+      evalEntered = resolve
+    })
+    const evalGate = new Promise((resolve) => {
+      releaseEval = resolve
+    })
+
+    const { router, cdpCalls, evalCalls, snapshotCalls } = createMinimalRouter({
+      evaluateScript: async () => {
+        evalEntered()
+        return await evalGate
+      },
+    })
+
+    const evalPromise = router.handleCommand({
+      command: 'eval',
+      id: 'eval-running',
+      args: { tabId: 1, script: 'while (true) {}' },
+    })
+    await evalStarted
+    expect(evalCalls).toHaveLength(1)
+
+    expect(router.cancelCommand('eval-running')).toBe(true)
+    // 运行中的 eval 使用 pin 后的真实 tabId 定向中断
+    expect(cdpCalls).toEqual([{ tabId: 1, method: 'Runtime.terminateExecution', params: {} }])
+
+    // 队列已脱钩：同 tab 的后继命令无需等待被中断的 eval
+    const snapshot = await router.handleCommand({ command: 'snapshot', args: { tabId: 1 } })
+    expect(snapshot).toMatchObject({ snapshotId: 'snapshot-1' })
+    expect(snapshotCalls).toHaveLength(1)
+
+    releaseEval(undefined)
+    await evalPromise.catch(() => {})
+  })
+
+  test('does not terminate an eval that is still queued', async () => {
+    let releaseBlocker!: () => void
+    let blockerEntered!: () => void
+    const blockerStarted = new Promise<void>((resolve) => {
+      blockerEntered = resolve
+    })
+    const blockerGate = new Promise<void>((resolve) => {
+      releaseBlocker = resolve
+    })
+
+    const { router, cdpCalls, evalCalls } = createMinimalRouter({
+      navigateTo: async () => {
+        blockerEntered()
+        await blockerGate
+        return { navigated: true }
+      },
+    })
+
+    const blocker = router.handleCommand({
+      command: 'goto',
+      id: 'blocker',
+      args: { tabId: 1, url: 'https://example.com' },
+    })
+    await blockerStarted
+
+    const queuedEval = router.handleCommand({
+      command: 'eval',
+      id: 'eval-queued',
+      args: { tabId: 1, script: '1 + 1' },
+    })
+    // 给调度完整的执行机会：eval 仍应停在队列里，未真正开始
+    await Bun.sleep(5)
+    expect(evalCalls).toHaveLength(0)
+
+    const cancelled = await router.handleCommand({
+      command: 'command',
+      args: { action: 'cancel', commandId: 'eval-queued' },
+    })
+    expect(cancelled).toMatchObject({ commandId: 'eval-queued', cancelled: true })
+    expect(cdpCalls).toEqual([])
+
+    releaseBlocker()
+    await blocker
+    await queuedEval.catch(() => {})
+  })
+
+  test('does not terminate a cancelled non-eval command', async () => {
+    let releaseBlocker!: () => void
+    let blockerEntered!: () => void
+    const blockerStarted = new Promise<void>((resolve) => {
+      blockerEntered = resolve
+    })
+    const blockerGate = new Promise<void>((resolve) => {
+      releaseBlocker = resolve
+    })
+
+    const { router, cdpCalls } = createMinimalRouter({
+      navigateTo: async () => {
+        blockerEntered()
+        await blockerGate
+        return { navigated: true }
+      },
+    })
+
+    const blocker = router.handleCommand({
+      command: 'goto',
+      id: 'goto-running',
+      args: { tabId: 1, url: 'https://example.com' },
+    })
+    await blockerStarted
+
+    expect(router.cancelCommand('goto-running')).toBe(true)
+    expect(cdpCalls).toEqual([])
+
+    releaseBlocker()
+    await blocker.catch(() => {})
   })
 })
 

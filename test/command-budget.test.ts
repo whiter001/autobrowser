@@ -12,7 +12,7 @@ describe('bounded command budgets', () => {
   test('keeps default and short runtime defaults, but honors explicit durations', () => {
     expect(getCommandRequestBudgetMs('snapshot')).toBe(30_000)
     expect(getCommandRequestBudgetMs('snapshot', {}, 25)).toBe(25)
-    for (const command of ['eval', 'goto', 'open', 'click', 'reload']) {
+    for (const command of ['eval', 'goto', 'open', 'click', 'reload', 'network']) {
       expect(getCommandRequestBudgetMs(command, { timeoutMs: 35_000 })).toBe(40_000)
     }
     expect(getCommandRequestBudgetMs('wait', { timeout: 60_000 })).toBe(65_000)

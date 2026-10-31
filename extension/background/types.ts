@@ -172,7 +172,6 @@ export interface TargetingState {
   tabHandles: Map<number, string>
   tabIdsByHandle: Map<string, number>
   pageEpochs: Map<number, number>
-  nextTabHandleIndex: number
 }
 
 /** 单 tab 生效中的仿真覆盖摘要：只记"设置了哪些"，不存完整值（headers 记键名列表） */

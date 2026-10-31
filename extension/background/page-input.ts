@@ -11,6 +11,7 @@ import {
   withFrameSelectorOptions,
 } from './targeting.js'
 import type {
+  ErrorWithCode,
   EvaluateInTabContextOptions,
   ExtensionState,
   FrameExecutionContext,
@@ -40,6 +41,35 @@ export function createElementNotFoundError(selector: string): Error {
     code: `STALE_REFERENCE`,
     suggestedAction: `The target element was not found. If this was from a previous snapshot reference like @eX, the page may have updated. Ensure you run 'snapshot' to get fresh element references.`,
   })
+}
+
+const evalResultEncoder = new TextEncoder()
+
+// 结果大小按 relay 实际发送的 JSON 文本（UTF-8）计算；undefined 视为 0 字节。
+// 不可序列化的值（循环引用等）本就无法 relay，返回 null 让后续序列化报告原有错误
+function measureEvalResultBytes(value: unknown): number | null {
+  if (value === undefined) return 0
+  try {
+    return evalResultEncoder.encode(JSON.stringify(value) ?? '').byteLength
+  } catch {
+    return null
+  }
+}
+
+// 只在显式传入 --max-result-bytes 时生效，且只报错不截断，保持 eval 返回原样
+function assertEvalResultWithinLimit(value: unknown, maxResultBytes?: number): void {
+  if (maxResultBytes === undefined) return
+  const bytes = measureEvalResultBytes(value)
+  if (bytes === null || bytes <= maxResultBytes) return
+
+  const error = new Error(
+    `eval result is ${bytes} bytes, exceeding the ${maxResultBytes}-byte limit`,
+  ) as ErrorWithCode
+  error.code = 'EVAL_RESULT_TOO_LARGE'
+  error.details = { bytes, maxResultBytes }
+  error.suggestedAction =
+    'Reduce the returned value (return only the fields you need, aggregate in the page, or paginate the data) or raise --max-result-bytes. Results above 256KiB are sent through the shared response upload deadline, so oversized payloads risk a transfer timeout.'
+  throw error
 }
 
 interface PageInputDependencies {
@@ -616,6 +646,7 @@ export function createPageInputDomain({
     frameSelector: FrameSelector,
     timeoutMs?: number,
     elementSelector?: string,
+    maxResultBytes?: number,
   ) {
     const options = withFrameSelectorOptions(frameSelector, {
       userGesture: true,
@@ -639,6 +670,7 @@ export function createPageInputDomain({
         (value as Record<string, unknown>).__autobrowserElementNotFound === true
       )
         throw createElementNotFoundError(elementSelector)
+      assertEvalResultWithinLimit(value, maxResultBytes)
       return value
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
@@ -652,6 +684,7 @@ export function createPageInputDomain({
         `(() => {\n${effectiveScript}\n})()`,
         options,
       )
+      assertEvalResultWithinLimit(value, maxResultBytes)
       return value
     }
   }
