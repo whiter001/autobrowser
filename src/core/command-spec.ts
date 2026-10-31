@@ -27,6 +27,7 @@ const TAB_TARGET_COMMANDS = [
   'cookies',
   'dblclick',
   'dialog',
+  'download',
   'drag',
   'drop',
   'errors',
@@ -45,6 +46,7 @@ const TAB_TARGET_COMMANDS = [
   'is',
   'keyboard',
   'locator',
+  'media',
   'mousemove',
   'mousedown',
   'mouseup',
@@ -457,6 +459,11 @@ function validateBatchStep(value: unknown, index: number): void {
     const command = typeof value.command === 'string' ? value.command.trim() : ''
     if (!command) {
       throw new Error('command must be a non-empty string')
+    }
+
+    // 文件直传要占用 relay 的 pending 请求来登记落盘路径，batch 步骤没有独立请求
+    if (command === 'download') {
+      throw new Error('download cannot run as a batch step; run it as a separate command')
     }
 
     if (value.args !== undefined && !isRecord(value.args)) {
@@ -970,6 +977,25 @@ function validateCommandArgsShape(command: string, args: unknown): void {
       readOptionalNonNegativeIntegerField(normalizedArgs, 'pageIdx', command)
       readOptionalNonNegativeIntegerField(normalizedArgs, 'pageSize', command)
       return
+    case 'download': {
+      const url = readStringField(normalizedArgs, 'url', command)
+      // 只允许 http/https，避免把 file:// 之类的本地协议当成远程资源去取
+      if (!/^https?:\/\//i.test(url as string))
+        throw createCommandArgsValidationError(command, 'url must be an http or https URL', {
+          field: 'url',
+          value: url,
+        })
+      readStringField(normalizedArgs, 'outputPath', command)
+      readOptionalNonNegativeNumberField(normalizedArgs, 'timeoutMs', command)
+      return
+    }
+    case 'media': {
+      const action = readStringField(normalizedArgs, 'action', command)
+      if (action !== 'list')
+        throw createCommandArgsValidationError(command, 'unsupported action', { action })
+      readBooleanField(normalizedArgs, 'resolve', command)
+      return
+    }
     case 'cookies': {
       const action = readStringField(normalizedArgs, 'action', command)
       readStringField(normalizedArgs, 'name', command, { required: action === 'set' })

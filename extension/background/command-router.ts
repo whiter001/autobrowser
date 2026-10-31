@@ -82,6 +82,7 @@ const DIALOG_BLOCKED_COMMANDS = new Set([
   'frame',
   'is',
   'get',
+  'media',
   'wait',
 ])
 
@@ -437,6 +438,25 @@ interface DownloadsDomain {
   clearDownloads: () => unknown
 }
 
+/** 文件直传通道：浏览器取二进制，经本地鉴权 HTTP 交给 relay 落盘 */
+interface FileTransferDomain {
+  download: (args: {
+    url: string
+    requestId?: string
+    deadlineAt?: string | null
+    context?: CommandExecutionContext
+  }) => Promise<unknown>
+}
+
+interface MediaDomain {
+  list: (
+    tabId: number,
+    frameSelector: FrameSelector,
+    resolve: boolean,
+    context?: CommandExecutionContext,
+  ) => Promise<unknown>
+}
+
 interface TracingDomain {
   start: (tabId: TabInput) => Promise<unknown>
   status: (tabId: TabInput) => Promise<unknown>
@@ -489,6 +509,8 @@ interface CommandRouterDependencies {
   session: SessionDomain
   network: NetworkDomain
   downloads: DownloadsDomain
+  fileTransfer: FileTransferDomain
+  mediaDomain: MediaDomain
   initScripts: InitScriptDomain
   tracing: TracingDomain
   video: VideoDomain
@@ -510,6 +532,8 @@ export function createCommandRouter({
   session,
   network,
   downloads,
+  fileTransfer,
+  mediaDomain,
   initScripts,
   tracing,
   video,
@@ -2158,6 +2182,23 @@ export function createCommandRouter({
           }
           // list 是默认 subaction，复用 console/errors 的分页参数
           return downloads.listDownloads(pageIdx, pageSize)
+        case 'download':
+          // 落盘路径由 relay 决定，扩展只负责取字节并直传
+          return await fileTransfer.download({
+            url,
+            ...(typeof request?.id === 'string' ? { requestId: request.id } : {}),
+            ...(typeof request?.deadlineAt === 'string' ? { deadlineAt: request.deadlineAt } : {}),
+            context,
+          })
+        case 'media': {
+          if (typeof tabId !== 'number') throw new Error('media list requires a resolved tab')
+          return await mediaDomain.list(
+            tabId,
+            frameSelector,
+            readBooleanArg(args, 'resolve', false),
+            context,
+          )
+        }
         case 'wait':
           return await handleWait(tabId, args, frameSelector)
         case 'cookies':
@@ -2473,7 +2514,10 @@ export function createCommandRouter({
     try {
       const result = runsInQueue
         ? await commandQueue.enqueue(
-            resolveCommandQueueKey(tabId),
+            command === 'download'
+              ? // 后台 fetch 不占用 tab 的 CDP；每个文件独立队列，HLS 分片才能真正并行。
+                `download:${request?.id || crypto.randomUUID()}`
+              : resolveCommandQueueKey(tabId),
             async (queueContext) => {
               context = queueContext
               // eval 只在此刻（真正开始执行）才可中断；使用 pin 后的真实数字 tabId，

@@ -2,6 +2,7 @@ import { htmlResponse, jsonResponse, textResponse } from './core/protocol.js'
 import { getExtensionUrl } from './core/extension.js'
 import { createRuntime, type Runtime } from './core/runtime.js'
 import { ResponseUploadError } from './core/response-upload.js'
+import { FileUploadError } from './core/file-upload.js'
 
 function escapeHtml(value: string): string {
   return String(value)
@@ -305,6 +306,38 @@ export async function startServers(options: ServerOptions = {}): Promise<StartSe
         }
       }
 
+      const fileMatch = /^\/files\/([A-Za-z0-9_-]{16,128})$/.exec(url.pathname)
+      if (fileMatch) {
+        if (readBearerToken(request) !== runtime.runtime.token) return unauthorizedResponse()
+        const transferId = fileMatch[1]!
+        try {
+          if (request.method === 'GET') {
+            return jsonResponse({ ok: true, result: runtime.fileUploadOffset(transferId) })
+          }
+          if (request.method === 'POST') {
+            const result = await runtime.uploadFile(transferId, request)
+            return jsonResponse(
+              { ok: true, result },
+              { status: result.receivedBytes === result.totalBytes ? 200 : 202 },
+            )
+          }
+          return textResponse('method not allowed', { status: 405 })
+        } catch (error) {
+          const uploadError =
+            error instanceof FileUploadError
+              ? error
+              : new FileUploadError('File upload failed', 500)
+          return jsonResponse(
+            {
+              ok: false,
+              error: { message: uploadError.message, code: uploadError.code },
+              receivedBytes: uploadError.receivedBytes,
+            },
+            { status: uploadError.httpStatus },
+          )
+        }
+      }
+
       if (url.pathname === '/ws') {
         if (url.searchParams.get('token') !== runtime.runtime.token) {
           return textResponse('unauthorized', { status: 401 })
@@ -339,7 +372,7 @@ export async function startServers(options: ServerOptions = {}): Promise<StartSe
             token: runtime.runtime.token,
             relayPort: runtime.runtime.relayPort,
             ipcPort: runtime.runtime.ipcPort,
-            capabilities: { responseUpload: 1 },
+            capabilities: { responseUpload: 1, fileUpload: 1 },
           }),
         )
       },

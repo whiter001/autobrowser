@@ -257,6 +257,57 @@ describe('command specs', () => {
     ).toThrow('invalid command arguments for fillform: fields[0].value must be a string')
   })
 
+  test('validates download command arguments', () => {
+    expect(() =>
+      validateCommandArgs('download', {
+        url: 'https://example.com/image.png',
+        outputPath: '/tmp/image.png',
+      }),
+    ).not.toThrow()
+    expect(() =>
+      validateCommandArgs('download', {
+        url: 'https://example.com/image.png',
+        outputPath: '/tmp/image.png',
+        timeoutMs: 45_000,
+      }),
+    ).not.toThrow()
+    expect(() => validateCommandArgs('download', { url: 'file:///etc/passwd' })).toThrow(
+      'invalid command arguments for download: url must be an http or https URL',
+    )
+    expect(() => validateCommandArgs('download', { url: 'https://example.com/a.png' })).toThrow(
+      'invalid command arguments for download: outputPath must be a non-empty string',
+    )
+    expect(() =>
+      validateCommandArgs('download', { url: 'https://example.com/a.png', outputPath: 42 }),
+    ).toThrow('outputPath must be a string')
+    expect(() =>
+      validateCommandArgs('download', {
+        url: 'https://example.com/a.png',
+        outputPath: '/tmp/a.png',
+        timeoutMs: -1,
+      }),
+    ).toThrow('timeoutMs must be a non-negative number')
+    // download 支持 tab target，但不支持 frame target
+    expect(commandSupportsTabTarget('download')).toBe(true)
+    expect(commandSupportsFrameTarget('download')).toBe(false)
+    // 文件直传需要独立的 relay 请求，不能作为 batch 步骤执行
+    expect(() =>
+      validateCommandArgs('batch', {
+        steps: [{ command: 'download', args: { url: 'https://example.com/a.png' } }],
+      }),
+    ).toThrow('download cannot run as a batch step')
+  })
+
+  test('validates media list arguments and targets', () => {
+    expect(() => validateCommandArgs('media', { action: 'list', resolve: true })).not.toThrow()
+    expect(() => validateCommandArgs('media', { action: 'scan' })).toThrow('unsupported action')
+    expect(() => validateCommandArgs('media', { action: 'list', resolve: 'yes' })).toThrow(
+      'resolve must be a boolean',
+    )
+    expect(commandSupportsTabTarget('media')).toBe(true)
+    expect(commandSupportsFrameTarget('media')).toBe(false)
+  })
+
   test('covers the remaining command schema gaps', () => {
     expect(() => validateCommandArgs('close', { all: 'yes' })).toThrow(
       'invalid command arguments for close: all must be a boolean',

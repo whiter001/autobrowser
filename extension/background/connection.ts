@@ -25,6 +25,11 @@ interface NetworkDomain {
 interface ConnectionRuntimeDependencies {
   state: ExtensionState
   network: NetworkDomain
+  /** 文件上传登记回执的处理入口 */
+  fileUploads?: {
+    confirm: (transferId: string, ok: boolean, message?: string) => void
+    dispose: () => void
+  }
   tracing?: {
     handleEvent: (source: { tabId?: number }, method: string, params: unknown) => void
     handleDetach: (tabId: number) => void
@@ -50,6 +55,7 @@ interface ConnectionRuntimeDependencies {
 export function createConnectionRuntime({
   state,
   network,
+  fileUploads,
   tracing,
   video,
   listTabs,
@@ -562,6 +568,19 @@ export function createConnectionRuntime({
 
         if (message?.type === 'hello') {
           supportsResponseUpload = message.capabilities?.responseUpload === 1
+          state.connection.fileUploadSupported = message.capabilities?.fileUpload === 1
+          return
+        }
+
+        if (message?.type === 'file.upload.ready') {
+          // relay 确认（或拒绝）了文件上传登记，扩展据此决定是否开始上传字节
+          const transferId = typeof message.transferId === 'string' ? message.transferId : ''
+          const detail = message.error as { message?: unknown } | undefined
+          fileUploads?.confirm(
+            transferId,
+            message.ok === true,
+            typeof detail?.message === 'string' ? detail.message : undefined,
+          )
           return
         }
 
@@ -644,6 +663,8 @@ export function createConnectionRuntime({
 
       socket.addEventListener('close', (event) => {
         responseSender.dispose()
+        // 断线后未完成的文件上传登记必须失效，否则扩展会一直等 relay 的回执
+        fileUploads?.dispose()
         for (const transfer of activeCommands.values()) transfer.cancelled = true
         activeCommands.clear()
         clearHeartbeatTimers()
@@ -661,6 +682,7 @@ export function createConnectionRuntime({
 
       socket.addEventListener('error', () => {
         responseSender.dispose()
+        fileUploads?.dispose()
         clearHeartbeatTimers()
         state.connection.connecting = false
         setConnectionError('relay websocket error')

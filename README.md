@@ -209,9 +209,36 @@ autobrowser network har stop [output.har] [--timeout-ms <ms>]
 
 未开启 HAR 时自动监控仅保存元数据，`network request <id>` 按需通过 CDP 补取 body；历史请求/失效会话可能无法补取，需查看失败信息，`--include-details` 只返回已存详情。HAR body 获取最多 4 个并发槽、单次 10 秒逻辑超时；不可中止的 CDP 工作仍占槽直到结束。`--har-max-requests` 只限制本次 capture 的导出数量，不裁剪全局历史；`--har-max-body-bytes` 只限制存储，不限制 CDP 下载/传输量。`har stop` 只等待本次 capture，大结果透明分块重组；超出传输预算明确报错，不静默截断 HAR。大采集可用 `network har stop [output.har] --timeout-ms <ms>` 延长预算；超时后先查 `network har status` 的 `checkpoint.recoverable`，再决定是否 `network har recover`。
 
-## 下载
+## 下载与页面媒体
 
-`downloads list` 查看下载记录，`downloads clear` 清空记录。设置默认下载目录需要独立的 CDP browser endpoint；当前扩展的 tab 级 session 无法调用该 browser 级能力。
+`downloads list` 查看 Chrome 下载记录，`downloads clear` 清空记录；它们不会把 URL 保存成新文件。实际下载使用 `download`：
+
+```bash
+autobrowser download https://example.com/image.png ./out/image.png
+autobrowser download https://example.com/image.png --output-dir ./out
+autobrowser download https://example.com/video.m3u8 ./out/video.mp4 --quality best
+autobrowser download https://example.com/video.m3u8 ./out/video-720.mp4 --quality 720p --concurrency 4
+```
+
+也可以先发现当前页面里的图片和视频，再按返回的 `index` 下载：
+
+```bash
+autobrowser media list
+autobrowser media list --resolve
+autobrowser download --media 0 ./out/video.mp4 --quality best
+```
+
+`media list` 读取当前 frame 的媒体元素及同 tab、同 page epoch 的网络元数据。`--resolve` 会对没有真实源的 `blob:` 视频做一次静音短播放以暴露 HLS/MP4 请求；后台标签页被浏览器限制播放时，需要先激活标签页。`download --media` 自动执行同样的解析，不必先手动播放或过滤网络日志。
+
+下载行为：
+
+- 输出使用显式路径或 `--output-dir` 自动命名，父目录自动创建。默认原子替换已有文件；`--no-clobber` 会在下载前拒绝覆盖，`--overwrite` 可显式选择默认行为。
+- 普通文件只接受 HTTP/HTTPS，扩展携带当前浏览器登录态获取，二进制经本地鉴权 `/files/:transferId` 通道直传 relay，不经过 Base64 或 WebSocket。
+- 已知 Content-Length 且超过 8MiB 的文件使用流式传输，每次只保留一个 8MiB 块；小文件和未知长度响应使用原来的缓冲路径。relay 校验分块及整文件 SHA-256 后原子落盘。
+- HLS 自动选择视频和音频轨，所有播放列表、初始化文件及分片都通过浏览器下载，FFmpeg/FFprobe 只处理本地文件。`--quality best|worst|720|720p` 选画质，`--concurrency 1..16` 控制分片并发，`--timeout-ms` 限制整个任务。
+- HLS 失败会保留 checkpoint 和已校验分片，相同命令下次自动续传；成功后清理中间文件。需要本机安装 `ffmpeg` 和 `ffprobe`，合并后返回分辨率、时长、分片数、字节数和摘要。
+- HLS 当前不支持加密或 `EXT-X-BYTERANGE`，最多 2048 个分片、2GiB 总字节和 4 层播放列表。DASH 目前仅能在 `media list` 中发现，尚不支持合并下载。
+- 单文件及并发上传预留上限为 512MiB，最多 128 个上传；15 秒无数据进度判定停滞。该能力仅支持 Chromium 扩展通道，不支持 WebDriver/MCP，底层单文件 `download` 也不能作为 `batch` 子步骤。
 
 ## 截图
 

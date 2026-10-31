@@ -1,3 +1,4 @@
+import path from 'node:path'
 import {
   cleanupStaleTempFiles,
   createId,
@@ -23,6 +24,8 @@ import {
   ResponseUploadStore,
   type ResponseUploadProgress,
 } from './response-upload.js'
+import { FileUploadError, FileUploadStore, type FileUploadProgress } from './file-upload.js'
+import { FILE_UPLOAD_CHUNK_SHA256_HEADER } from './file-transfer.js'
 
 export interface TabInfo {
   id: number
@@ -72,6 +75,9 @@ interface PendingRequest {
   resolve: (value: unknown) => void
   reject: (error: Error) => void
   timer: ReturnType<typeof setTimeout>
+  command: string
+  /** download 命令的绝对落盘路径，由 relay 自己保存，扩展另传的路径一律不采信 */
+  outputPath?: string
 }
 
 interface ConnectionWaiter {
@@ -276,6 +282,10 @@ export interface Runtime {
   responseUploadOffset: (transferId: string) => ResponseUploadProgress
   /** 写入一段大响应数据，完成后复用普通响应流程 */
   uploadResponse: (transferId: string, request: Request) => Promise<ResponseUploadProgress>
+  /** 查询文件上传已确认的字节偏移 */
+  fileUploadOffset: (transferId: string) => FileUploadProgress
+  /** 写入一段文件数据，字节收齐后原子落盘到 CLI 指定的路径 */
+  uploadFile: (transferId: string, request: Request) => Promise<FileUploadProgress>
   /** 向扩展分发命令并等待响应 */
   dispatchCommand: (command: string, args?: Record<string, unknown>) => Promise<unknown>
   /** 获取当前运行时的状态摘要 */
@@ -317,6 +327,7 @@ export async function createRuntime(options: RuntimeOptions = {}): Promise<Runti
   const pendingRequests = new Map<string, PendingRequest>()
   const responseAssembler = new ResponseAssembler()
   const responseUploads = await ResponseUploadStore.create(homeDir)
+  const fileUploads = new FileUploadStore()
   const connectionWaiters = new Set<ConnectionWaiter>()
   const snapshot: Snapshot = createDefaultSnapshot()
 
@@ -495,11 +506,73 @@ export async function createRuntime(options: RuntimeOptions = {}): Promise<Runti
     pendingRequests.delete(id)
     responseAssembler.release(id)
     void responseUploads.releaseRequest(id)
+    // 文件上传的临时文件必须一起清掉，否则取消/超时后目标目录会留下半个文件
+    void fileUploads.releaseRequest(id)
     pending.reject(error)
     try {
       runtime.extensionSocket?.send(JSON.stringify({ type: 'cancel', id, reason }))
     } catch {
       // 请求已经拒绝，取消仅用于让扩展尽早停止传输。
+    }
+  }
+
+  /** 通知扩展文件上传登记结果，扩展据此决定是否开始 POST 字节 */
+  function sendFileUploadReady(id: string, transferId: string, ok: boolean, error?: unknown): void {
+    const socket = runtime.extensionSocket
+    if (!socket || socket.readyState !== WebSocket.OPEN) return
+    try {
+      socket.send(
+        JSON.stringify({
+          type: 'file.upload.ready',
+          id,
+          transferId,
+          ok,
+          ...(ok
+            ? {}
+            : {
+                error: {
+                  message:
+                    error instanceof Error
+                      ? error.message
+                      : 'File upload was rejected by the relay',
+                },
+              }),
+        }),
+      )
+    } catch {
+      // socket 已断开，扩展会在上传失败后随命令一起结束。
+    }
+  }
+
+  function handleFileUploadRegistration(message: Record<string, unknown>): void {
+    const id = typeof message.id === 'string' ? message.id : ''
+    const transferId = typeof message.transferId === 'string' ? message.transferId : ''
+    try {
+      const totalBytes = message.totalBytes
+      const sha256 = message.sha256
+      // 流式上传不提供整文件摘要（null/缺省），relay 收到全部字节后自己算
+      if (
+        !id ||
+        typeof message.transferId !== 'string' ||
+        typeof totalBytes !== 'number' ||
+        (sha256 !== null && sha256 !== undefined && typeof sha256 !== 'string')
+      )
+        throw new FileUploadError('Invalid file upload metadata')
+      const pending = pendingRequests.get(id)
+      // 落盘路径只认 relay 自己保存的 pending download 参数，扩展另传的路径不采信
+      if (!pending || pending.command !== 'download' || !pending.outputPath)
+        throw new FileUploadError('File upload is not attached to a pending download command', 404)
+      fileUploads.register({
+        requestId: id,
+        transferId,
+        totalBytes,
+        sha256: typeof sha256 === 'string' ? sha256 : null,
+        outputPath: pending.outputPath,
+      })
+      sendFileUploadReady(id, transferId, true)
+    } catch (error) {
+      sendFileUploadReady(id, transferId, false, error)
+      if (id) rejectResponseTransfer(id, error as Error, 'invalid file upload')
     }
   }
 
@@ -511,6 +584,7 @@ export async function createRuntime(options: RuntimeOptions = {}): Promise<Runti
     if (previousSocket && previousSocket !== socket) {
       responseAssembler.clear()
       void responseUploads.clear()
+      void fileUploads.clear()
       rejectPendingRequests(pendingRequests, 'extension connection replaced')
       // 扩展重连时旧 socket 还挂在运行时上：先通知旧连接被新实例顶替，再主动关闭，
       // 否则旧侧会把断开误判成网络故障；detachExtension 会做身份校验，不会误伤新连接
@@ -557,6 +631,7 @@ export async function createRuntime(options: RuntimeOptions = {}): Promise<Runti
     clearHeartbeatTimeout()
     responseAssembler.clear()
     void responseUploads.clear()
+    void fileUploads.clear()
     rejectPendingRequests(pendingRequests, 'extension disconnected')
     // 断开时立即唤醒等待连接的 waiter，否则它们只能干等超时
     // reject 内的 settle 会把 waiter 从 Set 删除，Set 迭代期间删除当前元素是安全的
@@ -637,6 +712,12 @@ export async function createRuntime(options: RuntimeOptions = {}): Promise<Runti
       return
     }
 
+    if (message?.type === 'file.upload') {
+      // 文件上传登记必须先于 HTTP 分段到达，否则 relay 无从知道该写到哪里
+      handleFileUploadRegistration(message as Record<string, unknown>)
+      return
+    }
+
     if (typeof message?.id !== 'string') return
     const pending = pendingRequests.get(message.id)
     if (!pending) return
@@ -677,6 +758,7 @@ export async function createRuntime(options: RuntimeOptions = {}): Promise<Runti
     pendingRequests.delete(message.id)
     responseAssembler.release(message.id)
     void responseUploads.releaseRequest(message.id)
+    void fileUploads.releaseRequest(message.id)
     if (typeof message.ok !== 'boolean' || (message.ok === false && !isRecord(message.error))) {
       pending.reject(new ResponseTransferError('Invalid response envelope'))
       return
@@ -691,7 +773,12 @@ export async function createRuntime(options: RuntimeOptions = {}): Promise<Runti
       return
     }
 
-    pending.resolve(message.result)
+    // download 的落盘路径由 relay 决定，扩展只负责取字节
+    pending.resolve(
+      pending.command === 'download' && pending.outputPath && isRecord(message.result)
+        ? { ...message.result, path: pending.outputPath }
+        : message.result,
+    )
   }
 
   function responseUploadOffset(transferId: string): ResponseUploadProgress {
@@ -752,6 +839,51 @@ export async function createRuntime(options: RuntimeOptions = {}): Promise<Runti
     }
   }
 
+  function fileUploadOffset(transferId: string): FileUploadProgress {
+    const progress = fileUploads.offset(transferId)
+    if (!pendingRequests.has(progress.requestId)) {
+      void fileUploads.release(transferId)
+      throw new FileUploadError('File upload request is no longer pending', 404)
+    }
+    return progress
+  }
+
+  async function uploadFile(transferId: string, request: Request): Promise<FileUploadProgress> {
+    try {
+      const result = await fileUploads.write(
+        transferId,
+        request.headers.get('content-range'),
+        request.headers.get('content-length'),
+        request.body,
+        request.headers.get(FILE_UPLOAD_CHUNK_SHA256_HEADER),
+      )
+      // 命令已经取消/超时的话，这里会释放登记并丢弃临时文件
+      fileUploadOffset(transferId)
+      return {
+        requestId: result.requestId,
+        transferId: result.transferId,
+        receivedBytes: result.receivedBytes,
+        totalBytes: result.totalBytes,
+        outputPath: result.outputPath,
+        ...(result.sha256 ? { sha256: result.sha256 } : {}),
+      }
+    } catch (error) {
+      const uploadError =
+        error instanceof FileUploadError
+          ? error
+          : new FileUploadError(error instanceof Error ? error.message : 'File upload failed', 500)
+      if (![404, 408, 409].includes(uploadError.httpStatus)) {
+        try {
+          const progress = fileUploads.offset(transferId)
+          rejectResponseTransfer(progress.requestId, uploadError, 'file upload failed')
+        } catch {
+          // 上传登记已清理时，没有 pending 请求需要拒绝。
+        }
+      }
+      throw uploadError
+    }
+  }
+
   interface CommandPayload {
     type: 'command'
     id: string
@@ -761,12 +893,22 @@ export async function createRuntime(options: RuntimeOptions = {}): Promise<Runti
     deadlineAt: string
   }
 
+  /** download 的落盘路径由 relay 自己解析并保存，扩展只能看到命令参数，不能改写路径 */
+  function resolveDownloadOutputPath(args: Record<string, unknown>): string {
+    const outputPath = args.outputPath
+    if (typeof outputPath !== 'string' || !outputPath.trim()) {
+      throw new Error('download requires an outputPath')
+    }
+    return path.resolve(outputPath)
+  }
+
   async function dispatchCommand(
     command: string,
     args: Record<string, unknown> = {},
   ): Promise<unknown> {
     validateCommandArgs(command, args)
     const budgetMs = getCommandRequestBudgetMs(command, args, requestTimeoutMs)
+    const downloadOutputPath = command === 'download' ? resolveDownloadOutputPath(args) : null
     setLastCommand(command, args)
 
     const connectionTimeoutMs = Math.min(requestTimeoutMs, 10_000)
@@ -788,6 +930,7 @@ export async function createRuntime(options: RuntimeOptions = {}): Promise<Runti
         pendingRequests.delete(id)
         responseAssembler.release(id)
         void responseUploads.releaseRequest(id)
+        void fileUploads.releaseRequest(id)
         try {
           socket.send(JSON.stringify({ type: 'cancel', id, reason: 'relay timeout' }))
         } catch {
@@ -806,7 +949,13 @@ export async function createRuntime(options: RuntimeOptions = {}): Promise<Runti
         reject(timeoutError)
       }, budgetMs)
 
-      pendingRequests.set(id, { resolve, reject, timer })
+      pendingRequests.set(id, {
+        resolve,
+        reject,
+        timer,
+        command,
+        ...(downloadOutputPath ? { outputPath: downloadOutputPath } : {}),
+      })
 
       try {
         // Bun 的 -1 表示已接收但背压排队，只有 0 表示未发送。
@@ -816,6 +965,7 @@ export async function createRuntime(options: RuntimeOptions = {}): Promise<Runti
           pendingRequests.delete(id)
           responseAssembler.release(id)
           void responseUploads.releaseRequest(id)
+          void fileUploads.releaseRequest(id)
           reject(
             createExtensionDisconnectedError(
               `extension disconnected while sending command: ${command}`,
@@ -827,6 +977,7 @@ export async function createRuntime(options: RuntimeOptions = {}): Promise<Runti
         pendingRequests.delete(id)
         responseAssembler.release(id)
         void responseUploads.releaseRequest(id)
+        void fileUploads.releaseRequest(id)
         reject(
           error instanceof Error
             ? error
@@ -867,6 +1018,8 @@ export async function createRuntime(options: RuntimeOptions = {}): Promise<Runti
     handleExtensionMessage,
     responseUploadOffset,
     uploadResponse,
+    fileUploadOffset,
+    uploadFile,
     dispatchCommand,
     snapshot: () => ({
       token: runtime.token,

@@ -19,6 +19,7 @@ export function createExtensionState(defaultRelayPort: number): ExtensionState {
       lastCommandError: null,
       lastHeartbeatAt: null,
       lastHeartbeatSentAt: null,
+      fileUploadSupported: false,
     },
     targeting: {
       attachedTabs: new Set<number>(),

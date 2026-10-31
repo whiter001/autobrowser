@@ -162,6 +162,8 @@ export interface ConnectionState {
   lastCommandError: CommandErrorInfo | null
   lastHeartbeatAt: string | null
   lastHeartbeatSentAt: string | null
+  /** relay 是否支持文件直传通道（hello capabilities.fileUpload） */
+  fileUploadSupported: boolean
 }
 
 /** Tab/Frame 路由与调试器附加状态 */

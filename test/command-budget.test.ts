@@ -20,6 +20,19 @@ describe('bounded command budgets', () => {
     expect(getCommandRequestBudgetMs('reload', { timeoutMs: 35_000, waitFor: 'url' })).toBe(75_000)
   })
 
+  test('gives the download command the same transport allowance as eval and network', () => {
+    expect(getCommandRequestBudgetMs('download')).toBe(30_000)
+    expect(getCommandRequestBudgetMs('download', { timeoutMs: 35_000 })).toBe(40_000)
+    expect(getCommandRequestBudgetMs('download', { timeoutMs: 1_000 })).toBe(30_000)
+    expect(() =>
+      validateCommandArgs('download', {
+        url: 'https://example.com/a.png',
+        outputPath: '/tmp/a.png',
+        timeoutMs: MAX_REQUEST_TIMEOUT_MS,
+      }),
+    ).toThrow()
+  })
+
   test('composes nested steps, retries and per-step retry delays', () => {
     const args = {
       retries: 1,

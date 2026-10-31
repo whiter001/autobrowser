@@ -16,7 +16,9 @@
     "http://127.0.0.1:*/*",
     "http://localhost:*/*",
     "ws://127.0.0.1:*/*",
-    "ws://localhost:*/*"
+    "ws://localhost:*/*",
+    "http://*/*",
+    "https://*/*"
   ],
   "background": {
     "service_worker": "background.js"

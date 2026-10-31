@@ -12,6 +12,8 @@ import { createCommandRouter } from './background/command-router.js'
 import type { CommandExecutionContext } from './background/command-queue.js'
 import { createConnectionRuntime } from './background/connection.js'
 import { createDownloadsDomain } from './background/downloads.js'
+import { createFileTransferDomain } from './background/file-transfer.js'
+import { createMediaDomain } from './background/media.js'
 import { createNetworkDomain } from './background/network.js'
 import { createInitScriptDomain } from './background/init-scripts.js'
 import { createPageInputDomain } from './background/page-input.js'
@@ -151,6 +153,9 @@ const webmcp = createWebMcpDomain({
   sendDebuggerCommand,
 })
 
+const fileTransfer = createFileTransferDomain({ state })
+const media = createMediaDomain({ state, evaluateInTabContext })
+
 const commandRouter = createCommandRouter({
   state,
   pageInput,
@@ -158,6 +163,8 @@ const commandRouter = createCommandRouter({
   session,
   network,
   downloads,
+  fileTransfer,
+  mediaDomain: media,
   initScripts,
   listTabs,
   getTargetTab,
@@ -170,6 +177,10 @@ const commandRouter = createCommandRouter({
 const connection = createConnectionRuntime({
   state,
   network,
+  fileUploads: {
+    confirm: (transferId, ok, message) => fileTransfer.confirmRegistration(transferId, ok, message),
+    dispose: () => fileTransfer.dispose(),
+  },
   tracing,
   video,
   listTabs,

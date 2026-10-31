@@ -55,6 +55,8 @@ autobrowser 是一个面向 Chrome/Edge 的浏览器自动化 CLI，通过本地
 - `clipboard`
 - `state`
 - `downloads list` / `downloads clear`
+- `download <url|--media <index>> [output-path]`
+- `media list [--resolve]`
 - `network route` / `network unroute` / `network requests` / `network request` / `network har start` / `network har stop` / `network har status` / `network har recover`
 
 ## 浏览器引擎与能力边界
@@ -113,6 +115,15 @@ autobrowser 是一个面向 Chrome/Edge 的浏览器自动化 CLI，通过本地
 - 采集期间不要导航或刷新。page epoch 变化会返回 `STALE_FEED_STATE` 并丢弃旧结果，应在当前页面重新采集，不要把旧卡片与新页面拼接。
 - 长任务用 `collect run <spec.json>` 将 feed 或 network-first 流程一次执行并输出 JSONL。network spec 需要 `urlPattern/itemsPath`，可选 `nextPath` 跟随真实响应游标；没有匹配数据返回 `NETWORK_DATA_NOT_FOUND`，先检查请求链，不要伪造 DOM 结果。
 - 每页完成后会原子更新 JSONL 和 checkpoint。失败根据提示运行 `collect resume <checkpoint.json>`，从失败页继续并按内容去重；完成态 resume 是 no-op。结果可能含敏感页面数据，妥善保管输出文件，checkpoint 不保存 cookie/token。
+
+## 文件与媒体下载
+
+- 普通文件：`download <url> [output-path]`，或用 `--output-dir <dir>` 自动命名。默认原子覆盖，`--no-clobber` 拒绝覆盖。`downloads list|clear` 只是 Chrome 下载历史，与真正落盘的 `download` 不同。
+- 页面媒体：先 `media list` 查看图片、视频及真实源；`media list --resolve` 会对 `blob:` 视频静音短播以暴露 HLS/MP4 请求。然后 `download --media <index> [output-path]` 可直接下载，无需手动过滤网络日志。后台播放受限时先激活 tab。
+- HLS：`download <master.m3u8> <output.mp4> --quality best|worst|720|720p --concurrency 4`。自动下载最佳音视频轨并本地合并，FFmpeg/FFprobe 只读本地文件，不直接访问 CDN；本机需安装这两个工具。
+- HLS 是一个任务：统一 `--timeout-ms`，分片有界并发，失败保留 checkpoint/已校验分片，相同命令下次续传，成功清理。上限 2048 分片、2GiB、4 层 playlist；不支持加密和 `EXT-X-BYTERANGE`。DASH 目前只能发现，不能合并下载。
+- 所有媒体字节都经浏览器和本地鉴权 `/files/:transferId` 通道，不走 Base64/WebSocket。已知 Content-Length 且 >8MiB 时每次只缓冲一个 8MiB 块，relay 校验块/整文件 SHA-256；其他响应沿用缓冲传输。
+- 仅 Chromium 扩展通道，不支持 WebDriver/MCP；底层单文件下载不能作为 `batch` 子步骤。单文件与并发预留上限 512MiB、最多128个上传，15秒无进度判定停滞。
 
 ## 等待语义
 

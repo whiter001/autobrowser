@@ -431,6 +431,32 @@ const HELP_ROOT = helpNode(
       ],
     ),
     helpNode(
+      'download',
+      'Download a binary file or HLS video through the browser and save it locally.',
+      'autobrowser download <url|--media <index>> [output-path] [--output-dir <dir>] [--quality best|worst|720p] [--concurrency <1..16>] [--timeout-ms <ms>] [--overwrite|--no-clobber]',
+      [
+        '--media <index>  download a source reported by media list --resolve on the target tab',
+        '--output-dir <dir>  derive a safe filename from the source URL',
+        '--quality <best|worst|height>  HLS variant selection; best is the default',
+        '--concurrency <1..16>  HLS segment concurrency; default 4',
+        '--timeout-ms <ms>  total budget for the whole download task',
+        '--overwrite | --no-clobber  replace an existing output or fail before downloading; default overwrite',
+        'HLS manifests and segments all pass through the browser. ffmpeg and ffprobe are required only for local muxing and validation.',
+        'Large files over 8MiB with a known Content-Length stream one 8MiB chunk at a time; other responses use the buffered transfer.',
+        'This is different from "downloads list", which only lists the Chrome download history.',
+      ],
+    ),
+    helpNode(
+      'media',
+      'Discover image and video sources in the current page.',
+      'autobrowser media list [--resolve]',
+      [
+        '--resolve  briefly play blob-backed videos muted to reveal their network sources',
+        'Use the returned index with autobrowser download --media <index> [output-path].',
+      ],
+      [helpNode('list', 'List page media sources.', 'autobrowser media list [--resolve]')],
+    ),
+    helpNode(
       'wait',
       'Wait for a selector state, text, URL, load state, function, or a fixed duration in milliseconds.',
       'autobrowser wait [selector|time <ms>|ms <ms>|--text <text> [--gone]|--url <pattern>|--load [networkidle]|--fn <expression>] [--state visible|hidden|stable|new] [--timeout <ms>]',

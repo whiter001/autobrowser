@@ -39,6 +39,7 @@
 - 当前引用/歧义规则：snapshot/find 在同一 document 内不复用 ref，但删除节点无效、导航后 stale。`snapshot --changed` 包含状态变化和 `removedRefs`，按 document/frame 隔离基线；200000 UTF-8字节预算截断时收窄 target/roles 或使用 changed。`find.name` 默认子串，`exact:true` 精确；locate/text 默认 first，写操作多匹配返回 `AMBIGUOUS_TARGET` 与候选，检查 candidates 后收窄或显式 position。
 - 当前执行预算：默认30秒，显式 eval/navigation/click timeoutMs、wait timeout/ms 加5秒余量且不低于默认；batch 合成步骤/重试/延迟/嵌套预算，总上限30分钟含余量。feed 按滚动次数（上限40）×pauseMs +60秒执行余量+5秒传输余量计算，不低于默认预算，超过30分钟则拒绝。已发送后断连的未知结果不自动重放；显式 batch retries 可能重复副作用，不提供幂等性。
 - 当前网络策略：未 HAR 仅自动监控元数据，request detail 按需 CDP 获取 body，历史请求可能失效；HAR body 使用4槽/10秒逻辑超时，不可中止的底层工作继续占槽。maxBodyBytes 只限存储，stop 只等待本次 capture。大响应优先通过 WebSocket 控制消息协商、本地鉴权 HTTP 按范围上传，relay 落盘并校验 SHA-256；网络中断按已确认偏移续传，15 秒无进度判定停滞，整体仍受命令预算约束。小响应和旧 relay 保留 WebSocket 内联/分片回退，CLI/MCP 响应格式不变，超限仍明确报错。
+- 当前下载策略：`media list [--resolve]` 从 DOM 与同 tab/page epoch 的网络元数据发现图片、MP4/HLS 源；`download` 支持普通文件、`--media` 和 HLS 选轨。文件经独立鉴权 `/files` 通道上传，已知长度且超过8MiB时单块流式传输；HLS 在 CLI 侧统一并发、checkpoint 和续传，所有分片仍经浏览器获取，FFmpeg/FFprobe 只处理本地文件。
 
 以下“缺口/建议”保留早期设计讨论，不应覆盖上述已实现行为；例如候选排序、位置选择、stale 检测和 batch 已有实现。
 

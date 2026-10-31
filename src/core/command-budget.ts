@@ -102,7 +102,7 @@ export function getCommandRequestBudgetMs(
     }
 
     let explicit: number | undefined
-    if (['eval', 'goto', 'open', 'click', 'reload', 'network'].includes(name)) {
+    if (['eval', 'goto', 'open', 'click', 'reload', 'network', 'download'].includes(name)) {
       explicit = duration('timeoutMs')
       if (name === 'goto' || name === 'open') {
         duration('settleTimeoutMs')
