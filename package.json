@@ -16,6 +16,7 @@
   },
   "files": [
     "dist",
+    "launchers",
     "chrome",
     "docs",
     ".agents",
@@ -45,7 +46,8 @@
     "check": "bun run typecheck && oxlint src/ extension/ scripts/ test/ && bun fmt --check --no-script src/ extension/ scripts/ test/",
     "build:cli": "bun scripts/build-cli.ts",
     "build:chrome": "bun scripts/build-chrome.ts",
-    "build": "bun run build:cli && bun run build:chrome",
+    "build:launcher": "bun scripts/build-launcher-go.ts",
+    "build": "bun run build:cli && bun run build:chrome && bun run build:launcher",
     "link:bun": "bun scripts/link-bun.ts",
     "postinstall": "node scripts/npm-postinstall.mjs",
     "prepublishOnly": "bun run build",

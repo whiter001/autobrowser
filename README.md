@@ -21,7 +21,7 @@
 
 ### 前置条件：Bun 运行时
 
-先安装 [Bun](https://bun.sh)。npm 包里的可执行文件是 `dist/autobrowser.js`，其 shebang 为 `#!/usr/bin/env bun`，因此 `bun` 必须在 `PATH` 中，否则运行 `autobrowser` 会得到 command not found。
+先安装 [Bun](https://bun.sh)。npm 全局入口是小型 Go 原生启动器，但业务仍由 Bun 执行 `dist/autobrowser.js`，不是 Go 重写或独立打包的 CLI。启动器从 `PATH` 找 `bun` / `bun.exe`，也可用 `AUTOBROWSER_BUN_PATH` 指定 Bun；需要自定义 JS 入口时设置 `AUTOBROWSER_DIST_ENTRY`。缺少运行时或入口会给出明确错误。
 
 ### 全局安装
 
@@ -31,41 +31,24 @@ npm i -g @whiter001/autobrowser
 
 装完后 `autobrowser` 命令就在 `PATH` 里了。本文档下面的示例都以这个命令为准；仓库开发者想直接跑源码，见文末的「从源码运行」。
 
-#### Windows 上的启动器
+#### 原生全局入口（Windows / macOS / Linux）
 
-npm 会为 `bin` 字段生成三个启动器：`autobrowser`（sh）、`autobrowser.cmd`、`autobrowser.ps1`。
-其中 `autobrowser.cmd` 有坑：PowerShell 调用 `.cmd` 时会先剥掉参数里的双引号，cmd.exe 再把裸露的
-`& | ^ < >` 当成命令分隔符，于是 URL 查询串和 `eval` 源码会被拆成多条命令。`.ps1` 与 sh 启动器没有这个问题。
+包的 `postinstall` 会把对应平台的 Go 启动器复制到 npm 全局入口：Windows 为 `<prefix>/autobrowser.exe`，POSIX 为 `<prefix>/bin/autobrowser`。支持 macOS、Linux、Windows 的 x64 / arm64。它用参数数组启动 Bun + 包内 `dist/autobrowser.js`，保留 cwd、环境和标准输入输出，不经过 cmd.exe、`.bat`、`.ps1` 或 sh shim。安装成功会移除旧 shim；写死 `autobrowser.cmd` 的调用方应改用 `autobrowser`（Windows 也可显式调用 `autobrowser.exe`）。
 
-包的 `postinstall` 会在 Windows 上把这个 `.cmd` 改名成 `autobrowser.bat`：
-
-- PowerShell 解析同名命令时优先命中 `autobrowser.ps1`；
-- cmd.exe 按 PATHEXT（`.COM;.EXE;.BAT;.CMD`）优先命中 `autobrowser.bat`，而 cmd.exe 自己的解析会保护引号里的 `&`；
-- `autobrowser.cmd` 不再存在，显式调用会直接报找不到命令，而不是静默改写参数。
-
-> **行为变更**：改名后，任何**显式**写死 `autobrowser.cmd` 的调用方（脚本、CI 任务、VS Code task、npx 包装、旧文档示例）会从「参数被静默改写」变成「command not found」。原行为是静默产生错误结果，风险更高，所以这里选择显式报错。如果你的脚本里写死了 `autobrowser.cmd`，请改成 `autobrowser`（PowerShell 命中 `.ps1`，cmd.exe 命中 `.bat`）。
-
-> **卸载注意**：npm 的 bin-links 只登记无扩展名、`.cmd`、`.ps1` 三种 shim，**不登记 `.bat`**。所以 `npm uninstall -g @whiter001/autobrowser` 不会删除改名产生的 `autobrowser.bat`，它会成为指向已删除包的残留入口。卸载后请手动清理：
->
-> ```bash
-> rm "$(npm prefix -g)/autobrowser.bat"
-> ```
-
-npm 12 默认不执行 install 脚本（`allow-scripts` 默认不放行），这种情况下 `.cmd` 不会被改名。
-可以放行后重新执行一次：
+`bin` 仍指向 JS，npm 先生成 shim，再由 postinstall 替换。禁用安装脚本（例如 `--ignore-scripts` 或 npm 的 `allow-scripts` 未放行）时，**仍然只有旧 npm shim，不会凭空出现 exe**。按当前 npm 版本放行脚本后重建，例如：
 
 ```bash
 npm config set allow-scripts=@whiter001/autobrowser --location=user
 npm rebuild -g @whiter001/autobrowser
 ```
 
-或者手动改名（Windows 上 npm 的全局可执行文件目录就是 `npm prefix -g`）：
+不支持的平台、缺少预编译文件或非全局安装沿用旧入口；Windows 全局缺少原生文件时仍把 `.cmd` 改名为 `.bat`，优先让 PowerShell 使用 `.ps1`。原生文件存在但复制失败会明确报错，不会静默回退。不要从 PowerShell 显式调用 `.cmd`：它可能使 `& | ^ < >` 等参数被再次解析。
 
-```bash
-mv "$(npm prefix -g)/autobrowser.cmd" "$(npm prefix -g)/autobrowser.bat"
-```
+原生启动器也不能撤销调用方 shell 已做的展开（如 cmd.exe 的 `%VARIABLE%`）；复杂 `eval` 仍推荐 `--file`、`--stdin` 或 `--base64`。
 
-从源码开发时推荐用 `bun run link:bun`，它会直接生成原生 `autobrowser.exe`，见 [`docs/bun-link.md`](docs/bun-link.md)。
+**卸载注意**：npm 不登记 Windows postinstall 额外生成的 `.exe`，回退产生的 `.bat` 也不登记。`npm uninstall -g @whiter001/autobrowser` 后，请手动清理 `<prefix>/autobrowser.exe` 和可能存在的 `<prefix>/autobrowser.bat`（`npm prefix -g` 可查 prefix）。POSIX 替换了 npm 原有 symlink，卸载时也请检查并清理残留的 `<prefix>/bin/autobrowser`。
+
+源码开发的 `bun run link:bun` 行为不变，和 npm Go 启动器是两条独立路径，见 [`docs/bun-link.md`](docs/bun-link.md)。发布构建 `bun run build` 会自动构建六种原生文件；只构建本机可用 `bun run build:launcher -- --current`，构建机需要 Go，安装用户不需要 Go。
 
 ### 验证
 

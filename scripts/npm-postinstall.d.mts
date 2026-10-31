@@ -14,7 +14,21 @@ export type ShimFixPlan =
     }
   | { action: 'rename'; reason: 'npm-cmd-shim-mangles-args'; binDir: string }
 
-export type ShimFixResult = { applied: boolean; reason: string }
+export type ShimFixResult = { applied: boolean; reason: string; nativeReason?: string }
+
+export type LauncherInstallOptions = {
+  platform?: string
+  arch?: string
+  env?: Record<string, string | undefined>
+  packageDir?: string
+  logger?: { log?: (...args: unknown[]) => void; error?: (...args: unknown[]) => void }
+}
+
+export declare function launcherFileName(platform: string, arch: string): string | null
+export declare function installNativeLauncher(
+  input?: LauncherInstallOptions,
+): Promise<ShimFixResult>
+export declare function installNpmLauncher(input?: LauncherInstallOptions): Promise<ShimFixResult>
 
 export declare function resolveGlobalBinDir(
   env: Record<string, string | undefined>,

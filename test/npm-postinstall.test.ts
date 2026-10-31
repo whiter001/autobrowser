@@ -71,13 +71,17 @@ afterEach(async () => {
 describe('resolveGlobalBinDir', () => {
   test('returns the npm prefix on Windows', () => {
     expect(resolveGlobalBinDir({ npm_config_prefix: 'D:\\packages\\node\\modules' }, 'win32')).toBe(
-      'D:\\packages\\node\\modules',
+      path.resolve('D:\\packages\\node\\modules'),
     )
   })
 
-  test('ignores non-Windows platforms', () => {
-    expect(resolveGlobalBinDir({ npm_config_prefix: '/usr/local' }, 'linux')).toBeNull()
-    expect(resolveGlobalBinDir({ npm_config_prefix: '/usr/local' }, 'darwin')).toBeNull()
+  test('returns prefix/bin on POSIX platforms', () => {
+    expect(resolveGlobalBinDir({ npm_config_prefix: '/usr/local' }, 'linux')).toBe(
+      path.resolve('/usr/local/bin'),
+    )
+    expect(resolveGlobalBinDir({ npm_config_prefix: '/usr/local' }, 'darwin')).toBe(
+      path.resolve('/usr/local/bin'),
+    )
   })
 
   test('returns null when npm did not expose a prefix', () => {
@@ -168,7 +172,7 @@ describe('planCmdShimRename', () => {
     expect(plan).toEqual({
       action: 'rename',
       reason: 'npm-cmd-shim-mangles-args',
-      binDir: 'D:\\npm',
+      binDir: path.resolve('D:\\npm'),
     })
   })
 

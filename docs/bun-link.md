@@ -16,25 +16,21 @@ Windows 不再生成 `autobrowser.cmd`。旧的批处理 `%*` 会把参数里的
 
 这些问题属于链接产物或 shell 环境，不代表 autobrowser 不可用，不要因此改用其他浏览器方案。cmd.exe 会在启动任何程序前自行展开 `%VARIABLE%`，这是调用 shell 的行为；需要原样传递复杂 JavaScript 时，优先使用 `eval --file`、`eval --stdin` 或 Git Bash 入口。
 
-## npm 全局安装的 Windows 启动器
+## npm 全局安装的 Go 启动器
 
-npm 全局安装走的是另一条路径：`npm i -g @whiter001/autobrowser` 会按 `bin` 字段在全局可执行文件目录生成三个 shim（`autobrowser`、`autobrowser.cmd`、`autobrowser.ps1`），不经过 `scripts/link-bun.ts`。
+`npm i -g @whiter001/autobrowser` 不经过 `scripts/link-bun.ts`。npm 按 `bin: dist/autobrowser.js` 生成 shim 后，`scripts/npm-postinstall.mjs` 优先复制包内 `launchers/` 的 Go 原生文件：Windows 到 `<prefix>/autobrowser.exe`，POSIX 到 `<prefix>/bin/autobrowser`，并清理旧 `.cmd`、`.bat`、`.ps1`、sh 入口。支持 darwin/linux/windows 的 x64/arm64，不通过 shell 转发参数。
 
-npm 生成的 `autobrowser.cmd` 用 `%*` 转发参数，参数在 PowerShell → cmd.exe 这一层就已经被破坏：PowerShell 调用 `.cmd` 时会先剥掉参数里的双引号，cmd.exe 再把裸露的 `& | ^ < >` 当成命令分隔符，于是 URL 查询串和 `eval` 源码会被拆成多条命令。这不是 `.cmd` 内容能补救的，参数在批处理脚本体执行之前就已经被切碎了。
+Go 仅以 `[distEntry, ...args]` 启动 Bun，不包含浏览器业务。Bun 从 `AUTOBROWSER_BUN_PATH` 或 PATH 查找；dist 从 `AUTOBROWSER_DIST_ENTRY` 或相对启动器的全局/局部 npm 布局查找。cwd、env、stdio 和退出码保留。安装用户不需要 Go，构建机需要；`bun run build:launcher` 构建六个目标，`bun run build:launcher -- --current` 只构建本机。
 
-包的 `postinstall`（`scripts/npm-postinstall.mjs`）会在 Windows 全局安装时把这个 `.cmd` 改名成 `autobrowser.bat`：
-
-- PowerShell 解析同名命令时优先命中 `autobrowser.ps1`；
-- cmd.exe 按 PATHEXT（`.COM;.EXE;.BAT;.CMD`）优先命中 `autobrowser.bat`，cmd.exe 自己的解析会保护引号里的 `&`；
-- `autobrowser.cmd` 不再存在，显式调用会直接报找不到命令，而不是静默改写参数。
-
-npm 12 默认不执行 install 脚本（`allow-scripts` 默认不放行），这种安装下 `.cmd` 不会被改名，放行后重建一次即可：
+禁用安装脚本（`--ignore-scripts` 或 npm 的 `allow-scripts` 未放行）时仍是旧 npm shim，不会安装原生 exe。按 npm 版本放行后可重建：
 
 ```bash
 npm config set allow-scripts=@whiter001/autobrowser --location=user
 npm rebuild -g @whiter001/autobrowser
 ```
 
-**卸载残留**：npm 的 bin-links 只登记无扩展名、`.cmd`、`.ps1` 三种 shim，不登记 `.bat`。`npm uninstall -g` 不会删除改名产生的 `autobrowser.bat`，卸载后需手动清理 `$(npm prefix -g)/autobrowser.bat`。npm 7+ 也不为依赖卸载运行 `preuninstall`，所以这个残留无法靠 lifecycle 钩子自动清理。
+非全局、不支持平台或缺少预编译文件才沿用旧修正：Windows 全局把 `.cmd` 改名成 `.bat`，让 PowerShell 优先选 `.ps1`。原生文件存在但写入失败会明确记录错误，不静默回退。不要显式调用旧 `.cmd`，它会引入 PowerShell → cmd.exe 的引号与 `& | ^ < >` 风险。即使使用原生入口，复杂 eval 仍建议 `--file`、`--stdin` 或 `--base64`，因为调用方 shell 的展开无法还原。
 
-只想用原生 exe 的话，在仓库里跑 `bun run link:bun` 即可，它会把 `autobrowser.exe` 放到 bun 目录并清掉同目录的旧 `.cmd`。
+**卸载残留**：npm 没有登记额外生成的 Windows `.exe` 或回退 `.bat`，卸载后手动删除 `<prefix>/autobrowser.exe` 和可能存在的 `<prefix>/autobrowser.bat`。POSIX 也检查 `<prefix>/bin/autobrowser` 是否残留；`npm prefix -g` 可查 prefix。npm 7+ 不为依赖卸载运行 `preuninstall`，不能依赖该钩子清理。
+
+上述 npm 行为不改变本页前半部分的 `link:bun` 开发链接。

@@ -1,4 +1,5 @@
 dist/
+launchers/
 chrome/
 .husky/_/
 .autobrowser/

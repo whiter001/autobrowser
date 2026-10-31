@@ -1,24 +1,9 @@
-// npm 全局安装后的 Windows 启动器修正。
-//
-// npm 会按 bin 字段生成三个 shim：autobrowser（sh）、autobrowser.cmd、autobrowser.ps1。
-// 其中 autobrowser.cmd 用 %* 转发参数，而 PowerShell 调用 .cmd 时会先剥掉参数里的双引号，
-// cmd.exe 再把裸露的 & | ^ < > 当成命令分隔符，于是 URL 查询串和 eval 源码会被拆成多条命令。
-// 这不是 .cmd 内容能补救的：参数在批处理脚本体执行之前就已经被切碎了。
-//
-// .ps1 与 sh shim 没有这个问题——PowerShell 直接把参数数组交给进程，不经过 cmd.exe；
-// cmd.exe 用户也没问题，cmd.exe 自己的解析会保护引号里的 & 。
-//
-// 所以这里把 npm 生成的 .cmd 改名成 .bat：
-//   - PowerShell 解析同名命令时优先命中 autobrowser.ps1；
-//   - cmd.exe 按 PATHEXT（.COM;.EXE;.BAT;.CMD）优先命中 autobrowser.bat；
-//   - 危险的 autobrowser.cmd 不再存在，显式调用会直接报找不到命令，而不是静默改写参数。
-//
-// 脚本用纯 Node 写成，不依赖 bun：npm 安装时 bun 未必已经在 PATH 里，而 autobrowser
-// 的可执行文件本身又要求 bun，这个修正步骤不该反过来把安装卡死。
-
-import { readFile, rm, writeFile } from 'node:fs/promises'
+// 全局安装优先用 Go 原生启动器替换 npm shim，避免 shell 再次解析参数。
+// 仅缺少预编译产物等不适用情况回退到旧 Windows 修正；复制失败必须明确报错。
+// 使用纯 Node，不要求 npm 安装期间已经有 Bun。
+import { chmod, copyFile, readFile, rename, rm, stat, writeFile } from 'node:fs/promises'
 import path from 'node:path'
-import { pathToFileURL } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 
 /**
  * npm 生成的 .cmd 里指向本包可执行文件的路径片段，用来确认这个 shim 确实属于本包。
@@ -35,18 +20,16 @@ export const BAT_SHIM_NAME = 'autobrowser.bat'
 /**
  * 解析 npm 全局可执行文件目录。
  *
- * Windows 上 npm 把可执行文件直接放在 prefix 根目录，其他平台是 prefix/bin；
- * 这里只处理 Windows，因此返回 prefix 本身。
+ * Windows 上 npm 把可执行文件直接放在 prefix 根目录，其他平台是 prefix/bin。
  *
  * npm 的 parseField 对 path 类型已经做过 resolve，正常情况下这里是绝对路径；
  * 但这里再做一次 resolve 兜底——postinstall 的 cwd 是包安装目录，万一某个 npm
  * 版本或调用方传进来相对路径，不解析就会把 shim 写到包目录里而不是全局 bin 目录。
  */
 export function resolveGlobalBinDir(env, platform) {
-  if (platform !== 'win32') return null
   const prefix = env.npm_config_prefix
   if (!prefix) return null
-  return path.resolve(prefix)
+  return platform === 'win32' ? path.resolve(prefix) : path.resolve(prefix, 'bin')
 }
 
 /**
@@ -116,8 +99,8 @@ export async function fixWindowsCmdShim({
 } = {}) {
   if (platform !== 'win32') return { applied: false, reason: 'not-windows' }
 
-  const cmdPath = binDir ? `${binDir}\\${CMD_SHIM_NAME}` : null
-  const batPath = binDir ? `${binDir}\\${BAT_SHIM_NAME}` : null
+  const cmdPath = binDir ? path.join(binDir, CMD_SHIM_NAME) : null
+  const batPath = binDir ? path.join(binDir, BAT_SHIM_NAME) : null
   if (!cmdPath || !batPath) return { applied: false, reason: 'no-global-prefix' }
 
   let cmdContent = ''
@@ -149,10 +132,64 @@ export async function fixWindowsCmdShim({
   return { applied: true, reason: plan.reason }
 }
 
-// 直接执行时（npm postinstall）才做修正，被 import 时只导出函数。
-// 用 pathToFileURL 比较，手拼 file:// 在 Windows 上会少一个斜杠而永远不相等。
+export function launcherFileName(platform, arch) {
+  const goos = { win32: 'windows', darwin: 'darwin', linux: 'linux' }[platform]
+  if (!goos || !['x64', 'arm64'].includes(arch)) return null
+  return `autobrowser-${goos}-${arch}${platform === 'win32' ? '.exe' : ''}`
+}
+
+export async function installNativeLauncher({
+  platform = process.platform,
+  arch = process.arch,
+  env = process.env,
+  packageDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..'),
+  logger = console,
+} = {}) {
+  if (env.npm_config_global !== 'true') return { applied: false, reason: 'not-global-install' }
+  const name = launcherFileName(platform, arch)
+  if (!name) return { applied: false, reason: 'unsupported-platform' }
+  const binDir = resolveGlobalBinDir(env, platform)
+  if (!binDir) return { applied: false, reason: 'no-global-prefix' }
+  const source = path.join(packageDir, 'launchers', name)
+  const target = path.join(binDir, platform === 'win32' ? 'autobrowser.exe' : 'autobrowser')
+  const temporary = `${target}.${process.pid}.tmp`
+  try {
+    try {
+      if (!(await stat(source)).isFile()) throw new Error(`Launcher is not a file: ${source}`)
+    } catch (error) {
+      if (error.code === 'ENOENT') return { applied: false, reason: 'missing-launcher' }
+      throw error
+    }
+    // 先写临时文件再替换，不能沿 POSIX npm symlink 覆盖包内 dist JS。
+    await copyFile(source, temporary)
+    await chmod(temporary, 0o755)
+    await rename(temporary, target)
+    const obsolete = ['autobrowser.cmd', 'autobrowser.bat', 'autobrowser.ps1', 'autobrowser.sh']
+    if (platform === 'win32') obsolete.push('autobrowser')
+    for (const shim of obsolete) await rm(path.join(binDir, shim), { force: true })
+    logger.log?.(`[autobrowser] 已安装 Go 原生启动器：${target}（运行时仍需 Bun）`)
+    return { applied: true, reason: 'native-launcher-installed' }
+  } catch (error) {
+    logger.error?.(
+      `[autobrowser] 原生启动器安装失败：${source} -> ${target}；未回退到 shim。请检查目录权限，旧入口可能仍存在：`,
+      error instanceof Error ? error.message : error,
+    )
+    return { applied: false, reason: 'native-install-failed' }
+  } finally {
+    await rm(temporary, { force: true }).catch(() => {})
+  }
+}
+
+export async function installNpmLauncher(options = {}) {
+  const native = await installNativeLauncher(options)
+  if (native.applied || native.reason === 'native-install-failed') return native
+  const fallback = await fixWindowsCmdShim(options)
+  return { ...fallback, nativeReason: native.reason }
+}
+
+// 用 pathToFileURL 比较，避免 Windows file URL 斜杠差异。
 const invokedDirectly =
   Boolean(process.argv[1]) && import.meta.url === pathToFileURL(process.argv[1]).href
 if (invokedDirectly) {
-  await fixWindowsCmdShim()
+  await installNpmLauncher()
 }
