@@ -1,6 +1,6 @@
 {
   "name": "@whiter001/autobrowser",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "description": "面向 AI agent 的浏览器自动化 CLI：本地 relay + Chrome/Edge 扩展，支持导航、点击/填写、snapshot 引用、网络拦截与 HAR，以及 MCP server",
   "keywords": [
     "browser-automation",
