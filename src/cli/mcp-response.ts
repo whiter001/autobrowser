@@ -3,38 +3,10 @@ import { mkdir, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { getHomeDir } from '../core/protocol.js'
 import { isRecord } from './client.js'
+import { extractScreenshotBase64 } from './screenshot.js'
 
 // 超过该体积的截图 base64 不再内联进 MCP 响应（会爆模型上下文），改为落盘后回文本路径
 const SCREENSHOT_MAX_INLINE_BYTES = 2 * 1024 * 1024
-
-function extractScreenshotData(result: Record<string, unknown>): {
-  data: string
-  mimeType: string
-} {
-  const dataUrl = typeof result.dataUrl === 'string' ? result.dataUrl : ''
-  const rawData =
-    typeof result.data === 'string'
-      ? result.data
-      : dataUrl.includes(',')
-        ? dataUrl.slice(dataUrl.indexOf(',') + 1)
-        : ''
-
-  if (!rawData) {
-    throw new Error('missing screenshot data')
-  }
-
-  const mimeType =
-    typeof result.mimeType === 'string'
-      ? result.mimeType
-      : dataUrl.startsWith('data:image/jpeg')
-        ? 'image/jpeg'
-        : 'image/png'
-
-  return {
-    data: rawData,
-    mimeType,
-  }
-}
 
 export function toErrorResult(
   code: string | undefined,
@@ -71,7 +43,7 @@ export function toSuccessResult(result: unknown): CallToolResult {
 }
 
 export function toScreenshotResult(result: Record<string, unknown>): Promise<CallToolResult> {
-  const { data, mimeType } = extractScreenshotData(result)
+  const { data, mimeType } = extractScreenshotBase64(result)
   const summary: Record<string, unknown> = { mimeType }
   for (const [key, value] of Object.entries(result)) {
     if (key !== 'data' && key !== 'dataUrl') {

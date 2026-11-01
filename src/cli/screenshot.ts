@@ -7,8 +7,10 @@ async function mkTempScreenshotDir(): Promise<string> {
   return await mkdtemp(path.join(os.tmpdir(), 'autobrowser-screenshot-'))
 }
 
-export function extractScreenshotData(result: Record<string, unknown> | undefined): {
-  data: Buffer
+// 结果里可能是裸 base64，也可能是 dataUrl。MCP 侧要原样透传 base64 串，CLI 落盘侧要 Buffer，
+// 所以解析只做一次，解码交给调用方，避免两套实现各写一遍 dataUrl/mimeType 兜底逻辑。
+export function extractScreenshotBase64(result: Record<string, unknown> | undefined): {
+  data: string
   mimeType: string
 } {
   const dataUrl = typeof result?.dataUrl === 'string' ? result.dataUrl : ''
@@ -30,10 +32,15 @@ export function extractScreenshotData(result: Record<string, unknown> | undefine
         ? 'image/jpeg'
         : 'image/png'
 
-  return {
-    data: Buffer.from(rawData, 'base64'),
-    mimeType,
-  }
+  return { data: rawData, mimeType }
+}
+
+export function extractScreenshotData(result: Record<string, unknown> | undefined): {
+  data: Buffer
+  mimeType: string
+} {
+  const { data, mimeType } = extractScreenshotBase64(result)
+  return { data: Buffer.from(data, 'base64'), mimeType }
 }
 
 export async function resolveScreenshotOutputPath(screenshotArgs: ScreenshotArgs): Promise<string> {
