@@ -1,0 +1,187 @@
+import { mkdtemp } from 'node:fs/promises'
+import os from 'node:os'
+import path from 'node:path'
+import { main } from '../src/cli.js'
+import type { DetachedProcessHandle } from '../src/cli/server-control.js'
+import type { CliDependencies } from '../src/cli/types.js'
+import type { BrowserLaunchConfig } from '../src/core/config.js'
+
+/** CLI 发给 relay 的请求体结构：command + args。 */
+export interface CliCommandBody {
+  command?: string
+  args?: Record<string, unknown>
+  [key: string]: unknown
+}
+
+/** CLI 发出的 fetch 请求参数；body 是 JSON 字符串，没有请求体时为 undefined。 */
+export interface CliFetchInit {
+  method?: string
+  headers?: Record<string, string | undefined>
+  body?: string
+}
+
+/**
+ * 测试里的 fetch 替身：CLI 只用到 ok/json()/text() 这几个成员。
+ * 这些成员都设为可选，因为不同分支只读取其中一部分，替身不必实现全部成员
+ * （例如解码失败的替身只需要 json()，而 CLI 在该分支上根本不看 ok）。
+ */
+export interface FetchResponseLike {
+  ok?: boolean
+  status?: number
+  statusText?: string
+  json?(): Promise<unknown>
+  text?(): Promise<string>
+}
+
+export type FetchMock = (url: string, init: CliFetchInit) => Promise<FetchResponseLike>
+
+export interface FetchCall {
+  url: string
+  init: CliFetchInit
+  body: CliCommandBody | null
+}
+
+export interface SpawnCall {
+  command: string
+  args: string[]
+}
+
+export interface RunCliOptions {
+  homeDir?: string
+  fetchImpl?: FetchMock
+  openUrl?: (url: string, browserConfig: BrowserLaunchConfig | null) => Promise<void>
+  spawnDetachedProcess?: (
+    command: string,
+    args: string[],
+  ) => DetachedProcessHandle | Promise<DetachedProcessHandle>
+  findProcessIdByPort?: (port: number) => Promise<number | null>
+  killProcess?: (pid: number, signal?: NodeJS.Signals | number) => boolean
+}
+
+export interface RunCliResult {
+  exitCode: number | void
+  fetchCalls: FetchCall[]
+  spawnCalls: SpawnCall[]
+  openCalls: string[]
+  browserCalls: (BrowserLaunchConfig | null)[]
+  stdout: string
+  stderr: string
+}
+
+export const originalFetch = globalThis.fetch
+const originalStdoutWrite = process.stdout.write.bind(process.stdout)
+const originalStderrWrite = process.stderr.write.bind(process.stderr)
+let cliRunQueue: Promise<unknown> = Promise.resolve()
+
+export function interceptStream(chunks: string[]): typeof process.stdout.write {
+  return ((chunk: unknown, encoding?: unknown, callback?: unknown) => {
+    chunks.push(String(chunk))
+    if (typeof encoding === 'function') {
+      encoding()
+    }
+    if (typeof callback === 'function') {
+      callback()
+    }
+    return true
+  }) as typeof process.stdout.write
+}
+
+export async function runCli(
+  argv: string[],
+  payload: unknown = { ok: true, result: { ok: true } },
+  options: RunCliOptions = {},
+): Promise<RunCliResult> {
+  const run = cliRunQueue.then(async () => {
+    const fetchCalls: FetchCall[] = []
+    const spawnCalls: SpawnCall[] = []
+    const stdout: string[] = []
+    const stderr: string[] = []
+    const openCalls: string[] = []
+    const browserCalls: (BrowserLaunchConfig | null)[] = []
+    const previousAutobrowserHome = process.env.AUTOBROWSER_HOME
+    const homeDir =
+      options.homeDir || (await mkdtemp(path.join(os.tmpdir(), 'autobrowser-home-run-')))
+
+    process.env.AUTOBROWSER_HOME = homeDir
+
+    globalThis.fetch = (async (url: RequestInfo | URL, init: RequestInit = {}) => {
+      const requestInit = init as CliFetchInit
+      const bodyText = requestInit.body ? String(requestInit.body) : ''
+      fetchCalls.push({
+        url: String(url),
+        init: requestInit,
+        body: bodyText ? (JSON.parse(bodyText) as CliCommandBody) : null,
+      })
+
+      if (options.fetchImpl) {
+        return options.fetchImpl(String(url), requestInit)
+      }
+
+      return {
+        ok: true,
+        async json() {
+          return payload
+        },
+        async text() {
+          return `${JSON.stringify(payload)}\n`
+        },
+      }
+    }) as typeof fetch
+
+    process.stdout.write = interceptStream(stdout)
+    process.stderr.write = interceptStream(stderr)
+
+    const dependencies: CliDependencies = {}
+    const openUrlImpl = options.openUrl
+    const spawnImpl = options.spawnDetachedProcess
+
+    if (openUrlImpl) {
+      const openUrl = openUrlImpl
+      dependencies.openUrl = async (url, browserConfig) => {
+        openCalls.push(url)
+        browserCalls.push(browserConfig)
+        await openUrl(url, browserConfig)
+      }
+    }
+
+    if (spawnImpl) {
+      const spawnDetached = spawnImpl
+      dependencies.spawnDetachedProcess = (command, args) => {
+        const child = spawnDetached(command, args)
+        spawnCalls.push({ command, args })
+        return child
+      }
+    }
+
+    dependencies.findProcessIdByPort = options.findProcessIdByPort
+    dependencies.killProcess = options.killProcess
+
+    try {
+      const exitCode = await main(argv, dependencies)
+
+      return {
+        exitCode,
+        fetchCalls,
+        spawnCalls,
+        openCalls,
+        browserCalls,
+        stdout: stdout.join(''),
+        stderr: stderr.join(''),
+      }
+    } finally {
+      globalThis.fetch = originalFetch
+      process.stdout.write = originalStdoutWrite
+      process.stderr.write = originalStderrWrite
+
+      if (previousAutobrowserHome === undefined) {
+        delete process.env.AUTOBROWSER_HOME
+      } else {
+        process.env.AUTOBROWSER_HOME = previousAutobrowserHome
+      }
+    }
+  })
+
+  // 这些 CLI 测试会临时替换全局 fetch/stdout/stderr；串行化能避免全量并发执行时互相踩状态。
+  cliRunQueue = run.catch(() => {})
+  return await run
+}

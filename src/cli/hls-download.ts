@@ -1,28 +1,37 @@
-import { spawn } from 'node:child_process'
-import { createHash } from 'node:crypto'
-import { createReadStream } from 'node:fs'
-import {
-  constants,
-  copyFile,
-  link,
-  mkdir,
-  open,
-  readdir,
-  readFile,
-  rename,
-  rm,
-  stat,
-  unlink,
-  writeFile,
-} from 'node:fs/promises'
+import { mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import {
   parseHlsMasterPlaylist,
   parseHlsMediaPlaylist,
   selectHlsAudioRendition,
   selectHlsVariant,
-  type HlsMediaPlaylist,
 } from './hls-manifest.js'
+import { HlsDownloadError } from './hls-error.js'
+import {
+  CHECKPOINT_VERSION,
+  commitFile,
+  fileExists,
+  loadCheckpoint,
+  readHead,
+  removeTempFiles,
+  sha256File,
+  shortHash,
+  type CheckpointEntry,
+  type CheckpointFile,
+} from './hls-files.js'
+import {
+  buildLocalPlaylist,
+  createDefaultToolRunner,
+  detectHlsDemuxerOptions,
+  parseFfprobe,
+  resolveContainer,
+  type HlsToolRunner,
+  type TrackPlan,
+} from './hls-tools.js'
+
+export { HlsDownloadError } from './hls-error.js'
+export { buildLocalPlaylist } from './hls-tools.js'
+export type { HlsTool, HlsToolRunner } from './hls-tools.js'
 
 export interface BrowserDownloadResult {
   sourceUrl: string
@@ -39,14 +48,6 @@ export interface HlsDownloadResult extends BrowserDownloadResult {
   width?: number
   height?: number
   segments?: number
-}
-
-export type HlsTool = 'ffmpeg' | 'ffprobe'
-
-export interface HlsToolRunner {
-  /** 工具是否可用；用于在开始下载前给出明确的“未安装”提示 */
-  isAvailable(tool: HlsTool): Promise<boolean>
-  run(tool: HlsTool, args: string[], timeoutMs: number): Promise<{ stdout: string; stderr: string }>
 }
 
 export interface HlsDownloadOptions {
@@ -84,47 +85,12 @@ export const MAX_HLS_TOTAL_BYTES = 2 * 1024 * 1024 * 1024
 /** 播放列表递归层数上限 */
 export const MAX_HLS_PLAYLIST_DEPTH = 4
 
-const CHECKPOINT_VERSION = 1
-
-interface CheckpointEntry {
-  kind: 'init' | 'segment'
-  track: 'video' | 'audio'
-  index: number
-  url: string
-  path: string
-  bytes: number
-  sha256: string
-}
-
-interface CheckpointFile {
-  version: number
-  sourceUrl: string
-  outputPath: string
-  quality: string
-  files: CheckpointEntry[]
-}
-
 interface DownloadTask {
   kind: 'init' | 'segment'
   track: 'video' | 'audio'
   index: number
   url: string
   path: string
-}
-
-interface TrackPlan {
-  kind: 'video' | 'audio'
-  playlist: HlsMediaPlaylist
-}
-
-export class HlsDownloadError extends Error {
-  constructor(
-    message: string,
-    readonly detail?: string,
-  ) {
-    super(message)
-    this.name = 'HlsDownloadError'
-  }
 }
 
 function isHttpUrl(value: string): boolean {
@@ -134,98 +100,6 @@ function isHttpUrl(value: string): boolean {
 function clampConcurrency(value: number | undefined): number {
   if (value === undefined || !Number.isFinite(value)) return DEFAULT_HLS_CONCURRENCY
   return Math.min(MAX_HLS_CONCURRENCY, Math.max(1, Math.floor(value)))
-}
-
-function shortHash(value: string): string {
-  return createHash('sha256').update(value).digest('hex').slice(0, 8)
-}
-
-async function fileExists(filePath: string): Promise<boolean> {
-  try {
-    await stat(filePath)
-    return true
-  } catch {
-    return false
-  }
-}
-
-async function sha256File(filePath: string): Promise<string> {
-  const hash = createHash('sha256')
-  const stream = createReadStream(filePath)
-  for await (const chunk of stream) {
-    hash.update(chunk as Buffer)
-  }
-  return hash.digest('hex')
-}
-
-async function readHead(filePath: string, size: number): Promise<string> {
-  const handle = await open(filePath, 'r')
-  try {
-    const buffer = Buffer.alloc(size)
-    const { bytesRead } = await handle.read(buffer, 0, size, 0)
-    return buffer.subarray(0, bytesRead).toString('utf8')
-  } finally {
-    await handle.close()
-  }
-}
-
-function createDefaultToolRunner(): HlsToolRunner {
-  const run = (
-    tool: HlsTool,
-    args: string[],
-    timeoutMs: number,
-  ): Promise<{ stdout: string; stderr: string }> =>
-    new Promise((resolve, reject) => {
-      const child = spawn(tool, args, { stdio: ['ignore', 'pipe', 'pipe'] })
-      let stdout = ''
-      let stderr = ''
-      const timer = setTimeout(
-        () => {
-          child.kill('SIGKILL')
-          reject(new HlsDownloadError(`${tool} 执行超时（${timeoutMs}ms）`))
-        },
-        Math.max(1, timeoutMs),
-      )
-      child.stdout?.on('data', (chunk: Buffer) => {
-        stdout += chunk.toString()
-      })
-      child.stderr?.on('data', (chunk: Buffer) => {
-        stderr += chunk.toString()
-      })
-      child.on('error', (error: NodeJS.ErrnoException) => {
-        clearTimeout(timer)
-        if (error.code === 'ENOENT') {
-          reject(new HlsDownloadError(`找不到可执行文件 ${tool}`, error.message))
-          return
-        }
-        reject(error)
-      })
-      child.on('close', (code) => {
-        clearTimeout(timer)
-        if (code === 0) {
-          resolve({ stdout, stderr })
-          return
-        }
-        reject(
-          new HlsDownloadError(
-            `${tool} 执行失败（退出码 ${code}）`,
-            stderr.trim().split('\n').slice(-8).join('\n'),
-          ),
-        )
-      })
-    })
-
-  return {
-    isAvailable: async (tool) => {
-      try {
-        await run(tool, ['-version'], 15_000)
-        return true
-      } catch {
-        return false
-      }
-    },
-    run,
-  }
 }
 
 /**
@@ -248,71 +122,6 @@ export function detectHls(input: {
     // URL 解析失败时只能依赖 content-type 与内容特征
   }
   return false
-}
-
-function resolveContainer(outputPath: string): string {
-  const extension = path.extname(outputPath).toLowerCase()
-  if (extension === '.mkv') return 'matroska'
-  if (extension === '.webm') return 'webm'
-  if (extension === '.ts' || extension === '.m2ts') return 'mpegts'
-  if (extension === '.mov') return 'mov'
-  return 'mp4'
-}
-
-/**
- * 本地重写的播放列表：只引用本地文件路径，ffmpeg 因此不会访问任何远程地址。
- * EXT-X-MAP 在初始化分片切换的位置原样输出，保持 fMP4 的分片边界语义。
- */
-export function buildLocalPlaylist(plan: TrackPlan, files: Map<string, string>): string {
-  const lines: string[] = ['#EXTM3U', '#EXT-X-VERSION:7']
-  const targetDuration = Math.max(1, Math.ceil(plan.playlist.targetDuration || 0))
-  lines.push(`#EXT-X-TARGETDURATION:${targetDuration}`)
-  lines.push('#EXT-X-MEDIA-SEQUENCE:0')
-  let currentInit: string | null = null
-  for (const segment of plan.playlist.segments) {
-    if (segment.discontinuity) lines.push('#EXT-X-DISCONTINUITY')
-    if (segment.initUrl && segment.initUrl !== currentInit) {
-      const initPath = files.get(segment.initUrl)
-      if (!initPath) {
-        throw new HlsDownloadError(`本地播放列表缺少初始化分片: ${segment.initUrl}`)
-      }
-      lines.push(`#EXT-X-MAP:URI="${initPath}"`)
-      currentInit = segment.initUrl
-    }
-    lines.push(`#EXTINF:${segment.duration.toFixed(3)},`)
-    const local = files.get(segment.url)
-    if (!local) {
-      throw new HlsDownloadError(`本地播放列表缺少分片文件: ${segment.url}`)
-    }
-    lines.push(local)
-  }
-  if (plan.playlist.endList) lines.push('#EXT-X-ENDLIST')
-  return `${lines.join('\n')}\n`
-}
-
-function parseFfprobe(stdout: string): { duration?: number; width?: number; height?: number } {
-  let parsed: unknown
-  try {
-    parsed = JSON.parse(stdout)
-  } catch {
-    throw new HlsDownloadError('ffprobe 输出不是合法 JSON')
-  }
-  const result: { duration?: number; width?: number; height?: number } = {}
-  if (parsed && typeof parsed === 'object') {
-    const root = parsed as { format?: { duration?: string }; streams?: unknown[] }
-    const duration = Number(root.format?.duration)
-    if (Number.isFinite(duration)) result.duration = duration
-    const streams = Array.isArray(root.streams) ? root.streams : []
-    for (const stream of streams) {
-      if (!stream || typeof stream !== 'object') continue
-      const entry = stream as { codec_type?: string; width?: number; height?: number }
-      if (entry.codec_type === 'video' && result.width === undefined) {
-        if (typeof entry.width === 'number') result.width = entry.width
-        if (typeof entry.height === 'number') result.height = entry.height
-      }
-    }
-  }
-  return result
 }
 
 function buildTasks(tracks: TrackPlan[], outputDir: string, filePrefix: string): DownloadTask[] {
@@ -346,101 +155,6 @@ function buildTasks(tracks: TrackPlan[], outputDir: string, filePrefix: string):
     })
   }
   return tasks
-}
-
-/** 清理输出目录里属于本任务前缀的临时文件 */
-async function removeTempFiles(
-  outputDir: string,
-  filePrefix: string,
-  suffixes: string[],
-): Promise<void> {
-  let entries: string[]
-  try {
-    entries = await readdir(outputDir)
-  } catch {
-    return
-  }
-  for (const entry of entries) {
-    if (!entry.startsWith(filePrefix)) continue
-    if (suffixes.some((suffix) => entry.endsWith(suffix))) {
-      await rm(path.join(outputDir, entry), { force: true })
-    }
-  }
-}
-
-async function loadCheckpoint(checkpointPath: string): Promise<CheckpointFile | null> {
-  try {
-    const raw = await readFile(checkpointPath, 'utf8')
-    const parsed = JSON.parse(raw) as CheckpointFile
-    if (!parsed || parsed.version !== CHECKPOINT_VERSION || !Array.isArray(parsed.files)) {
-      return null
-    }
-    return parsed
-  } catch {
-    return null
-  }
-}
-
-/**
- * 原子提交：覆盖时用 rename 直接替换；不覆盖时用同目录 hard link + unlink，
- * link 在目标已存在时会失败，从而不会破坏旧文件。
- */
-async function commitFile(
-  sourcePath: string,
-  targetPath: string,
-  overwrite: boolean,
-): Promise<void> {
-  if (overwrite) {
-    try {
-      await rename(sourcePath, targetPath)
-      return
-    } catch (error) {
-      // 跨设备时 rename 会失败，退化成先复制再删除，语义仍然是“替换”
-      if ((error as NodeJS.ErrnoException).code !== 'EXDEV') throw error
-      await copyFile(sourcePath, targetPath)
-      await rm(sourcePath, { force: true })
-      return
-    }
-  }
-  try {
-    await link(sourcePath, targetPath)
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'EXDEV') {
-      // 跨设备无法 hard link，退化成独占创建，目标已存在时同样会失败
-      await copyFile(sourcePath, targetPath, constants.COPYFILE_EXCL)
-      await rm(sourcePath, { force: true })
-      return
-    }
-    throw new HlsDownloadError(
-      `输出文件已存在，拒绝覆盖: ${targetPath}`,
-      error instanceof Error ? error.message : undefined,
-    )
-  }
-  await unlink(sourcePath).catch(() => undefined)
-}
-
-/**
- * ffmpeg 的 hls demuxer 会校验分片文件扩展名，本地临时文件用的是 .part，
- * 需要放开扩展名限制。不同 ffmpeg 版本支持的选项不同，因此先探测再拼参数。
- * 探测结果按 runner 缓存，避免注入不同 runner 时互相污染。
- */
-const hlsDemuxerOptions = new WeakMap<HlsToolRunner, Set<string>>()
-
-async function detectHlsDemuxerOptions(tools: HlsToolRunner): Promise<Set<string>> {
-  const cached = hlsDemuxerOptions.get(tools)
-  if (cached) return cached
-  const options = new Set<string>()
-  try {
-    const { stdout } = await tools.run('ffmpeg', ['-hide_banner', '-h', 'demuxer=hls'], 15_000)
-    for (const line of stdout.split('\n')) {
-      const match = /^\s+-(\w+)\s/.exec(line)
-      if (match?.[1]) options.add(match[1])
-    }
-  } catch {
-    // 探测失败时按最保守的默认值处理
-  }
-  hlsDemuxerOptions.set(tools, options)
-  return options
 }
 
 export async function downloadMediaWithHls(

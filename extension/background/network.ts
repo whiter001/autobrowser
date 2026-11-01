@@ -5,9 +5,32 @@ import type {
   TabInput,
   TabWithId,
 } from './types.js'
-import { buildHarPayload, compareHarRecords } from '../../src/core/har.js'
+import { compareHarRecords } from '../../src/core/har.js'
 import { paginateList } from './pagination.js'
 import { getPageEpoch } from './targeting.js'
+import { buildHar, buildHarEntry } from './network-har.js'
+import {
+  createBodyFetcher,
+  encodeBase64,
+  stringifyNetworkBody,
+  summarizeStoredBody,
+} from './network-body.js'
+import {
+  createHarCaptureController,
+  DEFAULT_HAR_MAX_BODY_BYTES,
+  DEFAULT_HAR_MAX_REQUESTS,
+  getHarMaxBodyBytes,
+} from './network-capture.js'
+import {
+  createNetworkRequestKey,
+  evictedRequests,
+  getNetworkRequestById,
+  matchesNetworkRequestFilters,
+  normalizeHeaderPairs,
+  normalizeHeaders,
+  summarizeNetworkRequest,
+  upsertNetworkRequest,
+} from './network-records.js'
 
 type SendDebuggerCommand = <TResult = unknown>(
   tabId: number,
@@ -117,53 +140,25 @@ function stripUrlFragment(url: string): string {
   return hashIndex === -1 ? url : url.slice(0, hashIndex)
 }
 
-function createNetworkRequestKey(tabId: number | null, requestId: string): string {
-  return `${tabId === null ? 'global' : tabId}:${requestId}`
-}
-
-function normalizeHeaders(headers: Record<string, unknown> | undefined): Record<string, string> {
-  if (!headers || typeof headers !== 'object') {
-    return {}
+function matchesNetworkRoute(pattern: string, url: string): boolean {
+  const normalizedPattern = String(pattern || '').trim()
+  if (!normalizedPattern) {
+    return false
   }
 
-  return Object.fromEntries(
-    Object.entries(headers).map(([name, value]) => [String(name), String(value ?? '')]),
-  )
-}
-
-function normalizeHeaderPairs(
-  headers: Record<string, string>,
-): Array<{ name: string; value: string }> {
-  return Object.entries(headers).map(([name, value]) => ({ name, value }))
-}
-
-function encodeBase64(value: string): string {
-  const bytes = new TextEncoder().encode(value)
-  const chunk = 8192
-  let binary = ''
-  for (let i = 0; i < bytes.length; i += chunk) {
-    binary += String.fromCharCode.apply(null, Array.from(bytes.subarray(i, i + chunk)))
+  if (normalizedPattern === '*') {
+    return true
   }
-  return btoa(binary)
+
+  return String(url || '').includes(normalizedPattern)
 }
 
-function stringifyNetworkBody(body: unknown): { text: string; base64Encoded: boolean } {
-  // 若 body 已经是字符串则直接使用，避免 JSON.stringify 产生双重引号。
-  const text = typeof body === 'string' ? body : `${JSON.stringify(body, null, 2)}\n`
-  return { text, base64Encoded: false }
+function findMatchingNetworkRoute(state: ExtensionState, url: string): NetworkRoute | null {
+  return state.network.routes.find((route) => matchesNetworkRoute(route.pattern, url)) || null
 }
 
-const DEFAULT_HAR_MAX_REQUESTS = 1000
-const DEFAULT_HAR_MAX_BODY_BYTES = 256 * 1024
-/** 全局请求列表的绝对上限，与 HAR 配置无关，防止长时间运行时内存无界增长 */
-const GLOBAL_REQUEST_HARD_CAP = 10_000
-const HAR_CHECKPOINT_STORAGE_KEY = 'autobrowser.harCheckpoint'
-const BODY_FETCH_CONCURRENCY = 4
-const BODY_FETCH_QUEUE_LIMIT = 1000
-const BODY_FETCH_TIMEOUT_MS = 10_000
 /** 未被 requestWillBeSent 消费的拦截条目上限，防止只被 mock/abort 的请求长期堆积 */
 const PENDING_INTERCEPTION_MAX = 512
-const evictedRequests = new WeakSet<NetworkRequestRecord>()
 
 /**
  * 一次 Fetch 拦截的上下文。按 networkId 暂存到对应的 Network 事件到达为止：
@@ -181,513 +176,6 @@ interface PendingInterception {
   superseded: boolean
 }
 
-interface HarCapture {
-  id: string
-  tabId: number | null
-  startedAt: string | null
-  maxRequests: number | null
-  maxBodyBytes: number | null
-  includePattern: string | null
-  excludePattern: string | null
-  pending: Set<Promise<void>>
-}
-
-interface BodyFetchTask {
-  record: NetworkRequestRecord
-  capture: HarCapture | null
-  maxBodyBytes: number | null
-  done: Promise<void>
-  finish: (error?: string) => void
-  settled: boolean
-}
-
-function estimateTextByteLength(text: string): number {
-  return new TextEncoder().encode(text).length
-}
-
-function truncateTextByBytes(text: string, maxBytes: number): string {
-  if (maxBytes <= 0 || !text) {
-    return ''
-  }
-
-  const encoder = new TextEncoder()
-  const bytes = encoder.encode(text)
-
-  if (bytes.length <= maxBytes) {
-    return text
-  }
-
-  const decoder = new TextDecoder('utf-8', { fatal: false })
-  // Use maxBytes as array length to decode back to string safely
-  // The decoder deals with boundary multi-byte characters and might output a replacement character
-  // but it avoids O(N) single-character loops.
-  return decoder.decode(bytes.subarray(0, maxBytes)).replace(/\uFFFD$/, '')
-}
-
-function summarizeStoredBody(
-  body: string,
-  base64Encoded: boolean,
-  maxBytes: number | null,
-): { text: string; byteLength: number; truncated: boolean } {
-  const byteLength = base64Encoded
-    ? Math.max(0, Math.floor(body.length * 0.75))
-    : estimateTextByteLength(body)
-
-  if (maxBytes === null || byteLength <= maxBytes) {
-    return { text: body, byteLength, truncated: false }
-  }
-
-  if (base64Encoded) {
-    return { text: '', byteLength, truncated: true }
-  }
-
-  return {
-    text: truncateTextByBytes(body, maxBytes),
-    byteLength,
-    truncated: true,
-  }
-}
-
-function getHarMaxRequests(state: ExtensionState): number | null {
-  return state.network.harMaxRequests === null
-    ? null
-    : (state.network.harMaxRequests ?? DEFAULT_HAR_MAX_REQUESTS)
-}
-
-function getHarMaxBodyBytes(state: ExtensionState): number | null {
-  return state.network.harMaxBodyBytes === null
-    ? null
-    : (state.network.harMaxBodyBytes ?? DEFAULT_HAR_MAX_BODY_BYTES)
-}
-
-function matchesNetworkRoute(pattern: string, url: string): boolean {
-  const normalizedPattern = String(pattern || '').trim()
-  if (!normalizedPattern) {
-    return false
-  }
-
-  if (normalizedPattern === '*') {
-    return true
-  }
-
-  return String(url || '').includes(normalizedPattern)
-}
-
-function parseNetworkStatusFilter(
-  statusFilter: string,
-): (status: number | null | undefined) => boolean {
-  const tokens = String(statusFilter || '')
-    .split(',')
-    .map((token) => token.trim())
-    .filter(Boolean)
-
-  if (tokens.length === 0) {
-    return () => true
-  }
-
-  return (status) => {
-    const numericStatus = Number(status || 0)
-    return tokens.some((token) => {
-      if (/^\dxx$/i.test(token)) {
-        return Math.floor(numericStatus / 100) === Number(token[0])
-      }
-
-      if (/^\d{3}-\d{3}$/.test(token)) {
-        const [start, end] = token.split('-').map((value) => Number(value))
-        return numericStatus >= start && numericStatus <= end
-      }
-
-      return numericStatus === Number(token)
-    })
-  }
-}
-
-function findMatchingNetworkRoute(state: ExtensionState, url: string): NetworkRoute | null {
-  return state.network.routes.find((route) => matchesNetworkRoute(route.pattern, url)) || null
-}
-
-function upsertNetworkRequest(
-  state: ExtensionState,
-  record: NetworkRequestRecord,
-): NetworkRequestRecord {
-  const key = String(record.id || '')
-  if (!key) {
-    return record
-  }
-
-  const existing: NetworkRequestRecord = state.network.requestMap.get(key) || { id: key }
-  // 保持单次请求对象身份，异步 body 只写回该对象，不按可复用的 CDP id 覆盖新请求。
-  const merged = Object.assign(existing, record)
-  state.network.requestMap.set(key, merged)
-
-  const index = state.network.requestIndex.get(key)
-  if (index !== undefined) {
-    state.network.requests[index] = merged
-  } else {
-    state.network.requestIndex.set(key, state.network.requests.length)
-    state.network.requests.push(merged)
-  }
-
-  // 全局缓冲只受硬上限约束：HAR 的 maxRequests 是某次 capture 的导出窗口，
-  // 若在这里裁剪会毁掉与 HAR 无关的跨 tab 历史（且 stop 后无法恢复）。
-  if (state.network.requests.length > GLOBAL_REQUEST_HARD_CAP) {
-    const removed = state.network.requests.splice(
-      0,
-      state.network.requests.length - GLOBAL_REQUEST_HARD_CAP,
-    )
-    for (const item of removed) {
-      if (item && typeof item.id === 'string') {
-        evictedRequests.add(item)
-        state.network.requestMap.delete(item.id)
-      }
-    }
-    // splice 会让所有下标前移，裁剪不频繁，直接整体重建下标表最简单可靠
-    state.network.requestIndex.clear()
-    for (let i = 0; i < state.network.requests.length; i += 1) {
-      const itemId = state.network.requests[i]?.id
-      if (typeof itemId === 'string') {
-        state.network.requestIndex.set(itemId, i)
-      }
-    }
-  }
-
-  return merged
-}
-
-function getNetworkRequestById(
-  state: ExtensionState,
-  requestId: string,
-  tabId?: number | null,
-): NetworkRequestRecord | null {
-  if (!requestId) {
-    return null
-  }
-
-  const exact = state.network.requestMap.get(requestId)
-  if (exact && (typeof tabId !== 'number' || exact.tabId === tabId)) {
-    return exact
-  }
-  const matches = state.network.requests.filter(
-    (item) =>
-      (item?.requestId === requestId || item?.id === requestId) &&
-      (typeof tabId !== 'number' || item.tabId === tabId),
-  )
-  if (new Set(matches.map((item) => item.tabId)).size > 1) {
-    throw new Error(
-      `network request id is ambiguous across tabs: ${requestId}; use the full tabId:requestId id`,
-    )
-  }
-  return (
-    matches.find((item) => item.id === createNetworkRequestKey(item.tabId ?? null, requestId)) ||
-    matches.at(-1) ||
-    null
-  )
-}
-
-function summarizeNetworkRequest(
-  record: NetworkRequestRecord,
-  includeDetails = false,
-): Record<string, unknown> {
-  const summary: Record<string, unknown> = {
-    id: record.id,
-    requestId: record.requestId,
-    tabId: record.tabId,
-    pageEpoch: record.pageEpoch ?? null,
-    url: record.url,
-    method: record.method,
-    resourceType: record.resourceType,
-    status: record.status ?? null,
-    statusText: record.statusText ?? null,
-    routeId: record.routeId ?? null,
-    routeAction: record.routeAction ?? null,
-    finishedAt: record.finishedAt ?? null,
-    startedAt: record.startedAt ?? null,
-    durationMs: record.durationMs ?? null,
-    errorText: record.errorText ?? null,
-    requestBodyTruncated: Boolean(record.postDataTruncated),
-    requestBodyBytes: record.postDataBytes ?? null,
-    responseBodyTruncated: Boolean(record.responseBodyTruncated),
-    responseBodyBytes: record.responseBodyBytes ?? null,
-    responseMimeType: record.responseMimeType ?? null,
-  }
-  if (includeDetails) {
-    summary.requestHeaders = record.requestHeaders ?? null
-    summary.responseHeaders = record.responseHeaders ?? null
-    summary.requestBody = typeof record.postData === 'string' ? record.postData : null
-    summary.responseBody = typeof record.responseBody === 'string' ? record.responseBody : null
-  }
-  return summary
-}
-
-/** 从 URL 解析 query 参数数组（HAR queryString 字段），无 query 时返回空数组 */
-function parseQueryString(url: string | undefined): Array<{ name: string; value: string }> {
-  if (!url) {
-    return []
-  }
-
-  try {
-    const parsed = new URL(url, 'http://localhost')
-    const query: Array<{ name: string; value: string }> = []
-    parsed.searchParams.forEach((value, name) => {
-      query.push({ name, value })
-    })
-    return query
-  } catch {
-    // URL 无法解析（如 blob:/data:），没有可拆分的 query
-    return []
-  }
-}
-
-/** CDP 的 protocol 值（h2/http/1.1）转 HAR 惯例的 HTTP 版本号写法，缺失时回退 HTTP/1.1 */
-function normalizeHttpVersion(protocol: string | undefined): string {
-  const normalized = String(protocol || '')
-    .trim()
-    .toLowerCase()
-  if (normalized.startsWith('h2')) {
-    return 'HTTP/2'
-  }
-  if (normalized.startsWith('h3')) {
-    return 'HTTP/3'
-  }
-  if (normalized.startsWith('http/1')) {
-    return 'HTTP/1.1'
-  }
-  return 'HTTP/1.1'
-}
-
-/**
- * CDP Network.ResourceTiming 只有 requestTime 是秒基准，其余字段（dnsStart/connectStart/...）
- * 已经是相对请求开始的毫秒偏移，因此阶段差不能再乘 1000，也不能拿 requestTime 当基准去减。
- */
-function timingOffset(timing: Record<string, number>, key: string): number | null {
-  const value = timing[key]
-  return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : null
-}
-
-/** 阶段差（毫秒），端点缺失或出现负值（乱序/不可信数据）视为不可用 */
-function timingDelta(
-  timing: Record<string, number>,
-  fromKey: string,
-  toKey: string,
-): number | null {
-  const from = timingOffset(timing, fromKey)
-  const to = timingOffset(timing, toKey)
-  if (from === null || to === null) {
-    return null
-  }
-  const delta = Math.round(to - from)
-  return delta >= 0 ? delta : null
-}
-
-/**
- * HAR timings 映射（DevTools HAR 也是近似值，参考其惯例）：
- * - blocked = 首个可用阶段偏移（dnsStart → connectStart → sslStart → sendStart）；
- * - dns/connect/ssl/send/wait 用对应阶段差（毫秒），wait = receiveHeadersEnd - sendEnd；
- * - receive 沿用事件时间戳（loadingFinished - responseReceived）的 receiveMs 近似；
- * - 有 timing 时缺失的阶段记 -1（HAR 惯例的“不可用”），完全没有 timing 时保持旧的
- *   send/wait/receive 形状，避免破坏老数据。
- */
-function buildHarTimings(record: NetworkRequestRecord): Record<string, number> {
-  const timing = record.timing
-  if (!timing || typeof timing !== 'object') {
-    return {
-      send: 0,
-      wait: typeof record.waitMs === 'number' ? record.waitMs : 0,
-      receive: typeof record.receiveMs === 'number' ? record.receiveMs : 0,
-    }
-  }
-
-  const blocked =
-    timingOffset(timing, 'dnsStart') ??
-    timingOffset(timing, 'connectStart') ??
-    timingOffset(timing, 'sslStart') ??
-    timingOffset(timing, 'sendStart')
-  const dns = timingDelta(timing, 'dnsStart', 'dnsEnd')
-  const connect = timingDelta(timing, 'connectStart', 'connectEnd')
-  const ssl = timingDelta(timing, 'sslStart', 'sslEnd')
-  const send = timingDelta(timing, 'sendStart', 'sendEnd')
-  const wait = timingDelta(timing, 'sendEnd', 'receiveHeadersEnd')
-
-  return {
-    blocked: blocked ?? -1,
-    dns: dns ?? -1,
-    connect: connect ?? -1,
-    ssl: ssl ?? -1,
-    send: send ?? -1,
-    wait: wait ?? (typeof record.waitMs === 'number' ? record.waitMs : -1),
-    receive: typeof record.receiveMs === 'number' ? record.receiveMs : -1,
-  }
-}
-
-function buildHarEntry(record: NetworkRequestRecord): Record<string, unknown> {
-  const requestHeaders = normalizeHeaderPairs(normalizeHeaders(record.requestHeaders))
-  const responseHeaders = normalizeHeaderPairs(normalizeHeaders(record.responseHeaders))
-  const requestBody = typeof record.postData === 'string' ? record.postData : ''
-  const requestBodyTruncated = Boolean(record.postDataTruncated)
-  const requestBodyBytes =
-    typeof record.postDataBytes === 'number'
-      ? record.postDataBytes
-      : estimateTextByteLength(requestBody)
-  const responseBody = typeof record.responseBody === 'string' ? record.responseBody : ''
-  const responseBodyBase64 = Boolean(record.responseBodyBase64)
-  const responseBodyTruncated = Boolean(record.responseBodyTruncated)
-  const responseBodyError =
-    typeof record.responseBodyError === 'string' ? record.responseBodyError : ''
-  const responseBodyBytes =
-    typeof record.responseBodyBytes === 'number'
-      ? record.responseBodyBytes
-      : responseBodyBase64
-        ? Math.max(0, Math.floor(responseBody.length * 0.75))
-        : estimateTextByteLength(responseBody)
-  const responseMimeType = String(record.responseMimeType || 'application/octet-stream')
-  const responseContent: Record<string, unknown> = {
-    size: responseBodyBytes,
-    mimeType: responseMimeType,
-  }
-
-  if (responseBodyError) {
-    responseContent.comment = `body unavailable: ${responseBodyError}`
-  } else if (responseBodyTruncated) {
-    responseContent.comment = 'body truncated by autobrowser'
-  }
-
-  if (responseBody) {
-    responseContent.text = responseBody
-    if (responseBodyBase64 && !responseBodyTruncated) {
-      responseContent.encoding = 'base64'
-    }
-  }
-
-  // 请求/响应 cookie 不做解析：从 header 还原 Set-Cookie/Cookie 成本高、收益低，
-  // 需要时可直接看 requestHeaders/responseHeaders
-  return {
-    startedDateTime: record.startedAt,
-    time: typeof record.durationMs === 'number' ? record.durationMs : 0,
-    request: {
-      method: record.method || 'GET',
-      url: record.url || '',
-      httpVersion: normalizeHttpVersion(record.protocol),
-      cookies: [],
-      headers: requestHeaders,
-      queryString: parseQueryString(record.url),
-      headersSize: -1,
-      bodySize: requestBodyBytes,
-      postData:
-        typeof record.postData === 'string'
-          ? {
-              mimeType: 'application/json',
-              text: requestBody,
-              ...(requestBodyTruncated
-                ? {
-                    comment: 'body truncated by autobrowser',
-                  }
-                : {}),
-            }
-          : undefined,
-    },
-    response: {
-      status: Number(record.status || 0),
-      statusText: String(record.statusText || ''),
-      httpVersion: normalizeHttpVersion(record.protocol),
-      cookies: [],
-      headers: responseHeaders,
-      content: responseContent,
-      redirectURL:
-        responseHeaders.find((header) => header.name.toLowerCase() === 'location')?.value || '',
-      headersSize: -1,
-      bodySize: responseBodyBytes,
-    },
-    cache: {},
-    timings: buildHarTimings(record),
-    pageref:
-      record.tabId === null || record.tabId === undefined ? undefined : `tab-${record.tabId}`,
-  }
-}
-
-function buildHar(records: NetworkRequestRecord[]): Record<string, unknown> {
-  const ordered = [...records].sort((left, right) => {
-    // 同毫秒多跳不能按随机归档 id 排序；先按原始请求分组再按跳序排列。
-    const compared = compareHarRecords(
-      {
-        ...left,
-        id: left.requestId ? createNetworkRequestKey(left.tabId ?? null, left.requestId) : left.id,
-      },
-      {
-        ...right,
-        id: right.requestId
-          ? createNetworkRequestKey(right.tabId ?? null, right.requestId)
-          : right.id,
-      },
-    )
-    return compared || Number(left.hopSequence || 0) - Number(right.hopSequence || 0)
-  })
-  return buildHarPayload(ordered.map((record) => buildHarEntry(record)))
-}
-
-function matchesNetworkRequestFilters(
-  record: NetworkRequestRecord,
-  filters: Record<string, unknown>,
-): boolean {
-  const filterText = String(filters.filter || '')
-    .trim()
-    .toLowerCase()
-  const typeFilter = String(filters.type || '')
-    .split(',')
-    .map((value) => value.trim().toLowerCase())
-    .filter(Boolean)
-  const methodFilter = String(filters.method || '')
-    .trim()
-    .toUpperCase()
-  const statusMatches = parseNetworkStatusFilter(String(filters.status || ''))
-  if (typeof filters.tabId === 'number' && record.tabId !== filters.tabId) return false
-  if (typeof filters.pageEpoch === 'number' && record.pageEpoch !== filters.pageEpoch) return false
-  if (
-    filters.currentEpochs &&
-    typeof filters.currentEpochs === 'object' &&
-    typeof record.tabId === 'number'
-  ) {
-    const currentEpoch = (filters.currentEpochs as Record<number, number>)[record.tabId]
-    if (typeof currentEpoch === 'number' && record.pageEpoch !== currentEpoch) return false
-  }
-
-  if (filterText) {
-    const haystack = [
-      record.id,
-      record.requestId,
-      record.url,
-      record.method,
-      record.resourceType,
-      record.statusText,
-      record.errorText,
-    ]
-      .map((value) => String(value || '').toLowerCase())
-      .join(' ')
-
-    if (!haystack.includes(filterText)) {
-      return false
-    }
-  }
-
-  if (typeFilter.length > 0) {
-    const requestType = String(record.resourceType || '')
-      .trim()
-      .toLowerCase()
-    if (!typeFilter.includes(requestType)) {
-      return false
-    }
-  }
-
-  if (methodFilter && String(record.method || '').toUpperCase() !== methodFilter) {
-    return false
-  }
-
-  if (!statusMatches(record.status)) {
-    return false
-  }
-
-  return true
-}
-
 export function createNetworkDomain({
   state,
   getTargetTab,
@@ -703,19 +191,8 @@ export function createNetworkDomain({
     }
   },
 }: NetworkDomainDependencies) {
-  let checkpointTimer: ReturnType<typeof setTimeout> | null = null
-  let capture: HarCapture | null = state.network.harRecording ? createCapture(null) : null
-  // Legacy recording state has no original ID; its synthetic internal identity is not public.
-  const unidentifiedCapture = capture
-  function getCaptureId(session: HarCapture | null): string | null {
-    return session && session !== unidentifiedCapture ? session.id : null
-  }
-  let checkpointWrites: Promise<void> = Promise.resolve()
-  /** 当前 SW 内最近一次 checkpoint 写入失败的原因；status 用它解释「为什么 recover 可能拿不到数据」 */
-  let lastCheckpointError: string | null = null
-  const bodyTasks = new WeakMap<NetworkRequestRecord, BodyFetchTask>()
-  const bodyQueue: BodyFetchTask[] = []
-  let activeBodyFetches = 0
+  const captureController = createHarCaptureController({ state, storageLocalGet, storageLocalSet })
+  const bodyFetcher = createBodyFetcher({ state, sendRawDebuggerCommand })
   /** 等待对应 Network 事件确认的拦截条目 */
   const pendingInterceptions = new Map<string, PendingInterception>()
   /** Fetch id 按 hop 唯一；绑在对象上，Network-first 新对象不会继承上一跳身份，淘汰后可回收 */
@@ -791,97 +268,6 @@ export function createNetworkDomain({
     }
   }
 
-  function createCapture(
-    tabId: number | null,
-    options: { includePattern?: string; excludePattern?: string } = {},
-  ): HarCapture {
-    return {
-      id: crypto.randomUUID(),
-      tabId,
-      startedAt: state.network.harStartedAt,
-      maxRequests: getHarMaxRequests(state),
-      maxBodyBytes: getHarMaxBodyBytes(state),
-      includePattern: options.includePattern || null,
-      excludePattern: options.excludePattern || null,
-      pending: new Set(),
-    }
-  }
-
-  function captureMatchesUrl(session: HarCapture, url: string): boolean {
-    if (session.includePattern && !url.includes(session.includePattern)) return false
-    return !session.excludePattern || !url.includes(session.excludePattern)
-  }
-
-  function captureRequests(session: HarCapture | null): NetworkRequestRecord[] {
-    const records = state.network.requests.filter((record) =>
-      session
-        ? (session.tabId === null || record.tabId === session.tabId) &&
-          captureMatchesUrl(session, String(record.url || '')) &&
-          (record.harCaptureId === session.id ||
-            (record.harCaptureId === undefined &&
-              (!session.startedAt || String(record.startedAt || '') >= session.startedAt)))
-        : true,
-    )
-    const maxRequests = session?.maxRequests
-    // maxRequests 只收敛本次 capture 的导出窗口：按全局插入顺序取窗口内最新 N 条。
-    // 不裁剪全局缓冲，导出排序仍交给 buildHar。
-    if (typeof maxRequests !== 'number') {
-      return records
-    }
-    return maxRequests <= 0 ? [] : records.slice(-maxRequests)
-  }
-
-  function checkpointPayload(
-    recording = state.network.harRecording,
-    session = capture,
-    requests = captureRequests(session),
-  ): Record<string, unknown> {
-    return {
-      recording,
-      captureId: getCaptureId(session),
-      captureTabId: session?.tabId ?? null,
-      includePattern: session?.includePattern ?? null,
-      excludePattern: session?.excludePattern ?? null,
-      startedAt: session?.startedAt ?? state.network.harStartedAt,
-      maxRequests: session ? session.maxRequests : state.network.harMaxRequests,
-      maxBodyBytes: session ? session.maxBodyBytes : state.network.harMaxBodyBytes,
-      updatedAt: new Date().toISOString(),
-      requests,
-    }
-  }
-
-  async function writeHarCheckpoint(payload = checkpointPayload()): Promise<void> {
-    // 串行落盘避免旧 stop 的慢写覆盖新 capture 的 checkpoint。
-    const write = checkpointWrites.then(() =>
-      storageLocalSet({
-        [HAR_CHECKPOINT_STORAGE_KEY]: payload,
-      }),
-    )
-    checkpointWrites = write.catch(() => {})
-    try {
-      await write
-      lastCheckpointError = null
-    } catch (error) {
-      lastCheckpointError = error instanceof Error ? error.message : String(error)
-      throw error
-    }
-  }
-
-  function scheduleHarCheckpoint(): void {
-    if (!state.network.harRecording || checkpointTimer) return
-    checkpointTimer = setTimeout(() => {
-      checkpointTimer = null
-      void writeHarCheckpoint().catch((error) => console.error('failed to checkpoint HAR', error))
-    }, 500)
-  }
-
-  async function readHarCheckpoint(): Promise<Record<string, unknown> | null> {
-    const result = await storageLocalGet(HAR_CHECKPOINT_STORAGE_KEY)
-    const checkpoint = result?.[HAR_CHECKPOINT_STORAGE_KEY]
-    return checkpoint && typeof checkpoint === 'object'
-      ? (checkpoint as Record<string, unknown>)
-      : null
-  }
   async function refreshInterceptors(): Promise<void> {
     await Promise.allSettled(
       Array.from(state.targeting.attachedTabs).map(async (tabId) => {
@@ -917,11 +303,12 @@ export function createNetworkDomain({
         typeof request.postData === 'string'
           ? summarizeStoredBody(request.postData, false, getHarMaxBodyBytes(state))
           : null
+      const capture = captureController.getCapture()
       const capturedHarId =
         state.network.harRecording &&
         capture &&
         (capture.tabId === null || capture.tabId === tabId) &&
-        captureMatchesUrl(capture, String(request.url || ''))
+        captureController.captureMatchesUrl(capture, String(request.url || ''))
           ? capture.id
           : ''
       const existing = state.network.requestMap.get(key)
@@ -1095,125 +482,6 @@ export function createNetworkDomain({
     }
   }
 
-  function bodyUnavailable(record: NetworkRequestRecord): string | null {
-    if (evictedRequests.has(record)) return 'request was evicted before body retrieval'
-    if (record.redirectArchived) return 'redirect hop body is no longer available from CDP'
-    if (typeof record.tabId !== 'number' || !record.requestId) return 'no live CDP request identity'
-    if (
-      state.network.requestMap.get(createNetworkRequestKey(record.tabId, record.requestId)) !==
-      record
-    ) {
-      return 'historical request is no longer the live CDP request'
-    }
-    if (record.pageEpoch !== getPageEpoch(state, record.tabId))
-      return 'historical page epoch; body is no longer available'
-    if (record.errorText) return `request failed: ${record.errorText}`
-    if (!record.finishedAt) return 'request has not finished; retry detail after loading finishes'
-    return null
-  }
-
-  function pumpBodyQueue(): void {
-    for (let index = bodyQueue.length - 1; index >= 0; index -= 1) {
-      const task = bodyQueue[index]!
-      const reason = bodyUnavailable(task.record)
-      if (task.settled || reason) {
-        bodyQueue.splice(index, 1)
-        task.finish(reason || undefined)
-      }
-    }
-    while (activeBodyFetches < BODY_FETCH_CONCURRENCY && bodyQueue.length > 0) {
-      const task = bodyQueue.shift()!
-      activeBodyFetches += 1
-      void runBodyFetch(task)
-    }
-  }
-
-  async function runBodyFetch(task: BodyFetchTask): Promise<void> {
-    const { record } = task
-    try {
-      const result = await sendRawDebuggerCommand<{ body?: string; base64Encoded?: boolean }>(
-        record.tabId as number,
-        'Network.getResponseBody',
-        { requestId: record.requestId },
-      )
-      // CDP 不支持流式截断；maxBodyBytes 只限制收到完整响应后的存储量。
-      // stop 后仍可写自己的旧对象，但淘汰、重定向及逻辑超时后的结果丢弃。
-      if (!task.settled && !evictedRequests.has(record) && !record.redirectArchived) {
-        const summary = summarizeStoredBody(
-          String(result?.body || ''),
-          Boolean(result?.base64Encoded),
-          task.maxBodyBytes,
-        )
-        Object.assign(record, {
-          responseBody: summary.text,
-          responseBodyTruncated: summary.truncated,
-          responseBodyBytes: summary.byteLength,
-          responseBodyBase64: Boolean(result?.base64Encoded),
-          responseBodyError: undefined,
-          responseMimeType: record.responseMimeType || 'application/octet-stream',
-        })
-      }
-      task.finish()
-    } catch (error) {
-      task.finish(error instanceof Error ? error.message : String(error))
-    } finally {
-      // 超时不能释放真实 CDP 槽，否则卡死连接会持续累积底层请求。
-      activeBodyFetches -= 1
-      pumpBodyQueue()
-    }
-  }
-
-  function fetchRequestBody(
-    record: NetworkRequestRecord,
-    session: HarCapture | null,
-  ): Promise<void> {
-    const existing = bodyTasks.get(record)
-    if (existing) return existing.done
-    if (typeof record.responseBody === 'string') return Promise.resolve()
-    const reason = bodyUnavailable(record)
-    if (reason) {
-      record.responseBodyError = reason
-      return Promise.resolve()
-    }
-    pumpBodyQueue()
-    if (bodyQueue.length >= BODY_FETCH_QUEUE_LIMIT) {
-      record.responseBodyError =
-        'body fetch queue is full (1000 queued requests); retry detail later'
-      return Promise.resolve()
-    }
-    let resolve!: () => void
-    const done = new Promise<void>((complete) => {
-      resolve = complete
-    })
-    const task: BodyFetchTask = {
-      record,
-      capture: session,
-      maxBodyBytes: session ? session.maxBodyBytes : DEFAULT_HAR_MAX_BODY_BYTES,
-      done,
-      settled: false,
-      finish: (error) => {
-        if (task.settled) return
-        task.settled = true
-        clearTimeout(timer)
-        if (error && !evictedRequests.has(record)) record.responseBodyError = error
-        session?.pending.delete(done)
-        state.network.pendingBodyFetches.delete(done)
-        resolve()
-      },
-    }
-    // 等待队列也计入预算，stop 不会被排队工作无限拖延。
-    const timer = setTimeout(() => {
-      task.finish('Network.getResponseBody timed out after 10000ms (including queue wait)')
-      pumpBodyQueue()
-    }, BODY_FETCH_TIMEOUT_MS)
-    bodyTasks.set(record, task)
-    session?.pending.add(done)
-    state.network.pendingBodyFetches.add(done)
-    bodyQueue.push(task)
-    pumpBodyQueue()
-    return done
-  }
-
   async function handleEvent(
     source: NetworkDebuggerSource,
     method: string,
@@ -1286,6 +554,7 @@ export function createNetworkDomain({
         }
       }
 
+      const capture = captureController.getCapture()
       upsertNetworkRequest(state, {
         id: key,
         requestId,
@@ -1312,12 +581,12 @@ export function createNetworkDomain({
           state.network.harRecording &&
           capture &&
           (capture.tabId === null || capture.tabId === tabId) &&
-          captureMatchesUrl(capture, networkRequest.url)
+          captureController.captureMatchesUrl(capture, networkRequest.url)
             ? capture.id
             : '',
       })
-      pumpBodyQueue()
-      scheduleHarCheckpoint()
+      bodyFetcher.pumpBodyQueue()
+      captureController.scheduleHarCheckpoint()
       return
     }
 
@@ -1402,10 +671,11 @@ export function createNetworkDomain({
           typeof payload.encodedDataLength === 'number' ? payload.encodedDataLength : null,
       })
 
+      const capture = captureController.getCapture()
       if (record && state.network.harRecording && capture && record.harCaptureId === capture.id) {
-        void fetchRequestBody(record, capture)
+        void bodyFetcher.fetchRequestBody(record, capture)
       }
-      scheduleHarCheckpoint()
+      captureController.scheduleHarCheckpoint()
       return
     }
 
@@ -1429,7 +699,7 @@ export function createNetworkDomain({
         canceled: Boolean(payload.canceled),
         finishedAt: new Date().toISOString(),
       })
-      scheduleHarCheckpoint()
+      captureController.scheduleHarCheckpoint()
     }
   }
 
@@ -1528,7 +798,8 @@ export function createNetworkDomain({
     if (!record) {
       throw new Error(`network request not found: ${requestId}`)
     }
-    await fetchRequestBody(
+    const capture = captureController.getCapture()
+    await bodyFetcher.fetchRequestBody(
       record,
       state.network.harRecording && record.harCaptureId === capture?.id ? capture : null,
     )
@@ -1557,9 +828,9 @@ export function createNetworkDomain({
       options.maxRequests === undefined ? DEFAULT_HAR_MAX_REQUESTS : options.maxRequests
     state.network.harMaxBodyBytes =
       options.maxBodyBytes === undefined ? DEFAULT_HAR_MAX_BODY_BYTES : options.maxBodyBytes
-    const session = createCapture(tab.id, options)
-    capture = session
-    await writeHarCheckpoint()
+    const session = captureController.createCapture(tab.id, options)
+    captureController.setCapture(session)
+    await captureController.writeHarCheckpoint()
     return {
       recording: true,
       captureId: session.id,
@@ -1575,7 +846,7 @@ export function createNetworkDomain({
   async function stopHar(
     options: { captureId?: string; includeUrls?: boolean } = {},
   ): Promise<Record<string, unknown>> {
-    const session = capture
+    const session = captureController.getCapture()
     if (options.captureId !== undefined) {
       if (typeof options.captureId !== 'string' || !options.captureId.trim()) {
         throw new Error('captureId must be a non-empty string')
@@ -1583,7 +854,7 @@ export function createNetworkDomain({
       if (!state.network.harRecording || !session) {
         throw new Error('HAR capture is not recording')
       }
-      if (options.captureId !== getCaptureId(session)) {
+      if (options.captureId !== captureController.getCaptureId(session)) {
         throw new Error('HAR captureId does not match the active capture')
       }
     }
@@ -1593,30 +864,29 @@ export function createNetworkDomain({
     const startedAt = session?.startedAt ?? state.network.harStartedAt
     const stoppedAt = new Date().toISOString()
     // 快照持有旧记录对象与该 capture 的逻辑等待，不受后续 start/同 key 请求影响。
-    const requests = captureRequests(session)
+    const requests = captureController.captureRequests(session)
     const pending = [...(session?.pending || [])]
     state.network.harRecording = false
     state.network.harStartedAt = null
     state.network.harMaxRequests = DEFAULT_HAR_MAX_REQUESTS
     state.network.harMaxBodyBytes = DEFAULT_HAR_MAX_BODY_BYTES
-    if (checkpointTimer) {
-      clearTimeout(checkpointTimer)
-      checkpointTimer = null
-    }
+    captureController.clearCheckpointTimer()
     await Promise.allSettled(pending)
 
     const retained = requests.filter((record) => !evictedRequests.has(record))
     let checkpointError: string | null = null
     try {
-      if (capture === session && !state.network.harRecording) {
-        await writeHarCheckpoint(checkpointPayload(false, session, retained))
+      if (captureController.getCapture() === session && !state.network.harRecording) {
+        await captureController.writeHarCheckpoint(
+          captureController.checkpointPayload(false, session, retained),
+        )
       }
     } catch (error) {
       checkpointError = error instanceof Error ? error.message : String(error)
     }
     return {
       recording: false,
-      captureId: getCaptureId(session),
+      captureId: captureController.getCaptureId(session),
       ...(options.includeUrls
         ? { urls: [...new Set(retained.flatMap((record) => (record.url ? [record.url] : [])))] }
         : {}),
@@ -1638,13 +908,15 @@ export function createNetworkDomain({
   }
 
   async function getHarStatus(): Promise<Record<string, unknown>> {
-    const checkpoint = await readHarCheckpoint()
+    const checkpoint = await captureController.readHarCheckpoint()
     const requestCount = Array.isArray(checkpoint?.requests) ? checkpoint.requests.length : 0
+    const capture = captureController.getCapture()
+    const lastCheckpointError = captureController.getLastCheckpointError()
     return {
       recording: state.network.harRecording,
-      captureId: getCaptureId(capture),
+      captureId: captureController.getCaptureId(capture),
       captureTabId: capture?.tabId ?? null,
-      captureRequestCount: captureRequests(capture).length,
+      captureRequestCount: captureController.captureRequests(capture).length,
       startedAt: state.network.harStartedAt,
       requestCount: state.network.requests.length,
       checkpoint: checkpoint
@@ -1670,7 +942,7 @@ export function createNetworkDomain({
   }
 
   async function recoverHar(): Promise<Record<string, unknown>> {
-    const checkpoint = await readHarCheckpoint()
+    const checkpoint = await captureController.readHarCheckpoint()
     const requests = Array.isArray(checkpoint?.requests)
       ? (checkpoint.requests as NetworkRequestRecord[])
       : []

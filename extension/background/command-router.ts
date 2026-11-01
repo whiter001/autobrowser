@@ -1,30 +1,25 @@
+import { tabsQuery, tabsRemove, windowsCreate } from './chrome.js'
 import {
-  tabsCreate,
-  tabsQuery,
-  tabsRemove,
-  tabsUpdate,
-  windowsCreate,
-  windowsUpdate,
-} from './chrome.js'
-import {
-  getOrCreateTabHandle,
   getPageEpoch,
   rememberTargetTab,
   resolveEffectiveFrameSelector,
   resolveTabInput,
-  toTabSummary,
 } from './targeting.js'
-import { serializeCommandFailure, type SerializedCommandError } from './errors.js'
 import { createCommandQueue, type CommandExecutionContext } from './command-queue.js'
+import { createBatchCommandHandler } from './command-batch.js'
+import { createCommandMetaBuilder } from './command-meta.js'
+import { createDiagnosticsCommandHandler } from './command-router-diagnostics.js'
+import { createNetworkCommandHandler } from './command-router-network.js'
+import { createSessionCommandHandler } from './command-router-session.js'
+import { createTabsCommandHandler } from './command-router-tabs.js'
+import type { CommandRunScope } from './command-router-context.js'
 import { getCommandRequestBudgetMs } from '../../src/core/command-budget.js'
-import { DEFAULT_PAGE_SIZE, paginateList } from './pagination.js'
+import { DEFAULT_PAGE_SIZE } from './pagination.js'
 import type { ExtensionControlDomain } from './extension-control.js'
 import { commandSupportsTabTarget, validateCommandArgs } from '../../src/core/command-spec.js'
 import type {
   CommandArgs,
   CommandMessage,
-  CommandMeta,
-  ConsoleMessageRecord,
   DialogState,
   ExtensionState,
   FrameSelector,
@@ -556,6 +551,22 @@ export function createCommandRouter({
   // 仅在 eval 真正开始执行后登记：队列任务会与队列脱钩，靠这份映射判断
   // 取消的到底是"运行中的 eval"（可中断页面执行）还是普通命令/尚未开始的 eval
   const runningEvalTabIds = new Map<string, number>()
+  // batch 步骤执行与命令元数据构建各自独立成模块：依赖在这里注入，
+  // 避免子模块反向依赖路由器形成循环导入
+  const { handleBatchCommand } = createBatchCommandHandler(executeCommand)
+  const { buildCommandMeta, attachCommandMeta } = createCommandMetaBuilder({ state, getTargetTab })
+  const { handleDiagnosticsCommand } = createDiagnosticsCommandHandler({ state, tracing, video })
+  const { handleNetworkCommand } = createNetworkCommandHandler({ state, network })
+  const { handleSessionCommand } = createSessionCommandHandler({ state, session })
+  const { handleTabsCommand } = createTabsCommandHandler({
+    state,
+    extensionControl,
+    listTabs,
+    getTargetTab,
+    commandQueue,
+    cancelTrackedCommand,
+    resolveCommandQueueKey,
+  })
 
   /** 取消命令的统一入口：先脱钩队列；只有运行中的 eval 才定向中断页面侧执行。
    *  terminateExecution 是 best-effort，底层拒绝不能冒泡成 unhandled rejection */
@@ -632,28 +643,6 @@ export function createCommandRouter({
         value: typeof field.value === 'string' ? field.value : '',
       }))
       .filter((field) => field.selector.trim().length > 0)
-  }
-
-  function readSavedStateArg(args: CommandArgs, key: string): SavedStateData | undefined {
-    const value = args[key]
-    return value && typeof value === 'object' && !Array.isArray(value)
-      ? (value as SavedStateData)
-      : undefined
-  }
-
-  function readHeadersArg(
-    args: CommandArgs,
-    key: string,
-  ): Array<{ name?: string; value?: unknown }> | Record<string, unknown> | undefined {
-    const value = args[key]
-    if (Array.isArray(value)) {
-      return value.filter(
-        (item): item is { name?: string; value?: unknown } =>
-          Boolean(item) && typeof item === 'object',
-      )
-    }
-
-    return readObjectArg(args, key)
   }
 
   function readScreenshotOptions(args: CommandArgs): ScreenshotCaptureOptions {
@@ -986,682 +975,8 @@ export function createCommandRouter({
     return { closed: true, all: false, tabId: tab.id }
   }
 
-  async function selectTab(tabHandle: TabInput) {
-    const tab = await getTargetTab(tabHandle)
-    const updatedTab = await tabsUpdate(tab.id, {
-      active: true,
-    })
-
-    rememberTargetTab(state, tab.id)
-
-    if (typeof updatedTab?.windowId === 'number') {
-      try {
-        await windowsUpdate(updatedTab.windowId, {
-          focused: true,
-        })
-      } catch {
-        // Best effort only.
-      }
-    }
-
-    return {
-      selected: true,
-      tab: toTabSummary(state, updatedTab || tab),
-    }
-  }
-
-  async function closeTab(tabHandle: TabInput) {
-    const tab = await getTargetTab(tabHandle)
-    const handle = getOrCreateTabHandle(state, tab.id)
-    await tabsRemove([tab.id])
-    return {
-      closed: true,
-      tab: {
-        ...toTabSummary(state, tab),
-        handle,
-      },
-    }
-  }
-
-  interface BatchStepCondition {
-    step: string | number
-    path?: string
-    equals?: unknown
-    truthy?: boolean
-    exists?: boolean
-  }
-
-  interface BatchCommandStep {
-    command: string
-    args: CommandArgs
-    label: string | null
-    id?: string | null
-    when?: BatchStepCondition | null
-    skipRemainingOnFailure?: boolean
-  }
-
-  interface BatchCommandStepResult {
-    index: number
-    command: string
-    args: CommandArgs
-    label: string | null
-    id?: string
-    skipped?: true
-    reason?: string
-    response?: { ok: true; result: unknown } | { ok: false; error: SerializedCommandError }
-  }
-
-  interface BatchCommandOptions {
-    continueOnError: boolean
-    retries: number
-    retryDelayMs: number
-  }
-
-  interface BatchCommandSummary {
-    total: number
-    completed: number
-    succeeded: number
-    failed: number
-    skippedCount: number
-    retried: number
-    continueOnError: boolean
-    retries: number
-    retryDelayMs: number
-    terminated?: true
-  }
-
   function isRecord(value: unknown): value is Record<string, unknown> {
     return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
-  }
-
-  type FoldedConsoleMessage = ConsoleMessageRecord & { repeatCount?: number }
-
-  /** 连续相同（type+text）的 console 消息折叠成一条，折叠结果带 repeatCount；不改动原始数组 */
-  function foldConsoleMessages(messages: ConsoleMessageRecord[]): FoldedConsoleMessage[] {
-    const folded: FoldedConsoleMessage[] = []
-    for (const message of messages) {
-      const previous = folded[folded.length - 1]
-      if (previous && previous.type === message.type && previous.text === message.text) {
-        // 用最后一条的时间戳，计数累加
-        folded[folded.length - 1] = { ...message, repeatCount: (previous.repeatCount ?? 1) + 1 }
-      } else {
-        folded.push({ ...message })
-      }
-    }
-    return folded
-  }
-
-  function normalizeBatchStepCondition(value: unknown, index: number): BatchStepCondition {
-    if (!isRecord(value)) {
-      throw new Error(`invalid batch step ${index + 1}: when must be an object`)
-    }
-
-    const stepRef = value.step
-    const isStringRef = typeof stepRef === 'string' && stepRef.trim().length > 0
-    const isIntegerRef = typeof stepRef === 'number' && Number.isInteger(stepRef) && stepRef >= 1
-    if (!isStringRef && !isIntegerRef) {
-      throw new Error(
-        `invalid batch step ${index + 1}: when.step must be a step id string or a positive integer`,
-      )
-    }
-
-    if (value.path !== undefined && typeof value.path !== 'string') {
-      throw new Error(`invalid batch step ${index + 1}: when.path must be a string`)
-    }
-
-    const declared = ['equals', 'truthy', 'exists'].filter((key) => key in value)
-    if (declared.length !== 1) {
-      throw new Error(
-        `invalid batch step ${index + 1}: when must declare exactly one of equals, truthy, or exists`,
-      )
-    }
-
-    if (value.truthy !== undefined && typeof value.truthy !== 'boolean') {
-      throw new Error(`invalid batch step ${index + 1}: when.truthy must be a boolean`)
-    }
-    if (value.exists !== undefined && typeof value.exists !== 'boolean') {
-      throw new Error(`invalid batch step ${index + 1}: when.exists must be a boolean`)
-    }
-
-    const condition: BatchStepCondition = { step: stepRef as string | number }
-    if (value.path !== undefined) {
-      condition.path = value.path
-    }
-    if (value.equals !== undefined) {
-      condition.equals = value.equals
-    }
-    if (value.truthy !== undefined) {
-      condition.truthy = value.truthy
-    }
-    if (value.exists !== undefined) {
-      condition.exists = value.exists
-    }
-    return condition
-  }
-
-  function normalizeBatchCommandStep(value: unknown, index: number): BatchCommandStep {
-    if (typeof value === 'string') {
-      const command = value.trim()
-      if (!command) {
-        throw new Error(`invalid batch step ${index + 1}: empty command string`)
-      }
-
-      return {
-        command,
-        args: {},
-        label: null,
-      }
-    }
-
-    if (!isRecord(value)) {
-      throw new Error(`invalid batch step ${index + 1}: expected a command string or object`)
-    }
-
-    const command = typeof value.command === 'string' ? value.command.trim() : ''
-    if (!command) {
-      throw new Error(`invalid batch step ${index + 1}: missing command`)
-    }
-
-    const args = value.args === undefined ? {} : value.args
-    if (!isRecord(args)) {
-      throw new Error(`invalid batch step ${index + 1}: args must be an object`)
-    }
-
-    const step: BatchCommandStep = {
-      command,
-      args,
-      label: typeof value.label === 'string' && value.label.trim() ? value.label.trim() : null,
-    }
-
-    if (value.id !== undefined && value.id !== null) {
-      if (typeof value.id !== 'string' || !value.id.trim()) {
-        throw new Error(`invalid batch step ${index + 1}: id must be a non-empty string`)
-      }
-      step.id = value.id.trim()
-    }
-
-    if (value.skipRemainingOnFailure !== undefined && value.skipRemainingOnFailure !== null) {
-      if (typeof value.skipRemainingOnFailure !== 'boolean') {
-        throw new Error(`invalid batch step ${index + 1}: skipRemainingOnFailure must be a boolean`)
-      }
-      step.skipRemainingOnFailure = value.skipRemainingOnFailure
-    }
-
-    if (value.when !== undefined && value.when !== null) {
-      step.when = normalizeBatchStepCondition(value.when, index)
-    }
-
-    return step
-  }
-
-  function readBatchCommandSteps(args: CommandArgs): BatchCommandStep[] {
-    const rawSteps = args.steps
-    if (!Array.isArray(rawSteps)) {
-      throw new Error('batch steps must be a JSON array')
-    }
-
-    return rawSteps.map((value, index) => normalizeBatchCommandStep(value, index))
-  }
-
-  function readBatchCommandOptions(args: CommandArgs): BatchCommandOptions {
-    return {
-      continueOnError: readBooleanArg(args, 'continueOnError', false),
-      retries: Math.max(0, Math.floor(readNumberArg(args, 'retries', 0))),
-      retryDelayMs: Math.max(0, Math.floor(readNumberArg(args, 'retryDelayMs', 0))),
-    }
-  }
-
-  async function waitForRetryDelay(ms: number): Promise<void> {
-    if (ms <= 0) {
-      return
-    }
-
-    await new Promise((resolve) => setTimeout(resolve, ms))
-  }
-
-  function createBatchStepResponse(result: unknown): { ok: true; result: unknown } {
-    return {
-      ok: true,
-      result,
-    }
-  }
-
-  function createBatchStepFailureResponse(error: unknown): {
-    ok: false
-    error: SerializedCommandError
-  } {
-    return serializeCommandFailure(error)
-  }
-
-  function createBatchSummary(
-    total: number,
-    completed: number,
-    succeeded: number,
-    failed: number,
-    skippedCount: number,
-    retried: number,
-    options: BatchCommandOptions,
-    terminated = false,
-  ): BatchCommandSummary {
-    return {
-      total,
-      completed,
-      succeeded,
-      failed,
-      skippedCount,
-      retried,
-      continueOnError: options.continueOnError,
-      retries: options.retries,
-      retryDelayMs: options.retryDelayMs,
-      ...(terminated ? { terminated: true as const } : {}),
-    }
-  }
-
-  async function executeBatchStep(
-    step: BatchCommandStep,
-    index: number,
-    options: BatchCommandOptions,
-    context?: CommandExecutionContext,
-  ): Promise<{
-    result: BatchCommandStepResult
-    failed: boolean
-    retryCount: number
-  }> {
-    let attempt = 0
-    let lastError: unknown = null
-    let retryCount = 0
-    // 防御性截断：确保 retries 是有限非负整数，避免 Infinity/NaN 导致无限循环
-    const maxRetries = Number.isFinite(options.retries)
-      ? Math.max(0, Math.floor(options.retries))
-      : 0
-
-    while (attempt <= maxRetries) {
-      context?.throwIfCancelled()
-      try {
-        // batch 已在自身队列槽内执行，嵌套步骤共享取消状态，不能重新创建上下文。
-        const result = await executeCommand(step.command, step.args, true, undefined, context)
-        context?.throwIfCancelled()
-        return {
-          result: {
-            index: index + 1,
-            command: step.command,
-            args: step.args,
-            label: step.label,
-            ...(step.id ? { id: step.id } : {}),
-            response: createBatchStepResponse(result),
-          },
-          failed: false,
-          retryCount,
-        }
-      } catch (error) {
-        context?.throwIfCancelled()
-        lastError = error
-        if (attempt >= maxRetries) {
-          break
-        }
-
-        retryCount += 1
-        await waitForRetryDelay(options.retryDelayMs)
-        context?.throwIfCancelled()
-      }
-
-      attempt += 1
-    }
-
-    return {
-      result: {
-        index: index + 1,
-        command: step.command,
-        args: step.args,
-        label: step.label,
-        ...(step.id ? { id: step.id } : {}),
-        response: createBatchStepFailureResponse(lastError),
-      },
-      failed: true,
-      retryCount,
-    }
-  }
-
-  function batchValuesEqual(a: unknown, b: unknown): boolean {
-    if (Object.is(a, b)) {
-      return true
-    }
-    if (typeof a !== typeof b) {
-      return false
-    }
-    if (Array.isArray(a) && Array.isArray(b)) {
-      return a.length === b.length && a.every((item, i) => batchValuesEqual(item, b[i]))
-    }
-    if (isRecord(a) && isRecord(b)) {
-      const aKeys = Object.keys(a)
-      const bKeys = Object.keys(b)
-      return (
-        aKeys.length === bKeys.length &&
-        aKeys.every(
-          (key) => Object.prototype.hasOwnProperty.call(b, key) && batchValuesEqual(a[key], b[key]),
-        )
-      )
-    }
-    return false
-  }
-
-  function getBatchStepResultValue(
-    container: unknown,
-    path: string | undefined,
-  ): { exists: boolean; value: unknown } {
-    if (!path) {
-      return { exists: true, value: container }
-    }
-
-    let current: unknown = container
-    for (const part of path.split('.')) {
-      if (current === null || current === undefined) {
-        return { exists: false, value: undefined }
-      }
-      if (Array.isArray(current)) {
-        if (!/^(0|[1-9]\d*)$/.test(part)) {
-          return { exists: false, value: undefined }
-        }
-        const arrayIndex = Number(part)
-        if (arrayIndex >= current.length) {
-          return { exists: false, value: undefined }
-        }
-        current = current[arrayIndex]
-        continue
-      }
-      if (typeof current === 'object') {
-        const record = current as Record<string, unknown>
-        if (!Object.prototype.hasOwnProperty.call(record, part)) {
-          return { exists: false, value: undefined }
-        }
-        current = record[part]
-        continue
-      }
-      return { exists: false, value: undefined }
-    }
-
-    return { exists: true, value: current }
-  }
-
-  function resolveBatchStepIndex(ref: string | number, steps: BatchCommandStep[]): number | null {
-    if (typeof ref === 'number') {
-      return ref >= 1 && ref <= steps.length ? ref - 1 : null
-    }
-    const matchedIndex = steps.findIndex((step) => step.id === ref)
-    return matchedIndex === -1 ? null : matchedIndex
-  }
-
-  /** 求值 when 条件：被引用的前置 step 必须已成功执行且未跳过，再按 path/谓词匹配其结果 */
-  function evaluateBatchStepCondition(
-    condition: BatchStepCondition,
-    steps: BatchCommandStep[],
-    results: BatchCommandStepResult[],
-    currentIndex: number,
-  ): boolean {
-    const referencedIndex = resolveBatchStepIndex(condition.step, steps)
-    if (
-      referencedIndex === null ||
-      referencedIndex >= currentIndex ||
-      referencedIndex >= results.length
-    ) {
-      return false
-    }
-
-    const referencedResult = results[referencedIndex]
-    if (referencedResult.skipped || referencedResult.response?.ok !== true) {
-      return false
-    }
-
-    const { exists, value } = getBatchStepResultValue(
-      referencedResult.response.result,
-      condition.path,
-    )
-
-    if (condition.exists !== undefined) {
-      return condition.exists === exists
-    }
-    if (condition.truthy !== undefined) {
-      return condition.truthy ? Boolean(value) : !value
-    }
-    if (condition.equals !== undefined) {
-      return exists && batchValuesEqual(condition.equals, value)
-    }
-    return false
-  }
-
-  function validateBatchWhenReferences(steps: BatchCommandStep[]): void {
-    for (const [index, step] of steps.entries()) {
-      if (!step.when) {
-        continue
-      }
-      const referencedIndex = resolveBatchStepIndex(step.when.step, steps)
-      if (referencedIndex === null || referencedIndex >= index) {
-        throw new Error(
-          `invalid batch step ${index + 1}: when.step must reference an earlier step (got ${JSON.stringify(step.when.step)})`,
-        )
-      }
-    }
-  }
-
-  function createSkippedBatchStepResult(
-    step: BatchCommandStep,
-    index: number,
-    reason: string,
-  ): BatchCommandStepResult {
-    return {
-      index: index + 1,
-      command: step.command,
-      args: step.args,
-      label: step.label,
-      ...(step.id ? { id: step.id } : {}),
-      skipped: true,
-      reason,
-    }
-  }
-
-  async function handleBatchCommand(
-    args: CommandArgs,
-    context?: CommandExecutionContext,
-  ): Promise<{ steps: BatchCommandStepResult[]; summary: BatchCommandSummary }> {
-    const steps = readBatchCommandSteps(args)
-    const options = readBatchCommandOptions(args)
-    validateBatchWhenReferences(steps)
-    const results: BatchCommandStepResult[] = []
-    let succeeded = 0
-    let failed = 0
-    let retried = 0
-    let skippedCount = 0
-    let terminated = false
-    let terminatedAtIndex: number | null = null
-
-    for (const [index, step] of steps.entries()) {
-      context?.throwIfCancelled()
-      if (terminated) {
-        skippedCount += 1
-        results.push(
-          createSkippedBatchStepResult(
-            step,
-            index,
-            `terminated: step ${terminatedAtIndex} failed with skipRemainingOnFailure`,
-          ),
-        )
-        continue
-      }
-
-      if (step.when) {
-        const conditionMet = evaluateBatchStepCondition(step.when, steps, results, index)
-        if (!conditionMet) {
-          skippedCount += 1
-          results.push(
-            createSkippedBatchStepResult(
-              step,
-              index,
-              `skipped: when condition not met (references step ${String(step.when.step)})`,
-            ),
-          )
-          continue
-        }
-      }
-
-      const stepExecution = await executeBatchStep(step, index, options, context)
-      results.push(stepExecution.result)
-
-      if (stepExecution.failed) {
-        failed += 1
-        retried += stepExecution.retryCount
-
-        // skipRemainingOnFailure 只在 continueOnError 下生效：失败时不继续执行后续步骤，而是显式终止。
-        if (step.skipRemainingOnFailure === true && options.continueOnError) {
-          terminated = true
-          terminatedAtIndex = index + 1
-          continue
-        }
-
-        if (!options.continueOnError) {
-          const summary = createBatchSummary(
-            steps.length,
-            results.length - skippedCount,
-            succeeded,
-            failed,
-            skippedCount,
-            retried,
-            options,
-          )
-          const batchError = new Error(
-            `batch step ${index + 1} failed: ${step.command}`,
-          ) as ErrorWithCode
-          batchError.code = 'BATCH_STEP_FAILED'
-          batchError.details = {
-            steps: results,
-            failedStep: stepExecution.result,
-            summary,
-          }
-          throw batchError
-        }
-
-        continue
-      }
-
-      succeeded += 1
-      retried += stepExecution.retryCount
-    }
-
-    return {
-      steps: results,
-      summary: createBatchSummary(
-        steps.length,
-        results.length - skippedCount,
-        succeeded,
-        failed,
-        skippedCount,
-        retried,
-        options,
-        terminated,
-      ),
-    }
-  }
-
-  /** 无页面上下文的命令（status/tab.list/script/batch 等）返回的元数据全为 null */
-  function emptyCommandMeta(): CommandMeta {
-    return {
-      tabHandle: null,
-      tabId: null,
-      frame: null,
-      pageEpoch: null,
-      url: null,
-      title: null,
-    }
-  }
-
-  /** 构建命令实际目标 tab 的上下文元数据；取 tab 失败时回退为全 null，永不 throw */
-  async function buildCommandMeta(
-    command: string,
-    args: CommandArgs,
-    tabTarget: TabInput,
-    frameSelector: FrameSelector,
-    options: { pinnedTabId: number | null; targetTabIdBeforeCommand: number | null },
-  ): Promise<CommandMeta> {
-    if (!commandSupportsTabTarget(command)) {
-      return emptyCommandMeta()
-    }
-
-    // 命令是否显式指定了 tabId/handle；未指定时 getTargetTab 内部可能走了兜底选择
-    const explicitTarget =
-      readTabInputArg(args, 'tabId') !== undefined || readTabInputArg(args, 'handle') !== undefined
-    // getTargetTab 会 rememberTargetTab；固定目标时它发生在命令执行之前，
-    // 再读只会看到固定后的值、fallback note 不再出现，故用执行前捕获的旧值
-    const preCommandTargetTabId =
-      options.pinnedTabId === null ? state.targeting.targetTabId : options.targetTabIdBeforeCommand
-
-    let tab
-    try {
-      tab = await getTargetTab(tabTarget)
-    } catch {
-      return emptyCommandMeta()
-    }
-
-    if (!tab || typeof tab.id !== 'number') {
-      return emptyCommandMeta()
-    }
-
-    const handle = getOrCreateTabHandle(state, tab.id)
-    const meta: CommandMeta = {
-      tabHandle: handle,
-      tabId: tab.id,
-      frame: resolveEffectiveFrameSelector(state, { id: tab.id }, frameSelector),
-      pageEpoch: getPageEpoch(state, tab.id),
-      url: tab.url || null,
-      title: tab.title || null,
-    }
-
-    const openDialog = state.session.dialogs.get(tab.id)
-    if (openDialog) {
-      meta.dialog = {
-        type: openDialog.type,
-        message: openDialog.message,
-        openedAt: openDialog.openedAt,
-      }
-    }
-
-    const emulationOverrides = state.session.emulation.get(tab.id)
-    if (emulationOverrides && Object.keys(emulationOverrides).length > 0) {
-      meta.emulation = { ...emulationOverrides }
-    }
-
-    const target: NonNullable<CommandMeta['target']> = {
-      tabId: tab.id,
-      handle,
-      explicit: explicitTarget,
-    }
-    if (!explicitTarget && preCommandTargetTabId !== tab.id) {
-      target.note = 'fell back to last non-active tab'
-    }
-    meta.target = target
-
-    return meta
-  }
-
-  /** 只对对象结果增量附加 meta；原始值/数组保持原样透传 */
-  function attachCommandMeta(result: unknown, meta: CommandMeta): unknown {
-    if (!isRecord(result)) {
-      return result
-    }
-    // 导航类命令（goto/open）结果体里带新 url，覆盖 buildCommandMeta 从 tabsGet 拿到的旧值
-    const effectiveUrl =
-      typeof result.observedUrl === 'string'
-        ? result.observedUrl
-        : typeof result.url === 'string'
-          ? result.url
-          : null
-    const effectiveMeta = effectiveUrl ? { ...meta, url: effectiveUrl } : meta
-    // 回落到非活动标签页时，在结果主体（而非仅 meta）给出可见提示，避免 agent 忽略。
-    // meta.target.note 保留供程序化判断；targetFallback 是给调用方/人看的显式信号。
-    const targetFallback =
-      meta.target && !meta.target.explicit && meta.target.note ? meta.target.note : null
-    if (targetFallback) {
-      return { ...result, targetFallback, meta: effectiveMeta }
-    }
-    return { ...result, meta: effectiveMeta }
   }
 
   const CONTROL_COMMANDS = new Set([
@@ -1756,29 +1071,12 @@ export function createCommandRouter({
     const end = readStringArg(args, 'end')
     const stateName = readStringArg(args, 'state', 'visible')
     const attr = readStringArg(args, 'attr', 'text')
-    const name = readStringArg(args, 'name', 'default')
-    const domain = readOptionalStringArg(args, 'domain')
-    const promptText = readOptionalStringArg(args, 'promptText')
     const files = readStringArrayArg(args, 'files')
     const scrollSelector = selector || null
     const deltaX = readNumberArg(args, 'deltaX', 0)
     const deltaY = readNumberArg(args, 'deltaY', 100)
-    const viewportWidth = readNumberArg(args, 'width', 0)
-    const viewportHeight = readNumberArg(args, 'height', 0)
-    const deviceScaleFactor = readNumberArg(args, 'deviceScaleFactor', 1)
-    const mobile = readBooleanArg(args, 'mobile', false)
-    const enabled = readBooleanArg(args, 'enabled', true)
-    const accept = readBooleanArg(args, 'accept', true)
-    const headers = readHeadersArg(args, 'headers')
-    const latitude = readNumberArg(args, 'latitude', 0)
-    const longitude = readNumberArg(args, 'longitude', 0)
-    const accuracy = readNumberArg(args, 'accuracy', 1)
-    const media = readOptionalStringArg(args, 'media')
     const requestId = readStringArg(args, 'requestId')
     const subaction = readStringArg(args, 'subaction')
-    const storageKey = readOptionalStringArg(args, 'key')
-    const storageValue = readStringArg(args, 'value')
-    const savedStateData = readSavedStateArg(args, 'data')
     const screenshotOptions = readScreenshotOptions(args)
     const feedSelector = readOptionalStringArg(args, 'selector')
     const feedLimit = readNumberArg(args, 'limit', 30)
@@ -1811,58 +1109,28 @@ export function createCommandRouter({
       context?.throwIfCancelled()
       // 排队期间可能新弹出对话框，入队前那次检查不够，执行前要针对固定后的 tab 再查一次
       await assertNoOpenDialog(command, tabId)
+      const scope: CommandRunScope = {
+        command,
+        args,
+        action,
+        subaction,
+        url,
+        requestId,
+        tabId,
+        explicitTabTarget,
+        frameSelector,
+        queryTargetTabId,
+        pageIdx,
+        pageSize,
+      }
       switch (command) {
         case 'extension':
-          if (action === 'info') return await extensionControl.info()
-          if (action === 'reload') return extensionControl.reload()
-          if (action === 'reconnect') return extensionControl.reconnect()
-          throw new Error(
-            `unsupported extension action: ${action} (expected info|reload|reconnect)`,
-          )
         case 'status':
-          return {
-            connected: true,
-            tabs: await listTabs(),
-          }
-        case 'actions': {
-          if (action === 'clear') {
-            const count = state.session.actionLog.length
-            state.session.actionLog = []
-            return { cleared: true, count }
-          }
-          const actions = state.session.actionLog.filter(
-            (entry) => queryTargetTabId === null || entry.tabId === queryTargetTabId,
-          )
-          const { items, pagination } = paginateList(actions, pageIdx, pageSize)
-          return { actions: items, pagination }
-        }
+          return await handleTabsCommand(scope)
+        case 'actions':
         case 'tracing':
-          if (action === 'start') return await tracing.start(tabId)
-          if (action === 'status') return await tracing.status(tabId)
-          if (action === 'stop') return await tracing.stop(tabId)
-          throw new Error(`unsupported tracing action: ${action}`)
         case 'video':
-          if (action === 'start')
-            return await video.start(tabId, readOptionalNumberArg(args, 'maxDurationMs'))
-          if (action === 'status') return await video.status(tabId)
-          if (action === 'stop') return await video.stop(tabId)
-          if (action === 'chapter')
-            return await video.chapter(
-              tabId,
-              readStringArg(args, 'title'),
-              readOptionalStringArg(args, 'description'),
-              readOptionalNumberArg(args, 'durationMs'),
-            )
-          if (action === 'show-actions')
-            return await video.showActions(tabId, {
-              durationMs: readNumberArg(args, 'durationMs', 600),
-              position: readStringArg(args, 'position', 'top:16px;right:16px;'),
-              ...(readOptionalStringArg(args, 'highlightStyle')
-                ? { highlightStyle: readStringArg(args, 'highlightStyle') }
-                : {}),
-            })
-          if (action === 'hide-actions') return await video.hideActions(tabId)
-          throw new Error(`unsupported video action: ${action}`)
+          return await handleDiagnosticsCommand(scope)
         case 'webmcp':
           if (action === 'list') return await webmcp.list(tabId, frameSelector, context)
           if (action === 'call') {
@@ -1875,78 +1143,13 @@ export function createCommandRouter({
             )
           }
           throw new Error(`unsupported webmcp action: ${action}`)
-        case 'tab.list': {
-          let tabs = await listTabs()
-          const filter = readStringArg(args, 'filter').toLowerCase()
-          if (args.active === true) tabs = tabs.filter((tab) => tab.active)
-          if (args.currentWindow === true) {
-            const targetId = queryTargetTabId
-            const currentWindowId = tabs.find((tab) => tab.id === targetId)?.windowId
-            if (typeof currentWindowId === 'number') {
-              tabs = tabs.filter((tab) => tab.windowId === currentWindowId)
-            }
-          }
-          if (filter) {
-            tabs = tabs.filter((tab) =>
-              `${tab.handle || ''} ${tab.title} ${tab.url}`.toLowerCase().includes(filter),
-            )
-          }
-          const { items, pagination } = paginateList(tabs, pageIdx, pageSize)
-          return { tabs: items, total: tabs.length, pagination }
-        }
+        case 'tab.list':
         case 'tab.select':
-          return await selectTab(explicitTabTarget)
-        case 'tab.new': {
-          const tab = await tabsCreate({
-            url,
-          })
-
-          if (tab && typeof tab.id === 'number') {
-            rememberTargetTab(state, tab.id)
-          }
-
-          return { tab: toTabSummary(state, tab || {}) }
-        }
+        case 'tab.new':
         case 'tab.close':
-          return await closeTab(explicitTabTarget)
-        case 'target': {
-          if (action === 'show') {
-            return { targetTabId: state.targeting.targetTabId }
-          }
-          if (action === 'clear') {
-            rememberTargetTab(state, null)
-            return { targetTabId: null }
-          }
-          if (action === 'active') {
-            const tabs = await listTabs()
-            const activeTab = tabs.find((tab) => tab.active && typeof tab.id === 'number')
-            rememberTargetTab(state, activeTab?.id ?? null)
-            return { target: activeTab || null }
-          }
-          if (action === 'set') {
-            return await selectTab(explicitTabTarget)
-          }
-          throw new Error(`unsupported target action: ${action}`)
-        }
-        case 'command': {
-          if (action === 'list' || action === 'status') {
-            const commandId = readOptionalStringArg(args, 'commandId')
-            const commands = commandQueue.list()
-            return {
-              commands: commandId ? commands.filter((entry) => entry.id === commandId) : commands,
-            }
-          }
-          if (action === 'cancel') {
-            const commandId = readStringArg(args, 'commandId')
-            return { commandId, cancelled: cancelTrackedCommand(commandId) }
-          }
-          if (action === 'reset') {
-            const key =
-              readOptionalStringArg(args, 'queueKey') || resolveCommandQueueKey(explicitTabTarget)
-            return { queueKey: key, cancelled: commandQueue.reset(key) }
-          }
-          throw new Error(`unsupported command action: ${action}`)
-        }
+        case 'target':
+        case 'command':
+          return await handleTabsCommand(scope)
         case 'goto':
         case 'open': {
           const navigationResult = await pageInput.navigateTo(tabId, url, {
@@ -2208,20 +1411,7 @@ export function createCommandRouter({
         case 'get':
           return await pageInput.getAttribute(tabId, selector, attr, frameSelector)
         case 'dialog':
-          if (action === 'status') {
-            return session.getDialogStatus(tabId)
-          }
-          if (action === 'auto') {
-            // 不带 enabled 时只查询当前值；默认值 true 与扩展重启后的初始状态一致
-            if (args.enabled === undefined) {
-              return {
-                autoAccept: session.getDialogAutoAccept(),
-                note: 'dialogAutoAccept is a runtime-only setting; it resets to true when the extension restarts',
-              }
-            }
-            return session.setDialogAutoAccept(readBooleanArg(args, 'enabled', true))
-          }
-          return await session.handleDialog(tabId, accept, promptText)
+          return await handleSessionCommand(scope)
         case 'downloads':
           if (action === 'clear') {
             return downloads.clearDownloads()
@@ -2278,114 +1468,11 @@ export function createCommandRouter({
         case 'wait':
           return await handleWait(tabId, args, frameSelector)
         case 'cookies':
-          if (action === 'list' || action === 'get') {
-            return await session.cookiesGet(tabId, {
-              domain: readOptionalStringArg(args, 'domain'),
-              path: readOptionalStringArg(args, 'path'),
-            })
-          }
-          if (action === 'set') {
-            return await session.cookiesSet(tabId, name, value, domain)
-          }
-          if (action === 'clear') {
-            return await session.cookiesClear(tabId)
-          }
-          if (action === 'delete') {
-            if (!name || name === 'default') {
-              throw new Error('cookies delete requires a cookie name')
-            }
-            return await session.cookiesDelete(tabId, name)
-          }
-          throw new Error(`unsupported cookies action: ${action}`)
-        case 'storage': {
-          const sessionOnly = readBooleanArg(args, 'session', false)
-          if (action === 'get') {
-            return await session.storageGet(tabId, storageKey, frameSelector, sessionOnly)
-          }
-          if (action === 'set') {
-            return await session.storageSet(
-              tabId,
-              storageKey || '',
-              storageValue,
-              frameSelector,
-              sessionOnly,
-            )
-          }
-          if (action === 'delete') {
-            if (!storageKey) {
-              throw new Error('storage delete requires a key')
-            }
-            return await session.storageDelete(tabId, storageKey, frameSelector, sessionOnly)
-          }
-          if (action === 'clear') {
-            return await session.storageClear(tabId, frameSelector, sessionOnly)
-          }
-          throw new Error(`unsupported storage action: ${action}`)
-        }
-        case 'console': {
-          const targetTabId = queryTargetTabId
-          if (action === 'clear') {
-            const before = state.session.consoleMessages.length
-            state.session.consoleMessages = state.session.consoleMessages.filter(
-              (message) => targetTabId !== null && message.tabId !== targetTabId,
-            )
-            return { cleared: before - state.session.consoleMessages.length }
-          }
-          const since = readNumberArg(args, 'since', 0)
-          const level = readStringArg(args, 'level')
-          const maxLevelRank = level ? ['error', 'warning', 'info', 'debug'].indexOf(level) : null
-          const currentEpoch = targetTabId === null ? null : getPageEpoch(state, targetTabId)
-          const messages = (
-            targetTabId === null
-              ? state.session.consoleMessages
-              : state.session.consoleMessages.filter((message) => message.tabId === targetTabId)
-          ).filter((message) => {
-            const type = String(message.type || '')
-            const levelRank =
-              type === 'error' ? 0 : type === 'warning' ? 1 : type === 'debug' ? 3 : 2
-            return (
-              message.timestamp >= since &&
-              (maxLevelRank === null || levelRank <= maxLevelRank) &&
-              (args.allEpochs === true ||
-                currentEpoch === null ||
-                message.pageEpoch == null ||
-                message.pageEpoch === currentEpoch)
-            )
-          })
-          // level 必须在折叠和分页前过滤，total/pagination 才与返回结果一致
-          const { items, pagination } = paginateList(
-            foldConsoleMessages(messages),
-            pageIdx,
-            pageSize,
-          )
-          return { messages: items, pagination }
-        }
-        case 'errors': {
-          const targetTabId = queryTargetTabId
-          if (action === 'clear') {
-            const before = state.session.pageErrors.length
-            state.session.pageErrors = state.session.pageErrors.filter(
-              (error) => targetTabId !== null && error.tabId !== targetTabId,
-            )
-            return { cleared: before - state.session.pageErrors.length }
-          }
-          const since = readNumberArg(args, 'since', 0)
-          const currentEpoch = targetTabId === null ? null : getPageEpoch(state, targetTabId)
-          const errors = (
-            targetTabId === null
-              ? state.session.pageErrors
-              : state.session.pageErrors.filter((error) => error.tabId === targetTabId)
-          ).filter(
-            (error) =>
-              error.timestamp >= since &&
-              (args.allEpochs === true ||
-                currentEpoch === null ||
-                error.pageEpoch == null ||
-                error.pageEpoch === currentEpoch),
-          )
-          const { items, pagination } = paginateList(errors, pageIdx, pageSize)
-          return { errors: items, pagination }
-        }
+        case 'storage':
+          return await handleSessionCommand(scope)
+        case 'console':
+        case 'errors':
+          return await handleDiagnosticsCommand(scope)
         case 'batch':
           return await handleBatchCommand(args, context)
         case 'script':
@@ -2407,146 +1494,12 @@ export function createCommandRouter({
           }
           throw new Error(`unsupported script action: ${action}`)
         case 'network':
-          if (action === 'route') {
-            if (subaction === 'list') {
-              return network.listRoutes()
-            }
-            const removeHeaders = readStringArrayArg(args, 'removeHeaders')
-            return await network.routeRequest(tabId, url, {
-              abort: args.abort === true,
-              body: args.body,
-              status: typeof args.status === 'number' ? args.status : undefined,
-              contentType: readOptionalStringArg(args, 'contentType'),
-              headers: readObjectArg(args, 'headers') as Record<string, string> | undefined,
-              removeHeaders: removeHeaders.length > 0 ? removeHeaders : undefined,
-            })
-          }
-          if (action === 'unroute') {
-            return await network.unrouteRequest(tabId, readStringArg(args, 'url'))
-          }
-          if (action === 'requests') {
-            const targetTabId = queryTargetTabId
-            return network.listRequests({
-              ...args,
-              ...(args.allTabs === true || targetTabId === null ? {} : { tabId: targetTabId }),
-              ...(args.allEpochs === true
-                ? {}
-                : args.allTabs === true
-                  ? { currentEpochs: Object.fromEntries(state.targeting.pageEpochs) }
-                  : targetTabId === null
-                    ? {}
-                    : { pageEpoch: getPageEpoch(state, targetTabId) }),
-            })
-          }
-          if (action === 'request') {
-            return await network.getRequestDetail(requestId, queryTargetTabId)
-          }
-          if (action === 'har') {
-            if (subaction === 'start') {
-              return await network.startHar(tabId, {
-                maxRequests:
-                  typeof args.maxRequests === 'number' || args.maxRequests === null
-                    ? (args.maxRequests as number | null)
-                    : undefined,
-                maxBodyBytes:
-                  typeof args.maxBodyBytes === 'number' || args.maxBodyBytes === null
-                    ? (args.maxBodyBytes as number | null)
-                    : undefined,
-                includePattern: readOptionalStringArg(args, 'includePattern'),
-                excludePattern: readOptionalStringArg(args, 'excludePattern'),
-              })
-            }
-            if (subaction === 'stop') {
-              return await network.stopHar({
-                captureId: readOptionalStringArg(args, 'captureId'),
-                includeUrls: typeof args.includeUrls === 'boolean' ? args.includeUrls : undefined,
-              })
-            }
-            if (subaction === 'status') {
-              return await network.getHarStatus()
-            }
-            if (subaction === 'recover') {
-              return await network.recoverHar()
-            }
-            throw new Error(`unsupported network har action: ${subaction}`)
-          }
-          throw new Error(`unsupported network action: ${action}`)
+          return await handleNetworkCommand(scope)
         case 'set':
-          if (readStringArg(args, 'type') === 'viewport') {
-            return await session.setViewport(
-              tabId,
-              viewportWidth,
-              viewportHeight,
-              deviceScaleFactor,
-              mobile,
-            )
-          }
-          if (readStringArg(args, 'type') === 'offline') {
-            return await session.setOffline(tabId, enabled)
-          }
-          if (readStringArg(args, 'type') === 'auto-snapshot') {
-            state.session.autoSnapshot = enabled
-            return { autoSnapshot: enabled }
-          }
-          if (readStringArg(args, 'type') === 'headers') {
-            return await session.setHeaders(tabId, headers)
-          }
-          if (readStringArg(args, 'type') === 'geo') {
-            return await session.setGeo(tabId, latitude, longitude, accuracy)
-          }
-          if (readStringArg(args, 'type') === 'media') {
-            return await session.setMedia(tabId, media)
-          }
-          if (readStringArg(args, 'type') === 'media-type') {
-            return await session.setMediaType(tabId, value || null)
-          }
-          if (readStringArg(args, 'type') === 'reduced-motion') {
-            return await session.setMediaFeature(tabId, 'prefers-reduced-motion', value || null)
-          }
-          if (readStringArg(args, 'type') === 'forced-colors') {
-            return await session.setMediaFeature(tabId, 'forced-colors', value || null)
-          }
-          if (readStringArg(args, 'type') === 'contrast') {
-            return await session.setMediaFeature(tabId, 'prefers-contrast', value || null)
-          }
-          if (readStringArg(args, 'type') === 'device') {
-            return await session.setDevice(tabId, value || null)
-          }
-          if (readStringArg(args, 'type') === 'permission') {
-            return await session.setPermission(tabId, name, readBooleanArg(args, 'reset', false))
-          }
-          if (readStringArg(args, 'type') === 'ua') {
-            return await session.setUserAgent(tabId, value || null)
-          }
-          if (readStringArg(args, 'type') === 'timezone') {
-            return await session.setTimezone(tabId, value || null)
-          }
-          if (readStringArg(args, 'type') === 'locale') {
-            return await session.setLocale(tabId, value || null)
-          }
-          throw new Error(`unsupported set type: ${readStringArg(args, 'type')}`)
         case 'pdf':
-          return await session.generatePdf(tabId)
         case 'clipboard':
-          if (action === 'read') {
-            return await session.clipboardRead(tabId)
-          }
-          if (action === 'write') {
-            return await session.clipboardWrite(tabId, text)
-          }
-          throw new Error(`unsupported clipboard action: ${action}`)
         case 'state':
-          if (action === 'save') {
-            return await session.saveState(tabId, name)
-          }
-          if (action === 'load') {
-            if (savedStateData) {
-              return await session.loadState(tabId, savedStateData)
-            }
-
-            return await session.loadStateByName(tabId, name)
-          }
-          throw new Error(`unsupported state action: ${action}`)
+          return await handleSessionCommand(scope)
         default:
           throw new Error(`unsupported command: ${command}`)
       }

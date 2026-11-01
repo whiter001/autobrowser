@@ -14,88 +14,28 @@ import {
 } from './protocol.js'
 import { validateCommandArgs } from './command-spec.js'
 import { getCommandRequestBudgetMs } from './command-budget.js'
+import { ResponseAssembler, ResponseTransferError } from './response-transfer.js'
+import type { ResponseUploadProgress } from './response-upload.js'
+import type { FileUploadProgress } from './file-upload.js'
 import {
-  parseTransferredResponse,
-  ResponseAssembler,
-  ResponseTransferError,
-} from './response-transfer.js'
-import {
-  ResponseUploadError,
-  ResponseUploadStore,
-  type ResponseUploadProgress,
-} from './response-upload.js'
-import { FileUploadError, FileUploadStore, type FileUploadProgress } from './file-upload.js'
-import { FILE_UPLOAD_CHUNK_SHA256_HEADER } from './file-transfer.js'
+  createExtensionConnection,
+  createExtensionDisconnectedError,
+} from './runtime-connection.js'
+import { createRuntimeTransfer } from './runtime-transfer.js'
+import type {
+  ErrorWithCode,
+  ExtensionMetadata,
+  PendingRequest,
+  RuntimeOptions,
+  RuntimeState,
+  Snapshot,
+  TabInfo,
+} from './runtime-types.js'
 
-export interface TabInfo {
-  id: number
-  title: string
-  url: string
-  active: boolean
-  pinned: boolean
-  status: string
-  windowId: number
-}
-
-export interface ExtensionInfo {
-  extensionId: string | null
-  connectedAt: string
-  userAgent: string | null
-  lastHeartbeatAt: string | null
-}
-
-export interface Snapshot {
-  extension: ExtensionInfo | null
-  tabs: TabInfo[]
-  activeTabId: number | null
-  targetTabId: number | null
-  pageEpochs: Record<number, number>
-  lastCommand: { command: string; args: unknown; at: string } | null
-  lastError: { message: string; at: string } | null
-  /**
-   * 最近一次命令成功的时间。lastError 保留历史语义、不会因成功而清空；
-   * 调用方可比较两者判断当前是否仍有故障（lastError.at > lastSuccessAt）。
-   */
-  lastSuccessAt: string | null
-}
-
-export interface RuntimeOptions {
-  homeDir?: string
-  relayPort?: number
-  ipcPort?: number
-  requestTimeoutMs?: number
-  heartbeatTimeoutMs?: number
-  token?: string
-}
+export type { ExtensionInfo, RuntimeOptions, Snapshot, TabInfo } from './runtime-types.js'
 
 /** 扩展每 30s 发一次心跳；超过该时长未收到心跳视为连接已死（半开连接），主动断开 */
 const DEFAULT_HEARTBEAT_TIMEOUT_MS = 45_000
-
-interface PendingRequest {
-  resolve: (value: unknown) => void
-  reject: (error: Error) => void
-  timer: ReturnType<typeof setTimeout>
-  command: string
-  /** download 命令的绝对落盘路径，由 relay 自己保存，扩展另传的路径一律不采信 */
-  outputPath?: string
-}
-
-interface ConnectionWaiter {
-  resolve: (socket: Bun.ServerWebSocket<ExtensionMetadata>) => void
-  reject: (error: Error) => void
-  timer: ReturnType<typeof setTimeout>
-}
-
-interface ExtensionMetadata {
-  extensionId?: string | null
-  userAgent?: string | null
-}
-
-interface ErrorWithCode extends Error {
-  code?: string
-  details?: unknown
-  suggestedAction?: string
-}
 
 function rejectPendingRequests(
   pendingRequests: Map<string, PendingRequest>,
@@ -111,12 +51,6 @@ function rejectPendingRequests(
     pending.reject(error)
     pendingRequests.delete(id)
   }
-}
-
-function createExtensionDisconnectedError(message: string = 'no extension is connected'): Error {
-  const error = new Error(message) as ErrorWithCode
-  error.code = 'EXTENSION_DISCONNECTED'
-  return error
 }
 
 function createDefaultSnapshot(): Snapshot {
@@ -242,17 +176,6 @@ function normalizePageEpochs(value: unknown): Record<number, number> {
   return normalized
 }
 
-interface RuntimeState {
-  homeDir: string
-  relayPort: number
-  ipcPort: number
-  requestTimeoutMs: number
-  token: string
-  startedAt: string
-  extensionSocket: Bun.ServerWebSocket<ExtensionMetadata> | null
-  extensionId: string | null
-}
-
 /**
  * 核心运行时接口，负责管理浏览器扩展连接、状态持久化和命令分发。
  */
@@ -326,9 +249,6 @@ export async function createRuntime(options: RuntimeOptions = {}): Promise<Runti
   // pendingRequests maps CLI commands to extension responses
   const pendingRequests = new Map<string, PendingRequest>()
   const responseAssembler = new ResponseAssembler()
-  const responseUploads = await ResponseUploadStore.create(homeDir)
-  const fileUploads = new FileUploadStore()
-  const connectionWaiters = new Set<ConnectionWaiter>()
   const snapshot: Snapshot = createDefaultSnapshot()
 
   const runtime: RuntimeState = {
@@ -385,94 +305,30 @@ export async function createRuntime(options: RuntimeOptions = {}): Promise<Runti
     await persistChain
   }
 
-  function resolveConnectionWaiters(socket: Bun.ServerWebSocket<ExtensionMetadata>): void {
-    for (const waiter of connectionWaiters) {
-      connectionWaiters.delete(waiter)
-      clearTimeout(waiter.timer)
-      waiter.resolve(socket)
-    }
-  }
+  // 大响应与文件上传的偏移、SHA-256 校验与 HTTP 分段处理都在传输模块内收口
+  const transfer = await createRuntimeTransfer({
+    homeDir,
+    pendingRequests,
+    releaseResponseAssembler: (requestId) => responseAssembler.release(requestId),
+    getSocket: () => runtime.extensionSocket,
+    onResponseReady: (response) => handleExtensionMessage(response),
+  })
 
-  let heartbeatTimer: ReturnType<typeof setTimeout> | null = null
-
-  function clearHeartbeatTimeout(): void {
-    if (heartbeatTimer) {
-      clearTimeout(heartbeatTimer)
-      heartbeatTimer = null
-    }
-  }
-
-  function scheduleHeartbeatTimeout(socket: Bun.ServerWebSocket<ExtensionMetadata>): void {
-    clearHeartbeatTimeout()
-    if (!(heartbeatTimeoutMs > 0)) {
-      return
-    }
-
-    heartbeatTimer = setTimeout(() => {
-      heartbeatTimer = null
-      // 重连竞态：定时器触发时可能已经换了连接，只对当前 socket 生效
-      if (runtime.extensionSocket !== socket) {
-        return
-      }
-
-      // 主动关掉半开连接；close 事件会走 detach 身份校验（对当前 socket 生效）。
-      // 直接 detach 兜底，避免部分环境 close 事件不可达时扩展仍被误认为在线。
-      try {
-        if (typeof socket.close === 'function') {
-          socket.close()
-        }
-      } catch {
-        // 连接可能已断开，忽略关闭失败
-      }
-      // detachExtension 是 hoisted 的函数声明，定时器触发时必然已定义；
-      // 直接调用（runtime 是 RuntimeState 对象，没有 detachExtension）
-      detachExtension(socket)
-    }, heartbeatTimeoutMs)
-  }
-
-  function waitForExtensionConnection(
-    timeoutMs: number,
-  ): Promise<Bun.ServerWebSocket<ExtensionMetadata>> {
-    if (runtime.extensionSocket && runtime.extensionSocket.readyState === WebSocket.OPEN) {
-      return Promise.resolve(runtime.extensionSocket)
-    }
-
-    if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
-      return Promise.reject(createExtensionDisconnectedError())
-    }
-
-    return new Promise((resolve, reject) => {
-      let settled = false
-      let waiter: ConnectionWaiter
-
-      const settle = (callback: () => void): void => {
-        if (settled) {
-          return
-        }
-
-        settled = true
-        clearTimeout(waiter.timer)
-        connectionWaiters.delete(waiter)
-        callback()
-      }
-
-      const timer = setTimeout(() => {
-        settle(() => reject(createExtensionDisconnectedError()))
-      }, timeoutMs)
-
-      waiter = {
-        timer,
-        resolve(socket) {
-          settle(() => resolve(socket))
-        },
-        reject(error) {
-          settle(() => reject(error))
-        },
-      }
-
-      connectionWaiters.add(waiter)
-    })
-  }
+  // 扩展连接的生命周期（接管、心跳超时、等待队列）在连接模块内收口
+  const connection = createExtensionConnection({
+    runtime,
+    snapshot,
+    heartbeatTimeoutMs,
+    onConnectionLost: (reason) => {
+      responseAssembler.clear()
+      transfer.clear()
+      rejectPendingRequests(
+        pendingRequests,
+        reason === 'replaced' ? 'extension connection replaced' : 'extension disconnected',
+      )
+    },
+    onConnectionChanged: () => schedulePersist(),
+  })
 
   await persistNow()
 
@@ -496,150 +352,6 @@ export async function createRuntime(options: RuntimeOptions = {}): Promise<Runti
   function setTabs(tabs: TabInfo[] = []): void {
     snapshot.tabs = Array.isArray(tabs) ? tabs : []
     snapshot.activeTabId = snapshot.tabs.find((tab: TabInfo) => tab.active)?.id ?? null
-    schedulePersist()
-  }
-
-  function rejectResponseTransfer(id: string, error: Error, reason: string): void {
-    const pending = pendingRequests.get(id)
-    if (!pending) return
-    clearTimeout(pending.timer)
-    pendingRequests.delete(id)
-    responseAssembler.release(id)
-    void responseUploads.releaseRequest(id)
-    // 文件上传的临时文件必须一起清掉，否则取消/超时后目标目录会留下半个文件
-    void fileUploads.releaseRequest(id)
-    pending.reject(error)
-    try {
-      runtime.extensionSocket?.send(JSON.stringify({ type: 'cancel', id, reason }))
-    } catch {
-      // 请求已经拒绝，取消仅用于让扩展尽早停止传输。
-    }
-  }
-
-  /** 通知扩展文件上传登记结果，扩展据此决定是否开始 POST 字节 */
-  function sendFileUploadReady(id: string, transferId: string, ok: boolean, error?: unknown): void {
-    const socket = runtime.extensionSocket
-    if (!socket || socket.readyState !== WebSocket.OPEN) return
-    try {
-      socket.send(
-        JSON.stringify({
-          type: 'file.upload.ready',
-          id,
-          transferId,
-          ok,
-          ...(ok
-            ? {}
-            : {
-                error: {
-                  message:
-                    error instanceof Error
-                      ? error.message
-                      : 'File upload was rejected by the relay',
-                },
-              }),
-        }),
-      )
-    } catch {
-      // socket 已断开，扩展会在上传失败后随命令一起结束。
-    }
-  }
-
-  function handleFileUploadRegistration(message: Record<string, unknown>): void {
-    const id = typeof message.id === 'string' ? message.id : ''
-    const transferId = typeof message.transferId === 'string' ? message.transferId : ''
-    try {
-      const totalBytes = message.totalBytes
-      const sha256 = message.sha256
-      // 流式上传不提供整文件摘要（null/缺省），relay 收到全部字节后自己算
-      if (
-        !id ||
-        typeof message.transferId !== 'string' ||
-        typeof totalBytes !== 'number' ||
-        (sha256 !== null && sha256 !== undefined && typeof sha256 !== 'string')
-      )
-        throw new FileUploadError('Invalid file upload metadata')
-      const pending = pendingRequests.get(id)
-      // 落盘路径只认 relay 自己保存的 pending download 参数，扩展另传的路径不采信
-      if (!pending || pending.command !== 'download' || !pending.outputPath)
-        throw new FileUploadError('File upload is not attached to a pending download command', 404)
-      fileUploads.register({
-        requestId: id,
-        transferId,
-        totalBytes,
-        sha256: typeof sha256 === 'string' ? sha256 : null,
-        outputPath: pending.outputPath,
-      })
-      sendFileUploadReady(id, transferId, true)
-    } catch (error) {
-      sendFileUploadReady(id, transferId, false, error)
-      if (id) rejectResponseTransfer(id, error as Error, 'invalid file upload')
-    }
-  }
-
-  function attachExtension(
-    socket: Bun.ServerWebSocket<ExtensionMetadata>,
-    meta: ExtensionMetadata = {},
-  ): void {
-    const previousSocket = runtime.extensionSocket
-    if (previousSocket && previousSocket !== socket) {
-      responseAssembler.clear()
-      void responseUploads.clear()
-      void fileUploads.clear()
-      rejectPendingRequests(pendingRequests, 'extension connection replaced')
-      // 扩展重连时旧 socket 还挂在运行时上：先通知旧连接被新实例顶替，再主动关闭，
-      // 否则旧侧会把断开误判成网络故障；detachExtension 会做身份校验，不会误伤新连接
-      try {
-        const displacedPayload = JSON.stringify({
-          type: 'displaced',
-          reason: 'A new extension instance connected and took over this connection.',
-        })
-        if (typeof previousSocket.send === 'function') {
-          previousSocket.send(displacedPayload)
-        }
-      } catch {
-        // 旧连接可能已断开，忽略发送失败
-      }
-      try {
-        previousSocket.close()
-      } catch {
-        // 旧连接可能已断开，忽略关闭失败
-      }
-    }
-
-    runtime.extensionSocket = socket
-    runtime.extensionId = typeof meta.extensionId === 'string' ? meta.extensionId : null
-    snapshot.extension = {
-      extensionId: runtime.extensionId,
-      connectedAt: new Date().toISOString(),
-      userAgent: (meta.userAgent as string) || null,
-      lastHeartbeatAt: null,
-    }
-    resolveConnectionWaiters(socket)
-    scheduleHeartbeatTimeout(socket)
-    schedulePersist()
-  }
-
-  function detachExtension(socket?: Bun.ServerWebSocket<ExtensionMetadata>): void {
-    if (socket && runtime.extensionSocket !== socket) {
-      // 重连竞态：旧 socket 的 close 事件晚于新连接 attach 到达，不能把新连接踢掉
-      return
-    }
-
-    runtime.extensionSocket = null
-    runtime.extensionId = null
-    snapshot.extension = null
-    clearHeartbeatTimeout()
-    responseAssembler.clear()
-    void responseUploads.clear()
-    void fileUploads.clear()
-    rejectPendingRequests(pendingRequests, 'extension disconnected')
-    // 断开时立即唤醒等待连接的 waiter，否则它们只能干等超时
-    // reject 内的 settle 会把 waiter 从 Set 删除，Set 迭代期间删除当前元素是安全的
-    for (const waiter of connectionWaiters) {
-      waiter.reject(
-        createExtensionDisconnectedError('extension disconnected while waiting for connection'),
-      )
-    }
     schedulePersist()
   }
 
@@ -689,32 +401,13 @@ export async function createRuntime(options: RuntimeOptions = {}): Promise<Runti
     }
 
     if (message?.type === 'heartbeat') {
-      // 心跳每 30s 一次，lastHeartbeatAt 是运行时状态无需持久化；只更新内存，避免每次都全量落盘
-      if (snapshot.extension) {
-        snapshot.extension.lastHeartbeatAt = new Date().toISOString()
-      }
-
-      // 收到心跳说明连接仍健康，重置超时计时
-      if (runtime.extensionSocket) {
-        scheduleHeartbeatTimeout(runtime.extensionSocket)
-      }
-
-      if (runtime.extensionSocket && runtime.extensionSocket.readyState === WebSocket.OPEN) {
-        runtime.extensionSocket.send(
-          JSON.stringify({
-            type: 'heartbeat',
-            sentAt: typeof message.sentAt === 'string' ? message.sentAt : null,
-            receivedAt: new Date().toISOString(),
-          }),
-        )
-      }
-
+      connection.handleHeartbeat(message.sentAt)
       return
     }
 
     if (message?.type === 'file.upload') {
       // 文件上传登记必须先于 HTTP 分段到达，否则 relay 无从知道该写到哪里
-      handleFileUploadRegistration(message as Record<string, unknown>)
+      transfer.handleFileUploadRegistration(message as Record<string, unknown>)
       return
     }
 
@@ -723,23 +416,7 @@ export async function createRuntime(options: RuntimeOptions = {}): Promise<Runti
     if (!pending) return
 
     if (message.type === 'response.upload') {
-      try {
-        const upload = message as Record<string, unknown>
-        if (
-          typeof upload.transferId !== 'string' ||
-          typeof upload.totalBytes !== 'number' ||
-          typeof upload.sha256 !== 'string'
-        )
-          throw new ResponseTransferError('Invalid response upload metadata')
-        responseUploads.register({
-          requestId: message.id,
-          transferId: upload.transferId,
-          totalBytes: upload.totalBytes,
-          sha256: upload.sha256,
-        })
-      } catch (error) {
-        rejectResponseTransfer(message.id, error as Error, 'invalid response upload')
-      }
+      transfer.handleResponseUploadRegistration(message.id, message as Record<string, unknown>)
       return
     }
 
@@ -748,7 +425,7 @@ export async function createRuntime(options: RuntimeOptions = {}): Promise<Runti
         const response = responseAssembler.accept(message as Record<string, unknown>)
         if (response) handleExtensionMessage(response)
       } catch (error) {
-        rejectResponseTransfer(message.id, error as Error, 'invalid response transfer')
+        transfer.rejectTransfer(message.id, error as Error, 'invalid response transfer')
       }
       return
     }
@@ -757,8 +434,7 @@ export async function createRuntime(options: RuntimeOptions = {}): Promise<Runti
     clearTimeout(pending.timer)
     pendingRequests.delete(message.id)
     responseAssembler.release(message.id)
-    void responseUploads.releaseRequest(message.id)
-    void fileUploads.releaseRequest(message.id)
+    transfer.releaseRequest(message.id)
     if (typeof message.ok !== 'boolean' || (message.ok === false && !isRecord(message.error))) {
       pending.reject(new ResponseTransferError('Invalid response envelope'))
       return
@@ -779,109 +455,6 @@ export async function createRuntime(options: RuntimeOptions = {}): Promise<Runti
         ? { ...message.result, path: pending.outputPath }
         : message.result,
     )
-  }
-
-  function responseUploadOffset(transferId: string): ResponseUploadProgress {
-    const progress = responseUploads.offset(transferId)
-    if (!pendingRequests.has(progress.requestId)) {
-      void responseUploads.release(transferId)
-      throw new ResponseUploadError('Response upload request is no longer pending', 404)
-    }
-    return progress
-  }
-
-  async function uploadResponse(
-    transferId: string,
-    request: Request,
-  ): Promise<ResponseUploadProgress> {
-    try {
-      const result = await responseUploads.write(
-        transferId,
-        request.headers.get('content-range'),
-        request.headers.get('content-length'),
-        request.body,
-      )
-      responseUploadOffset(transferId)
-      if (result.done) {
-        let response: Record<string, unknown>
-        try {
-          response = parseTransferredResponse(result.text, result.requestId)
-        } catch (error) {
-          throw new ResponseUploadError(
-            error instanceof Error ? error.message : 'Invalid transferred response',
-            422,
-          )
-        }
-        handleExtensionMessage(response)
-      }
-      return {
-        requestId: result.requestId,
-        receivedBytes: result.receivedBytes,
-        totalBytes: result.totalBytes,
-      }
-    } catch (error) {
-      const uploadError =
-        error instanceof ResponseUploadError
-          ? error
-          : new ResponseUploadError(
-              error instanceof Error ? error.message : 'Response upload failed',
-              500,
-            )
-      if (![404, 408, 409].includes(uploadError.httpStatus)) {
-        try {
-          const progress = responseUploads.offset(transferId)
-          rejectResponseTransfer(progress.requestId, uploadError, 'response upload failed')
-        } catch {
-          // 上传登记已清理时，没有 pending 请求需要拒绝。
-        }
-      }
-      throw uploadError
-    }
-  }
-
-  function fileUploadOffset(transferId: string): FileUploadProgress {
-    const progress = fileUploads.offset(transferId)
-    if (!pendingRequests.has(progress.requestId)) {
-      void fileUploads.release(transferId)
-      throw new FileUploadError('File upload request is no longer pending', 404)
-    }
-    return progress
-  }
-
-  async function uploadFile(transferId: string, request: Request): Promise<FileUploadProgress> {
-    try {
-      const result = await fileUploads.write(
-        transferId,
-        request.headers.get('content-range'),
-        request.headers.get('content-length'),
-        request.body,
-        request.headers.get(FILE_UPLOAD_CHUNK_SHA256_HEADER),
-      )
-      // 命令已经取消/超时的话，这里会释放登记并丢弃临时文件
-      fileUploadOffset(transferId)
-      return {
-        requestId: result.requestId,
-        transferId: result.transferId,
-        receivedBytes: result.receivedBytes,
-        totalBytes: result.totalBytes,
-        outputPath: result.outputPath,
-        ...(result.sha256 ? { sha256: result.sha256 } : {}),
-      }
-    } catch (error) {
-      const uploadError =
-        error instanceof FileUploadError
-          ? error
-          : new FileUploadError(error instanceof Error ? error.message : 'File upload failed', 500)
-      if (![404, 408, 409].includes(uploadError.httpStatus)) {
-        try {
-          const progress = fileUploads.offset(transferId)
-          rejectResponseTransfer(progress.requestId, uploadError, 'file upload failed')
-        } catch {
-          // 上传登记已清理时，没有 pending 请求需要拒绝。
-        }
-      }
-      throw uploadError
-    }
   }
 
   interface CommandPayload {
@@ -912,7 +485,7 @@ export async function createRuntime(options: RuntimeOptions = {}): Promise<Runti
     setLastCommand(command, args)
 
     const connectionTimeoutMs = Math.min(requestTimeoutMs, 10_000)
-    const socket = await waitForExtensionConnection(connectionTimeoutMs)
+    const socket = await connection.waitForConnection(connectionTimeoutMs)
 
     const id = createId('cmd')
     const deadlineAt = new Date(Date.now() + budgetMs).toISOString()
@@ -929,8 +502,7 @@ export async function createRuntime(options: RuntimeOptions = {}): Promise<Runti
       const timer = setTimeout(() => {
         pendingRequests.delete(id)
         responseAssembler.release(id)
-        void responseUploads.releaseRequest(id)
-        void fileUploads.releaseRequest(id)
+        transfer.releaseRequest(id)
         try {
           socket.send(JSON.stringify({ type: 'cancel', id, reason: 'relay timeout' }))
         } catch {
@@ -964,8 +536,7 @@ export async function createRuntime(options: RuntimeOptions = {}): Promise<Runti
           clearTimeout(timer)
           pendingRequests.delete(id)
           responseAssembler.release(id)
-          void responseUploads.releaseRequest(id)
-          void fileUploads.releaseRequest(id)
+          transfer.releaseRequest(id)
           reject(
             createExtensionDisconnectedError(
               `extension disconnected while sending command: ${command}`,
@@ -976,8 +547,7 @@ export async function createRuntime(options: RuntimeOptions = {}): Promise<Runti
         clearTimeout(timer)
         pendingRequests.delete(id)
         responseAssembler.release(id)
-        void responseUploads.releaseRequest(id)
-        void fileUploads.releaseRequest(id)
+        transfer.releaseRequest(id)
         reject(
           error instanceof Error
             ? error
@@ -1013,13 +583,13 @@ export async function createRuntime(options: RuntimeOptions = {}): Promise<Runti
     setError,
     setLastCommand,
     setTabs,
-    attachExtension,
-    detachExtension,
+    attachExtension: connection.attach,
+    detachExtension: connection.detach,
     handleExtensionMessage,
-    responseUploadOffset,
-    uploadResponse,
-    fileUploadOffset,
-    uploadFile,
+    responseUploadOffset: transfer.responseUploadOffset,
+    uploadResponse: transfer.uploadResponse,
+    fileUploadOffset: transfer.fileUploadOffset,
+    uploadFile: transfer.uploadFile,
     dispatchCommand,
     snapshot: () => ({
       token: runtime.token,

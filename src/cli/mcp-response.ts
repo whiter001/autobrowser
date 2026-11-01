@@ -1,0 +1,153 @@
+import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js'
+import { mkdir, writeFile } from 'node:fs/promises'
+import path from 'node:path'
+import { getHomeDir } from '../core/protocol.js'
+import { isRecord } from './client.js'
+
+// 超过该体积的截图 base64 不再内联进 MCP 响应（会爆模型上下文），改为落盘后回文本路径
+const SCREENSHOT_MAX_INLINE_BYTES = 2 * 1024 * 1024
+
+function extractScreenshotData(result: Record<string, unknown>): {
+  data: string
+  mimeType: string
+} {
+  const dataUrl = typeof result.dataUrl === 'string' ? result.dataUrl : ''
+  const rawData =
+    typeof result.data === 'string'
+      ? result.data
+      : dataUrl.includes(',')
+        ? dataUrl.slice(dataUrl.indexOf(',') + 1)
+        : ''
+
+  if (!rawData) {
+    throw new Error('missing screenshot data')
+  }
+
+  const mimeType =
+    typeof result.mimeType === 'string'
+      ? result.mimeType
+      : dataUrl.startsWith('data:image/jpeg')
+        ? 'image/jpeg'
+        : 'image/png'
+
+  return {
+    data: rawData,
+    mimeType,
+  }
+}
+
+export function toErrorResult(
+  code: string | undefined,
+  message: string,
+  error: {
+    suggestion?: string
+    suggestedAction?: string
+    details?: unknown
+  } = {},
+): CallToolResult {
+  const suggestion = error.suggestion || error.suggestedAction
+  const text = suggestion ? `${message}\n\n[AI SUGGESTION]: ${suggestion}` : message
+  return {
+    isError: true,
+    content: [{ type: 'text', text }],
+    structuredContent: {
+      error: {
+        ...(code ? { code } : {}),
+        message,
+        ...(error.suggestion ? { suggestion: error.suggestion } : {}),
+        ...(error.suggestedAction ? { suggestedAction: error.suggestedAction } : {}),
+        ...(error.details !== undefined ? { details: error.details } : {}),
+      },
+    },
+  }
+}
+
+export function toSuccessResult(result: unknown): CallToolResult {
+  const structuredContent = isRecord(result) && !Array.isArray(result) ? result : undefined
+  return {
+    content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
+    ...(structuredContent ? { structuredContent } : {}),
+  }
+}
+
+export function toScreenshotResult(result: Record<string, unknown>): Promise<CallToolResult> {
+  const { data, mimeType } = extractScreenshotData(result)
+  const summary: Record<string, unknown> = { mimeType }
+  for (const [key, value] of Object.entries(result)) {
+    if (key !== 'data' && key !== 'dataUrl') {
+      summary[key] = value
+    }
+  }
+  const dimensions =
+    typeof result.width === 'number' && typeof result.height === 'number'
+      ? ` (${result.width}x${result.height})`
+      : ''
+  const byteLength = Buffer.from(data, 'base64').length
+  if (byteLength > SCREENSHOT_MAX_INLINE_BYTES) {
+    return writeOversizedScreenshot(result, summary, data, mimeType, byteLength)
+  }
+  return Promise.resolve({
+    content: [
+      { type: 'image', data, mimeType },
+      { type: 'text', text: `Screenshot captured as ${mimeType}${dimensions}.` },
+    ],
+    structuredContent: summary,
+  })
+}
+
+/** 超过 2MB 的截图落盘到 ~/.autobrowser/screenshots/，只回文本路径，避免 base64 进模型上下文 */
+async function writeOversizedScreenshot(
+  result: Record<string, unknown>,
+  summary: Record<string, unknown>,
+  data: string,
+  mimeType: string,
+  byteLength: number,
+): Promise<CallToolResult> {
+  const extension = mimeType === 'image/jpeg' ? 'jpeg' : 'png'
+  const directory = path.join(getHomeDir(), '.autobrowser', 'screenshots')
+  await mkdir(directory, { recursive: true })
+  const filePath = path.join(directory, `autobrowser-${Date.now()}.${extension}`)
+  await writeFile(filePath, data, 'base64')
+
+  const sizeMb = (byteLength / (1024 * 1024)).toFixed(1)
+  const sizeText =
+    typeof result.width === 'number' && typeof result.height === 'number'
+      ? `${result.width}x${result.height} pixels`
+      : `${byteLength} bytes`
+  const text = `screenshot saved to ${filePath} (${sizeText}, ${sizeMb} MB, too large to inline)`
+  return {
+    content: [{ type: 'text', text }],
+    structuredContent: { ...summary, path: filePath },
+  }
+}
+
+export async function toVideoResult(result: Record<string, unknown>): Promise<CallToolResult> {
+  if (typeof result.data !== 'string') return toSuccessResult(result)
+  const { data, ...summary } = result
+  const directory = path.join(getHomeDir(), '.autobrowser', 'videos')
+  await mkdir(directory, { recursive: true })
+  const filePath = path.join(directory, `video-${Date.now()}.webm`)
+  await writeFile(filePath, data, 'base64')
+  let chaptersPath: string | undefined
+  if (Array.isArray(result.chapters) && result.chapters.length) {
+    chaptersPath = filePath.replace(/\.webm$/i, '') + '.chapters.json'
+    await writeFile(chaptersPath, `${JSON.stringify(result.chapters, null, 2)}\n`)
+  }
+  return {
+    content: [{ type: 'text', text: `video saved to ${filePath}` }],
+    structuredContent: { ...summary, path: filePath, chaptersPath },
+  }
+}
+
+export async function toTracingResult(result: Record<string, unknown>): Promise<CallToolResult> {
+  if (typeof result.data !== 'string') return toSuccessResult(result)
+  const { data, ...summary } = result
+  const directory = path.join(getHomeDir(), '.autobrowser', 'tracing')
+  await mkdir(directory, { recursive: true })
+  const filePath = path.join(directory, `trace-${Date.now()}.json`)
+  await writeFile(filePath, data, result.base64Encoded === true ? 'base64' : 'utf8')
+  return {
+    content: [{ type: 'text', text: `trace saved to ${filePath}` }],
+    structuredContent: { ...summary, path: filePath },
+  }
+}
