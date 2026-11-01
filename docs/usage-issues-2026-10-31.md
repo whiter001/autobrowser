@@ -5,6 +5,8 @@
 > 日期：2026-10-31
 >
 > 说明：本文「实测」结论均在本机复现过；标注「推测」的为代码分析结论、未经运行验证。与 [`usage-issues.md`](usage-issues.md)（2026-08-20）中的历史问题不重复，仅在 Issue 1 处交叉引用。
+>
+> 归档说明：本文记录的是 v0.1.2 / main `b280c36` 当时的行为。「实际表现」「根因分析」「复现脚本」和旧规避配方不代表当前版本限制；各 Issue 的「处理状态」与文末后续说明用于记录演进，现行使用方式以 README 和内置 skill 为准。
 
 ## 一、已确认的问题（Bug）
 
@@ -373,29 +375,16 @@ autobrowser network har recover out.har
 7. **「响应体超过 256 KiB 一定失败」——不成立**。实测一次导出 780,272 字节的 HAR（4 × 59KB 分片）用时 <1s，upload 通道本身可用。但生产路径上确实存在 30s 卡死的复现（Issue 10），属**不稳定**而非硬上限。
 8. **「Twimg 对分片请求限流」——实际是 404**（返回 HTML「dog」页，不是 403）。另外该视频的 1280x720 变体在 CDN 侧整体下架：同一播放列表 01:29 还是 200，01:32 变 404；此时页面内 `fetch` 会因错误页没有 CORS 头而表现为 `TypeError: Failed to fetch`，与 CORS 故障无法区分。
 
-## 三、优化改进方向（按优先级）
+## 三、后续状态说明
 
-**高**
+- Issue 1–6、8–12 均已有处理结论，不再把旧改进清单作为现行待办；具体行为和保留限制以各 Issue 的「处理状态」为准。
+- Issue 7 仍受 Chromium browser-level CDP 通道限制，当前扩展不能通过 tab session 设置默认下载目录。
+- 当前 HAR 已支持 captureId 防误停、URL 包含/排除过滤、可调停止/恢复预算、checkpoint 恢复以及大结果传输；现行参数和恢复流程见 README 的「网络」与内置 skill。
+- 当前下载应优先使用原生 `download` / `media list`，支持浏览器登录态、普通文件与 HLS、重试、断点续传和本地落盘，不再依赖下方旧版 HAR 分片规避配方。
 
-1. capture 绑定 tab 时在 start / stop 回显实际捕获的 tab；`entries` 为 0 时 `har stop` 返回非 0 退出码 + `suggestedAction`（`src/cli/commands/state.ts:552-575` 目前只回文件路径）。
-2. `harMaxRequests` 与全局请求缓冲解耦（`extension/background/network.ts:330-333`）。
-3. **`network har stop` / `network request` 提供可调预算**（`src/core/command-budget.ts:105-131` 目前只覆盖 eval/goto/open/click/reload/wait/feed），并保证超时后结果仍可从 checkpoint 取回（Issue 10、11）。
-4. 超时中断能力（`Runtime.terminateExecution` / `Page.stopLoading`），让超时后的同 tab 命令不再卡满预算（Issue 12）。
-5. 扩展增加 browser 级 CDP session，或提供「设置下载目录」的专门命令。
+## 四、历史规避方式（当时版本，不改代码）
 
-**中**
-
-6. `network requests` 默认按最新优先排序；CLI 摘要显示 `total` / `totalPages` / `currentPage`。
-7. `status.lastError` 成功即清，或明确区分当前错误与历史残留。
-8. tab handle 持久化 + 复用校验（参考 element/frame 的 `pageEpoch` 机制）。
-9. `eval` 结果增加显式体积上限与 `truncated` 标记。
-10. 采集提供排除规则，避免页面自身流量进入 capture（Issue 12）。
-
-**低**
-
-9. 文档：在 SKILL.md 补上 `network requests` 的分页语义、`network har start` 的 tab 绑定语义、以及 `network har stop` 的空结果判读方式。
-
-## 四、本次可用的规避方式（不改代码）
+> 以下内容仅保留当时的排查路径，不是当前版本的推荐流程或必要条件。
 
 - `network har start` 一定带 `--tab <handle>`；`har stop` 后检查 `entries` 数量，而不是只看 `ok`。
 - 只需要单条响应体时，用 `network request <requestId>`（返回体里带 `harEntry`），不必整包导出 HAR。
@@ -423,15 +412,17 @@ autobrowser --json network requests --all-tabs --all-epochs   # 看 result.total
 
 ---
 
-## 六、本轮实测：可用的 HAR 取数配方与正向结论
+## 六、历史实测：当时的 HAR 取数配方与正向结论
 
-**正向结论（实测通过）**
+> 本节保留 v0.1.2 当时的实测结果和规避限制，不是当前版本的性能结论或推荐流程。当前原生下载与 HAR 能力见 README。
+
+**当时的正向结论（实测通过）**
 
 - `network har start --tab <handle>` + `network har stop <file>` 能**无损**导出二进制响应体：`content.encoding` 为 `base64`，解码后与页面内 fetch 到的真实字节逐字节一致。
 - 响应体规模在 256 KiB 量级以内时，`har stop` 稳定在 0.1–0.2s，HAR 文件正常写出。
 - 原生 `network request <requestId>` 同样能取到 body（同样是无损 base64），单次响应体 ≤ 256 KiB 时 0.06–0.09s。
 
-**可用的取数配方（原生命令为主）**
+**当时可用的取数配方（原生命令为主）**
 
 ```bash
 # 1) 固定采集目标页
@@ -444,14 +435,14 @@ autobrowser --tab t13 eval '(async () => { /* fetch 分片 */ return "done" })()
 autobrowser network har stop out.har
 ```
 
-三个必须注意的前提：
+当时使用该配方的三个前提（仅描述旧版规避方式，不是当前要求）：
 
 1. **`har start` 必须带 `--tab`**（Issue 1）——不带就会静默抓到别的标签页。
 2. **先让页面自身的播放器停流**，否则 capture 会被播放器持续拉取的分片污染，stop 必然超时（Issue 12）。在页面里移除 `<video>` 元素即可（实测能把 capture 从几十条降到 1 条）。
 3. **单次采集的总响应体控制在 256 KiB 量级**，否则触发 upload 通道，生产路径上不稳定（Issue 10）。实践中按「每批 2–3 个分片」分批即可，实测 121 个分片分 45 批、每批 0.1s 全部成功。
 
-**本轮用该配方实测产出**
+**当时用该配方实测产出**
 
 - 121/121 个分片（60 视频 + 61 音频）全部经 HAR 导出，字节零缺失。
 - 合成结果：640×360 / H.264 + AAC 44.1kHz 立体声 / 177.66s / 6.65 MB，`ffmpeg -f null -` 全片解码零报错。
-- 该视频的 1280x720 变体在 CDN 侧已下架（播放列表由 200 转 404），因此 HAR 路线当前只能取到 360p 轨。
+- 该视频的 1280x720 变体在 CDN 侧已下架（播放列表由 200 转 404），因此当时通过 HAR 路线只能取到 360p 轨。

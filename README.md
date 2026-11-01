@@ -10,18 +10,18 @@
 
 - 本地中继服务，端口 `57978`
 - CLI API 服务，端口 `57979`
-- 带有基于 token 的连接流程的浏览器扩展骨架
+- 带有基于 token 的连接流程的浏览器扩展
 - 覆盖服务与连接管理、导航、标签页和窗口控制、元素交互、对话框、等待与状态检查、cookie、存储、剪贴板、浏览器状态、网络检查与拦截、snapshot、snapshot 导出/提取、截图、初始化脚本注入，以及 `batch`、`status`、`config`、`replay` 这类实用命令的核心能力
 
-运行 `autobrowser help` 可以查看完整命令树。`src/cli.ts` 里的 help 输出是权威来源，也会说明根级标志位，例如 `--tab`、`--frame` 和 `--auto-connect`。
+运行 `autobrowser help` 可以查看完整命令树。`src/cli/help.ts` 里的 help 输出是权威来源，也会说明根级标志位，例如 `--tab`、`--frame` 和 `--auto-connect`。
 
-如果你想看 Windows 原生 exe 与 sh 启动示例，请参见 [`docs/windows-demo.md`](docs/windows-demo.md)。
+如果你想看 Windows 原生 exe 启动示例，请参见 [`docs/windows-demo.md`](docs/windows-demo.md)。
 
 ## 安装
 
 ### 前置条件：Bun 运行时
 
-先安装 [Bun](https://bun.sh)。npm 全局入口是小型 Go 原生启动器，但业务仍由 Bun 执行 `dist/autobrowser.js`，不是 Go 重写或独立打包的 CLI。启动器从 `PATH` 找 `bun` / `bun.exe`，也可用 `AUTOBROWSER_BUN_PATH` 指定 Bun；需要自定义 JS 入口时设置 `AUTOBROWSER_DIST_ENTRY`。缺少运行时或入口会给出明确错误。
+先安装 [Bun](https://bun.sh)（>= 1.4.4）。npm 全局入口是小型 Go 原生启动器，但业务仍由 Bun 执行 `dist/autobrowser.js`，不是 Go 重写或独立打包的 CLI。启动器从 `PATH` 找 `bun` / `bun.exe`，也可用 `AUTOBROWSER_BUN_PATH` 指定 Bun；需要自定义 JS 入口时设置 `AUTOBROWSER_DIST_ENTRY`。缺少运行时或入口会给出明确错误。
 
 ### 全局安装
 
@@ -119,7 +119,9 @@ safaridriver -p 4723
 autobrowser --engine webkit open https://example.com
 ```
 
-核心适配包括导航、snapshot、元素点击/填写/输入、状态读取、storage、cookies 和视口 PNG 截图。network、tracing、CDP、video、WebMCP 等 Chromium 能力，以及当前未适配的选项，会返回 `BROWSER_CAPABILITY_UNSUPPORTED`，不会用模拟结果冒充支持。安装、driver 配置和分引擎 smoke 见 [`docs/install.md`](docs/install.md#firefox--webkitwebdriver)。
+核心适配包括导航、snapshot（不支持 `--changed`）、元素点击/填写/输入、状态读取、storage、cookies，以及视口或单元素 PNG 截图。`get` 的 `count`/`box`/`styles` 没有 WebDriver 专用实现，不能按 Chromium 语义使用。network、tracing、CDP、video、WebMCP 等 Chromium 能力会返回 `BROWSER_CAPABILITY_UNSUPPORTED`，不会用模拟结果冒充支持。
+
+能力拒绝目前不是全量参数校验：`goto/open` 的 `waitUntil`、`settleTimeoutMs`、`domQuietMs`、`timeoutMs` 会被接受但不会生效；需要这些等待或超时语义时请使用 Chromium，不要把成功回执当成选项已执行。安装、driver 配置和分引擎 smoke 见 [`docs/install.md`](docs/install.md#firefox--webkitwebdriver)。
 
 ## 状态检查
 
@@ -290,7 +292,9 @@ autobrowser script remove --all
 
 ## 面向 Agent 的引用
 
-每个成功的命令响应（JSON 模式下）都会附带一个 `meta` 字段，回显该命令实际操作的标签页上下文：`tabHandle`（Tab Handle）、`tabId`、`frame`（Frame 引用，若为 `top`/`main`/`default` 则归一化为 `null`）、`pageEpoch`、`url` 与 `title`。取不到的字段为 `null`；无页面上下文的命令（如 `status`、`tab.list`、`script`、`batch`）的 `meta` 所有字段均为 `null`。
+扩展命令返回对象结果时，会在 `result.meta` 中回显该命令实际操作的标签页上下文：`tabHandle`（Tab Handle）、`tabId`、`frame`（Frame 引用，若为 `top`/`main`/`default` 则归一化为 `null`）、`pageEpoch`、`url` 与 `title`。取不到的字段为 `null`；无页面上下文的对象命令（如 `tab.list`、`script`、`batch`）的 `result.meta` 所有字段均为 `null`。
+
+原始值或数组结果不会附加该字段，CLI 本地生成的响应（包括 Chromium `status`）也不保证存在。因此不要把 `meta` 当作所有成功响应的统一顶层契约；HAR stop/recover 的顶层 `meta.har` 是独立约定，见上文「网络」。
 
 `snapshot` 现在会输出一个 `elements` 列表，里面包含诸如 `@e1`、`@e2`、`@e3` 这样的稳定引用；同时还会输出一个 `frames` 列表，包含当前页面视图中的 `@f1` 之类的 frame 引用。基于选择器的命令在需要选择器的地方也可以直接接受元素引用，而 `frame` 可以直接接受 frame 引用，因此 agent 可以先 snapshot，再基于这些句柄执行操作，而不是去猜 CSS 选择器。
 
@@ -372,7 +376,12 @@ autobrowser tab close t3
 autobrowser mcp
 ```
 
-暴露的工具：`navigate`、`snapshot`、`search`、`find`、`click`、`dblclick`、`hover`、`fill`、`type`、`press`、`scroll`、`get`、`wait`、`screenshot`、`tab_list`、`tab_new`、`tab_select`、`tab_close`、`eval`。
+当前暴露 46 个工具，按用途分组如下：
+
+- 页面与导航：`navigate`、`snapshot`、`search`、`feed`、`find`、`click`、`dblclick`、`hover`、`fill`、`type`、`press`、`scroll`、`get`、`wait`、`screenshot`、`eval`。
+- 标签页与控制：`tab_list`、`target`、`command_control`、`tab_new`、`tab_select`、`tab_close`。
+- 浏览器、网络与状态：`cdp`、`webmcp_list`、`webmcp_call`、`console`、`errors`、`network_requests`、`network_har`、`dialog`、`cookies`、`storage`。
+- 其他交互与诊断：`locator`、`highlight`、`drop`、`mouse_move`、`mouse_down`、`mouse_up`、`mouse_wheel`、`video`、`tracing`、`actions`、`auto_snapshot`、`media_emulation`、`device`、`fill_form`。
 
 行为约定与上文的「面向 Agent 的引用」保持一致：
 

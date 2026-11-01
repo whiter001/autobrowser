@@ -8,7 +8,7 @@
 npm i -g @whiter001/autobrowser
 ```
 
-npm 用户必须先安装 Bun 运行时（见 https://bun.sh）：发布的命令入口是 `dist/autobrowser.js`，其 shebang 是 `#!/usr/bin/env bun`，因此 `bun` 不在 PATH 里就会报 command not found。
+npm 用户必须先安装 Bun >= 1.4.4（见 https://bun.sh）：发布的命令入口是 `dist/autobrowser.js`，其 shebang 是 `#!/usr/bin/env bun`，因此 `bun` 不在 PATH 里就会报 command not found。
 
 装好之后**不需要**自己构建扩展——随包发布的已构建扩展就在 `$(npm root -g)/@whiter001/autobrowser/chrome`（Windows 上同样用 `npm root -g` 定位）。在基于 Chromium 的浏览器里打开 `chrome://extensions`，用「加载已解压的扩展程序」加载这个目录即可。
 
@@ -73,7 +73,9 @@ autobrowser --engine webkit status
 autobrowser --engine webkit open https://example.com
 ```
 
-WebKit 默认连接 `http://127.0.0.1:4723`。当前核心适配范围是 `goto/open/back/forward/reload`、`snapshot`、`click/fill/type/press`、`get/is`、`storage`、`cookies`、视口 PNG `screenshot` 和 `close/status`。`full`、标注截图、JPEG、显式 tab/frame 目标、network、tracing、CDP、video、WebMCP 等尚未适配的能力会返回 `BROWSER_CAPABILITY_UNSUPPORTED`，不会静默降级成模拟结果。
+WebKit 默认连接 `http://127.0.0.1:4723`。当前核心适配范围是 `goto/open/back/forward/reload`、`snapshot`（不支持 `--changed`）、`click/fill/type/press`、`get/is`、`storage`、`cookies`、视口或单元素 PNG `screenshot` 和 `close/status`。`get` 的 `count`/`box`/`styles` 没有 WebDriver 专用实现，不能按 Chromium 语义使用。`full`、标注截图、JPEG、显式 tab/frame 目标、network、tracing、CDP、video、WebMCP 等尚未适配的能力会返回 `BROWSER_CAPABILITY_UNSUPPORTED`，不会静默降级成模拟结果。
+
+能力拒绝目前不是全量参数校验：`goto/open` 的 `waitUntil`、`settleTimeoutMs`、`domQuietMs`、`timeoutMs` 会被接受但不会生效。需要这些等待或超时语义时请使用 Chromium，不要把成功回执当成选项已执行。
 
 WebDriver sessionId 按当前 home 和引擎保存并复用；命名会话之间不会共享 sessionId。可用 `--session <name>` 与 `--engine` 组合。`close-all` 会结束对应 WebDriver 会话，之后下次命令会创建新会话。
 

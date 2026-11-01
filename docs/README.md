@@ -4,7 +4,7 @@
 
 ## 保持可维护性
 
-- 把 `src/cli.ts` 里的命令树当作命令名、标志位和语法的权威来源。
+- 把 `src/cli/help.ts` 里的命令树当作命令名、标志位和语法的权威来源。
 - 一段工作流只在它所属的页面里更新，不要在多个文件里重复相同示例。
 - `README.md` 只保留高层概览，把详细使用问题导向这里。
 
@@ -12,8 +12,8 @@
 
 - [`overview.md`](overview.md) — 核心流程、常用命令和功能地图。
 - [`install.md`](install.md) — 未打包扩展的安装、已保存连接配置以及兜底路径。
-- [`windows-demo.md`](windows-demo.md) — 面向 Windows 的原生 exe 与 sh 启动示例。
+- [`windows-demo.md`](windows-demo.md) — 面向 Windows 的原生 exe 启动示例。
 - [`bun-link.md`](bun-link.md) — Bun 包装器行为和 link 脚本细节。
-- [`agent-design.md`](agent-design.md) — 面向 agent 的路线图、协议缺口和下一步建议调整。
-- [`usage-issues.md`](usage-issues.md) — 2026-08-20 的使用体验问题汇总。
-- [`usage-issues-2026-10-31.md`](usage-issues-2026-10-31.md) — 2026-10-31 抓取 HLS 视频流场景下的使用体验问题汇总。
+- [`agent-design.md`](agent-design.md) — 面向 agent 的历史设计草稿；其中的缺口和建议不代表当前实现状态。
+- [`usage-issues.md`](usage-issues.md) — 2026-08-20 的历史使用体验问题及处理状态。
+- [`usage-issues-2026-10-31.md`](usage-issues-2026-10-31.md) — 2026-10-31 抓取 HLS 视频流场景下的历史使用体验问题及处理状态。

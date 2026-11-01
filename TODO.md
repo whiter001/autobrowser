@@ -6,14 +6,14 @@
   - [ ] 确保所有命令都能显式接受 --tab 和 --frame 参数，减少对隐式“当前目标”的依赖。
   - [x] 在命令响应中稳定回显实际操作的标签页句柄 (Tab Handle) 和 Frame 引用。
 
-- [ ] **增强语义定位能力 (Semantic Locators)**
+- [x] **增强语义定位能力 (Semantic Locators)**
   - [x] 扩展 find 命令：支持候选列表、Top-N 结果排序。
   - [x] 增加更多定位策略：placeholder, alt text, title, test-id, exact-name。
   - [x] 支持位置/次序选择：first, last, nth。
 
-- [ ] **引用过期模型 (Snapshot Epoch)**
-  - [ ] 引入 Page Epoch 或 Snapshot ID，让 Agent 能感知 DOM 状态是否发生了质变。
-  - [ ] 当使用过期的元素/Frame 引用（如 @e1）时，返回清晰的机器可读错误（Stale Reference Error）。
+- [x] **引用过期模型 (Snapshot Epoch)**
+  - [x] 引入 Page Epoch 或 Snapshot ID，让 Agent 能感知 DOM 状态是否发生了质变。
+  - [x] 当使用过期的元素/Frame 引用（如 @e1）时，返回清晰的机器可读错误（Stale Reference Error）。
 
 - [x] **优化 Agent I/O 协议**
   - [ ] 统一各命令的 JSON 响应格式，确保输出的一致性。

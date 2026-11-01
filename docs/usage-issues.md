@@ -4,6 +4,8 @@
 > 日期：2026-08-20
 >
 > 后续批次：[`usage-issues-2026-10-31.md`](usage-issues-2026-10-31.md)（抓取 HLS 视频流场景）。
+>
+> 归档说明：本文的「实际表现」「根因分析」「复现步骤」保留当时观察，不代表当前版本仍有相同行为。各 Issue 的「处理状态」与文末后续说明用于记录演进；现行使用方式以 README 和内置 skill 为准。
 
 ## 一、已确认的问题（Bug）
 
@@ -138,27 +140,9 @@
 
 - 定位并修复时序问题，或在 CI 上对已知 flaky 测试做 retry 标记。
 
-## 二、优化改进方向
+## 二、后续状态说明
 
-### 高优先级
-
-1. **修复 HAR 配额问题**（Issue 1）：
-   - `--har-unlimited` 真正关闭 CDP body 配额；
-   - 统一内存态与 checkpoint 态。
-2. **eval 错误信息带修复建议**（Issue 2）：
-   - 语法错误时提示改用 `--file`/`--stdin`（延续 `createPageEvaluationExceptionError` 的 `suggestedAction` 思路，引导改为换传入方式而非换方案）。
-3. **SPA/反爬场景导航等待增强**（Issue 3）：
-   - 增加 `--wait-for url` / `--wait-for selector` 等面向结果的等待。
-
-### 中优先级
-
-4. **`network requests` 首次查询引导**（Issue 4）。
-5. **CLI 帮助文本一致性**（Issue 5）：已支持 `cookies list` 别名。
-6. **稳定性**：排查 Windows flaky 测试（Issue 6）：已修 connect/status 竞争分支取消。
-
-### 长期（与 TODO.md 一致）
-
-- Snapshot Epoch 的 stale reference 机器可读错误。
-- 统一 `--tab` / `--frame` 显式目标协议。
-- 标准错误码系统 + 修复建议推广到全部命令。
-- JSDoc 补全、连接断开恢复引导、React/Vue 组件操作示例。
+- Issue 1 仍按上方的「部分处理」记录：`--har-unlimited` 只取消 autobrowser 自身的 body 存储限额，不能绕过 CDP 配额；HAR 在 body 获取失败时仍导出，并在对应 entry 的 `response.content.comment` 中记录原因。checkpoint 状态顺序和错误建议已处理。
+- Issue 2–6 均已有处理结论，不再把旧的改进清单作为现行待办。
+- Page Epoch 与 stale reference 机器可读错误已经实现，包括 `STALE_ELEMENT_REF` / `STALE_FRAME_REF` 和重新 snapshot 的建议，不再是长期缺口。
+- 其余持续事项以 `TODO.md` 为准，包括扩大显式目标协议覆盖、统一响应与错误码、补全 JSDoc 和框架组件示例。

@@ -6,12 +6,12 @@
 
 - 端口 `57978` 的本地中继服务
 - 端口 `57979` 的 CLI API 服务
-- 带有基于 token 的连接流程的浏览器扩展骨架
+- 带有基于 token 的连接流程的浏览器扩展
 - 覆盖服务与连接管理、导航、标签页和窗口控制、元素交互、对话框、等待与状态检查、cookie、存储、剪贴板、浏览器状态、网络检查与拦截、snapshot、snapshot 导出/提取、截图、初始化脚本注入（`script add/list/remove`），以及 `batch`、`status`、`config`、`replay`、`network export` 这类实用命令的核心能力
 
 以上能力同样通过 npm 全局安装的 `autobrowser` 命令提供，npm 用户不需要克隆本仓库；安装步骤见 [`install.md`](install.md)。
 
-运行 `autobrowser help` 可以查看完整命令树。`src/cli.ts` 里的命令树是标志位和语法的权威来源。`autobrowser mcp` 还会通过 stdio 暴露一个 MCP（Model Context Protocol）服务器，把核心命令包装成 MCP tools，供 Claude Desktop 等 MCP 客户端调用。
+运行 `autobrowser help` 可以查看完整命令树。`src/cli/help.ts` 里的命令树是标志位和语法的权威来源。`autobrowser mcp` 还会通过 stdio 暴露一个 MCP（Model Context Protocol）服务器，把核心命令包装成 MCP tools，供 Claude Desktop 等 MCP 客户端调用。
 
 ## CLI 输出与退出码
 
@@ -21,12 +21,12 @@
 
 ## 文档地图
 
-`src/cli.ts` 的命令树是权威参考。这个目录里的文档则把较长的使用流程整理在一起：
+`src/cli/help.ts` 的命令树是权威参考。这个目录里的文档则把较长的使用流程整理在一起：
 
 - [`install.md`](install.md) 讲解未打包扩展的安装和已保存的连接配置。
 - [`bun-link.md`](bun-link.md) 讲解 `link:bun` 开发链接行为。
 
-npm 用户的安装方式是 `npm i -g @whiter001/autobrowser`（需要先安装 Bun 运行时），装完即可直接使用 `autobrowser` 命令。
+npm 用户的安装方式是 `npm i -g @whiter001/autobrowser`（需要先安装 Bun >= 1.4.4），装完即可直接使用 `autobrowser` 命令。
 
 ## 核心流程
 

@@ -63,7 +63,8 @@ autobrowser 是一个面向 Chrome/Edge 的浏览器自动化 CLI，通过本地
 ## 浏览器引擎与能力边界
 
 - 默认 `--engine chromium` 使用扩展 + CDP。Firefox/WebKit 使用标准 WebDriver，需先启动 geckodriver/safaridriver，再把 `--engine firefox|webkit` 放在命令名前；driver 地址可用 `--webdriver-url` 覆盖。
-- WebDriver 核心范围是导航、snapshot、click/fill/type/press、get/is、storage、cookies、视口 PNG screenshot 和 close/status。遇到 `BROWSER_CAPABILITY_UNSUPPORTED` 时改用已适配命令或回到 Chromium，不要把 CDP/network/tracing 等专属能力当成跨浏览器承诺。
+- WebDriver 核心范围是导航、snapshot（不支持 `--changed`）、click/fill/type/press、get/is、storage、cookies、视口或单元素 PNG screenshot 和 close/status。`get` 的 `count`/`box`/`styles` 没有 WebDriver 专用实现，不能按 Chromium 语义使用。遇到 `BROWSER_CAPABILITY_UNSUPPORTED` 时改用已适配命令或回到 Chromium，不要把 CDP/network/tracing 等专属能力当成跨浏览器承诺。
+- 能力拒绝并非全量参数校验：`goto/open` 的 `waitUntil`、`settleTimeoutMs`、`domQuietMs`、`timeoutMs` 当前会被接受但不会生效。需要这些等待或超时语义时使用 Chromium，不要把成功回执当成选项已执行。
 - `BROWSER_DRIVER_UNAVAILABLE` 先检查 driver 进程、URL 和 Safari 远程自动化设置；`WEBDRIVER_SESSION_INVALID` 表示旧会话已失效，适配层只会在执行前校验时重建，不会盲目重放副作用命令。
 
 ## 命名会话与清理边界
@@ -108,7 +109,7 @@ autobrowser 是一个面向 Chrome/Edge 的浏览器自动化 CLI，通过本地
 ## 诊断与自动 snapshot
 
 - `tracing start` / `tracing stop [output.json]` 记录目标 tab 的 CDP trace，最大 32MiB；超限明确失败，不静默截断。CLI/MCP 都把 trace 落盘并返回路径，避免大段数据进入模型上下文。
-- `video start` / `video stop [output.webm]` 使用 Chrome tabCapture + offscreen MediaRecorder 录制 WebM，默认最长 10 分钟、文件上限 64MiB。`video chapter <title>` 添加章节并输出 JSON sidecar；`video show-actions` / `video hide-actions` 控制后续动作 callout 和目标高亮。浏览器不支持 tabCapture 时按错误信息诊断，不伪造视频结果。
+- `video start` / `video stop [output.webm]` 使用 Chrome tabCapture + offscreen MediaRecorder 录制 WebM，默认最长 10 分钟、文件上限 64MiB。`video chapter <title>` 添加章节，JSON sidecar 在 `video stop` 时输出；`video show-actions` / `video hide-actions` 控制后续动作 callout 和目标高亮。浏览器不支持 tabCapture 时按错误信息诊断，不伪造视频结果。
 - `actions [list|clear]` 查看或清理有界动作时间线，包含命令、目标、耗时和错误，但不保存参数值，密码、脚本、cookie 等不会进入日志。
 - `set auto-snapshot on|off` 控制动作后自动 snapshot，默认关闭；只覆盖导航和输入动作，snapshot 失败通过 `snapshotError` 返回，不覆盖原动作结果。开启后会显著增加输出，排查完应关闭。
 
@@ -189,7 +190,7 @@ autobrowser 是一个面向 Chrome/Edge 的浏览器自动化 CLI，通过本地
 - 在旧扩展上，`network har stop` 可能只返回元数据；CLI 会自动兜底重建 HAR。
 - 如果页面看起来空白或不对，先确认是不是登录页、验证码页，或者虚拟滚动列表。
 - 如果命令报 `command not found` 或退出码 127，这是链接产物或 PATH 的问题，**不是 autobrowser 不可用**：先确认 `bun` 目录在当前 shell 的 PATH 里；Windows 使用 `autobrowser.exe <子命令>`（Windows 没有无扩展名入口），其他平台使用 `autobrowser <子命令>`。这是 shell 解析问题，修好之后继续用 autobrowser，不要因此换方案。
-- npm 全局安装在 postinstall 中用 Go 原生入口替换 npm shim：Windows `<prefix>/autobrowser.exe`，POSIX `<prefix>/bin/autobrowser`，支持 macOS/Linux/Windows x64/arm64。Go 只用参数数组启动 Bun + `dist/autobrowser.js`，不重写业务、不经过 shell；仍需 PATH 中的 Bun 或 `AUTOBROWSER_BUN_PATH`，JS 路径可用 `AUTOBROWSER_DIST_ENTRY` 覆盖。源码 `link:bun` 同样用 Go 构建原生启动器并嵌入当前 Bun 与仓库 dist 路径，开发机需要 Go。
+- npm 全局安装在 postinstall 中用 Go 原生入口替换 npm shim：Windows `<prefix>/autobrowser.exe`，POSIX `<prefix>/bin/autobrowser`，支持 macOS/Linux/Windows x64/arm64。Go 只用参数数组启动 Bun + `dist/autobrowser.js`，不重写业务、不经过 shell；仍需 PATH 中的 Bun >= 1.4.4 或 `AUTOBROWSER_BUN_PATH`，JS 路径可用 `AUTOBROWSER_DIST_ENTRY` 覆盖。源码 `link:bun` 同样用 Go 构建原生启动器并嵌入当前 Bun 与仓库 dist 路径，开发机需要 Go。
 - 禁用 npm 安装脚本时仍是旧 shim，**不保证存在 exe**；放行脚本后 `npm rebuild -g @whiter001/autobrowser`。缺少预编译文件/不支持平台/非全局才沿用旧修正；原生复制失败会明确报错，不静默回退。不要显式调用 `autobrowser.cmd`，PowerShell → cmd.exe 会破坏引号和 `& | ^` 参数。原生入口也不能还原调用方 shell 的展开，复杂 eval 仍用 `--file`、`--stdin` 或 `--base64`。
 - 卸载 npm 包后清理 npm 未登记的 Windows `<prefix>/autobrowser.exe`、回退 `.bat`，POSIX 检查 `<prefix>/bin/autobrowser` 是否残留；prefix 可用 `npm prefix -g` 查询。
 - 对于类似 x.com 的 SPA 列表页，优先从 `article` 等可见节点读取内容，不要直接相信 `get text body`。
