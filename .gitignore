@@ -12,5 +12,7 @@ node_modules/
 .env
 *.har
 .chrome-profile/
+.autobrowser-profile*/
+.autobrowser-edge-profile/
 .mini-agent/
 tmp/
