@@ -363,6 +363,90 @@ describe('WebDriver engine adapter', () => {
     })
   })
 
+  test('covers every script-backed branch so a missing return fails loudly', async () => {
+    // get / is / storage 的每个分支各跑一次：任一分支持续退回裸 IIFE，
+    // 这里拿到的就是 null，断言会立刻失败，而不是拖到真实 driver 才暴露。
+    await withTempHome(async (home) => {
+      const mock = createDriverMock({
+        elements: [
+          createStubElement('h1', { innerText: 'Hello', textContent: 'Hello' }),
+          createStubElement('input', { attributes: { id: 'name' }, value: 'Ada' }),
+          createStubElement('button', {
+            attributes: { id: 'save', 'aria-label': 'Save changes' },
+            disabled: true,
+          }),
+          createStubElement('input', {
+            attributes: { id: 'agree', type: 'checkbox' },
+            checked: true,
+          }),
+        ],
+      })
+      const handler = createWebDriverCommandHandler({
+        engine: 'firefox',
+        driverUrl: 'http://127.0.0.1:4444',
+        homeDir: home,
+        fetchImpl: mock.fetchImpl,
+      })
+
+      // get：text / value / 任意属性三条分支
+      expect(await handler('get', { attr: 'text', selector: 'h1' })).toMatchObject({
+        ok: true,
+        result: 'Hello',
+      })
+      expect(await handler('get', { attr: 'value', selector: '#name' })).toMatchObject({
+        ok: true,
+        result: 'Ada',
+      })
+      expect(await handler('get', { attr: 'aria-label', selector: '#save' })).toMatchObject({
+        ok: true,
+        result: 'Save changes',
+      })
+
+      // is：可见 / 禁用 / 可用 / 勾选
+      expect(await handler('is', { selector: 'h1', state: 'visible' })).toMatchObject({
+        ok: true,
+        result: true,
+      })
+      expect(await handler('is', { selector: '#save', state: 'disabled' })).toMatchObject({
+        ok: true,
+        result: true,
+      })
+      expect(await handler('is', { selector: '#name', state: 'enabled' })).toMatchObject({
+        ok: true,
+        result: true,
+      })
+      expect(await handler('is', { selector: '#agree', state: 'checked' })).toMatchObject({
+        ok: true,
+        result: true,
+      })
+
+      // storage：localStorage 的写读删清，以及 sessionStorage 分支
+      expect(await handler('storage', { action: 'set', key: 'k', value: 'v' })).toMatchObject({
+        ok: true,
+        result: { key: 'k', value: 'v' },
+      })
+      expect(await handler('storage', { action: 'get', key: 'k' })).toMatchObject({
+        ok: true,
+        result: { key: 'k', value: 'v' },
+      })
+      expect(await handler('storage', { action: 'delete', key: 'k' })).toMatchObject({
+        ok: true,
+        result: { key: 'k', deleted: true },
+      })
+      expect(await handler('storage', { action: 'clear' })).toMatchObject({
+        ok: true,
+        result: { cleared: true },
+      })
+      expect(
+        await handler('storage', { action: 'set', key: 's', value: 'sv', session: true }),
+      ).toMatchObject({ ok: true, result: { key: 's', value: 'sv' } })
+      expect(await handler('storage', { action: 'get', key: 's', session: true })).toMatchObject({
+        ok: true,
+        result: { key: 's', value: 'sv' },
+      })
+    })
+  })
+
   test('returns structured unsupported errors without creating a browser session', async () => {
     await withTempHome(async (home) => {
       const mock = createDriverMock()
