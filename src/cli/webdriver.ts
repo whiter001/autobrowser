@@ -47,7 +47,9 @@ function selectorForWebDriver(selector: string): string {
   return match ? `[data-autobrowser-webdriver-ref="e${match[1]}"]` : selector
 }
 
-const SNAPSHOT_SCRIPT = `(() => {
+// W3C execute/sync 的 body 是函数体，不是表达式：脚本必须显式 return 才有返回值。
+// 写成裸 IIFE（`(() => {...})()`）时，driver 会把它当成未返回的表达式语句，value 恒为 null。
+const SNAPSHOT_SCRIPT = `return (() => {
   const root = SELECTOR ? document.querySelector(SELECTOR) : document;
   if (!root) return { error: 'snapshot target not found' };
   const roles = ROLES;
@@ -253,7 +255,7 @@ export function createWebDriverCommandHandler({
             return { ok: true, result: await client.call('GET', (id) => `/session/${id}/url`) }
           if (attr === 'cdp-url') return unsupported(engine, command, 'CDP URLs are Chromium-only')
           const selector = JSON.stringify(selectorForWebDriver(String(args.selector)))
-          const script = `(() => {
+          const script = `return (() => {
             const node = document.querySelector(${selector});
             if (!node) return { found: false };
             const attr = ${JSON.stringify(attr)};
@@ -269,7 +271,7 @@ export function createWebDriverCommandHandler({
         case 'is': {
           const selector = JSON.stringify(selectorForWebDriver(String(args.selector)))
           const state = String(args.state)
-          const result = await execute<{ found: boolean; value?: boolean }>(`(() => {
+          const result = await execute<{ found: boolean; value?: boolean }>(`return (() => {
             const node = document.querySelector(${selector});
             if (!node) return { found: false };
             const style = getComputedStyle(node);
@@ -301,7 +303,7 @@ export function createWebDriverCommandHandler({
           else if (action === 'delete')
             expression = `(${store}.removeItem(${key}), { key: ${key}, deleted: true })`
           else expression = `(${store}.clear(), { cleared: true })`
-          return { ok: true, result: await execute(`(() => (${expression}))()`) }
+          return { ok: true, result: await execute(`return (() => (${expression}))()`) }
         }
         case 'cookies': {
           const action = String(args.action)

@@ -15,6 +15,14 @@
 
 运行 `autobrowser help` 可以查看完整命令树。`src/cli/help.ts` 里的 help 输出是权威来源，也会说明根级标志位，例如 `--tab`、`--frame` 和 `--auto-connect`。
 
+根级标志位放在命令名前。除了 `--tab`/`--frame`/`--session`/`--engine` 这类目标选择标志，服务连接相关的三个也常被用到：
+
+- `--server <url>`：直接指定 CLI API 服务地址，默认 `http://127.0.0.1:57979`。指向远端或已改端口的服务时用它。
+- `--ipc-port <port>`：覆盖 CLI API 服务端口（默认 `57979`）。除非同时显式给了 `--server`，否则它会同步改写 `--server` 的地址。
+- `--relay-port <port>`：覆盖中继服务端口（默认 `57978`）。扩展连接的是这个端口，不是 `--ipc-port`。
+
+`--session <name>` 会自动改用该命名会话登记的 relay/IPC 端口和地址；只有显式传 `--relay-port`/`--ipc-port`/`--server` 才会覆盖会话自带的端口。`session create` 也可以用 `--relay-port`/`--ipc-port` 指定新会话的端口。
+
 如果你想看 Windows 原生 exe 启动示例，请参见 [`docs/windows-demo.md`](docs/windows-demo.md)。
 
 ## 安装
@@ -367,6 +375,134 @@ autobrowser tab close t3
 如果页面发生了大规模重渲染或导航，请先重新运行 `snapshot` 刷新引用，再继续操作。
 
 页面有未处理的 confirm/prompt 对话框时，`snapshot` 会返回该 modal 的描述，交互类命令会返回带 `MODAL_OPEN` 错误码和 `suggestedAction` 的错误；先用 `dialog accept` / `dialog dismiss` 处理对话框，再继续操作。
+
+## 其他命令速查
+
+上面几节覆盖的是主要工作流。下面是其余命令族的最小用法示例；每个命令的完整标志位以 `autobrowser help <命令>` 为准。
+
+### 浏览器状态模拟
+
+`set` 命令调整浏览器侧的模拟设置，按当前标签页生效：
+
+```bash
+autobrowser set viewport 390 844 3 mobile   # 宽 高 设备像素比 mobile
+autobrowser set device iphone-15            # 一次性设置视口、DPR、mobile 和 UA
+autobrowser set device --reset              # 同时清除设备尺寸和 UA 覆盖
+autobrowser set media dark                  # 配色方案，light / 省略则重置
+autobrowser set media-type print            # 打印或屏幕媒体，--reset 重置
+autobrowser set reduced-motion reduce       # 也支持 no-preference / --reset
+autobrowser set forced-colors active        # 也支持 none / --reset
+autobrowser set contrast more               # 也支持 less / custom / no-preference / --reset
+autobrowser set timezone Asia/Shanghai      # IANA 时区名，--reset 重置
+autobrowser set locale zh-CN                # BCP 47 标签，--reset 重置
+autobrowser set ua "Mozilla/5.0 ..."       # 覆盖 UA，--reset 或空值重置
+autobrowser set geo 39.9 116.4 100          # 纬度 经度 精度(米)
+autobrowser set headers "X-Token:abc,Demo:1"
+autobrowser set offline                     # 切到离线；set offline false 恢复
+autobrowser set permission notifications --reset   # 授权当前源，--reset 撤销
+autobrowser set auto-snapshot on            # 导航和输入后自动附带 snapshot，默认 off
+```
+
+设备预设目前是 `desktop-chrome`、`iphone-15`、`pixel-10`，非法名字返回 `INVALID_DEVICE_PRESET`。
+
+### 目标与命令队列
+
+`target` 管理持久化的目标标签页，`command` 查看和干预扩展侧的命令队列：
+
+```bash
+autobrowser target show                    # 查看当前持久化目标
+autobrowser target set t2                  # 绑定到稳定句柄
+autobrowser target active                  # 改用浏览器活动标签页
+autobrowser target clear                   # 清除持久化目标
+
+autobrowser command list                   # 排队中与执行中的命令
+autobrowser command status <id>            # 查看单个命令
+autobrowser command cancel <id>            # 按 id 取消
+autobrowser command reset --tab t2         # 重置目标队列
+```
+
+命令超时或页面卡死时，先用 `status` 和 `command list` 判断现场，再决定重试还是恢复，不要连续重放。
+
+### 诊断与录制
+
+```bash
+autobrowser console --level error          # 读控制台输出，还支持 warning/info/debug
+autobrowser errors                         # 读页面错误
+autobrowser console clear                  # 清空控制台缓冲
+autobrowser errors clear
+autobrowser actions list                   # 有界动作时间线，不记录参数值
+autobrowser actions clear
+autobrowser tracing start
+autobrowser tracing stop ./trace.json      # 落盘并返回路径，最大 32MiB
+autobrowser video start
+autobrowser video chapter "第一步" --duration 3000
+autobrowser video stop ./out.webm          # 落盘并返回路径，最大 64MiB
+```
+
+`console` 和 `errors` 支持 `--page`、`--page-size`、`--since <timestamp>` 和 `--all-epochs`；`--level` 会连带包含更严重级别的消息。
+
+### 可恢复的长任务采集
+
+`feed` 采集单页虚拟列表，`collect` 把多页流程跑成可断点续传的 JSONL 任务：
+
+```bash
+autobrowser feed collect 'article' --limit 50 --dedupe url
+autobrowser collect run ./spec.json
+autobrowser collect resume ./spec.json     # 从失败页继续，按内容去重
+```
+
+`collect` 的 spec 是 JSON：`{name, mode: "feed"|"network", startUrl?, output, maxPages?, feed?, network?}`。`feed` 模式用 `feed.selector/limit/dedupe/maxScrolls/pauseMs/stallRounds/nextSelector/waitTimeoutMs`；`network` 模式用 `network.urlPattern/itemsPath` 和可选的 `nextPath` 跟随真实响应游标。每完成一页就原子更新输出 JSONL 和 checkpoint，失败时按提示 `collect resume`；checkpoint 不含 cookie 或 token。该命令当前只支持 Chromium 扩展通道。
+
+### 数据导出
+
+```bash
+autobrowser network export ./requests.jsonl     # 请求摘要 JSONL，比完整 HAR 更好 diff
+autobrowser snapshot export ./snapshot.jsonl    # 完整快照 JSONL
+autobrowser snapshot extract ./fields.jsonl --field 'elements.*.text'
+```
+
+`snapshot extract` 的 `--field` 支持逗号分隔的多项和 `*` 前缀通配，只导出匹配的字段路径。
+
+### 页面读写与其他
+
+```bash
+autobrowser state save my-profile            # 保存浏览器状态
+autobrowser state load my-profile            # 按名字恢复
+autobrowser clipboard read
+autobrowser clipboard write "hello"
+autobrowser pdf                              # 导出当前页为 PDF
+autobrowser config                           # 查看已保存的连接配置
+autobrowser replay                           # 重放上一条记录的命令
+autobrowser skill sync                       # 同步包内 SKILL.md 到 ~/.agents/skills/autobrowser/
+autobrowser skill status                     # 只检查是否与包内一致，不写入
+```
+
+`replay` 会拒绝含 `[redacted]` 的历史命令，不会拿脱敏占位符当真实参数执行。`skill sync` 是更新 agent 提示词的官方途径，包内 SKILL.md 位于 `.agents/skills/autobrowser/SKILL.md`，可用 `AUTOBROWSER_SKILL_DIR` 覆盖安装位置。
+
+低层输入与拖拽：
+
+```bash
+autobrowser keyboard type "hello"            # type / inserttext / keydown / keyup
+autobrowser mousemove 400 300
+autobrowser mousedown left
+autobrowser mouseup left
+autobrowser mousewheel 0 500
+autobrowser drag "#a" "#b"
+autobrowser scrollintoview "#result"
+autobrowser upload "input[type=file]" ./a.png ./b.png
+autobrowser fillform '[{"selector":"#u","value":"a"},{"selector":"#p","value":"b"}]'
+autobrowser window new
+autobrowser close all                        # 关闭当前窗口全部标签页
+```
+
+`fillform` 一次填多个字段，单个字段失败不会中断其余字段，输入是 JSON 数组或 `{"fields":[...]}`，也支持 `--stdin`/`--file`/`--base64`。
+
+`dialog auto` 控制运行时是否自动接受 alert/beforeunload（默认开启，仅运行时生效）：
+
+```bash
+autobrowser dialog auto --off
+autobrowser dialog auto --on
+```
 
 ## MCP 服务器（Model Context Protocol）
 

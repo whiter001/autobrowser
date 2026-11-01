@@ -25,6 +25,12 @@
 
 - [`install.md`](install.md) 讲解未打包扩展的安装和已保存的连接配置。
 - [`bun-link.md`](bun-link.md) 讲解 `link:bun` 开发链接行为。
+- [`windows-demo.md`](windows-demo.md) 讲解 Windows 原生 exe 启动示例。
+- [`agent-design.md`](agent-design.md) 是面向 agent 的历史设计草稿；其中的缺口和建议不代表当前实现状态。
+- [`usage-issues.md`](usage-issues.md) 是 2026-08-20 的历史使用体验问题及处理状态。
+- [`usage-issues-2026-10-31.md`](usage-issues-2026-10-31.md) 是 2026-10-31 抓取 HLS 视频流场景下的历史使用体验问题及处理状态。
+
+README 只保留高层概览和命令速查；本页承接那些需要连贯叙事的较长工作流。
 
 npm 用户的安装方式是 `npm i -g @whiter001/autobrowser`（需要先安装 Bun >= 1.4.4），装完即可直接使用 `autobrowser` 命令。
 
@@ -84,6 +90,94 @@ autobrowser tab select t2
 ```
 
 如果 DOM 发生了明显变化，请再跑一次 `snapshot` 来刷新引用。
+
+## 浏览器状态模拟
+
+`set` 命令族调整浏览器侧的模拟状态（视口、UA、时区、媒体特性等），按标签页生效：
+
+```bash
+autobrowser set viewport 390 844 3 mobile
+autobrowser set device iphone-15
+autobrowser set device --reset
+autobrowser set media dark
+autobrowser set media-type print
+autobrowser set reduced-motion reduce
+autobrowser set forced-colors active
+autobrowser set contrast more
+autobrowser set timezone Asia/Shanghai
+autobrowser set locale zh-CN
+autobrowser set ua "Mozilla/5.0 ..."
+autobrowser set geo 39.9 116.4 100
+autobrowser set headers "X-Token:abc"
+autobrowser set offline
+autobrowser set permission notifications --reset
+autobrowser set auto-snapshot on
+```
+
+几条容易踩的约定：
+
+- 省略值或传 `--reset` 只重置当前这一项，不会连带清掉其他媒体覆盖；`set device --reset` 是例外，它同时清除设备尺寸和 UA。
+- 设备预设目前只有 `desktop-chrome`、`iphone-15`、`pixel-10`，非法名字返回 `INVALID_DEVICE_PRESET`，不要改用未经验证的参数组合去凑。
+- `set auto-snapshot on` 会显著增加每次导航和输入后的输出量，排查完记得关掉。
+- WebDriver 引擎不支持这些 CDP 仿真能力，会返回 `BROWSER_CAPABILITY_UNSUPPORTED`。
+
+## 诊断与录制
+
+页面出问题或需要留证时，按「先看状态，再看页面，最后才录制」的顺序：
+
+```bash
+autobrowser status
+autobrowser console --level error
+autobrowser errors
+autobrowser actions list
+```
+
+- `console` 和 `errors` 支持 `--page`、`--page-size`、`--since <timestamp>` 和 `--all-epochs`；`--level` 会连带包含更严重级别的消息，`console clear` / `errors clear` 清空缓冲。
+- `actions` 是有界动作时间线，记录命令、目标、耗时和错误，但**不保存参数值**，密码、脚本、cookie 不会进入日志。
+- 命令超时或页面无响应时，先用 `status` 看控制面，再配合 `command list` 判断是命令还在跑还是已经卡死。恢复顺序是 `tab list` → `target clear` → 重新 `snapshot`，不要连续重试堆积命令。
+
+录制类命令会把大块数据落盘，避免整段进模型上下文：
+
+```bash
+autobrowser tracing start
+autobrowser tracing stop ./trace.json     # 最大 32MiB，超限直接失败而非截断
+
+autobrowser video start
+autobrowser video chapter "第一步" --duration 3000
+autobrowser video show-actions
+autobrowser video stop ./out.webm          # 最大 64MiB，章节写成 JSON sidecar
+```
+
+`video` 依赖 Chrome tabCapture，浏览器不支持时按错误信息诊断，不要把失败当成录制成功。
+
+## 可恢复的长任务采集
+
+单页的虚拟列表用 `feed`：
+
+```bash
+autobrowser feed collect 'article' --limit 50 --dedupe url --max-scrolls 20
+```
+
+`dedupe` 默认按 URL 去重，卡片没有链接时回退到 author/handle/text；采集期间不要导航或刷新，page epoch 变化会返回 `STALE_FEED_STATE` 并丢弃旧结果。
+
+需要跨页、带断点续传的任务用 `collect`，spec 是 JSON：
+
+```json
+{
+  "name": "articles",
+  "mode": "feed",
+  "startUrl": "https://example.com/list",
+  "output": "articles.jsonl",
+  "maxPages": 10,
+  "feed": { "selector": "article", "limit": 30, "nextSelector": ".next" }
+}
+```
+
+- `mode` 为 `feed` 时用 `feed.selector/limit/dedupe/maxScrolls/pauseMs/stallRounds/nextSelector/waitTimeoutMs`；为 `network` 时用 `network.urlPattern/itemsPath` 和可选的 `nextPath`（跟随真实响应里的游标）。
+- `collect run ./spec.json` 开始跑，`collect resume ./spec.json` 从失败页继续并按内容去重，完成态 resume 是 no-op。
+- 每完成一页就原子更新输出 JSONL 和 checkpoint；失败会带上失败页和原因，结果里带 `suggestedAction`。
+- checkpoint 不保存 cookie 或 token，但输出文件可能包含页面敏感数据，妥善保管。
+- 没有匹配到数据时返回 `NETWORK_DATA_NOT_FOUND`，先检查请求链、`urlPattern` 和 `itemsPath`，不要伪造 DOM 结果；`collect` 当前只支持 Chromium 扩展通道。
 
 ## 构建与 link 流程（仓库开发者）
 
