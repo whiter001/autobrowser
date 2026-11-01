@@ -111,8 +111,8 @@ const HELP_ROOT = helpNode(
     ),
     helpNode(
       'status',
-      'Show server status. Default output is full JSON; use --raw for a compact summary or --brief to also collapse per-tab page epochs.',
-      'autobrowser status [--raw|--brief]',
+      'Show server status. Default output is a readable summary; pass --json for the raw status object or --brief to also collapse per-tab page epochs.',
+      'autobrowser status [--json|--brief]',
     ),
     helpNode(
       'extension',

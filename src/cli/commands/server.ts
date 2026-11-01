@@ -365,7 +365,9 @@ async function handleStatus(rest: string[], context: CommandContext): Promise<nu
   }
 
   const status = await context.getCommandStatus(context.flags.server)
-  if (!context.flags.json) {
+  // status 默认给人读的摘要：json 默认就是 true，只有显式 --json 才输出原始对象，
+  // 否则 --raw/--brief 这类「要文本」的用法反而会被默认值吞掉。
+  if (!context.flags.json || !context.flags.jsonExplicitlySet) {
     process.stdout.write(formatStatusSummary(status, context.flags.brief))
     return 0
   }

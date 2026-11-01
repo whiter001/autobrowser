@@ -49,6 +49,7 @@ function parsePortFlag(value: string, flag: string): number {
 export function parseCli(argv: string[]): ParsedCli {
   const flags: CliFlags = {
     json: true,
+    jsonExplicitlySet: false,
     brief: false,
     server: `http://127.0.0.1:${DEFAULT_IPC_PORT}`,
     session: '',
@@ -80,6 +81,7 @@ export function parseCli(argv: string[]): ParsedCli {
     }
     if (value === '--json') {
       flags.json = true
+      flags.jsonExplicitlySet = true
       continue
     }
 

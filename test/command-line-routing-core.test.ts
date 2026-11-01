@@ -51,7 +51,7 @@ describe('cli command routing', () => {
     let statusCallCount = 0
 
     const result = await runCli(
-      ['status'],
+      ['--json', 'status'],
       { ok: true, result: { ok: true } },
       {
         spawnDetachedProcess: () => ({
@@ -88,6 +88,26 @@ describe('cli command routing', () => {
       ipcPort: 57979,
       extensionConnected: false,
     })
+  })
+
+  test('status prints a readable summary by default and raw JSON with --json', async () => {
+    const payload = {
+      token: 'live-token',
+      relayPort: 57978,
+      ipcPort: 57979,
+      extensionConnected: false,
+    }
+
+    // 默认走摘要：json 默认值仍是 true，但不能因为默认值就把人读格式吞掉。
+    const summary = await runCli(['status'], payload)
+    expect(summary.exitCode).toBe(0)
+    expect(summary.stdout).toContain('autobrowser status')
+    expect(summary.stdout).toContain('relay: http://127.0.0.1:57978')
+    expect(summary.stdout).toContain('extension: waiting for extension')
+
+    const asJson = await runCli(['--json', 'status'], payload)
+    expect(asJson.exitCode).toBe(0)
+    expect(JSON.parse(asJson.stdout)).toMatchObject(payload)
   })
 
   test('returns a non-zero code when status lookup fails', async () => {
