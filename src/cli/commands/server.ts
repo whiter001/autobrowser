@@ -95,13 +95,24 @@ export function formatStatusSummary(status: Record<string, unknown>, brief = fal
     .filter(([tabId, epoch]) => Number.isInteger(tabId) && tabId > 0 && typeof epoch === 'number')
     .sort((left, right) => left[0] - right[0])
 
-  if (pageEpochEntries.length > 0) {
+  // 服务重启后会恢复上一次的 pageEpochs，但当时那些标签未必还在。
+  // 未连接或者标签已消失时逐条列出来，会让人误以为这些标签页仍然存在。
+  const knownTabIds = new Set(tabById.keys())
+  const liveEpochEntries = pageEpochEntries.filter(([tabId]) => knownTabIds.has(tabId))
+  const staleEpochCount = pageEpochEntries.length - liveEpochEntries.length
+
+  if (!extensionConnected && pageEpochEntries.length > 0) {
+    lines.push(
+      `page epochs: ${pageEpochEntries.length} restored from last session (extension offline)`,
+    )
+  } else if (liveEpochEntries.length > 0) {
     if (brief) {
       // brief 模式只给汇总，不逐行列出每个 tab 的 epoch（内部簿记，排查连接问题时无用）。
-      lines.push(`page epochs: ${pageEpochEntries.length} tabs`)
+      const staleSuffix = staleEpochCount > 0 ? ` (+${staleEpochCount} stale)` : ''
+      lines.push(`page epochs: ${liveEpochEntries.length} tabs${staleSuffix}`)
     } else {
       lines.push('page epochs:')
-      for (const [tabId, epoch] of pageEpochEntries) {
+      for (const [tabId, epoch] of liveEpochEntries) {
         if (typeof epoch !== 'number') {
           continue
         }
@@ -110,7 +121,12 @@ export function formatStatusSummary(status: Record<string, unknown>, brief = fal
         const handle = typeof tab?.handle === 'string' ? tab.handle : `tab ${tabId}`
         lines.push(`  ${handle} (${tabId}): ${Math.floor(epoch)}`)
       }
+      if (staleEpochCount > 0) {
+        lines.push(`  +${staleEpochCount} stale (tab closed or from previous session)`)
+      }
     }
+  } else if (staleEpochCount > 0) {
+    lines.push(`page epochs: ${staleEpochCount} stale (tab closed or from previous session)`)
   }
 
   return `${lines.join('\n')}\n`
