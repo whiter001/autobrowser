@@ -157,6 +157,24 @@ describe('cli command routing', () => {
     expect(result.stderr).toContain('already in use')
   })
 
+  test('prints the persisted token without opening the browser', async () => {
+    const homeDir = await mkdtemp(path.join(os.tmpdir(), 'autobrowser-print-token-'))
+    const stateDir = path.join(homeDir, '.autobrowser')
+    await mkdir(stateDir, { recursive: true })
+    await writeFile(path.join(stateDir, 'token'), JSON.stringify({ token: 'persisted-token' }))
+
+    const result = await runCli(
+      ['connect', '--print-token'],
+      { ok: true, relayPort: 48011, ipcPort: 48012 },
+      { homeDir, openUrl: async () => {} },
+    )
+
+    expect(result.exitCode).toBe(0)
+    expect(result.stdout.trim()).toBe('persisted-token')
+    // 打印 token 不应触发浏览器，也不该打网络请求
+    expect(result.openCalls).toEqual([])
+    expect(result.fetchCalls).toHaveLength(0)
+  })
   test('opens the plain relay connect page when the server reports no token', async () => {
     const result = await runCli(
       ['connect'],

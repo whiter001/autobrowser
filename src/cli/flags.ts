@@ -7,6 +7,7 @@ const SUPPORTED_GLOBAL_FLAGS = [
   '--brief',
   '--stdin',
   '--base64',
+  '--print-token',
   '--tab',
   '--frame',
   '--file',
@@ -67,6 +68,7 @@ export function parseCli(argv: string[]): ParsedCli {
     stdin: false,
     file: null,
     base64: false,
+    printToken: false,
     tab: null,
     frame: null,
   }
@@ -103,6 +105,11 @@ export function parseCli(argv: string[]): ParsedCli {
 
     if (value === '--base64') {
       flags.base64 = true
+      continue
+    }
+
+    if (value === '--print-token') {
+      flags.printToken = true
       continue
     }
 

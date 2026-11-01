@@ -343,6 +343,24 @@ async function handleConnect(rest: string[], context: CommandContext): Promise<n
     return context.writeHelp(['connect'])
   }
 
+  if (context.flags.printToken) {
+    // 只输出 token 本身，方便 `autobrowser connect --print-token | pbcopy` 这类用法；
+    // 不启动服务、不打开浏览器，取值来源与命令请求一致（state.json 优先，其次 token 文件）。
+    const persisted = await readPersistedConnectionInfo(
+      context.flags.relayPort,
+      context.flags.ipcPort,
+      context.homeDir,
+    )
+    if (!persisted) {
+      process.stderr.write(
+        'no token found yet; run `autobrowser status` once to start the server and create one\n',
+      )
+      return 1
+    }
+    process.stdout.write(`${persisted.token}\n`)
+    return 0
+  }
+
   if (context.flags.engine !== 'chromium') {
     const payload = await context.requestCommand(context.flags.server, 'status', {})
     context.writeResult(payload)

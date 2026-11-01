@@ -22,6 +22,8 @@ export interface CliFlags {
   stdin: boolean
   file: string | null
   base64: boolean
+  /** 只打印持久化的 token 而不打开浏览器（connect --print-token） */
+  printToken: boolean
   tab: string | null
   frame: string | null
 }

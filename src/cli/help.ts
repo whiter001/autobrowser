@@ -156,8 +156,8 @@ const HELP_ROOT = helpNode(
     helpNode('config', 'Show persisted CLI connection settings.', 'autobrowser config'),
     helpNode(
       'connect',
-      'Open the extension connect page, starting the local server when needed.',
-      'autobrowser connect [--relay-port <port>] [--ipc-port <port>] [--extension-id <id>] [--browser-command <command>] [--browser-arg <arg>]',
+      'Open the extension connect page, starting the local server when needed. Pass --print-token to print the persisted token instead (useful when the extension page cannot open).',
+      'autobrowser connect [--print-token] [--relay-port <port>] [--ipc-port <port>] [--extension-id <id>] [--browser-command <command>] [--browser-arg <arg>]',
     ),
     helpNode(
       'mcp',
