@@ -13,7 +13,7 @@ import type {
   ExtensionState,
   TabSummary,
 } from './types.js'
-import { serializeCommandError } from './errors.js'
+import { serializeCommandFailure } from './errors.js'
 import { getPageEpoch } from './targeting.js'
 import { createUploadResponseSender } from './response-upload.js'
 
@@ -637,7 +637,7 @@ export function createConnectionRuntime({
           persistDiagnostics()
           try {
             await responseSender.send(
-              { type: 'response', id: message.id, ok: false, error: serializeCommandError(error) },
+              { type: 'response', id: message.id, ...serializeCommandFailure(error) },
               message.deadlineAt,
             )
           } catch (sendError) {

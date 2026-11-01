@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 import { createCommandRouter } from '../extension/background/command-router.js'
+import { serializeCommandFailure } from '../extension/background/errors.js'
 import { createStaleTabHandleError } from '../extension/background/targeting.js'
 import type { DialogState } from '../extension/background/types.js'
 
@@ -65,7 +66,11 @@ function createMinimalRouter(overrides?: {
   navigateTo?: (tabId: unknown, url: string) => Promise<unknown>
   listTabs?: () => Promise<unknown[]>
   findSemanticTarget?: (tabId: unknown, options: unknown, frame: unknown) => Promise<unknown>
+  download?: (args: Record<string, unknown>) => Promise<unknown>
+  mediaList?: (tabId: number, frame: unknown, options: unknown) => Promise<unknown>
+  waitSelector?: (tabId: unknown, frame: unknown) => Promise<void>
   getRequestDetail?: () => Promise<unknown>
+  stopHar?: (options?: { captureId?: string; includeUrls?: boolean }) => Promise<unknown>
   clickSelector?: (tabId: unknown, selector: unknown) => Promise<unknown>
   typeIntoSelector?: (tabId: unknown, selector: unknown) => Promise<unknown>
   evaluateScript?: (tabId: unknown, script: unknown) => Promise<unknown>
@@ -292,8 +297,10 @@ function createMinimalRouter(overrides?: {
         selector: unknown,
         state: unknown,
         timeout: unknown,
+        frame: unknown,
       ) => {
         waitSelectorCalls.push({ selector, state, timeout })
+        await overrides?.waitSelector?.(_tabId, frame)
         return {
           waited: true,
           condition: 'selector-stable',
@@ -370,7 +377,7 @@ function createMinimalRouter(overrides?: {
       },
       getRequestDetail: overrides?.getRequestDetail ?? (() => ({})),
       startHar: async () => undefined,
-      stopHar: () => undefined,
+      stopHar: overrides?.stopHar ?? (() => undefined),
     } as never,
     downloads: {
       listDownloads: (...args: unknown[]) => {
@@ -386,6 +393,8 @@ function createMinimalRouter(overrides?: {
         return { cleared: 0 }
       },
     } as never,
+    mediaDomain: { list: overrides?.mediaList ?? (async () => ({ media: [] })) },
+    fileTransfer: { download: overrides?.download ?? (async () => ({})) },
     initScripts: {
       addScript: async (source: string) => ({
         script: { id: 'script_1', preview: source },
@@ -489,6 +498,97 @@ function createMinimalRouter(overrides?: {
     webmcpCalls,
   }
 }
+
+describe('command router media readiness', () => {
+  test('rejects a stale media epoch before re-listing', async () => {
+    let listed = false
+    const { router } = createMinimalRouter({
+      mediaList: async () => {
+        listed = true
+        return { media: [] }
+      },
+    })
+    await expect(
+      router.handleCommand({ command: 'media', args: { action: 'list', mediaEpoch: 2 } }),
+    ).rejects.toMatchObject({ code: 'STALE_MEDIA_STATE' })
+    expect(listed).toBe(false)
+  })
+  for (const frame of ['#original', 'top']) {
+    for (const removed of [false, true]) {
+      test(`implicit media frame stays fixed after wait clears selection, frame=${frame}, removed=${removed}`, async () => {
+        const calls: unknown[][] = []
+        const { router, state } = createMinimalRouter({
+          waitSelector: async (tabId, executionFrame) => {
+            calls.push(['wait', tabId, executionFrame])
+            state.targeting.selectedFrames.delete(1)
+            if (frame === 'top') state.targeting.selectedFrames.set(1, '#different')
+          },
+          mediaList: async (tabId, executionFrame) => {
+            calls.push(['list', tabId, executionFrame])
+            if (removed) throw new Error(`frame not found: ${executionFrame}`)
+            return { media: [] }
+          },
+        })
+        state.targeting.targetTabId = 1
+        if (frame !== 'top') state.targeting.selectedFrames.set(1, frame)
+        const request = router.handleCommand({
+          command: 'media',
+          args: { action: 'list', waitFor: 'article', selector: 'article' },
+        })
+        if (removed) await expect(request).rejects.toThrow(`frame not found: ${frame}`)
+        else expect(await request).toMatchObject({ wait: { completed: true, selector: 'article' } })
+        expect(calls).toEqual([
+          ['wait', 1, frame],
+          ['list', 1, frame],
+        ])
+      })
+    }
+  }
+  for (const fail of [false, true]) {
+    test(`wait and list stay on the resolved tab/frame despite ambient drift, failure=${fail}`, async () => {
+      const calls: unknown[][] = []
+      const { router, state } = createMinimalRouter({
+        waitSelector: async (tabId, frame) => {
+          calls.push(['wait', tabId, frame])
+          state.targeting.targetTabId = 2
+          state.targeting.selectedFrames.set(1, '#different')
+          if (fail) throw new Error('wait timeout')
+        },
+        mediaList: async (tabId, frame, options) => {
+          calls.push(['list', tabId, frame, options])
+          return { media: [] }
+        },
+      })
+      state.targeting.targetTabId = 1
+      state.targeting.selectedFrames.set(1, '#original')
+      const request = router.handleCommand({
+        command: 'media',
+        args: {
+          action: 'list',
+          waitFor: 'article',
+          timeoutMs: 45000,
+          selector: 'article',
+          frame: '#original',
+        },
+      })
+      if (fail) await expect(request).rejects.toThrow('wait timeout')
+      else expect(await request).toMatchObject({ wait: { completed: true, selector: 'article' } })
+      expect(calls).toEqual(
+        fail
+          ? [['wait', 1, '#original']]
+          : [
+              ['wait', 1, '#original'],
+              [
+                'list',
+                1,
+                '#original',
+                { resolve: false, selector: 'article', includeBackground: false },
+              ],
+            ],
+      )
+    })
+  }
+})
 
 describe('command router batch handling', () => {
   test('executes batch steps in sequence with a single command entry point', async () => {
@@ -1171,6 +1271,106 @@ describe('command router batch handling', () => {
     expect(waitTimeoutCalls).toEqual([50])
   })
 
+  for (const command of ['goto', 'open']) {
+    for (const waitFor of ['url', 'selector']) {
+      test(`${command} reuses existing ${waitFor} observation after navigating`, async () => {
+        const { router, navigateCalls, waitUrlCalls, waitSelectorCalls } = createMinimalRouter()
+        const result = await router.handleCommand({
+          command,
+          args: {
+            url: 'https://example.com',
+            waitFor,
+            waitUrl: '#ready',
+            selector: 'article',
+            timeoutMs: 45000,
+          },
+        })
+        expect(navigateCalls).toHaveLength(1)
+        expect(navigateCalls[0]?.url).toBe('https://example.com')
+        if (waitFor === 'url') {
+          expect(waitUrlCalls).toEqual([{ url: '#ready', timeout: 45000 }])
+          expect(waitSelectorCalls).toHaveLength(0)
+        } else {
+          expect(waitSelectorCalls).toEqual([
+            { selector: 'article', state: 'visible', timeout: 45000 },
+          ])
+          expect(waitUrlCalls).toHaveLength(0)
+        }
+        expect(result).toHaveProperty('wait.waited', true)
+      })
+    }
+  }
+
+  for (const command of ['goto', 'open']) {
+    for (const waitFor of ['url', 'selector']) {
+      test(`${command} ${waitFor} wait defaults to 30000 and returns matching execution proof`, async () => {
+        const { router, waitUrlCalls, waitSelectorCalls } = createMinimalRouter()
+        const result = await router.handleCommand({
+          command,
+          args: { url: 'https://example.com', waitFor, waitUrl: '#ready', selector: 'article' },
+        })
+        expect((waitFor === 'url' ? waitUrlCalls : waitSelectorCalls)[0]?.timeout).toBe(30000)
+        expect(result).toHaveProperty(
+          'wait',
+          expect.objectContaining({
+            type: waitFor,
+            value: waitFor === 'url' ? '#ready' : 'article',
+            completed: true,
+          }),
+        )
+      })
+    }
+    test(`${command} wait failure retains completed navigation and final URL in a failed response`, async () => {
+      const { router } = createMinimalRouter({
+        navigateTo: async () => ({ navigated: true, url: 'https://example.com/final' }),
+        waitSelector: async () => {
+          throw Object.assign(new Error('selector timeout'), {
+            code: 'TIMEOUT',
+            details: { selector: 'article' },
+          })
+        },
+      })
+      try {
+        await router.handleCommand({
+          command,
+          args: { url: 'https://example.com', waitFor: 'selector', selector: 'article' },
+        })
+        throw new Error('expected wait failure')
+      } catch (error) {
+        const response = serializeCommandFailure(error)
+        expect(response).toMatchObject({
+          ok: false,
+          error: { code: 'TIMEOUT', details: { selector: 'article' } },
+          result: {
+            navigated: true,
+            url: 'https://example.com/final',
+            navigationResult: { navigated: true, url: 'https://example.com/final' },
+            wait: { completed: false },
+          },
+        })
+      }
+      const batch = await router.handleCommand({
+        command: 'batch',
+        args: {
+          continueOnError: true,
+          steps: [
+            {
+              command,
+              args: { url: 'https://example.com', waitFor: 'selector', selector: 'article' },
+            },
+          ],
+        },
+      })
+      expect(batch).toHaveProperty(
+        'steps.0.response',
+        expect.objectContaining({
+          ok: false,
+          result: expect.objectContaining({ url: 'https://example.com/final' }),
+        }),
+      )
+    })
+  }
+
   test('reload can wait for a resulting url pattern', async () => {
     const { router, waitUrlCalls } = createMinimalRouter()
 
@@ -1189,6 +1389,32 @@ describe('command router batch handling', () => {
 })
 
 describe('command router network/session extensions', () => {
+  test('forwards guarded HAR stop options and validates direct callers', async () => {
+    const calls: unknown[] = []
+    const { router } = createMinimalRouter({
+      stopHar: async (options) => {
+        calls.push(options)
+        return { captureId: 'capture-1' }
+      },
+    })
+    expect(
+      await router.handleCommand({
+        command: 'network',
+        args: { action: 'har', subaction: 'stop', captureId: 'capture-1', includeUrls: true },
+      }),
+    ).toMatchObject({ captureId: 'capture-1' })
+    expect(calls).toEqual([{ captureId: 'capture-1', includeUrls: true }])
+    for (const invalid of [{ captureId: '' }, { captureId: null }, { includeUrls: 'true' }]) {
+      await expect(
+        router.handleCommand({
+          command: 'network',
+          args: { action: 'har', subaction: 'stop', ...invalid },
+        }),
+      ).rejects.toThrow()
+    }
+    expect(calls).toHaveLength(1)
+  })
+
   test('routes network route list to the network domain', async () => {
     const { router } = createMinimalRouter()
 
@@ -2437,6 +2663,47 @@ describe('command router window/downloads/dialog-auto routing', () => {
     } finally {
       defineGlobalValue('chrome', originalChrome)
     }
+  })
+
+  test('validates and forwards download retry options with the original deadline', async () => {
+    const calls: Record<string, unknown>[] = []
+    const { router } = createMinimalRouter({
+      download: async (args) => {
+        calls.push(args)
+        return {}
+      },
+    })
+    const deadlineAt = new Date(Date.now() + 10_000).toISOString()
+    for (const retries of [0, 5]) {
+      await router.handleCommand({
+        command: 'download',
+        id: `retry_${retries}`,
+        deadlineAt,
+        args: {
+          url: 'https://example.com/file',
+          outputPath: '/tmp/file',
+          retries,
+          retryDelayMs: 17,
+        },
+      })
+      expect(calls.at(-1)).toMatchObject({
+        url: 'https://example.com/file',
+        retries,
+        retryDelayMs: 17,
+        requestId: `retry_${retries}`,
+        deadlineAt,
+      })
+      expect(calls.at(-1)!.context).toBeDefined()
+    }
+    for (const args of [{ retries: 6 }, { retryDelayMs: 60_001 }, { retries: 1.5 }]) {
+      await expect(
+        router.handleCommand({
+          command: 'download',
+          args: { url: 'https://example.com/file', outputPath: '/tmp/file', ...args },
+        }),
+      ).rejects.toThrow()
+    }
+    expect(calls).toHaveLength(2)
   })
 
   test('downloads list defaults to the first page and passes pagination through', async () => {

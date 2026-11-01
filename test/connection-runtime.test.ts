@@ -135,6 +135,7 @@ describe('connection runtime', () => {
           if (message.command === 'title')
             throw Object.assign(new Error('synthetic error'), {
               code: 'TEST_ERROR',
+              details: { result: { url: 'https://example.com/final', outcome: 'completed' } },
               suggestedAction: 'Use snapshot to inspect the page.',
             })
           return { healthy: true }
@@ -163,6 +164,7 @@ describe('connection runtime', () => {
       expect(state.connection.lastSocketClose).toBeNull()
       expect(titleOutcome).toMatchObject({
         code: 'TEST_ERROR',
+        details: { result: { url: 'https://example.com/final', outcome: 'completed' } },
         suggestedAction: 'Use snapshot to inspect the page.',
       })
       expect(relay.snapshot().extensionConnected).toBe(true)

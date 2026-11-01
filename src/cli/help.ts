@@ -170,7 +170,15 @@ const HELP_ROOT = helpNode(
         'List tabs.',
         'autobrowser tab list [--active] [--current-window] [--filter <text>] [--page <n>] [--page-size <n>]',
       ),
-      helpNode('new', 'Open a new tab.', 'autobrowser tab new [url]'),
+      helpNode(
+        'new',
+        'Open a new tab.',
+        'autobrowser tab new [url] [--wait-for url <pattern>|selector <sel>] [--timeout-ms <ms>]',
+        [
+          'Wait on the newly created handle (not the active tab); failures retain result.tab.',
+          '--timeout-ms sets the post-creation wait budget (default 30000 ms); requires --wait-for.',
+        ],
+      ),
       helpNode('select', 'Select a tab by handle.', 'autobrowser tab select <tN>'),
       helpNode(
         'close',
@@ -209,12 +217,12 @@ const HELP_ROOT = helpNode(
     helpNode(
       'open',
       'Navigate to a URL.',
-      'autobrowser open <url> [--wait-until <mode>] [--settle-timeout <ms>] [--dom-quiet-ms <ms>]',
+      'autobrowser open <url> [--wait-until <mode>] [--settle-timeout <ms>] [--dom-quiet-ms <ms>] [--wait-for url <pattern>|selector <sel>] [--timeout-ms <ms>]',
     ),
     helpNode(
       'goto',
       'Navigate to a URL.',
-      'autobrowser goto <url> [--wait-until <mode>] [--settle-timeout <ms>] [--dom-quiet-ms <ms>]',
+      'autobrowser goto <url> [--wait-until <mode>] [--settle-timeout <ms>] [--dom-quiet-ms <ms>] [--wait-for url <pattern>|selector <sel>] [--timeout-ms <ms>]',
     ),
     helpNode(
       'close',
@@ -460,13 +468,18 @@ const HELP_ROOT = helpNode(
     helpNode(
       'download',
       'Download a binary file or HLS video through the browser and save it locally.',
-      'autobrowser download <url|--media <index>> [output-path] [--output-dir <dir>] [--quality best|worst|720p] [--concurrency <1..16>] [--timeout-ms <ms>] [--overwrite|--no-clobber]',
+      'autobrowser download <url|--media <index>> [output-path] [--selector <css>] [--include-background] [--media-epoch <n>] [--output-dir <dir>] [--quality best|worst|720p] [--concurrency <1..16>] [--timeout-ms <ms>] [--retries <0..5>] [--retry-delay-ms <0..60000>] [--overwrite|--no-clobber]',
       [
-        '--media <index>  download a source reported by media list --resolve on the target tab',
+        '--media <index>  re-list and download only trusted DOM sources; never observedSources',
+        '--selector <css> / --include-background  re-use the exact media list scope (requires --media)',
+        '--media-epoch <n>  require re-collected pageEpoch to match exactly (requires --media)',
+        'Index is valid only within the same tab/frame/scope/epoch; confirm the index again after DOM changes.',
         '--output-dir <dir>  derive a safe filename from the source URL',
         '--quality <best|worst|height>  HLS variant selection; best is the default',
         '--concurrency <1..16>  HLS segment concurrency; default 4',
         '--timeout-ms <ms>  total budget for the whole download task',
+        '--retries <0..5>  extra retries for network errors, HTTP 429 and 5xx; default 2; --retries 0 disables retries',
+        '--retry-delay-ms <0..60000>  base exponential backoff; default 250 ms; retries share the original deadline',
         '--overwrite | --no-clobber  replace an existing output or fail before downloading; default overwrite',
         'HLS manifests and segments all pass through the browser. ffmpeg and ffprobe are required only for local muxing and validation.',
         'Large files over 8MiB with a known Content-Length stream one 8MiB chunk at a time; other responses use the buffered transfer.',
@@ -476,12 +489,29 @@ const HELP_ROOT = helpNode(
     helpNode(
       'media',
       'Discover image and video sources in the current page.',
-      'autobrowser media list [--resolve]',
+      'autobrowser media list [--resolve] [--selector <css>] [--include-background] [--wait-for <css>] [--timeout-ms <ms>]',
       [
-        '--resolve  briefly play blob-backed videos muted to reveal their network sources',
-        'Use the returned index with autobrowser download --media <index> [output-path].',
+        '--resolve  briefly play verified original elements muted; network observations remain unverified diagnostics',
+        '--selector <css>  limit DOM collection/probes to matching containers; no match means empty, including backgrounds',
+        '--include-background  also collect CSS background-image URLs in scope',
+        '--wait-for <css>  extension waits then collects on the same resolved tab/frame in one request',
+        '--timeout-ms <ms>  wait-phase budget (default 30000 ms); requires --wait-for; collection has its own budget',
+        'Only DOM currentSrc/source and image/CSS sources enter sources/url. Historical traffic is never claimed.',
+        'observedSources (unverified:true) is diagnostic only, never downloadable; failed probes record none.',
+        'Observed-only media remains complete=false with warnings. Epoch changes fail with STALE_MEDIA_STATE.',
+        'Index is valid only in the same tab/frame/scope/epoch; reuse --selector/--include-background and --media-epoch when downloading.',
+        'Example: --tab t1 --frame top download --media 0 --selector article --media-epoch 7 ./out.mp4',
+        'CLI rejects old extension responses without matching scope, background support or wait proof.',
+        'complete/warnings describe known discovery gaps only, not the absence of unrendered carousel media.',
+        'The result also carries observedAt/pageEpoch/pageUrl/scope/includeBackground plus per-item permalink and primarySource.',
       ],
-      [helpNode('list', 'List page media sources.', 'autobrowser media list [--resolve]')],
+      [
+        helpNode(
+          'list',
+          'List page media sources.',
+          'autobrowser media list [--resolve] [--selector <css>] [--include-background] [--wait-for <css>] [--timeout-ms <ms>]',
+        ),
+      ],
     ),
     helpNode(
       'wait',
@@ -754,6 +784,7 @@ const HELP_ROOT = helpNode(
                 '--har-max-requests <n>  limits only this capture, not global request history',
                 '--har-max-body-bytes <n>  limits storage only, not CDP download/transfer bytes',
                 '--har-unlimited  does not bypass CDP or response transfer resource limits',
+                'Returns captureId; concurrent tasks should save it and pass --capture-id when stopping.',
                 '--include-pattern <text>  capture only URLs containing this text',
                 '--exclude-pattern <text>  exclude URLs containing this text from this capture',
               ],
@@ -772,9 +803,12 @@ const HELP_ROOT = helpNode(
             helpNode(
               'stop',
               'Stop HAR capture and save it.',
-              'autobrowser network har stop [output.har] [--timeout-ms <ms>]',
+              'autobrowser network har stop [output.har] [--timeout-ms <ms>] [--capture-id <id>] [--include-urls]',
               [
                 '--timeout-ms <ms>',
+                '--capture-id <id>  stop only the matching active capture; save start.captureId for concurrent tasks',
+                '--include-urls  return { path, captureId, urls }; URLs are deduplicated in capture order',
+                'Without --include-urls, result remains the file path; captureId is in meta.har.',
                 'Waits only for this capture; large results are transparently chunked/reassembled or explicitly rejected for size, not silently truncated.',
                 'On timeout, check network har status and recover when checkpoint.recoverable is true.',
               ],

@@ -4038,6 +4038,7 @@ describe('cli command routing', () => {
     expect(outputPath.length).toBeGreaterThan(0)
     expect(output.meta.har).toEqual({
       recovered: false,
+      captureId: null,
       captureTabId: null,
       requestCount: 1,
       checkpoint: null,
@@ -4070,10 +4071,83 @@ describe('cli command routing', () => {
     expect(result.stderr).toContain('--tab <handle>')
     expect(JSON.parse(result.stdout).meta.har).toEqual({
       recovered: false,
+      captureId: null,
       captureTabId: 13,
       requestCount: 0,
       checkpoint: { saved: true },
     })
+  })
+
+  test('forwards guarded HAR stop and returns URLs while writing the file', async () => {
+    const outputDir = await mkdtemp(path.join(os.tmpdir(), 'autobrowser-har-urls-test-'))
+    const outputPath = path.join(outputDir, 'network.har')
+    const result = await runCli(
+      [
+        'network',
+        'har',
+        'stop',
+        outputPath,
+        '--capture-id',
+        'capture-1',
+        '--include-urls',
+        '--timeout-ms',
+        '60000',
+      ],
+      {
+        ok: true,
+        result: {
+          captureId: 'capture-1',
+          urls: ['https://example.com/b', 'https://example.com/a'],
+          requestCount: 2,
+          har: { log: { entries: [] } },
+        },
+      },
+    )
+    expect(result.exitCode).toBe(0)
+    expect(result.fetchCalls[0].body.args).toEqual({
+      action: 'har',
+      subaction: 'status',
+      timeoutMs: 60000,
+    })
+    expect(result.fetchCalls[1].body.args).toEqual({
+      action: 'har',
+      subaction: 'stop',
+      captureId: 'capture-1',
+      includeUrls: true,
+      timeoutMs: 60000,
+    })
+    expect(JSON.parse(result.stdout).result).toEqual({
+      path: outputPath,
+      captureId: 'capture-1',
+      urls: ['https://example.com/b', 'https://example.com/a'],
+    })
+    expect(JSON.parse(result.stdout).meta.har.captureId).toBe('capture-1')
+    expect(JSON.parse(await readFile(outputPath, 'utf8'))).toEqual({ log: { entries: [] } })
+  })
+
+  test('rejects missing, duplicate and invalid HAR stop options before dispatch', async () => {
+    for (const args of [
+      ['--capture-id'],
+      ['--capture-id', ''],
+      ['--capture-id', '--include-urls'],
+      ['--capture-id', 'a', '--capture-id', 'b'],
+      ['--include-urls', '--include-urls'],
+      ['--timeout-ms'],
+      ['--timeout-ms', '1', '--timeout-ms', '2'],
+      ['--timeout-ms', '0'],
+      ['--bogus'],
+      ['--include-urls', 'extra'],
+    ]) {
+      const result = await runCli(['network', 'har', 'stop', ...args])
+      expect(result.exitCode).toBe(1)
+      expect(result.fetchCalls).toHaveLength(0)
+    }
+    const failed = await runCli(['network', 'har', 'stop', '--capture-id', 'stale'], {
+      ok: false,
+      error: { message: 'HAR captureId does not match the active capture' },
+    })
+    expect(failed.exitCode).toBe(1)
+    expect(failed.fetchCalls).toHaveLength(1)
   })
 
   test('reconstructs HAR output when stop only returns metadata', async () => {

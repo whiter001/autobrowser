@@ -108,10 +108,12 @@ export function getCommandRequestBudgetMs(
         duration('settleTimeoutMs')
         duration('domQuietMs')
       }
-      // reload 的附加等待在导航后运行，两段都必须纳入预算。
-      if (name === 'reload' && input.waitFor) {
+      // 导航的附加等待在导航后运行，两段都必须纳入预算。
+      if (['reload', 'goto', 'open'].includes(name) && input.waitFor) {
         explicit = (explicit ?? defaultTimeoutMs) * 2
       }
+    } else if (name === 'media' && input.waitFor) {
+      explicit = (duration('timeoutMs') ?? defaultTimeoutMs) + defaultTimeoutMs
     } else if (name === 'wait') {
       const timeout = duration('timeout')
       const ms = duration('ms')

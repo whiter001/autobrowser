@@ -13,6 +13,12 @@
 
 运行 `autobrowser help` 可以查看完整命令树。`src/cli.ts` 里的命令树是标志位和语法的权威来源。`autobrowser mcp` 还会通过 stdio 暴露一个 MCP（Model Context Protocol）服务器，把核心命令包装成 MCP tools，供 Claude Desktop 等 MCP 客户端调用。
 
+## CLI 输出与退出码
+
+命令最终写出的标准响应若为 `ok: false`，CLI 以非零退出码（通常为 `1`）结束；成功响应通常退出 `0`。脚本可同时依赖退出码判断成败，以及默认 JSON 输出中的 `error` 获取错误详情，失败 JSON 仍写入 stdout，内容与格式不变。`--raw` / `--brief` 的错误文本仍写入 stderr。
+
+退出码以最终写出的顶层响应为准：导航 fallback 恢复成功不会因早期失败而退出非零；`batch` 的 JSON 输入设置 `continueOnError: true` 时，只按最终聚合响应的 `ok` 判定，不因内部步骤的 `ok: false` 自动失败。handler 显式返回的非零退出码优先；help 与本地成功输出不受影响。
+
 ## 文档地图
 
 `src/cli.ts` 的命令树是权威参考。这个目录里的文档则把较长的使用流程整理在一起：
@@ -33,6 +39,14 @@ autobrowser open https://example.com
 - `server` 会启动本地中继服务和 IPC 服务。
 - `connect` 会打开扩展连接页，并在需要时先启动本地服务。
 - `open` 会把当前标签页导航到某个 URL。
+
+### 导航附加等待协议
+
+`goto` / `open --wait-for url|selector <value>` 在导航成功后再等待，附加等待默认超时为 30000ms（与 `reload` / `tab new` 相同）。协议中 `url` 始终是 goto/open 的导航目的地，URL 等待条件另用 `waitUrl`；`reload` 没有导航目的地，因历史兼容继续用 `url` 作为 URL 等待条件，不应互换这两个字段。成功响应的 `result.wait` 包含 `type`、`value`、`completed: true` 执行证明；CLI 会拒绝缺少匹配证明的旧扩展响应。等待失败仍返回 `ok: false`，在 `result`（以及 `error.details.result`）保留成功的导航结果和最终 URL。`tab new` 等待失败也保留已创建的 tab，不会自动关闭。
+
+MCP `navigate` 当前不暴露 `waitFor`，所以仍不提供 `frame` 参数；CLI / batch 的 goto/open 可用 frame 定位附加 selector 等待。
+
+带 `--capture-id` 的 HAR stop 会先在同一 tab 目标下查询 status 确认 captureId，再校验 stop 返回的 id；旧扩展未提供身份信息时不会发送 stop。`--include-urls` 若在 stop 后发现旧扩展不支持，capture 可能已停止，可用 `network har recover` 恢复。
 
 如果你要操作特定目标，根级 `--tab` 和 `--frame` 标志可以把兼容命令绑定到某个标签页句柄或 frame 引用。对于简短且确定性的流程，最好使用带 JSON 数组或对象主体的 `batch`，而不是发起多次往返。
 

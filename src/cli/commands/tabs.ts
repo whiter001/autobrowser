@@ -1,4 +1,4 @@
-import { shouldOpenInNewTab } from '../client.js'
+import { isRecord, shouldOpenInNewTab, type CommandResponse } from '../client.js'
 import { parseNumberArg } from '../parse.js'
 import { helpRequested, parseOrWriteError, readRequiredArg } from './shared.js'
 import type { CommandContext, CommandRegistry } from './types.js'
@@ -52,10 +52,23 @@ async function handleTab(rest: string[], context: CommandContext): Promise<numbe
     if (helpRequested(tabArgs[0], context, ['tab', 'new'])) {
       return 0
     }
-    const url = tabArgs[0] || 'about:blank'
-    const payload = await context.requestCommand(context.flags.server, 'tab.new', { url })
+    const parsed = parseOrWriteError(() => {
+      for (let index = 0; index < tabArgs.length; index += 1) {
+        const value = tabArgs[index]!
+        if (value === '--wait-for') index += 2
+        else if (value === '--timeout-ms') index += 1
+        else if (value.startsWith('--')) throw new Error(`unsupported tab new option: ${value}`)
+      }
+      const options = parseGotoArgs(tabArgs)
+      if (options.timeoutMs !== undefined && !options.waitFor) {
+        throw new Error('--timeout-ms requires --wait-for for tab new')
+      }
+      return options
+    })
+    if (!parsed) return 1
+    const payload = await createTabAndWait(context, parsed.url || 'about:blank', parsed)
     context.writeResult(payload)
-    return 0
+    return payload.ok === false ? 1 : 0
   }
 
   if (subcommand === 'select') {
@@ -129,29 +142,76 @@ async function handleCommandControl(
   return payload.ok === false ? 1 : 0
 }
 
-function parseGotoArgs(rest: string[]): {
+interface GotoArgs {
   url?: string
   timeoutMs?: number
   wait?: boolean
   waitUntil?: string
   settleTimeoutMs?: number
   domQuietMs?: number
-} {
-  const parsed: {
-    url?: string
-    timeoutMs?: number
-    wait?: boolean
-    waitUntil?: string
-    settleTimeoutMs?: number
-    domQuietMs?: number
-  } = {}
+  waitFor?: 'url' | 'selector'
+  waitUrl?: string
+  selector?: string
+}
+
+async function createTabAndWait(
+  context: CommandContext,
+  url: string,
+  options: GotoArgs,
+): Promise<CommandResponse> {
+  const created = await context.requestCommand(context.flags.server, 'tab.new', { url })
+  if (!created.ok || !options.waitFor) return created
+  const result = isRecord(created.result) ? created.result : {}
+  const tab = isRecord(result.tab) ? result.tab : {}
+  const target = tab.handle ?? tab.id
+  let waited: CommandResponse
+  try {
+    if (typeof target !== 'string' && typeof target !== 'number') {
+      throw new Error('tab.new returned no handle or id; cannot safely wait for the new tab')
+    }
+    waited = await context.requestCommand(context.flags.server, 'wait', {
+      tabId: target,
+      type: options.waitFor,
+      ...(options.waitFor === 'url'
+        ? { url: options.waitUrl }
+        : { selector: options.selector, state: 'visible' }),
+      ...(options.timeoutMs !== undefined ? { timeout: options.timeoutMs } : {}),
+    })
+  } catch (error) {
+    waited = {
+      ok: false,
+      error: { message: error instanceof Error ? error.message : String(error) },
+    }
+  }
+  // Only emit the final response. Keep the created tab recoverable even on wait/transport failure.
+  return { ...waited, result: { ...result, wait: waited.ok ? waited.result : waited } }
+}
+
+function parseGotoArgs(rest: string[]): GotoArgs {
+  const parsed: GotoArgs = {}
 
   for (let index = 0; index < rest.length; index += 1) {
     const value = rest[index]
 
     if (value === '--timeout-ms') {
+      if (parsed.timeoutMs !== undefined) throw new Error('duplicate goto option: --timeout-ms')
       parsed.timeoutMs = parseNumberArg(rest[index + 1], 'timeout ms', { min: 1, integer: true })
       index += 1
+      continue
+    }
+
+    if (value === '--wait-for') {
+      if (parsed.waitFor !== undefined) throw new Error('duplicate goto option: --wait-for')
+      const type = rest[index + 1]
+      const waitValue = rest[index + 2]
+      if (type !== 'url' && type !== 'selector')
+        throw new Error('--wait-for must be url or selector')
+      if (!waitValue || waitValue.startsWith('--'))
+        throw new Error(`missing --wait-for ${type} value`)
+      parsed.waitFor = type
+      if (type === 'url') parsed.waitUrl = waitValue
+      else parsed.selector = waitValue
+      index += 2
       continue
     }
 
@@ -241,15 +301,37 @@ async function handleOpenOrGoto(
   if (parsedArgs.waitUntil !== undefined) args.waitUntil = parsedArgs.waitUntil
   if (parsedArgs.settleTimeoutMs !== undefined) args.settleTimeoutMs = parsedArgs.settleTimeoutMs
   if (parsedArgs.domQuietMs !== undefined) args.domQuietMs = parsedArgs.domQuietMs
+  if (parsedArgs.waitFor !== undefined) {
+    args.waitFor = parsedArgs.waitFor
+    if (parsedArgs.waitFor === 'url') args.waitUrl = parsedArgs.waitUrl
+    else args.selector = parsedArgs.selector
+  }
 
   const payload = await context.requestCommand(context.flags.server, 'goto', args)
 
   if (shouldOpenInNewTab(payload)) {
-    const fallbackPayload = await context.requestCommand(context.flags.server, 'tab.new', { url })
+    const fallbackPayload = await createTabAndWait(context, url, parsedArgs)
     context.writeResult(fallbackPayload)
     return fallbackPayload.ok === false ? 1 : 0
   }
 
+  if (payload.ok && parsedArgs.waitFor) {
+    const result = isRecord(payload.result) ? payload.result : {}
+    const proof = isRecord(result.wait) ? result.wait : {}
+    const value = parsedArgs.waitFor === 'url' ? parsedArgs.waitUrl : parsedArgs.selector
+    if (proof.completed !== true || proof.type !== parsedArgs.waitFor || proof.value !== value) {
+      context.writeResult({
+        ...payload,
+        ok: false,
+        error: {
+          code: 'WAIT_NOT_CONFIRMED',
+          message:
+            'Extension did not confirm the requested navigation wait; update the extension and retry. Navigation may already have completed.',
+        },
+      })
+      return 1
+    }
+  }
   context.writeResult(payload)
   return payload.ok === false ? 1 : 0
 }

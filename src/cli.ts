@@ -39,7 +39,7 @@ import {
   shouldTriggerAutoConnect,
   type CommandResponse,
 } from './cli/client.js'
-import { CommandResultError, writeResult as baseWriteResult } from './cli/output.js'
+import { writeResult as baseWriteResult } from './cli/output.js'
 import {
   buildServerLaunchArgs,
   isServerSnapshotOnPorts,
@@ -1439,6 +1439,7 @@ async function runMain(
     return payload
   }
 
+  let lastResponseFailed = false
   const writeResult = (
     payload:
       | CommandResponse
@@ -1451,6 +1452,10 @@ async function runMain(
       | undefined,
   ): void => {
     baseWriteResult(payload, { json: flags.json })
+    // 只看已写出的顶层响应；后续成功可恢复早期失败，batch 内部步骤不影响聚合结果。
+    if (isRecord(payload) && typeof payload.ok === 'boolean') {
+      lastResponseFailed = payload.ok === false
+    }
   }
 
   const context: CommandContext = {
@@ -1478,7 +1483,9 @@ async function runMain(
 
   const handler = COMMAND_REGISTRY[command]
   if (handler) {
-    return await handler(rest, context)
+    const code = await handler(rest, context)
+    if (typeof code === 'number' && code !== 0) return code
+    return lastResponseFailed ? 1 : code
   }
 
   process.stderr.write(`${printHelp()}\n`)
@@ -1492,10 +1499,6 @@ export async function main(
   try {
     return await runMain(argv, dependencies)
   } catch (error) {
-    if (error instanceof CommandResultError) {
-      return 1
-    }
-
     process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`)
     return 1
   }

@@ -184,6 +184,7 @@ describe('cli batch command', () => {
               args: {
                 url: 'https://example.com',
                 tabId: 't2',
+                frame: '@f1',
               },
               label: null,
             },
@@ -263,7 +264,8 @@ describe('cli batch command', () => {
     const steps = (requestCalls[0]?.steps ?? []) as Array<Record<string, any>>
     const nested = steps[0]!.args.steps as Array<Record<string, any>>
     expect(nested[0].args).toEqual({ selector: '#a', tabId: 't2', frame: '@f1' })
-    expect(nested[1].args).toEqual({ url: 'https://a.example', tabId: 't9' })
+    // goto keeps ambient frame for a possible additional selector wait.
+    expect(nested[1].args).toEqual({ url: 'https://a.example', tabId: 't9', frame: '@f1' })
     // 显式 handle 优先，全局 --tab 不能覆盖
     expect(nested[2].args).toEqual({ selector: '#b', handle: 'h7', frame: '@f1' })
     expect(nested[3].args).toEqual({ selector: '#c', tabId: 't2', frame: '@f9' })

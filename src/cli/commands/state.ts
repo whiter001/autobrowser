@@ -22,22 +22,41 @@ import path from 'node:path'
 interface NetworkHarStopResult {
   har?: unknown
   recording?: boolean
+  captureId?: string | null
   captureTabId?: number | null
+  urls?: string[]
   requestCount?: number
   startedAt?: string
   stoppedAt?: string
   checkpoint?: { saved?: boolean; error?: string }
 }
 
-function parseNetworkTimeoutArgs(rest: string[]): { timeoutMs?: number } {
-  const result: { timeoutMs?: number } = {}
+function parseNetworkTimeoutArgs(
+  rest: string[],
+  harStop = false,
+): { timeoutMs?: number; captureId?: string; includeUrls?: boolean } {
+  const result: { timeoutMs?: number; captureId?: string; includeUrls?: boolean } = {}
+  const seen = new Set<string>()
   for (let index = 0; index < rest.length; index += 1) {
     const value = rest[index]
-    if (value === '--timeout-ms') {
-      result.timeoutMs = parseOptionalNumberArg(rest[index + 1], 'timeout ms', Number.NaN, {
-        min: 1,
-        integer: true,
-      })
+    if (seen.has(value)) throw new Error(`duplicate network option: ${value}`)
+    seen.add(value)
+    if (harStop && value === '--include-urls') {
+      result.includeUrls = true
+      continue
+    }
+    if (value === '--timeout-ms' || (harStop && value === '--capture-id')) {
+      const argument = rest[index + 1]
+      if (!argument?.trim() || argument.startsWith('--')) {
+        throw new Error(`missing value for ${value}`)
+      }
+      if (value === '--capture-id') result.captureId = argument
+      else {
+        result.timeoutMs = parseOptionalNumberArg(argument, 'timeout ms', Number.NaN, {
+          min: 1,
+          integer: true,
+        })
+      }
       index += 1
       continue
     }
@@ -574,9 +593,27 @@ async function handleNetwork(rest: string[], context: CommandContext): Promise<n
     if (subaction === 'stop' || subaction === 'recover') {
       const outputPath = rest[2] && !rest[2].startsWith('--') ? rest[2] : null
       const timeoutArgs = parseOrWriteError(() =>
-        parseNetworkTimeoutArgs(outputPath ? rest.slice(3) : rest.slice(2)),
+        parseNetworkTimeoutArgs(outputPath ? rest.slice(3) : rest.slice(2), subaction === 'stop'),
       )
       if (!timeoutArgs) return 1
+      if (timeoutArgs.captureId !== undefined) {
+        // Use the same ambient --tab as stop. Never send a destructive request unless
+        // the extension proves it understands capture identities before stopping.
+        const status = await context.requestCommand(context.flags.server, 'network', {
+          action: 'har',
+          subaction: 'status',
+          ...(timeoutArgs.timeoutMs !== undefined ? { timeoutMs: timeoutArgs.timeoutMs } : {}),
+        })
+        if (!status.ok) {
+          context.writeResult(status)
+          return 1
+        }
+        if (!isRecord(status.result) || status.result.captureId !== timeoutArgs.captureId) {
+          return writeCommandError(
+            'HAR status did not confirm the requested captureId; stop was not sent (extension may be outdated or captureId does not match)',
+          )
+        }
+      }
       const payload = await context.requestCommand(context.flags.server, 'network', {
         action: 'har',
         subaction,
@@ -589,6 +626,16 @@ async function handleNetwork(rest: string[], context: CommandContext): Promise<n
       }
 
       const result = isRecord(payload.result) ? (payload.result as NetworkHarStopResult) : undefined
+      if (timeoutArgs.captureId !== undefined && result?.captureId !== timeoutArgs.captureId) {
+        return writeCommandError(
+          'HAR stop did not confirm the requested captureId (capture may have changed); capture may already be stopped. Use network har recover to recover the capture.',
+        )
+      }
+      if (timeoutArgs.includeUrls && !Array.isArray(result?.urls)) {
+        return writeCommandError(
+          '--include-urls requires an extension that returns capture URLs; capture may already be stopped. Use network har recover to recover the capture.',
+        )
+      }
       const har =
         result && isRecord(result.har)
           ? result.har
@@ -610,10 +657,13 @@ async function handleNetwork(rest: string[], context: CommandContext): Promise<n
       }
       context.writeResult({
         ok: true,
-        result: savedPath,
+        result: timeoutArgs.includeUrls
+          ? { path: savedPath, captureId: result?.captureId ?? null, urls: result?.urls }
+          : savedPath,
         meta: {
           har: {
             recovered: subaction === 'recover',
+            captureId: result?.captureId ?? null,
             captureTabId: result?.captureTabId ?? null,
             requestCount,
             checkpoint: result?.checkpoint ?? null,

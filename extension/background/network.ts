@@ -705,6 +705,11 @@ export function createNetworkDomain({
 }: NetworkDomainDependencies) {
   let checkpointTimer: ReturnType<typeof setTimeout> | null = null
   let capture: HarCapture | null = state.network.harRecording ? createCapture(null) : null
+  // Legacy recording state has no original ID; its synthetic internal identity is not public.
+  const unidentifiedCapture = capture
+  function getCaptureId(session: HarCapture | null): string | null {
+    return session && session !== unidentifiedCapture ? session.id : null
+  }
   let checkpointWrites: Promise<void> = Promise.resolve()
   /** 当前 SW 内最近一次 checkpoint 写入失败的原因；status 用它解释「为什么 recover 可能拿不到数据」 */
   let lastCheckpointError: string | null = null
@@ -833,6 +838,7 @@ export function createNetworkDomain({
   ): Record<string, unknown> {
     return {
       recording,
+      captureId: getCaptureId(session),
       captureTabId: session?.tabId ?? null,
       includePattern: session?.includePattern ?? null,
       excludePattern: session?.excludePattern ?? null,
@@ -1551,21 +1557,39 @@ export function createNetworkDomain({
       options.maxRequests === undefined ? DEFAULT_HAR_MAX_REQUESTS : options.maxRequests
     state.network.harMaxBodyBytes =
       options.maxBodyBytes === undefined ? DEFAULT_HAR_MAX_BODY_BYTES : options.maxBodyBytes
-    capture = createCapture(tab.id, options)
+    const session = createCapture(tab.id, options)
+    capture = session
     await writeHarCheckpoint()
     return {
       recording: true,
+      captureId: session.id,
       captureTabId: tab.id,
-      includePattern: capture.includePattern,
-      excludePattern: capture.excludePattern,
-      startedAt: state.network.harStartedAt,
-      maxRequests: state.network.harMaxRequests,
-      maxBodyBytes: state.network.harMaxBodyBytes,
+      includePattern: session.includePattern,
+      excludePattern: session.excludePattern,
+      startedAt: session.startedAt,
+      maxRequests: session.maxRequests,
+      maxBodyBytes: session.maxBodyBytes,
     }
   }
 
-  async function stopHar(): Promise<Record<string, unknown>> {
+  async function stopHar(
+    options: { captureId?: string; includeUrls?: boolean } = {},
+  ): Promise<Record<string, unknown>> {
     const session = capture
+    if (options.captureId !== undefined) {
+      if (typeof options.captureId !== 'string' || !options.captureId.trim()) {
+        throw new Error('captureId must be a non-empty string')
+      }
+      if (!state.network.harRecording || !session) {
+        throw new Error('HAR capture is not recording')
+      }
+      if (options.captureId !== getCaptureId(session)) {
+        throw new Error('HAR captureId does not match the active capture')
+      }
+    }
+    if (options.includeUrls !== undefined && typeof options.includeUrls !== 'boolean') {
+      throw new Error('includeUrls must be a boolean')
+    }
     const startedAt = session?.startedAt ?? state.network.harStartedAt
     const stoppedAt = new Date().toISOString()
     // 快照持有旧记录对象与该 capture 的逻辑等待，不受后续 start/同 key 请求影响。
@@ -1592,6 +1616,10 @@ export function createNetworkDomain({
     }
     return {
       recording: false,
+      captureId: getCaptureId(session),
+      ...(options.includeUrls
+        ? { urls: [...new Set(retained.flatMap((record) => (record.url ? [record.url] : [])))] }
+        : {}),
       captureTabId: session?.tabId ?? null,
       includePattern: session?.includePattern ?? null,
       excludePattern: session?.excludePattern ?? null,
@@ -1614,6 +1642,7 @@ export function createNetworkDomain({
     const requestCount = Array.isArray(checkpoint?.requests) ? checkpoint.requests.length : 0
     return {
       recording: state.network.harRecording,
+      captureId: getCaptureId(capture),
       captureTabId: capture?.tabId ?? null,
       captureRequestCount: captureRequests(capture).length,
       startedAt: state.network.harStartedAt,
@@ -1623,6 +1652,7 @@ export function createNetworkDomain({
             available: true,
             recoverable: requestCount > 0,
             recording: checkpoint.recording === true,
+            captureId: typeof checkpoint.captureId === 'string' ? checkpoint.captureId : null,
             captureTabId:
               typeof checkpoint.captureTabId === 'number' ? checkpoint.captureTabId : null,
             startedAt: checkpoint.startedAt ?? null,
@@ -1633,6 +1663,7 @@ export function createNetworkDomain({
         : {
             available: false,
             recoverable: false,
+            captureId: null,
             ...(lastCheckpointError ? { error: lastCheckpointError } : {}),
           },
     }
@@ -1648,6 +1679,7 @@ export function createNetworkDomain({
     }
     return {
       recording: checkpoint.recording === true,
+      captureId: typeof checkpoint.captureId === 'string' ? checkpoint.captureId : null,
       recovered: true,
       captureTabId: typeof checkpoint.captureTabId === 'number' ? checkpoint.captureTabId : null,
       startedAt: checkpoint.startedAt ?? null,

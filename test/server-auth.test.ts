@@ -94,6 +94,50 @@ describe('server command authentication', () => {
     await expect(authorizedResponse.json()).resolves.toMatchObject({ ok: true })
   })
 
+  test('failed navigation waits preserve completed navigation result through IPC', async () => {
+    const homeDir = await mkdtemp(path.join(os.tmpdir(), 'autobrowser-wait-result-'))
+    tempDirs.push(homeDir)
+    const relayPort = await getFreePort()
+    const ipcPort = await getFreePort()
+    const server = await startServers({ homeDir, relayPort, ipcPort, token: 'wait-token' })
+    servers.push(server)
+    const navigationResult = { url: 'https://example.com/final', outcome: 'completed' }
+    const result = { ...navigationResult, navigationResult, wait: { completed: false } }
+    // Exercise the real relay rejection path as well as the IPC error envelope.
+    server.runtime.attachExtension({
+      readyState: WebSocket.OPEN,
+      send(raw: string) {
+        const command = JSON.parse(raw)
+        if (command.type !== 'command') return
+        queueMicrotask(() =>
+          server.runtime.handleExtensionMessage(
+            JSON.stringify({
+              type: 'response',
+              id: command.id,
+              ok: false,
+              result,
+              error: { code: 'TIMEOUT', message: 'selector timeout', details: { result } },
+            }),
+          ),
+        )
+      },
+    } as never)
+    const response = await fetch(`http://127.0.0.1:${ipcPort}/command`, {
+      method: 'POST',
+      headers: { authorization: 'Bearer wait-token', 'content-type': 'application/json' },
+      body: JSON.stringify({
+        command: 'goto',
+        args: { url: 'https://example.com', waitFor: 'selector', selector: 'article' },
+      }),
+    })
+    expect(response.status).toBe(500)
+    expect(await response.json()).toMatchObject({
+      ok: false,
+      result,
+      error: { code: 'TIMEOUT', details: { result } },
+    })
+  })
+
   test('both listeners reject untrusted, malformed, missing, and wrong-port Hosts', async () => {
     const homeDir = await mkdtemp(path.join(os.tmpdir(), 'autobrowser-host-test-'))
     tempDirs.push(homeDir)

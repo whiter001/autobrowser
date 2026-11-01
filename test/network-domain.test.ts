@@ -26,12 +26,16 @@ describe('network domain HAR export', () => {
       sendDebuggerCommand: async () => ({}) as never,
       ...storage,
     })
-    expect(await network.startHar(1)).toMatchObject({ captureTabId: 1 })
+    const started = await network.startHar(1)
+    const captureId = started.captureId as string
+    expect(captureId).toBeString()
+    expect(captureId.length).toBeGreaterThan(0)
     expect(await network.getHarStatus()).toMatchObject({
+      captureId,
       captureTabId: 1,
       captureRequestCount: 0,
       requestCount: 1,
-      checkpoint: { available: true, recoverable: false, requestCount: 0 },
+      checkpoint: { captureId, available: true, recoverable: false, requestCount: 0 },
     })
     state.network.requests.push({
       id: '1:r1',
@@ -42,10 +46,12 @@ describe('network domain HAR export', () => {
       status: 200,
       startedAt: new Date().toISOString(),
     })
-    expect(await network.stopHar()).toMatchObject({
+    expect(await network.stopHar({ captureId })).toMatchObject({
+      captureId,
       captureTabId: 1,
       checkpoint: { saved: true },
     })
+    expect(await network.getHarStatus()).toMatchObject({ recording: false, captureId })
 
     const recreated = createNetworkDomain({
       state: createExtensionState(57978),
@@ -55,12 +61,95 @@ describe('network domain HAR export', () => {
       ...storage,
     })
     expect(await recreated.getHarStatus()).toMatchObject({
-      checkpoint: { available: true, recoverable: true, captureTabId: 1, requestCount: 1 },
+      captureId: null,
+      checkpoint: {
+        captureId,
+        available: true,
+        recoverable: true,
+        captureTabId: 1,
+        requestCount: 1,
+      },
     })
     const recovered = await recreated.recoverHar()
-    expect(recovered).toMatchObject({ recovered: true, captureTabId: 1, requestCount: 1 })
+    expect(recovered).toMatchObject({
+      captureId,
+      recovered: true,
+      captureTabId: 1,
+      requestCount: 1,
+    })
     expect(recovered.startedAt).toBeString()
     expect(recovered.har).toBeObject()
+  })
+
+  test('guarded stop rejects stale IDs without changing recording and returns ordered unique URLs', async () => {
+    const state = createExtensionState(57978)
+    const network = createNetworkDomain({
+      state,
+      getTargetTab: async () => ({ id: 1 }) as never,
+      sendRawDebuggerCommand: async () => ({}) as never,
+      sendDebuggerCommand: async () => ({}) as never,
+    })
+    const old = await network.startHar(1)
+    const { captureId } = (await network.startHar(1, { maxRequests: 3 })) as { captureId: string }
+    for (const [index, url] of ['excluded', 'b', 'a', 'b'].entries()) {
+      await network.handleEvent({ tabId: 1 }, 'Network.requestWillBeSent', {
+        requestId: `r${index}`,
+        request: { url: `https://example.com/${url}`, method: 'GET' },
+      })
+    }
+    await expect(network.stopHar({ captureId: old.captureId as string })).rejects.toThrow(
+      'does not match',
+    )
+    expect(await network.getHarStatus()).toMatchObject({
+      recording: true,
+      captureId,
+      captureRequestCount: 3,
+    })
+    const result = await network.stopHar({ captureId, includeUrls: true })
+    expect(result).toMatchObject({
+      recording: false,
+      captureId,
+      requestCount: 3,
+      urls: ['https://example.com/b', 'https://example.com/a'],
+    })
+    await expect(network.stopHar({ captureId })).rejects.toThrow('not recording')
+    expect((await network.stopHar()).urls).toBeUndefined()
+  })
+
+  test('unknown and legacy checkpoint capture IDs remain null', async () => {
+    const network = createNetworkDomain({
+      state: createExtensionState(57978),
+      getTargetTab: async () => ({ id: 1 }) as never,
+      sendRawDebuggerCommand: async () => ({}) as never,
+      sendDebuggerCommand: async () => ({}) as never,
+      storageLocalGet: async (key) => ({ [key]: { requests: [{ url: 'https://example.com/' }] } }),
+    })
+    expect(await network.getHarStatus()).toMatchObject({
+      captureId: null,
+      checkpoint: { captureId: null },
+    })
+    expect(await network.recoverHar()).toMatchObject({ captureId: null })
+    expect(await network.stopHar()).toMatchObject({ captureId: null })
+  })
+
+  test('legacy recording state does not expose a fabricated capture ID', async () => {
+    const state = createExtensionState(57978)
+    state.network.harRecording = true
+    const stored: Record<string, unknown> = {}
+    const network = createNetworkDomain({
+      state,
+      getTargetTab: async () => ({ id: 1 }) as never,
+      sendRawDebuggerCommand: async () => ({}) as never,
+      sendDebuggerCommand: async () => ({}) as never,
+      storageLocalSet: async (items) => {
+        Object.assign(stored, items)
+      },
+    })
+    expect(await network.getHarStatus()).toMatchObject({ recording: true, captureId: null })
+    await expect(network.stopHar({ captureId: 'unknown' })).rejects.toThrow('does not match')
+    expect(state.network.harRecording).toBe(true)
+    expect(await network.stopHar()).toMatchObject({ captureId: null })
+    expect(stored['autobrowser.harCheckpoint']).toMatchObject({ captureId: null })
   })
 
   test('capture include and exclude patterns filter HAR without deleting global history', async () => {
@@ -2100,14 +2189,15 @@ describe('network body scheduler', () => {
 
   test('old stop keeps its records and limits; same-key new capture and checkpoint stay isolated', async () => {
     const { state, network, calls, request, stored } = harness()
-    await network.startHar(1, { maxRequests: 10, maxBodyBytes: 3 })
+    const oldCapture = await network.startHar(1, { maxRequests: 10, maxBodyBytes: 3 })
     await request('same')
     const oldRecord = state.network.requestMap.get('1:same')!
-    const oldStop = network.stopHar()
-    await network.startHar(1, { maxRequests: 20, maxBodyBytes: 8 })
+    const oldStop = network.stopHar({ captureId: oldCapture.captureId as string })
+    const newCapture = await network.startHar(1, { maxRequests: 20, maxBodyBytes: 8 })
     await request('same')
     calls[0]!.resolve({ body: 'old content' })
     const oldResult = await oldStop
+    expect(oldResult.captureId).toBe(oldCapture.captureId)
     expect(oldRecord.responseBody).toBe('old')
     expect(oldResult.har).toMatchObject({
       log: { entries: [{ response: { content: { text: 'old' } } }] },
@@ -2115,10 +2205,14 @@ describe('network body scheduler', () => {
     expect(state.network.harRecording).toBe(true)
     expect(state.network.harMaxBodyBytes).toBe(8)
     expect(state.network.requestMap.get('1:same')?.responseBody).toBeUndefined()
-    expect(stored['autobrowser.harCheckpoint']).toMatchObject({ recording: true, maxBodyBytes: 8 })
+    expect(stored['autobrowser.harCheckpoint']).toMatchObject({
+      recording: true,
+      captureId: newCapture.captureId,
+      maxBodyBytes: 8,
+    })
     calls[1]!.resolve({ body: 'new content' })
-    const newResult = await network.stopHar()
-    expect(newResult).toMatchObject({ requestCount: 1 })
+    const newResult = await network.stopHar({ captureId: newCapture.captureId as string })
+    expect(newResult).toMatchObject({ captureId: newCapture.captureId, requestCount: 1 })
     expect(newResult.har).toMatchObject({
       log: { entries: [{ response: { content: { text: 'new cont' } } }] },
     })

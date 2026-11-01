@@ -1,5 +1,6 @@
 import { parseSearchQueryRegex } from './search.js'
 import { getCommandRequestBudgetMs } from './command-budget.js'
+import { MAX_DOWNLOAD_RETRIES, MAX_DOWNLOAD_RETRY_DELAY_MS } from './file-transfer.js'
 
 export interface CommandSpec {
   name: string
@@ -91,6 +92,9 @@ const FRAME_TARGET_COMMANDS = [
   'hover',
   'is',
   'locator',
+  'media',
+  'goto',
+  'reload',
   'screenshot',
   'scroll',
   'scrollintoview',
@@ -591,6 +595,13 @@ function validateCommandArgsShape(command: string, args: unknown): void {
         readStringField(normalizedArgs, 'waitUntil', command, { required: false })
         readOptionalNonNegativeIntegerField(normalizedArgs, 'settleTimeoutMs', command)
         readOptionalNonNegativeIntegerField(normalizedArgs, 'domQuietMs', command)
+        const waitFor = readStringField(normalizedArgs, 'waitFor', command, { required: false })
+        if (waitFor !== undefined) {
+          if (waitFor !== 'url' && waitFor !== 'selector') {
+            throw createCommandArgsValidationError(command, 'waitFor must be url or selector')
+          }
+          readStringField(normalizedArgs, waitFor === 'url' ? 'waitUrl' : 'selector', command)
+        }
       }
       return
     case 'click':
@@ -1001,6 +1012,18 @@ function validateCommandArgsShape(command: string, args: unknown): void {
         })
       readStringField(normalizedArgs, 'outputPath', command)
       readOptionalNonNegativeNumberField(normalizedArgs, 'timeoutMs', command)
+      for (const [key, max] of [
+        ['retries', MAX_DOWNLOAD_RETRIES],
+        ['retryDelayMs', MAX_DOWNLOAD_RETRY_DELAY_MS],
+      ] as const) {
+        const value = readOptionalNonNegativeIntegerField(normalizedArgs, key, command)
+        if (value !== undefined && value > max) {
+          throw createCommandArgsValidationError(command, `${key} must be <= ${max}`, {
+            field: key,
+            value,
+          })
+        }
+      }
       return
     }
     case 'media': {
@@ -1008,6 +1031,18 @@ function validateCommandArgsShape(command: string, args: unknown): void {
       if (action !== 'list')
         throw createCommandArgsValidationError(command, 'unsupported action', { action })
       readBooleanField(normalizedArgs, 'resolve', command)
+      readStringField(normalizedArgs, 'selector', command, { required: false })
+      readBooleanField(normalizedArgs, 'includeBackground', command)
+      const mediaEpoch = readOptionalNonNegativeIntegerField(normalizedArgs, 'mediaEpoch', command)
+      if (mediaEpoch === 0)
+        throw createCommandArgsValidationError(command, 'mediaEpoch must be positive')
+      const waitFor = readStringField(normalizedArgs, 'waitFor', command, { required: false })
+      const timeoutMs = readOptionalNonNegativeIntegerField(normalizedArgs, 'timeoutMs', command)
+      if (timeoutMs === 0)
+        throw createCommandArgsValidationError(command, 'timeoutMs must be positive')
+      if (timeoutMs !== undefined && !waitFor) {
+        throw createCommandArgsValidationError(command, 'timeoutMs requires waitFor')
+      }
       return
     }
     case 'cookies': {
@@ -1114,6 +1149,12 @@ function validateCommandArgsShape(command: string, args: unknown): void {
           readStringField(normalizedArgs, 'excludePattern', command, { required: false })
         } else if (subaction === 'stop' || subaction === 'recover') {
           readOptionalNonNegativeNumberField(normalizedArgs, 'timeoutMs', command)
+          if (subaction === 'stop') {
+            if (normalizedArgs.captureId !== undefined) {
+              readStringField(normalizedArgs, 'captureId', command)
+            }
+            readBooleanField(normalizedArgs, 'includeUrls', command)
+          }
         }
       } else if (action === 'requests') {
         readStringField(normalizedArgs, 'filter', command, { required: false })

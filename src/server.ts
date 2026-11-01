@@ -444,6 +444,10 @@ export async function startServers(options: ServerOptions = {}): Promise<StartSe
                 return jsonResponse(
                   {
                     ok: false,
+                    // Preserve completed work carried by the extension's error details.
+                    ...(err.details && typeof err.details === 'object' && 'result' in err.details
+                      ? { result: err.details.result }
+                      : {}),
                     error: {
                       message: err.message,
                       code: err.code || 'COMMAND_FAILED',

@@ -177,6 +177,16 @@ describe('WebDriver engine adapter', () => {
         ok: false,
         error: { code: 'BROWSER_CAPABILITY_UNSUPPORTED' },
       })
+      expect(
+        await handler('goto', {
+          url: 'https://example.com',
+          waitFor: 'selector',
+          selector: 'article',
+        }),
+      ).toMatchObject({
+        ok: false,
+        error: { code: 'BROWSER_CAPABILITY_UNSUPPORTED' },
+      })
       expect(mock.getSessionCreates()).toBe(0)
     })
   })

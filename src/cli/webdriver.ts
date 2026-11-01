@@ -180,6 +180,13 @@ export function createWebDriverCommandHandler({
         command,
         'Changed-snapshot tracking requires the Chromium extension',
       )
+    if (command === 'goto' && args.waitFor) {
+      return unsupported(
+        engine,
+        command,
+        'WebDriver conditional navigation waits require the Chromium extension',
+      )
+    }
     if (command === 'reload') {
       if (args.waitFor || (args.waitUntil && args.waitUntil !== 'load')) {
         return unsupported(

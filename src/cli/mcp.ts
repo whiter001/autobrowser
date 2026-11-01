@@ -1214,7 +1214,9 @@ export class AutobrowserMcpServer {
           description: 'Target a specific tab by handle (tN) or id.',
         }
       }
-      if (commandSupportsFrameTarget(definition.command)) {
+      // goto supports frames for its additional waitFor, which MCP navigate does not expose.
+      // Keep navigate's existing schema instead of advertising an ineffective frame target.
+      if (definition.name !== 'navigate' && commandSupportsFrameTarget(definition.command)) {
         properties.frame = {
           type: 'string',
           description: 'Target a specific frame by reference (@fN) or selector.',
@@ -1246,7 +1248,11 @@ export class AutobrowserMcpServer {
       if (commandSupportsTabTarget(definition.command) && args?.tab !== undefined) {
         commandArgs.tabId = args.tab
       }
-      if (commandSupportsFrameTarget(definition.command) && args?.frame !== undefined) {
+      if (
+        definition.name !== 'navigate' &&
+        commandSupportsFrameTarget(definition.command) &&
+        args?.frame !== undefined
+      ) {
         commandArgs.frame = args.frame
       }
     } catch (error) {

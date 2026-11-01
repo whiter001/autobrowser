@@ -53,6 +53,23 @@ async function readCliCommandSources(): Promise<string[]> {
 }
 
 describe('command specs', () => {
+  test('validates media readiness as part of the media request', () => {
+    expect(() =>
+      validateCommandArgs('media', { action: 'list', waitFor: 'article', timeoutMs: 45000 }),
+    ).not.toThrow()
+    for (const args of [
+      { timeoutMs: 1 },
+      { waitFor: '' },
+      { waitFor: 'article', timeoutMs: 0 },
+      { waitFor: 'article', timeoutMs: 1.5 },
+      { mediaEpoch: 0 },
+      { mediaEpoch: 1.5 },
+      { mediaEpoch: '1' },
+    ]) {
+      expect(() => validateCommandArgs('media', { action: 'list', ...args })).toThrow()
+    }
+  })
+
   test('exposes target capabilities for page commands', () => {
     expect(commandSupportsTabTarget('click')).toBe(true)
     expect(commandSupportsFrameTarget('click')).toBe(true)
@@ -66,6 +83,37 @@ describe('command specs', () => {
     expect(commandSupportsFrameTarget('mousemove')).toBe(false)
     expect(commandSupportsFrameTarget('locator')).toBe(true)
     expect(commandSupportsFrameTarget('highlight')).toBe(true)
+  })
+
+  test('validates navigation readiness without confusing the destination URL', () => {
+    expect(commandSupportsFrameTarget('media')).toBe(true)
+    expect(commandSupportsFrameTarget('goto')).toBe(true)
+    for (const command of ['goto', 'open']) {
+      expect(() =>
+        validateCommandArgs(command, {
+          url: 'https://example.com',
+          waitFor: 'url',
+          waitUrl: '#ready',
+        }),
+      ).not.toThrow()
+      expect(() =>
+        validateCommandArgs(command, {
+          url: 'https://example.com',
+          waitFor: 'selector',
+          selector: 'article',
+        }),
+      ).not.toThrow()
+      for (const options of [
+        { waitFor: 'load' },
+        { waitFor: 'url' },
+        { waitFor: 'selector' },
+        { waitFor: 'url', waitUrl: '' },
+      ]) {
+        expect(() =>
+          validateCommandArgs(command, { url: 'https://example.com', ...options }),
+        ).toThrow()
+      }
+    }
   })
 
   test('does not apply ambient page targets to tab management commands', () => {
@@ -304,6 +352,29 @@ describe('command specs', () => {
         timeoutMs: -1,
       }),
     ).toThrow('timeoutMs must be a non-negative number')
+    for (const [key, max] of [
+      ['retries', 5],
+      ['retryDelayMs', 60_000],
+    ] as const) {
+      for (const value of [0, max]) {
+        expect(() =>
+          validateCommandArgs('download', {
+            url: 'https://example.com/a',
+            outputPath: '/tmp/a',
+            [key]: value,
+          }),
+        ).not.toThrow()
+      }
+      for (const value of [-1, max + 1, 1.5, '2', Number.NaN, Number.POSITIVE_INFINITY]) {
+        expect(() =>
+          validateCommandArgs('download', {
+            url: 'https://example.com/a',
+            outputPath: '/tmp/a',
+            [key]: value,
+          }),
+        ).toThrow(key)
+      }
+    }
     // download 支持 tab target，但不支持 frame target
     expect(commandSupportsTabTarget('download')).toBe(true)
     expect(commandSupportsFrameTarget('download')).toBe(false)
@@ -317,12 +388,25 @@ describe('command specs', () => {
 
   test('validates media list arguments and targets', () => {
     expect(() => validateCommandArgs('media', { action: 'list', resolve: true })).not.toThrow()
+    expect(() =>
+      validateCommandArgs('media', {
+        action: 'list',
+        selector: 'article[data-role="tweet"]',
+        includeBackground: true,
+      }),
+    ).not.toThrow()
     expect(() => validateCommandArgs('media', { action: 'scan' })).toThrow('unsupported action')
     expect(() => validateCommandArgs('media', { action: 'list', resolve: 'yes' })).toThrow(
       'resolve must be a boolean',
     )
+    expect(() => validateCommandArgs('media', { action: 'list', selector: 42 })).toThrow(
+      'selector must be a string',
+    )
+    expect(() =>
+      validateCommandArgs('media', { action: 'list', includeBackground: 'yes' }),
+    ).toThrow('includeBackground must be a boolean')
     expect(commandSupportsTabTarget('media')).toBe(true)
-    expect(commandSupportsFrameTarget('media')).toBe(false)
+    expect(commandSupportsFrameTarget('media')).toBe(true)
   })
 
   test('covers the remaining command schema gaps', () => {
@@ -677,6 +761,20 @@ describe('command specs', () => {
       'unsupported reduced-motion value',
     )
     expect(() => validateCommandArgs('set', { type: 'device', value: '' })).not.toThrow()
+  })
+
+  test('validates HAR stop capture identity and URL options', () => {
+    const args = { action: 'har', subaction: 'stop' }
+    expect(() => validateCommandArgs('network', args)).not.toThrow()
+    expect(() =>
+      validateCommandArgs('network', { ...args, captureId: 'capture-1', includeUrls: true }),
+    ).not.toThrow()
+    for (const captureId of ['', '  ', 1, null]) {
+      expect(() => validateCommandArgs('network', { ...args, captureId })).toThrow('captureId')
+    }
+    expect(() => validateCommandArgs('network', { ...args, includeUrls: 'true' })).toThrow(
+      'includeUrls must be a boolean',
+    )
   })
 
   test('validates search command arguments', () => {

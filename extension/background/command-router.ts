@@ -14,7 +14,7 @@ import {
   resolveTabInput,
   toTabSummary,
 } from './targeting.js'
-import { serializeCommandError, type SerializedCommandError } from './errors.js'
+import { serializeCommandFailure, type SerializedCommandError } from './errors.js'
 import { createCommandQueue, type CommandExecutionContext } from './command-queue.js'
 import { getCommandRequestBudgetMs } from '../../src/core/command-budget.js'
 import { DEFAULT_PAGE_SIZE, paginateList } from './pagination.js'
@@ -422,7 +422,7 @@ interface NetworkDomain {
       excludePattern?: string
     },
   ) => Promise<unknown>
-  stopHar: () => Promise<unknown>
+  stopHar: (options?: { captureId?: string; includeUrls?: boolean }) => Promise<unknown>
   getHarStatus: () => Promise<unknown>
   recoverHar: () => Promise<unknown>
 }
@@ -443,6 +443,8 @@ interface DownloadsDomain {
 interface FileTransferDomain {
   download: (args: {
     url: string
+    retries?: number
+    retryDelayMs?: number
     requestId?: string
     deadlineAt?: string | null
     context?: CommandExecutionContext
@@ -453,7 +455,11 @@ interface MediaDomain {
   list: (
     tabId: number,
     frameSelector: FrameSelector,
-    resolve: boolean,
+    options: {
+      resolve?: boolean
+      selector?: string | null
+      includeBackground?: boolean
+    },
     context?: CommandExecutionContext,
   ) => Promise<unknown>
 }
@@ -1224,10 +1230,7 @@ export function createCommandRouter({
     ok: false
     error: SerializedCommandError
   } {
-    return {
-      ok: false,
-      error: serializeCommandError(error),
-    }
+    return serializeCommandFailure(error)
   }
 
   function createBatchSummary(
@@ -1804,7 +1807,7 @@ export function createCommandRouter({
 
     await assertNoOpenDialog(command, tabId)
 
-    async function runCommand(): Promise<unknown> {
+    async function runCommand(executionFrame: FrameSelector): Promise<unknown> {
       context?.throwIfCancelled()
       // 排队期间可能新弹出对话框，入队前那次检查不够，执行前要针对固定后的 tab 再查一次
       await assertNoOpenDialog(command, tabId)
@@ -1945,14 +1948,46 @@ export function createCommandRouter({
           throw new Error(`unsupported command action: ${action}`)
         }
         case 'goto':
-        case 'open':
-          return await pageInput.navigateTo(tabId, url, {
+        case 'open': {
+          const navigationResult = await pageInput.navigateTo(tabId, url, {
             timeoutMs: readNumberArg(args, 'timeoutMs', 10000),
             wait: readBooleanArg(args, 'wait', true),
             waitUntil: readStringArg(args, 'waitUntil', 'domquiet'),
             settleTimeoutMs: readOptionalNumberArg(args, 'settleTimeoutMs'),
             domQuietMs: readOptionalNumberArg(args, 'domQuietMs'),
           })
+          const waitFor = readOptionalStringArg(args, 'waitFor')
+          if (!waitFor) return navigationResult
+          // url is the navigation destination; waitUrl is its URL condition.
+          // reload retains the historical url condition field because it has no destination.
+          const value = readStringArg(args, waitFor === 'url' ? 'waitUrl' : 'selector')
+          const waitArgs = {
+            type: waitFor,
+            timeout: readNumberArg(args, 'timeoutMs', 30000),
+            ...(waitFor === 'url' ? { url: value } : { selector: value, state: 'visible' }),
+          }
+          try {
+            const wait = await handleWait(tabId, waitArgs, frameSelector)
+            return {
+              ...(navigationResult as Record<string, unknown>),
+              wait: { ...(wait as Record<string, unknown>), type: waitFor, value, completed: true },
+            }
+          } catch (error) {
+            const failure =
+              error instanceof Error
+                ? (error as ErrorWithCode)
+                : (new Error(String(error)) as ErrorWithCode)
+            failure.details = {
+              ...(isRecord(failure.details) ? failure.details : {}),
+              result: {
+                ...(navigationResult as Record<string, unknown>),
+                navigationResult,
+                wait: { type: waitFor, value, completed: false },
+              },
+            }
+            throw failure
+          }
+        }
         case 'eval':
           return await pageInput.evaluateScript(
             tabId,
@@ -2197,18 +2232,48 @@ export function createCommandRouter({
           // 落盘路径由 relay 决定，扩展只负责取字节并直传
           return await fileTransfer.download({
             url,
+            retries: readOptionalNumberArg(args, 'retries'),
+            retryDelayMs: readOptionalNumberArg(args, 'retryDelayMs'),
             ...(typeof request?.id === 'string' ? { requestId: request.id } : {}),
             ...(typeof request?.deadlineAt === 'string' ? { deadlineAt: request.deadlineAt } : {}),
             context,
           })
         case 'media': {
           if (typeof tabId !== 'number') throw new Error('media list requires a resolved tab')
-          return await mediaDomain.list(
+          const waitFor = readOptionalStringArg(args, 'waitFor')
+          const wait = waitFor
+            ? {
+                selector: waitFor,
+                completed: true,
+                result: await handleWait(
+                  tabId,
+                  {
+                    type: 'selector',
+                    selector: waitFor,
+                    state: 'visible',
+                    timeout: readNumberArg(args, 'timeoutMs', 30000),
+                  },
+                  executionFrame,
+                ),
+              }
+            : undefined
+          const mediaEpoch = readOptionalNumberArg(args, 'mediaEpoch')
+          if (mediaEpoch !== undefined && mediaEpoch !== getPageEpoch(state, tabId)) {
+            throw Object.assign(new Error('media epoch changed; collect again'), {
+              code: 'STALE_MEDIA_STATE',
+            })
+          }
+          const result = await mediaDomain.list(
             tabId,
-            frameSelector,
-            readBooleanArg(args, 'resolve', false),
+            executionFrame,
+            {
+              resolve: readBooleanArg(args, 'resolve', false),
+              selector: readOptionalStringArg(args, 'selector') ?? null,
+              includeBackground: readBooleanArg(args, 'includeBackground', false),
+            },
             context,
           )
+          return { ...(result as Record<string, unknown>), ...(wait ? { wait } : {}) }
         }
         case 'wait':
           return await handleWait(tabId, args, frameSelector)
@@ -2392,7 +2457,10 @@ export function createCommandRouter({
               })
             }
             if (subaction === 'stop') {
-              return await network.stopHar()
+              return await network.stopHar({
+                captureId: readOptionalStringArg(args, 'captureId'),
+                includeUrls: typeof args.includeUrls === 'boolean' ? args.includeUrls : undefined,
+              })
             }
             if (subaction === 'status') {
               return await network.getHarStatus()
@@ -2491,7 +2559,7 @@ export function createCommandRouter({
         pinnedTabId === null
           ? frameSelector
           : resolveEffectiveFrameSelector(state, { id: pinnedTabId }, frameSelector) || 'top'
-      let result = await runCommand()
+      let result = await runCommand(executionFrame)
       if (state.session.autoSnapshot && AUTO_SNAPSHOT_COMMANDS.has(command) && isRecord(result)) {
         const actionResult = result
         try {

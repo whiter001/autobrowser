@@ -1,4 +1,10 @@
 // 此模块同时由扩展和 relay 使用，不能引入 Node/Bun 专属 API。
+/** 源站初始 fetch 的额外重试次数与基础指数退避（不影响上传恢复） */
+export const DEFAULT_DOWNLOAD_RETRIES = 2
+export const MAX_DOWNLOAD_RETRIES = 5
+export const DEFAULT_DOWNLOAD_RETRY_DELAY_MS = 250
+export const MAX_DOWNLOAD_RETRY_DELAY_MS = 60_000
+
 /** 单文件与并发预留共用的字节上限 */
 export const MAX_FILE_UPLOAD_BYTES = 512 * 1024 * 1024
 /** 扩展侧单次 HTTP 上传的分段大小 */

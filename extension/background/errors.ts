@@ -10,6 +10,24 @@ export interface SerializedCommandError {
   currentPageEpoch?: number
 }
 
+// Failed commands can retain completed work (for example navigation before a wait).
+// Keep details intact for compatibility, and expose its result in both response paths.
+export function serializeCommandFailure(error: unknown): {
+  ok: false
+  error: SerializedCommandError
+  result?: unknown
+} {
+  const serialized = serializeCommandError(error)
+  const details = serialized.details
+  return {
+    ok: false,
+    error: serialized,
+    ...(details && typeof details === 'object' && 'result' in details
+      ? { result: details.result }
+      : {}),
+  }
+}
+
 // 单命令响应和 batch 步骤共用的错误序列化：
 // suggestedAction/ref/pageEpoch 等引导字段对 AI 自愈很关键，两条路径都不能丢
 export function serializeCommandError(error: unknown): SerializedCommandError {

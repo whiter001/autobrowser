@@ -9,6 +9,10 @@ import {
 import {
   FILE_UPLOAD_STREAM_THRESHOLD_BYTES,
   MAX_FILE_UPLOAD_BYTES,
+  DEFAULT_DOWNLOAD_RETRIES,
+  DEFAULT_DOWNLOAD_RETRY_DELAY_MS,
+  MAX_DOWNLOAD_RETRIES,
+  MAX_DOWNLOAD_RETRY_DELAY_MS,
 } from '../../src/core/file-transfer.js'
 
 export interface FileTransferResult {
@@ -24,6 +28,8 @@ export interface FileTransferResult {
 export interface FileTransferDomain {
   download: (args: {
     url: string
+    retries?: number
+    retryDelayMs?: number
     requestId?: string
     deadlineAt?: string | null
     context?: CommandExecutionContext
@@ -64,6 +70,8 @@ export function createFileTransferDomain(options: FileTransferOptions): FileTran
 
   async function download(args: {
     url: string
+    retries?: number
+    retryDelayMs?: number
     requestId?: string
     deadlineAt?: string | null
     context?: CommandExecutionContext
@@ -96,16 +104,80 @@ export function createFileTransferDomain(options: FileTransferOptions): FileTran
         }, CANCEL_POLL_INTERVAL_MS)
       : undefined
 
-    try {
-      const response = await fetchImpl(args.url, {
-        credentials: 'include',
-        signal: controller.signal,
+    const retries = args.retries ?? DEFAULT_DOWNLOAD_RETRIES
+    const retryDelayMs = args.retryDelayMs ?? DEFAULT_DOWNLOAD_RETRY_DELAY_MS
+    const checkActive = () => {
+      if (args.context?.cancelled) controller.abort(new Error('File transfer was cancelled'))
+      if (Number.isFinite(deadlineMs) && Date.now() >= deadlineMs) {
+        controller.abort(new Error('File transfer deadline exceeded'))
+      }
+      controller.signal.throwIfAborted()
+    }
+    const waitForRetry = async (attempt: number) => {
+      checkActive()
+      const delay = retryDelayMs * 2 ** attempt
+      // 不开始一个注定耗尽剩余预算的 sleep，也不为重试重置 deadline。
+      if (Number.isFinite(deadlineMs) && delay >= deadlineMs - Date.now()) {
+        throw new Error('File transfer deadline exceeded')
+      }
+      await new Promise<void>((resolve, reject) => {
+        const onAbort = () => {
+          clearTimeout(timer)
+          controller.signal.removeEventListener('abort', onAbort)
+          reject(controller.signal.reason)
+        }
+        const timer = setTimeout(() => {
+          controller.signal.removeEventListener('abort', onAbort)
+          resolve()
+        }, delay)
+        controller.signal.addEventListener('abort', onAbort, { once: true })
       })
-      if (!response.ok) {
-        throw new Error(
+      checkActive()
+    }
+    const fetchSource = async (): Promise<Response> => {
+      for (let attempt = 0; ; attempt += 1) {
+        checkActive()
+        let response: Response
+        try {
+          response = await fetchImpl(args.url, {
+            credentials: 'include',
+            signal: controller.signal,
+          })
+        } catch (error) {
+          checkActive()
+          const networkError =
+            error instanceof TypeError || (error instanceof Error && error.name === 'NetworkError')
+          if (!networkError || attempt >= retries) throw error
+          await waitForRetry(attempt)
+          continue
+        }
+        checkActive()
+        if (response.ok) return response
+        // 丢弃失败响应，避免重试时留下未消费的连接/响应体。
+        void response.body?.cancel().catch(() => undefined)
+        const error = new Error(
           `Download failed with HTTP ${response.status} ${response.statusText}`.trim(),
         )
+        const retryable =
+          response.status === 429 || (response.status >= 500 && response.status <= 599)
+        if (!retryable || attempt >= retries) throw error
+        await waitForRetry(attempt)
       }
+    }
+
+    try {
+      if (
+        !Number.isInteger(retries) ||
+        retries < 0 ||
+        retries > MAX_DOWNLOAD_RETRIES ||
+        !Number.isInteger(retryDelayMs) ||
+        retryDelayMs < 0 ||
+        retryDelayMs > MAX_DOWNLOAD_RETRY_DELAY_MS
+      ) {
+        throw new Error('Invalid download retry options')
+      }
+      // 仅重试获取响应头；响应体读取及上传均在重试循环之外，不能重放整个文件。
+      const response = await fetchSource()
       const contentLength = readContentLength(response.headers.get('content-length'))
       // 长度已知时先看预算：超限的文件没必要读完再报错
       if (contentLength !== null && contentLength > MAX_FILE_UPLOAD_BYTES) {

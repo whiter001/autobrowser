@@ -139,7 +139,12 @@ describe('AutobrowserMcpServer.callTool', () => {
     const mock = recordingRequestCommand(okResult({ url: 'https://example.com' }))
     const server = new AutobrowserMcpServer({ requestCommand: mock })
 
-    const result = await server.callTool('navigate', { url: 'https://example.com', tab: 't1' })
+    // MCP navigate exposes navigation only, not the CLI's additional waitFor/frame target.
+    const result = await server.callTool('navigate', {
+      url: 'https://example.com',
+      tab: 't1',
+      frame: '@f1',
+    })
 
     expect(result.isError).toBeFalsy()
     expect(mock.calls).toEqual([

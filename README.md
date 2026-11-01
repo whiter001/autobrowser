@@ -198,8 +198,10 @@ autobrowser network unroute [url]
 autobrowser network requests [--filter api] [--type xhr,fetch] [--method POST] [--status 2xx] [--sort newest]
 autobrowser network request <requestId> [--timeout-ms <ms>]
 autobrowser network har start [--include-pattern <text>] [--exclude-pattern <text>]
-autobrowser network har stop [output.har] [--timeout-ms <ms>]
+autobrowser network har stop [output.har] [--timeout-ms <ms>] [--capture-id <id>] [--include-urls]
 ```
+
+`har start`、`status`、`stop`、`recover` 的扩展结果都携带 `captureId`（未知时为 `null`）；checkpoint 保留原 capture 的 ID。并发任务应保存 `har start` 返回的 `captureId`，并在停止时传入 `--capture-id <id>`：ID 不匹配或已经停止时命令失败，不会停止或导出其他任务的 capture。CLI stop/recover 默认仍以文件路径作为 `result`，ID 位于 `meta.har.captureId`；stop 加 `--include-urls` 时 `result` 为 `{ path, captureId, urls }`，其中 URL 来自本次保留的请求，按捕获顺序去重，HAR 文件照常写入。不传该选项不会返回 URL 大字段。
 
 `route` 既可以 `--abort` 拦截请求，也可以用 `--body` mock 响应（默认 200 + `application/json`，可用 `--status`、`--content-type`、`--header` 调整），还可以用 `--remove-headers` 在放行前删除请求头。不带 url 的 `unroute` 会清空所有路由。
 
@@ -219,17 +221,39 @@ autobrowser download https://example.com/video.m3u8 ./out/video-720.mp4 --qualit
 也可以先发现当前页面里的图片和视频，再按返回的 `index` 下载：
 
 ```bash
-autobrowser media list
-autobrowser media list --resolve
-autobrowser download --media 0 ./out/video.mp4 --quality best
+autobrowser --tab t1 --frame top media list --selector 'article[data-role="tweet"]' --include-background --resolve
+# 确认目标条目有可信 HTTP(S) sources/url；假设返回 pageEpoch=7
+# 下载重新采集时必须使用相同 tab/frame/selector/include-background
+autobrowser --tab t1 --frame top download --media 0 --selector 'article[data-role="tweet"]' --include-background --media-epoch 7 ./out/video.mp4 --quality best
 ```
 
-`media list` 读取当前 frame 的媒体元素及同 tab、同 page epoch 的网络元数据。`--resolve` 会对没有真实源的 `blob:` 视频做一次静音短播放以暴露 HLS/MP4 请求；后台标签页被浏览器限制播放时，需要先激活标签页。`download --media` 自动执行同样的解析，不必先手动播放或过滤网络日志。
+`media list` 读取当前 frame 的 DOM 媒体源；`--resolve` 允许对没有真实源的视频静音短播以记录未验证网络诊断，不承诺解析出可下载流。后台播放可能受浏览器限制。`download --media` 会以相同 scope 重新采集，只下载可信 HTTP(S) `sources/url`，不会使用 `observedSources`。
+
+`media list` 的作用域：
+
+- `--selector <css>` 把所有 DOM 媒体采集以及 `--resolve` 的播放探测限定到匹配到的容器内（容器自身是 `img`/`video` 时也算在内）。列表页/推荐流这类一个页面里有多组推文时，用它只取目标那条，避免回复区和推荐区的媒体串进来。
+- 不带 `--selector` 时沿用默认作用域：优先页面 `article` 容器内的可见媒体，其次 `article` 内的媒体，最后整页可见媒体。
+- `--include-background` 额外采集作用域内元素的 CSS `background-image`（优先 computed style，其次内联 style），同样以 `image` 条目返回。只返回 URL 和元数据，不读取也不执行页面内容。
+
+采集前可用 `media list --wait-for 'article[data-role="tweet"]' --selector 'article[data-role="tweet"]' --timeout-ms 15000` 等待目标选择器可见。等待与采集在扩展同一次 media 请求中对同一已解析 tab/frame 执行，不会因 ambient target 切换而漂移；等待失败不继续采集。`--wait-for` 与 `--selector` 独立，`--timeout-ms` 仅设置等待阶段预算（默认 30 秒），不限制后续发现/播放探测。
+
+导航也支持条件等待：`goto/open <url> --wait-for url <pattern>|selector <css> --timeout-ms <ms>`。导航与附加条件等待各使用该预算；URL 条件不会覆盖导航地址。`tab new <url> --wait-for selector <css> --timeout-ms <ms>` 在创建后等待返回的新 tab handle，而不是活动标签页；超时仍在错误响应的 `result.tab` 中保留新 tab 信息，便于找回或关闭。不带等待选项时输出不变。
+
+`media list` 的溯源信息：
+
+- 顶层返回 `observedAt`（采集时间）、`pageEpoch`（页面 epoch）、`pageUrl`（页面地址）和 `scope`（`selector` / `mode` / `matchedCount`，未指定选择器时如实表示默认作用域）。
+- 顶层还返回 `complete:boolean` 和 `warnings:string[]`。作用域未匹配、空媒体、未解析源/错误或 resolve 探测数量达到上限都会标记 `complete=false` 并给可读 warning；仅正常非空、无已知缺口时为 `true`。`complete` 只表示本次发现过程无已知缺口，不证明未渲染的轮播媒体不存在。
+- 每个条目带 `permalink`（最近 `article` 内首个含 `/status/` 的绝对链接，没有则为 `null`）和 `primarySource`（`dom` = 来自 DOM 属性或 CSS，`none` = 尚未解析出可信源）。顶层 `includeBackground` 回显本次背景图开关。
+
+网络归属采用严格保守契约：默认模式与 selector 模式都不认领历史 tab-wide 候选。即使播放期间新增请求，也可能来自 scope 外并发流量；只有实际 played 的探测才将新增候选放入 `observedSources`（每条 `unverified:true`），仅供诊断，绝不进入可下载的 `sources/url`，`download --media` 不使用它。失败或元素身份不符时诊断为空。只有 observedSources 而无可信 DOM 源仍为 `complete=false` 并给 warning，宁可 unresolved，不猜测下载。
+
+探测通过同一 document 内的稳定元素 token 找回原元素，并验证 connected 且仍属 scope；空 src、相同 src、删除、重排和替换不会让探测播放别的元素。采集开始记录 pageEpoch，采集/探测后或返回前 epoch 改变时报 `STALE_MEDIA_STATE`，必须重新采集。index 仅在相同 tab/frame/scope/epoch 内有效；`download --media` 重新 list 时须传相同 `--selector`/`--include-background`，并用 `--media-epoch <n>` 要求返回 epoch 完全一致，否则失败。epoch 不代表 DOM 不变，重排后应重新确认 index。CLI 对显式 scope、includeBackground 支持及 wait 完成要求响应明确回显，旧扩展缺少证明时拒绝成功。
 
 下载行为：
 
 - 输出使用显式路径或 `--output-dir` 自动命名，父目录自动创建。默认原子替换已有文件；`--no-clobber` 会在下载前拒绝覆盖，`--overwrite` 可显式选择默认行为。
 - 普通文件只接受 HTTP/HTTPS，扩展携带当前浏览器登录态获取，二进制经本地鉴权 `/files/:transferId` 通道直传 relay，不经过 Base64 或 WebSocket。
+- 每个浏览器下载请求（包括 HLS 播放列表、初始化文件和分片）的初始 fetch 对网络错误、HTTP 429 和 5xx 默认额外重试 2 次；其他 4xx 立即失败。`--retries <0..5>` 调整次数，`--retries 0` 禁用源站重试；`--retry-delay-ms <0..60000>` 设置指数退避基础间隔（默认 250ms）。重试及等待共用原始 `--timeout-ms` 总预算，并服从取消；响应体读取失败不会重新下载，上传开始后也不会重放整个文件，原有上传断点恢复不变。
 - 已知 Content-Length 且超过 8MiB 的文件使用流式传输，每次只保留一个 8MiB 块；小文件和未知长度响应使用原来的缓冲路径。relay 校验分块及整文件 SHA-256 后原子落盘。
 - HLS 自动选择视频和音频轨，所有播放列表、初始化文件及分片都通过浏览器下载，FFmpeg/FFprobe 只处理本地文件。`--quality best|worst|720|720p` 选画质，`--concurrency 1..16` 控制分片并发，`--timeout-ms` 限制整个任务。
 - HLS 失败会保留 checkpoint 和已校验分片，相同命令下次自动续传；成功后清理中间文件。需要本机安装 `ffmpeg` 和 `ffprobe`，合并后返回分辨率、时长、分片数、字节数和摘要。

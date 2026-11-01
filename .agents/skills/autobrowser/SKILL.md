@@ -27,9 +27,9 @@ autobrowser 是一个面向 Chrome/Edge 的浏览器自动化 CLI，通过本地
 - `status`
 - `connect`
 - `extension info` / `extension reload` / `extension reconnect`
-- `open <url>` / `goto <url>`
+- `open <url>` / `goto <url>`（均可加 `--wait-for url <pattern>|selector <css>`）
 - `back` / `forward` / `reload [--wait-for url <pattern>|selector <sel>]`
-- `tab list` / `tab new <url>` / `tab select <tN>` / `tab close [tN]`
+- `tab list` / `tab new <url> [--wait-for url <pattern>|selector <css>]` / `tab select <tN>` / `tab close [tN]`
 - `target show` / `target set <tN>` / `target active` / `target clear`
 - `command list` / `command cancel <id>` / `command reset`
 - `window new`
@@ -57,7 +57,7 @@ autobrowser 是一个面向 Chrome/Edge 的浏览器自动化 CLI，通过本地
 - `state`
 - `downloads list` / `downloads clear`
 - `download <url|--media <index>> [output-path]`
-- `media list [--resolve]`
+- `media list [--resolve] [--selector <css>] [--include-background]`
 - `network route` / `network unroute` / `network requests` / `network request` / `network har start` / `network har stop` / `network har status` / `network har recover`
 
 ## 浏览器引擎与能力边界
@@ -123,7 +123,10 @@ autobrowser 是一个面向 Chrome/Edge 的浏览器自动化 CLI，通过本地
 ## 文件与媒体下载
 
 - 普通文件：`download <url> [output-path]`，或用 `--output-dir <dir>` 自动命名。默认原子覆盖，`--no-clobber` 拒绝覆盖。`downloads list|clear` 只是 Chrome 下载历史，与真正落盘的 `download` 不同。
-- 页面媒体：先 `media list` 查看图片、视频及真实源；`media list --resolve` 会对 `blob:` 视频静音短播以暴露 HLS/MP4 请求。然后 `download --media <index> [output-path]` 可直接下载，无需手动过滤网络日志。后台播放受限时先激活 tab。
+- 源站初始 fetch 对网络错误、429、5xx 默认额外重试 2 次；`--retries <0..5>` 调整，`--retries 0` 禁用，`--retry-delay-ms <ms>` 设置指数退避基础间隔（默认 250）。普通下载和 HLS 各请求都适用，重试共享原 timeout/deadline；上传开始后不重放整个文件。
+- 页面媒体：先 `autobrowser --tab t1 --frame top media list --selector 'article' --include-background --resolve`。确认有可信 HTTP(S) `sources/url` 后，假设返回 `pageEpoch=7`，使用 `autobrowser --tab t1 --frame top download --media 0 --selector 'article' --include-background --media-epoch 7 ./out.mp4`。index 仅在相同 tab/frame/scope/epoch 内有效，重新采集必须沿用 selector 和 include-background；epoch 不一致会失败，DOM 重排后应重新确认 index。
+- 媒体作用域：`--selector <css>` 把 DOM 采集和播放探测限定到匹配容器，未命中时连背景图也返回空，不回退整页。`--include-background` 额外采集作用域内 CSS 背景图。`media list --wait-for <css> --timeout-ms <ms>` 在扩展内对同一已解析 tab/frame 先等待再采集，失败不继续。旧扩展缺少 scope、背景支持或 wait 回显时 CLI 拒绝 scoped 成功。
+- 媒体溯源：返回 `observedAt/pageEpoch/pageUrl/scope/includeBackground` 及条目 `permalink/primarySource`（dom/none）。仅 DOM currentSrc/source 和图片/CSS 是可信源；历史 tab-wide 网络候选从不认领。`--resolve` 用 document 内稳定 token 验证原元素 connected 且仍属 scope 后静音短播；只有实际 played 才可记录播放期间新增候选到 `observedSources`（`unverified:true`）。并发流量不能证明归属，observedSources 不进入 sources/url，也不可用于下载；只有诊断候选时仍 complete=false 并有 warning。失败或身份不符诊断为空。采集/探测中 epoch 改变报 `STALE_MEDIA_STATE`，重新采集，不拼接旧结果。
 - HLS：`download <master.m3u8> <output.mp4> --quality best|worst|720|720p --concurrency 4`。自动下载最佳音视频轨并本地合并，FFmpeg/FFprobe 只读本地文件，不直接访问 CDN；本机需安装这两个工具。
 - HLS 是一个任务：统一 `--timeout-ms`，分片有界并发，失败保留 checkpoint/已校验分片，相同命令下次续传，成功清理。上限 2048 分片、2GiB、4 层 playlist；不支持加密和 `EXT-X-BYTERANGE`。DASH 目前只能发现，不能合并下载。
 - 所有媒体字节都经浏览器和本地鉴权 `/files/:transferId` 通道，不走 Base64/WebSocket。已知 Content-Length 且 >8MiB 时每次只缓冲一个 8MiB 块，relay 校验块/整文件 SHA-256；其他响应沿用缓冲传输。
@@ -153,6 +156,7 @@ autobrowser 是一个面向 Chrome/Edge 的浏览器自动化 CLI，通过本地
 ## CLI 参数与回放
 
 - `--file`、`--stdin`、`--base64` 互斥；未知选项、冲突模式和缺参会返回非零退出码，不要把帮助文本或退出码 0 当成命令已执行。
+- 最终标准命令响应为 `ok:false` 时进程退出码为 1，JSON `error` 仍保留；脚本可同时检查 return code 和 JSON。goto fallback 的最终成功结果、batch 的最终聚合响应决定退出状态，内部已恢复步骤不会误报。
 - 需要输入与选项同名的字面量时，在 `--` 后传值，例如 `type '#field' -- '--submit'`。
 - `replay` 会拒绝包含 `[redacted]` 的历史命令，防止把脱敏占位符当成真实参数执行；需要重放敏感操作时重新检查页面并显式构造命令。
 
@@ -177,10 +181,10 @@ autobrowser 是一个面向 Chrome/Edge 的浏览器自动化 CLI，通过本地
 - `find role`、`find text`、`find label` 适合先语义定位，再点击、读取或填写。
 - `tab list` 返回稳定句柄如 `t1`、`t2`，优先用 `tab select tN`，不要依赖原始 tab id。
 - 页面命令超时后先运行 `status` 和 `command list`。标签页控制走独立控制面，可继续用 `tab list`、`target clear`、`tab close <tN>` 恢复；不要连续重试并堆积命令。运行中的 `eval` 被取消或超时后会定向执行 `Runtime.terminateExecution`，其他 CDP 操作仍可能继续在浏览器侧完成。`status.lastError` 保留历史最后错误，可结合 `lastSuccessAt` 判断它是否早于最近成功。
-- `goto/open/reload` 可用 `--wait-until none|commit|domcontentloaded|interactive|load|networkidle|domquiet` 选择等待阶段；`reload` 还可追加 `--wait-for url <pattern>` 或 `--wait-for selector <sel>` 等待最终页面结果，适合 hash 路由 SPA 和验证后重定向页面。
+- `goto/open/reload` 可用 `--wait-until none|commit|domcontentloaded|interactive|load|networkidle|domquiet` 选择等待阶段；三者及 `tab new` 还可追加 `--wait-for url <pattern>` 或 `--wait-for selector <sel>` 等最终结果。`tab new` 固定等待新建 handle；等待失败仍在 `result.tab` 保留新 tab。旧扩展缺少 wait 执行证明时 CLI 返回失败，不伪造已等待。
 - `cookies list` 是 `cookies get` 的别名，支持同样的 `--domain` / `--path` 过滤。
 - `network requests` 默认只看目标 tab 的当前页面 epoch；跨 tab 或跨页面历史必须显式使用 `--all-tabs` / `--all-epochs`，headers/body 用 `network request <id>` 或 `--include-details` 获取。默认按最旧记录分页（每页 50，`--page` / `--page-size` 调页），调试最新流量加 `--sort newest`；`total` 是过滤后的总数，不是当前页条数。
-- HAR start 默认包含目标 tab 的全部请求，可用 `--include-pattern <text>` 只采 URL 子串命中项，或用 `--exclude-pattern <text>` 排除页面播放器/无关流量；过滤不会删除全局请求历史。中断或 stop 超时后，先用 `network har status` 检查 `checkpoint.recoverable` 和错误信息，再用 `network har recover [output.har]` 导出；大采集可用 `network har stop [output.har] --timeout-ms <ms>` 延长预算。stop/recover 的 `meta.har` 会回显原 capture tab 和请求数，空 HAR 会有警告。
+- HAR start 默认包含目标 tab 的全部请求，可用 `--include-pattern <text>` 只采 URL 子串命中项，或用 `--exclude-pattern <text>` 排除页面播放器/无关流量；过滤不会删除全局请求历史。并发任务保存 start 返回的 captureId，stop 传 `--capture-id <id>` 防止误停其他 capture；stop 加 `--include-urls` 可直接返回本次捕获的去重 URL。中断或 stop 超时后先查 `network har status` 的 `checkpoint.recoverable`，再用 `network har recover [output.har]`；大采集可用 `--timeout-ms <ms>` 延长预算。stop/recover 的 `meta.har` 回显 captureId、原 capture tab 和请求数。
 - 设置默认下载目录需要独立 CDP browser endpoint；当前扩展的 tab session 和 `chrome.debugger.getTargets` 都无法提供该能力，不要反复尝试 `Page.setDownloadBehavior`。
 - 在旧扩展上，`network har stop` 可能只返回元数据；CLI 会自动兜底重建 HAR。
 - 如果页面看起来空白或不对，先确认是不是登录页、验证码页，或者虚拟滚动列表。

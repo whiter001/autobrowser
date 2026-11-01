@@ -2,7 +2,13 @@ import path from 'node:path'
 import { isRecord, type CommandResponse } from '../client.js'
 import { downloadMediaWithHls, type BrowserDownloadResult } from '../hls-download.js'
 import { parseNumberArg } from '../parse.js'
-import { helpRequested, requestAndWrite, writeCommandError } from './shared.js'
+import {
+  DEFAULT_DOWNLOAD_RETRIES,
+  DEFAULT_DOWNLOAD_RETRY_DELAY_MS,
+  MAX_DOWNLOAD_RETRIES,
+  MAX_DOWNLOAD_RETRY_DELAY_MS,
+} from '../../core/file-transfer.js'
+import { helpRequested, writeCommandError } from './shared.js'
 import type { CommandContext, CommandHandler, CommandRegistry } from './types.js'
 
 interface DownloadOptions {
@@ -63,14 +69,58 @@ function resolveOutputPath(sourceUrl: string, outputPath: string | null, outputD
   return path.resolve(outputDir, outputFilename(sourceUrl))
 }
 
-async function resolveMediaSource(index: number, context: CommandContext): Promise<string> {
+interface MediaScopeOptions {
+  selector?: string
+  includeBackground?: boolean
+  mediaEpoch?: number
+  waitFor?: string
+}
+
+function validateMediaResponse(result: Record<string, unknown>, options: MediaScopeOptions) {
+  if (
+    options.selector !== undefined &&
+    (!isRecord(result.scope) || result.scope.selector !== options.selector)
+  ) {
+    throw new Error(
+      'media response did not confirm the requested scope.selector; update the extension',
+    )
+  }
+  if (options.includeBackground && result.includeBackground !== true) {
+    throw new Error(
+      'media response did not confirm includeBackground support; update the extension',
+    )
+  }
+  if (
+    options.waitFor !== undefined &&
+    (!isRecord(result.wait) ||
+      result.wait.completed !== true ||
+      result.wait.selector !== options.waitFor)
+  ) {
+    throw new Error('media response did not confirm the requested wait; update the extension')
+  }
+  if (options.mediaEpoch !== undefined && result.pageEpoch !== options.mediaEpoch) {
+    throw new Error(
+      'STALE_MEDIA_STATE: media pageEpoch does not match --media-epoch; collect again',
+    )
+  }
+}
+
+async function resolveMediaSource(
+  index: number,
+  context: CommandContext,
+  options: MediaScopeOptions,
+): Promise<string> {
   const payload = await context.requestCommand(context.flags.server, 'media', {
     action: 'list',
     resolve: true,
+    ...(options.selector !== undefined ? { selector: options.selector } : {}),
+    ...(options.includeBackground ? { includeBackground: true } : {}),
+    ...(options.mediaEpoch !== undefined ? { mediaEpoch: options.mediaEpoch } : {}),
   })
   if (!payload.ok || !isRecord(payload.result) || !Array.isArray(payload.result.media)) {
     throw commandError(payload, 'media discovery failed')
   }
+  validateMediaResponse(payload.result, options)
   const item = payload.result.media.find(
     (candidate) => isRecord(candidate) && candidate.index === index,
   )
@@ -95,8 +145,12 @@ async function handleDownload(rest: string[], context: CommandContext): Promise<
   const positional: string[] = []
   let outputDir: string | null = null
   let mediaIndex: number | null = null
+  const mediaOptions: MediaScopeOptions = {}
   let quality = 'best'
   let concurrency = 4
+  let retries = DEFAULT_DOWNLOAD_RETRIES
+  let retryDelayMs = DEFAULT_DOWNLOAD_RETRY_DELAY_MS
+  const retryOptionsSeen = new Set<string>()
   let timeoutMs: number | undefined
   let overwrite = true
   let overwriteSeen = false
@@ -104,7 +158,27 @@ async function handleDownload(rest: string[], context: CommandContext): Promise<
   try {
     for (let index = 0; index < rest.length; index += 1) {
       const value = rest[index]
-      if (value === '--output-dir') {
+      if (
+        ['--media', '--selector', '--include-background', '--media-epoch', '--timeout-ms'].includes(
+          value!,
+        )
+      ) {
+        if (retryOptionsSeen.has(value!)) throw new Error(`duplicate option: ${value}`)
+        retryOptionsSeen.add(value!)
+      }
+      if (value === '--selector') {
+        const next = rest[++index]
+        if (!next || next.startsWith('--') || !next.trim())
+          throw new Error('missing value for --selector')
+        mediaOptions.selector = next.trim()
+      } else if (value === '--include-background') {
+        mediaOptions.includeBackground = true
+      } else if (value === '--media-epoch') {
+        mediaOptions.mediaEpoch = parseNumberArg(rest[++index], '--media-epoch', {
+          min: 1,
+          integer: true,
+        })
+      } else if (value === '--output-dir') {
         if (!rest[index + 1]) throw new Error('missing value for --output-dir')
         outputDir = rest[++index]!
       } else if (value === '--media') {
@@ -122,6 +196,18 @@ async function handleDownload(rest: string[], context: CommandContext): Promise<
           integer: true,
         })
         index += 1
+      } else if (value === '--retries' || value === '--retry-delay-ms') {
+        if (retryOptionsSeen.has(value)) throw new Error(`duplicate option: ${value}`)
+        retryOptionsSeen.add(value)
+        const next = rest[++index]
+        if (!next || next.startsWith('--')) throw new Error(`missing value for ${value}`)
+        const parsed = parseNumberArg(next, value, {
+          min: 0,
+          max: value === '--retries' ? MAX_DOWNLOAD_RETRIES : MAX_DOWNLOAD_RETRY_DELAY_MS,
+          integer: true,
+        })
+        if (value === '--retries') retries = parsed
+        else retryDelayMs = parsed
       } else if (value === '--timeout-ms') {
         timeoutMs = parseNumberArg(rest[index + 1], 'timeout ms', { min: 1, integer: true })
         index += 1
@@ -136,6 +222,9 @@ async function handleDownload(rest: string[], context: CommandContext): Promise<
       }
     }
 
+    if (mediaIndex === null && Object.keys(mediaOptions).length > 0) {
+      throw new Error('--selector, --include-background and --media-epoch require --media')
+    }
     if (mediaIndex !== null && positional.length > 1) {
       throw new Error('download --media accepts at most one output path')
     }
@@ -150,7 +239,9 @@ async function handleDownload(rest: string[], context: CommandContext): Promise<
       throw new Error('an explicit output path cannot be combined with --output-dir')
     }
     const sourceUrl =
-      mediaIndex === null ? positional[0]! : await resolveMediaSource(mediaIndex, context)
+      mediaIndex === null
+        ? positional[0]!
+        : await resolveMediaSource(mediaIndex, context, mediaOptions)
     if (!/^https?:\/\//i.test(sourceUrl))
       throw new Error('download url must be an http or https URL')
     const options: DownloadOptions = {
@@ -167,6 +258,8 @@ async function handleDownload(rest: string[], context: CommandContext): Promise<
         const payload = await context.requestCommand(context.flags.server, 'download', {
           url,
           outputPath,
+          retries,
+          retryDelayMs,
           ...(remainingMs !== undefined ? { timeoutMs: remainingMs } : {}),
         })
         return readBrowserDownloadResult(payload)
@@ -181,16 +274,78 @@ async function handleDownload(rest: string[], context: CommandContext): Promise<
 
 const handleMedia: CommandHandler = async (rest, context) => {
   if (helpRequested(rest[0], context, ['media'])) return 0
+  if (rest[0] === 'list' && helpRequested(rest[1], context, ['media', 'list'])) return 0
   if (rest[0] !== 'list') return writeCommandError('unsupported media action; expected list')
   const extra = rest.slice(1)
-  if (extra.some((value) => value !== '--resolve') || new Set(extra).size !== extra.length) {
-    return writeCommandError('usage: autobrowser media list [--resolve]')
+  let resolve = false
+  let includeBackground = false
+  let selector: string | undefined
+  let waitFor: string | undefined
+  let timeoutMs: number | undefined
+  for (let index = 0; index < extra.length; index += 1) {
+    if (extra[index] === '--timeout-ms') {
+      if (timeoutMs !== undefined) return writeCommandError('duplicate option: --timeout-ms')
+      try {
+        timeoutMs = parseNumberArg(extra[++index], 'timeout ms', { min: 1, integer: true })
+      } catch (error) {
+        return writeCommandError(error)
+      }
+      continue
+    }
+    if (extra[index] === '--wait-for') {
+      if (waitFor !== undefined) return writeCommandError('duplicate option: --wait-for')
+      const next = extra[++index]
+      if (!next || next.startsWith('--')) return writeCommandError('missing value for --wait-for')
+      waitFor = next
+      continue
+    }
+    const value = extra[index]!
+    if (value === '--resolve') {
+      if (resolve) return writeCommandError('duplicate option: --resolve')
+      resolve = true
+      continue
+    }
+    if (value === '--include-background') {
+      if (includeBackground) return writeCommandError('duplicate option: --include-background')
+      includeBackground = true
+      continue
+    }
+    if (value === '--selector') {
+      if (selector !== undefined) return writeCommandError('duplicate option: --selector')
+      const next = extra[index + 1]
+      if (!next || next.startsWith('--') || !next.trim())
+        return writeCommandError('missing value for --selector')
+      selector = next.trim()
+      index += 1
+      continue
+    }
+    return writeCommandError(
+      'usage: autobrowser media list [--resolve] [--selector <css>] [--include-background] [--wait-for <css>] [--timeout-ms <ms>]',
+    )
   }
-  await requestAndWrite(context, 'media', {
-    action: 'list',
-    resolve: extra.includes('--resolve'),
-  })
-  return 0
+  if (waitFor === undefined && timeoutMs !== undefined) {
+    return writeCommandError('--timeout-ms requires --wait-for')
+  }
+  try {
+    const payload = await context.requestCommand(context.flags.server, 'media', {
+      action: 'list',
+      resolve,
+      ...(selector !== undefined ? { selector } : {}),
+      ...(includeBackground ? { includeBackground: true } : {}),
+      ...(waitFor !== undefined ? { waitFor } : {}),
+      ...(timeoutMs !== undefined ? { timeoutMs } : {}),
+    })
+    if (payload.ok) {
+      if (!isRecord(payload.result) || !Array.isArray(payload.result.media)) {
+        throw new Error('media returned an invalid result')
+      }
+      validateMediaResponse(payload.result, { selector, includeBackground, waitFor })
+    }
+    context.writeResult(payload)
+    return payload.ok ? 0 : 1
+  } catch (error) {
+    return writeCommandError(error)
+  }
 }
 
 export const mediaCommandRegistry: CommandRegistry = {

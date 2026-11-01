@@ -1,17 +1,4 @@
-import { isRecord, type CommandResponse } from './client.js'
-
-export class CommandResultError extends Error {
-  suggestion?: string
-  constructor(message: string, suggestion?: string) {
-    super(message)
-    this.name = 'CommandResultError'
-    this.suggestion = suggestion
-  }
-}
-
-function isFailedCommandResponse(payload: unknown): payload is CommandResponse {
-  return isRecord(payload) && (payload as Record<string, unknown>).ok === false
-}
+import type { CommandResponse } from './client.js'
 
 export function writeResult(
   payload:
@@ -29,12 +16,6 @@ export function writeResult(
 ): void {
   if (options.json) {
     process.stdout.write(`${JSON.stringify(payload, null, 2)}\n`)
-    if (isFailedCommandResponse(payload)) {
-      throw new CommandResultError(
-        payload.error?.message || 'command failed',
-        payload.error?.suggestion,
-      )
-    }
     return
   }
 
@@ -56,7 +37,7 @@ export function writeResult(
       errorMsg += `\n\n[AI SUGGESTION]: ${suggestion}`
     }
     process.stderr.write(`${errorMsg}\n`)
-    throw new CommandResultError(errorMsg, suggestion)
+    return
   }
 
   const result = responsePayload?.result ?? payload

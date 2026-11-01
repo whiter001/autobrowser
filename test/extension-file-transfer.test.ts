@@ -48,6 +48,218 @@ function createCancelledContext(cancelledAfterMs: number): CommandExecutionConte
   }
 }
 
+function createRetryTransfer(sourceFetch: (init?: RequestInit) => Promise<Response>) {
+  const sent: SentMessage[] = []
+  const socket = createSocket(sent)
+  let sourceCalls = 0
+  let uploadCalls = 0
+  const signals: Array<AbortSignal | null | undefined> = []
+  const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    if (String(input).includes('/files/')) {
+      uploadCalls += 1
+      return new Response(JSON.stringify({ ok: true, result: { receivedBytes: 3 } }))
+    }
+    sourceCalls += 1
+    signals.push(init?.signal)
+    expect(init?.credentials).toBe('include')
+    return sourceFetch(init)
+  }) as typeof fetch
+  const transfer = createFileTransferDomain({
+    state: createState(socket),
+    fetchImpl,
+    retryDelayMs: 0,
+  })
+  const originalSend = socket.send
+  socket.send = (data) => {
+    originalSend(data)
+    const message = JSON.parse(data) as SentMessage
+    if (message.type === 'file.upload') {
+      queueMicrotask(() => transfer.confirmRegistration(message.transferId!, true))
+    }
+  }
+  return { transfer, sent, signals, sourceCalls: () => sourceCalls, uploadCalls: () => uploadCalls }
+}
+
+const retryDownloadArgs = {
+  url: 'https://example.com/file',
+  requestId: 'retry_cmd',
+  retryDelayMs: 0,
+}
+
+describe('extension download network retries', () => {
+  test('retries Failed to fetch and succeeds without replaying the upload', async () => {
+    let calls = 0
+    const fixture = createRetryTransfer(async () => {
+      if (++calls === 1) throw new TypeError('Failed to fetch')
+      return new Response('abc')
+    })
+    const result = await fixture.transfer.download(retryDownloadArgs)
+    expect(result).toEqual({
+      sourceUrl: retryDownloadArgs.url,
+      finalUrl: retryDownloadArgs.url,
+      contentType: null,
+      bytes: 3,
+      sha256: sha256(new TextEncoder().encode('abc')),
+    })
+    expect(fixture.sourceCalls()).toBe(2)
+    expect(fixture.uploadCalls()).toBe(1)
+    expect(fixture.sent.filter((message) => message.type === 'file.upload')).toHaveLength(1)
+    expect(fixture.signals[0]).toBe(fixture.signals[1])
+  })
+
+  test.each([429, 500, 503, 599])('retries HTTP %i then succeeds', async (status) => {
+    let calls = 0
+    const fixture = createRetryTransfer(async () =>
+      ++calls === 1 ? new Response('retry', { status }) : new Response('abc'),
+    )
+    await fixture.transfer.download(retryDownloadArgs)
+    expect(fixture.sourceCalls()).toBe(2)
+    expect(fixture.uploadCalls()).toBe(1)
+  })
+
+  test.each([403, 404, 408])('does not retry HTTP %i', async (status) => {
+    const fixture = createRetryTransfer(async () => new Response('denied', { status }))
+    await expect(fixture.transfer.download(retryDownloadArgs)).rejects.toThrow(`HTTP ${status}`)
+    expect(fixture.sourceCalls()).toBe(1)
+    expect(fixture.sent).toEqual([])
+  })
+
+  test.each([0, 2, 5])('stops after %i extra network retries', async (retries) => {
+    const fixture = createRetryTransfer(async () => {
+      throw new TypeError('Failed to fetch')
+    })
+    await expect(fixture.transfer.download({ ...retryDownloadArgs, retries })).rejects.toThrow(
+      'Failed to fetch',
+    )
+    expect(fixture.sourceCalls()).toBe(retries + 1)
+    expect(fixture.sent).toEqual([])
+  })
+
+  test('defaults to two extra retries and exhausts HTTP failures', async () => {
+    const fixture = createRetryTransfer(async () => new Response('unavailable', { status: 503 }))
+    await expect(fixture.transfer.download(retryDownloadArgs)).rejects.toThrow('HTTP 503')
+    expect(fixture.sourceCalls()).toBe(3)
+  })
+
+  test('does not retry non-network errors or body read failures', async () => {
+    for (const bodyFailure of [false, true]) {
+      const fixture = createRetryTransfer(async () => {
+        if (!bodyFailure) throw new Error('invalid configuration')
+        return new Response(
+          new ReadableStream({
+            start(controller) {
+              controller.error(new TypeError('body failed'))
+            },
+          }),
+        )
+      })
+      await expect(fixture.transfer.download(retryDownloadArgs)).rejects.toThrow(
+        bodyFailure ? 'body failed' : 'invalid configuration',
+      )
+      expect(fixture.sourceCalls()).toBe(1)
+      expect(fixture.sent).toEqual([])
+    }
+  })
+
+  test('does not sleep beyond the original deadline', async () => {
+    const fixture = createRetryTransfer(async () => {
+      throw new TypeError('Failed to fetch')
+    })
+    await expect(
+      fixture.transfer.download({
+        ...retryDownloadArgs,
+        retryDelayMs: 60_000,
+        deadlineAt: new Date(Date.now() + 500).toISOString(),
+      }),
+    ).rejects.toThrow('deadline')
+    expect(fixture.sourceCalls()).toBe(1)
+  })
+
+  test('uses exponential backoff without resetting the deadline', async () => {
+    const times: number[] = []
+    const fixture = createRetryTransfer(async () => {
+      times.push(Date.now())
+      throw new TypeError('Failed to fetch')
+    })
+    await expect(
+      fixture.transfer.download({
+        ...retryDownloadArgs,
+        retries: 3,
+        retryDelayMs: 20,
+        deadlineAt: new Date(Date.now() + 1000).toISOString(),
+      }),
+    ).rejects.toThrow('Failed to fetch')
+    expect(times).toHaveLength(4)
+    for (let index = 1; index < times.length; index += 1) {
+      expect(times[index]! - times[index - 1]!).toBeGreaterThanOrEqual(20 * 2 ** (index - 1) - 1)
+    }
+  })
+
+  test('retries named network errors', async () => {
+    let calls = 0
+    const fixture = createRetryTransfer(async () => {
+      if (++calls === 1) throw new DOMException('network unavailable', 'NetworkError')
+      return new Response('abc')
+    })
+    await fixture.transfer.download(retryDownloadArgs)
+    expect(fixture.sourceCalls()).toBe(2)
+  })
+
+  test('does not retry a network rejection after the deadline', async () => {
+    const fixture = createRetryTransfer(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 50))
+      throw new TypeError('Failed to fetch')
+    })
+    await expect(
+      fixture.transfer.download({
+        ...retryDownloadArgs,
+        deadlineAt: new Date(Date.now() + 20).toISOString(),
+      }),
+    ).rejects.toThrow('deadline')
+    expect(fixture.sourceCalls()).toBe(1)
+  })
+
+  test('checks an already elapsed deadline or cancellation before fetching', async () => {
+    const fixture = createRetryTransfer(async () => new Response('abc'))
+    await expect(
+      fixture.transfer.download({
+        ...retryDownloadArgs,
+        deadlineAt: new Date(Date.now() - 1).toISOString(),
+      }),
+    ).rejects.toThrow('deadline')
+    await expect(
+      fixture.transfer.download({ ...retryDownloadArgs, context: createCancelledContext(0) }),
+    ).rejects.toThrow('cancelled')
+    expect(fixture.sourceCalls()).toBe(0)
+  })
+
+  test('cancels during backoff without fetching again', async () => {
+    const fixture = createRetryTransfer(async () => {
+      throw new TypeError('Failed to fetch')
+    })
+    await expect(
+      fixture.transfer.download({
+        ...retryDownloadArgs,
+        retryDelayMs: 1000,
+        context: createCancelledContext(20),
+      }),
+    ).rejects.toThrow('cancelled')
+    expect(fixture.sourceCalls()).toBe(1)
+    expect(fixture.sent).toEqual([])
+  })
+
+  test('does not retry a network rejection after cancellation', async () => {
+    const fixture = createRetryTransfer(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 30))
+      throw new TypeError('Failed to fetch')
+    })
+    await expect(
+      fixture.transfer.download({ ...retryDownloadArgs, context: createCancelledContext(20) }),
+    ).rejects.toThrow('cancelled')
+    expect(fixture.sourceCalls()).toBe(1)
+  })
+})
+
 describe('extension file transfer', () => {
   test('fetches with credentials, uploads the bytes and reports the metadata', async () => {
     const bytes = new Uint8Array([0, 255, 128, 1, 2, 3])
@@ -235,7 +447,7 @@ describe('extension file transfer', () => {
         requestId: 'cmd_5',
         deadlineAt: new Date(Date.now() + 50).toISOString(),
       }),
-    ).rejects.toThrow(/aborted/)
+    ).rejects.toThrow(/deadline exceeded|cancelled/)
   })
 
   test('aborts the fetch when the command is cancelled', async () => {
@@ -254,7 +466,7 @@ describe('extension file transfer', () => {
         requestId: 'cmd_6',
         context: createCancelledContext(20),
       }),
-    ).rejects.toThrow(/aborted/)
+    ).rejects.toThrow(/deadline exceeded|cancelled/)
   })
 
   test('refuses to transfer without a relay connection', async () => {

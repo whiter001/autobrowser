@@ -9,6 +9,12 @@ import {
 import { validateCommandArgs } from '../src/core/command-spec.js'
 
 describe('bounded command budgets', () => {
+  test('media wait includes both readiness and collection budgets', () => {
+    expect(getCommandRequestBudgetMs('media', { waitFor: 'article', timeoutMs: 45000 })).toBe(80000)
+    expect(getCommandRequestBudgetMs('media', { waitFor: 'article' })).toBe(65000)
+    expect(getCommandRequestBudgetMs('media', {})).toBe(30000)
+  })
+
   test('keeps default and short runtime defaults, but honors explicit durations', () => {
     expect(getCommandRequestBudgetMs('snapshot')).toBe(30_000)
     expect(getCommandRequestBudgetMs('snapshot', {}, 25)).toBe(25)
@@ -17,7 +23,9 @@ describe('bounded command budgets', () => {
     }
     expect(getCommandRequestBudgetMs('wait', { timeout: 60_000 })).toBe(65_000)
     expect(getCommandRequestBudgetMs('wait', { ms: 80_000 })).toBe(85_000)
-    expect(getCommandRequestBudgetMs('reload', { timeoutMs: 35_000, waitFor: 'url' })).toBe(75_000)
+    for (const command of ['reload', 'goto', 'open']) {
+      expect(getCommandRequestBudgetMs(command, { timeoutMs: 35_000, waitFor: 'url' })).toBe(75_000)
+    }
   })
 
   test('gives the download command the same transport allowance as eval and network', () => {

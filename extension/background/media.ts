@@ -1,4 +1,11 @@
 import type { CommandExecutionContext } from './command-queue.js'
+import {
+  buildMediaCollectScript,
+  buildMediaPlayProbeScript,
+  MEDIA_PLAY_PROBE_MARKER,
+  MEDIA_PLAY_PROBE_MS,
+  type MediaScope,
+} from './media-dom.js'
 import { getPageEpoch } from './targeting.js'
 import type {
   EvaluateInTabContextOptions,
@@ -14,7 +21,7 @@ import type {
  *
  * 只做两件事：
  * 1. 在目标 frame 内读取 DOM 上的图片/视频元素（属性级读取，不读 body 文本）；
- * 2. 用扩展自己记录的网络请求元数据（URL / MIME / tab / pageEpoch）补齐媒体源。
+ * 2. 播放探测期间的网络请求元数据仅作为未验证诊断，不补入可下载源。
  *
  * 安全边界：
  * - 不读取也不执行任何网络响应正文（不 fetch、不 eval 远端文本）；
@@ -22,18 +29,25 @@ import type {
  * - 唯一的副作用是 resolve 模式下的一次静音短播放（随后 pause），不导航、不刷新。
  */
 
-/** 播放探测脚本的标记，测试用它识别"是否触发了播放" */
-export const MEDIA_PLAY_PROBE_MARKER = 'autobrowser:media-resolve-play'
+export { MEDIA_PLAY_PROBE_MARKER, MEDIA_PLAY_PROBE_MS }
 
-/** 播放探测里每个视频的最长播放时长（毫秒），总计不超过约 1 秒 */
-export const MEDIA_PLAY_PROBE_MS = 600
-/** 单次探测最多触发的视频数量，避免长页面被拖住 */
-export const MEDIA_PLAY_PROBE_MAX_TARGETS = 2
 /** 播放后等待新网络请求出现的时间上限（毫秒） */
 export const MEDIA_SOURCE_WAIT_MS = 1000
 
-const MEDIA_PLAYBACK_SUGGESTED_ACTION =
-  'The browser blocked playback of the blob-backed video (background tab throttling or autoplay policy). Bring the tab to the foreground, start the video manually, then re-run the media command with resolve enabled.'
+/** 单次 list 最多逐个探测的视频数量，避免长页面被拖住 */
+export const MEDIA_RESOLVE_MAX_VIDEOS = 3
+
+const MEDIA_AMBIGUOUS_SOURCES_ERROR =
+  'multiple videos in scope have no fetchable source, so the observed network candidates cannot be attributed to one of them'
+
+const MEDIA_AMBIGUOUS_SOURCES_SUGGESTED_ACTION =
+  'Narrow the scope with --selector or expose a direct DOM source manually. --resolve only provides unverified network diagnostics.'
+
+const MEDIA_SCOPED_SOURCE_ERROR =
+  'this video has no direct source, and the network requests observed on this tab may belong to media outside the selected scope'
+
+const MEDIA_SCOPED_SOURCE_SUGGESTED_ACTION =
+  'Expose a direct DOM source manually; --resolve only provides unverified network diagnostics, not downloadable sources.'
 
 export type MediaKind =
   | 'image'
@@ -51,15 +65,20 @@ export interface MediaSource {
   contentType?: string
 }
 
+/** 主来源：dom=DOM 属性或 CSS，none=没有可用源 */
+export type MediaPrimarySource = 'dom' | 'none'
+
 export interface MediaItem {
   /** DOM 顺序下标，从 0 开始 */
   index: number
   type: 'image' | 'video'
-  /** 首选可下载 URL（视频为网络源，图片为当前候选）；没有时为 null */
+  /** 首选 DOM URL；blob: 仅作参考，没有源时为 null，网络诊断绝不进入此字段。 */
   url: string | null
   /** 元素自身的 currentSrc（可能是 blob:），不可下载时仅作参考 */
   currentSrc: string | null
   sources: MediaSource[]
+  /** 未验证的 tab-wide 网络诊断，不可作为下载输入。 */
+  observedSources: Array<MediaSource & { unverified: true }>
   /** 视频封面，图片恒为 null */
   poster: string | null
   /** 视频时长（秒），无法读取时为 null */
@@ -68,10 +87,37 @@ export interface MediaItem {
   error: string | null
   /** 给 agent 的下一步建议 */
   suggestedAction: string | null
+  /** 来源链接：最近 article 内首个 /status/ 链接；没有则为 null */
+  permalink: string | null
+  /** 主来源：dom / none */
+  primarySource: MediaPrimarySource
+  /** 该条目是否来自 CSS background-image */
+  background: boolean
 }
 
 export interface MediaListResult {
   media: MediaItem[]
+  /** 本次发现无已知缺口；不保证尚未渲染的媒体不存在 */
+  complete: boolean
+  warnings: string[]
+  /** 采集时间（ISO8601） */
+  observedAt: string
+  /** 采集时的页面 epoch */
+  pageEpoch: number
+  /** 采集时的页面 URL */
+  pageUrl: string | null
+  /** 本次采集的作用域 */
+  scope: MediaScope
+  includeBackground: boolean
+}
+
+export interface MediaListOptions {
+  /** 是否允许静音短播以暴露网络源 */
+  resolve?: boolean
+  /** 限定采集范围的 CSS 选择器 */
+  selector?: string | null
+  /** 是否采集 CSS background-image */
+  includeBackground?: boolean
 }
 
 export interface MediaEvaluateResult<TValue = unknown> {
@@ -89,144 +135,6 @@ export interface MediaDomainDependencies {
   ) => Promise<MediaEvaluateResult<TValue>>
 }
 
-/** 页面内采集脚本：只读 DOM 属性，不读 body 文本 */
-const MEDIA_COLLECT_SCRIPT = `(() => {
-  const toAbsolute = (value) => {
-    if (!value) return '';
-    try { return new URL(String(value), document.baseURI).href; } catch (error) { return ''; }
-  };
-  const isVisible = (node) => {
-    try {
-      const rect = node.getBoundingClientRect();
-      if (!rect || rect.width <= 0 || rect.height <= 0) return false;
-      const style = window.getComputedStyle(node);
-      if (style) {
-        if (style.display === 'none') return false;
-        if (style.visibility === 'hidden' || style.visibility === 'collapse') return false;
-        if (Number(style.opacity) === 0) return false;
-      }
-      return true;
-    } catch (error) {
-      return false;
-    }
-  };
-  const parseSrcset = (value) => {
-    if (!value) return [];
-    return String(value).split(',').map((part) => part.trim().split(/\\s+/)[0]).filter(Boolean);
-  };
-  const articles = Array.from(document.querySelectorAll('article'));
-  const nodes = Array.from(document.querySelectorAll('img, video'));
-  const selected = [];
-  if (articles.length > 0) {
-    const scoped = nodes.filter((node) => articles.some((article) => article.contains(node)));
-    const visibleScoped = scoped.filter(isVisible);
-    if (visibleScoped.length > 0) selected.push(...visibleScoped);
-    else if (scoped.length > 0) selected.push(...scoped);
-    else selected.push(...nodes.filter(isVisible));
-  } else {
-    const visible = nodes.filter(isVisible);
-    if (visible.length > 0) selected.push(...visible);
-    else selected.push(...nodes);
-  }
-  return selected.map((node, index) => {
-    if (node.tagName === 'IMG') {
-      const candidates = [];
-      const push = (value) => {
-        const url = toAbsolute(value);
-        if (url && candidates.indexOf(url) === -1) candidates.push(url);
-      };
-      push(node.currentSrc);
-      push(node.getAttribute('src'));
-      for (const candidate of parseSrcset(node.getAttribute('srcset'))) push(candidate);
-      return {
-        index: index,
-        type: 'image',
-        url: candidates.length > 0 ? candidates[0] : null,
-        currentSrc: node.currentSrc ? toAbsolute(node.currentSrc) : null,
-        candidates: candidates,
-        poster: null,
-        duration: null,
-        sources: []
-      };
-    }
-    const sources = [];
-    for (const source of Array.from(node.querySelectorAll('source'))) {
-      const src = source.getAttribute('src');
-      if (!src) continue;
-      sources.push({ url: toAbsolute(src), contentType: source.getAttribute('type') || null });
-    }
-    const currentSrc = node.currentSrc ? toAbsolute(node.currentSrc) : null;
-    const posterAttribute = node.getAttribute('poster');
-    const duration = typeof node.duration === 'number' && isFinite(node.duration) ? node.duration : null;
-    return {
-      index: index,
-      type: 'video',
-      url: currentSrc || (sources.length > 0 ? sources[0].url : null),
-      currentSrc: currentSrc,
-      candidates: currentSrc ? [currentSrc] : [],
-      poster: posterAttribute ? toAbsolute(posterAttribute) : null,
-      duration: duration,
-      sources: sources
-    };
-  });
-})()`
-
-/**
- * 播放探测脚本：静音短播 → 等待 → pause → 还原 muted/播放状态。
- * 只调用 play/pause，不做任何导航、跳转或刷新。
- */
-const MEDIA_PLAY_PROBE_SCRIPT = `/* ${MEDIA_PLAY_PROBE_MARKER} */
-(async () => {
-  const videos = Array.from(document.querySelectorAll('video'));
-  const targets = videos.filter((video) => {
-    const src = video.currentSrc || video.getAttribute('src') || '';
-    return !src || src.indexOf('blob:') === 0;
-  });
-  if (targets.length === 0) {
-    return {
-      attempted: false,
-      played: false,
-      error: 'no blob-backed video element was found in this frame'
-    };
-  }
-  const limited = targets.slice(0, ${MEDIA_PLAY_PROBE_MAX_TARGETS});
-  const errors = [];
-  let played = false;
-  for (const video of limited) {
-    const previousMuted = video.muted;
-    const wasPlaying = !video.paused;
-    let started = false;
-    try {
-      video.muted = true;
-      const promise = video.play();
-      if (promise && typeof promise.then === 'function') await promise;
-      started = true;
-      played = true;
-    } catch (error) {
-      errors.push(error && error.message ? String(error.message) : String(error));
-    }
-    if (started) {
-      try {
-        await new Promise((resolve) => setTimeout(resolve, ${MEDIA_PLAY_PROBE_MS}));
-      } catch (error) { /* ignore */ }
-      try { video.pause(); } catch (error) { /* ignore */ }
-    }
-    try { video.muted = previousMuted; } catch (error) { /* ignore */ }
-    if (wasPlaying) {
-      try { await video.play(); } catch (error) { /* ignore */ }
-    }
-  }
-  return {
-    attempted: true,
-    played: played,
-    error: played
-      ? null
-      : errors.length > 0
-        ? errors.join('; ')
-        : 'the browser refused to start playback'
-  };
-})()`
-
 interface RawPageMedia {
   index: number
   type: 'image' | 'video'
@@ -236,6 +144,18 @@ interface RawPageMedia {
   poster: string | null
   duration: number | null
   sources: Array<{ url: string | null; contentType: string | null }>
+  permalink: string | null
+  background: boolean
+  /** 无源视频列表中的诊断序号；探测定位仅使用 probeKey token。 */
+  probeIndex: number | null
+  /** 视频身份标识：探测时用来确认定位到的仍是同一个视频 */
+  probeKey: string | null
+}
+
+interface RawPageResult {
+  items: RawPageMedia[]
+  scope: MediaScope
+  pageUrl: string | null
 }
 
 interface InternalSource {
@@ -244,6 +164,7 @@ interface InternalSource {
   contentType?: string
   score: number
   order: number
+  origin: 'dom' | 'network'
 }
 
 interface NetworkCandidate {
@@ -488,6 +409,20 @@ function refineHlsKinds(candidates: NetworkCandidate[]): void {
   }
 }
 
+function parseRawScope(value: unknown): MediaScope {
+  if (!value || typeof value !== 'object') {
+    return { selector: null, mode: 'default', matchedCount: 0 }
+  }
+  const record = value as Record<string, unknown>
+  const selector = typeof record.selector === 'string' ? record.selector : null
+  const mode = record.mode === 'selector' ? 'selector' : 'default'
+  const matchedCount =
+    typeof record.matchedCount === 'number' && Number.isFinite(record.matchedCount)
+      ? record.matchedCount
+      : 0
+  return { selector, mode, matchedCount }
+}
+
 function parseRawMedia(value: unknown): RawPageMedia[] {
   if (!Array.isArray(value)) return []
   const items: RawPageMedia[] = []
@@ -521,9 +456,30 @@ function parseRawMedia(value: unknown): RawPageMedia[] {
           ? record.duration
           : null,
       sources,
+      permalink: typeof record.permalink === 'string' ? record.permalink : null,
+      background: record.background === true,
+      probeIndex: typeof record.probeIndex === 'number' ? record.probeIndex : null,
+      probeKey: typeof record.probeKey === 'string' ? record.probeKey : null,
     })
   }
   return items.sort((left, right) => left.index - right.index)
+}
+
+function parseRawPageResult(value: unknown): RawPageResult {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    // 兼容旧结构：直接返回媒体数组
+    return {
+      items: parseRawMedia(value),
+      scope: { selector: null, mode: 'default', matchedCount: 0 },
+      pageUrl: null,
+    }
+  }
+  const record = value as Record<string, unknown>
+  return {
+    items: parseRawMedia(record.items),
+    scope: parseRawScope(record.scope),
+    pageUrl: typeof record.pageUrl === 'string' ? record.pageUrl : null,
+  }
 }
 
 /** 同 URL 只保留一条，保留信息更全（分数更高 / 带 contentType）的那条 */
@@ -542,6 +498,8 @@ function dedupeSources(sources: InternalSource[]): InternalSource[] {
       contentType: source.contentType || existing.contentType,
       score: Math.max(existing.score, source.score),
       order: Math.min(existing.order, source.order),
+      // DOM 提供的地址优先：它明确属于这个元素，网络候选只是推断
+      origin: existing.origin === 'dom' || source.origin === 'dom' ? 'dom' : 'network',
     })
   }
   return [...byUrl.values()].sort((left, right) => {
@@ -559,17 +517,34 @@ function toPublicSource(source: InternalSource): MediaSource {
   }
 }
 
+/** 视频是否已经能从 DOM 直接拿到可下载的源 */
+function hasFetchableDomSource(raw: RawPageMedia): boolean {
+  if (raw.currentSrc && isHttpUrl(raw.currentSrc)) return true
+  return raw.sources.some((source) => Boolean(source.url) && isHttpUrl(source.url!))
+}
+
+/** 网络候选里只有视频类请求才可能属于某个视频 */
+function isVideoCandidate(candidate: NetworkCandidate): boolean {
+  return candidate.kind !== 'image' && candidate.kind !== 'audio'
+}
+
 function buildImageItem(raw: RawPageMedia): MediaItem {
   const sources: InternalSource[] = []
   let order = 0
   for (const candidate of raw.candidates) {
     const url = normalizeMediaUrl(candidate)
     if (!url) continue
-    sources.push({ url, kind: 'image', score: KIND_SCORE.image, order: order++ })
+    sources.push({
+      url,
+      kind: 'image',
+      score: KIND_SCORE.image,
+      order: order++,
+      origin: 'dom',
+    })
   }
   if (sources.length === 0) {
     const url = normalizeMediaUrl(raw.url)
-    if (url) sources.push({ url, kind: 'image', score: KIND_SCORE.image, order: 0 })
+    if (url) sources.push({ url, kind: 'image', score: KIND_SCORE.image, order: 0, origin: 'dom' })
   }
   const deduped = dedupeSources(sources)
   return {
@@ -578,25 +553,31 @@ function buildImageItem(raw: RawPageMedia): MediaItem {
     url: deduped[0]?.url ?? null,
     currentSrc: normalizeMediaUrl(raw.currentSrc),
     sources: deduped.map(toPublicSource),
+    observedSources: [],
     poster: null,
     duration: null,
     error: null,
     suggestedAction: null,
+    permalink: raw.permalink,
+    primarySource: deduped.length > 0 ? 'dom' : 'none',
+    background: raw.background,
   }
 }
 
-function buildVideoItem(raw: RawPageMedia, candidates: NetworkCandidate[]): MediaItem {
+function buildVideoItem(raw: RawPageMedia, networkCandidates: NetworkCandidate[]): MediaItem {
   const sources: InternalSource[] = []
   let order = 0
 
   const currentSrc = normalizeMediaUrl(raw.currentSrc)
   // blob: 不是可下载源，只作为参考保留在 currentSrc
   if (currentSrc && !currentSrc.toLowerCase().startsWith('blob:')) {
+    const kind = kindFromUrl(currentSrc)
     sources.push({
       url: currentSrc,
-      kind: kindFromUrl(currentSrc),
-      score: KIND_SCORE[kindFromUrl(currentSrc)],
+      kind,
+      score: KIND_SCORE[kind],
       order: order++,
+      origin: 'dom',
     })
   }
   for (const source of raw.sources) {
@@ -609,44 +590,41 @@ function buildVideoItem(raw: RawPageMedia, candidates: NetworkCandidate[]): Medi
       ...(source.contentType ? { contentType: source.contentType } : {}),
       score: KIND_SCORE[kind],
       order: order++,
+      origin: 'dom',
     })
   }
 
-  // 没有可直取的 DOM 源（blob: / MSE / 空 src）时，用网络记录补齐
-  const hasFetchableSource = sources.some((source) => isHttpUrl(source.url))
-  if (!hasFetchableSource) {
-    for (const candidate of candidates) {
-      if (candidate.kind === 'audio') continue
-      if (sources.some((source) => source.url === candidate.url)) continue
-      sources.push({
-        url: candidate.url,
-        kind: candidate.kind,
-        ...(candidate.contentType ? { contentType: candidate.contentType } : {}),
-        score: KIND_SCORE[candidate.kind],
-        order: candidate.order,
-      })
-    }
-  }
+  // 播放期间的并发流量也不能证明归属；仅提供未验证诊断，绝不提升为可下载源。
+  const observedSources = networkCandidates.filter(isVideoCandidate).map((candidate) => ({
+    url: candidate.url,
+    kind: candidate.kind,
+    ...(candidate.contentType ? { contentType: candidate.contentType } : {}),
+    unverified: true as const,
+  }))
 
   const deduped = dedupeSources(sources)
   const primary = deduped.find((source) => isHttpUrl(source.url)) ?? deduped[0]
+  const primarySource: MediaPrimarySource = primary ? 'dom' : 'none'
   return {
     index: raw.index,
     type: 'video',
     url: primary?.url ?? currentSrc ?? null,
     currentSrc,
     sources: deduped.map(toPublicSource),
+    observedSources,
     poster: normalizeMediaUrl(raw.poster),
     duration: raw.duration,
     error: null,
     suggestedAction: null,
+    permalink: raw.permalink,
+    primarySource,
+    background: false,
   }
 }
 
-function buildItems(rawItems: RawPageMedia[], candidates: NetworkCandidate[]): MediaItem[] {
-  return rawItems.map((raw) =>
-    raw.type === 'video' ? buildVideoItem(raw, candidates) : buildImageItem(raw),
-  )
+interface ProbeOutcome {
+  observed: NetworkCandidate[]
+  probe: PlayProbeResult
 }
 
 export function createMediaDomain({ state, evaluateInTabContext }: MediaDomainDependencies) {
@@ -664,12 +642,14 @@ export function createMediaDomain({ state, evaluateInTabContext }: MediaDomainDe
   async function runPlayProbe(
     tabId: number,
     frameSelector: FrameSelector,
+    selector: string | null,
+    probeKey: string | null,
     context?: CommandExecutionContext,
   ): Promise<PlayProbeResult> {
     try {
       const { value } = await evaluateInTabContext<PlayProbeResult>(
         tabId,
-        MEDIA_PLAY_PROBE_SCRIPT,
+        buildMediaPlayProbeScript({ selector, ...(probeKey ? { probeKey } : {}) }),
         frameOptions(frameSelector, context),
       )
       return {
@@ -678,7 +658,8 @@ export function createMediaDomain({ state, evaluateInTabContext }: MediaDomainDe
         error: typeof value?.error === 'string' ? value.error : null,
       }
     } catch (error) {
-      // 探测失败按"无法解析"处理，不伪造源；原始原因带给调用方
+      context?.throwIfCancelled()
+      if ((error as { code?: string })?.code === 'COMMAND_CANCELLED') throw error
       return {
         attempted: true,
         played: false,
@@ -687,16 +668,39 @@ export function createMediaDomain({ state, evaluateInTabContext }: MediaDomainDe
     }
   }
 
-  async function waitForNewCandidates(
+  /** 仅记录实际播放期间新增的未验证诊断；时间相关性不代表元素归属。 */
+  async function probeVideoForSource(
     tabId: number,
-    before: Set<string>,
-    timeoutMs: number,
-  ): Promise<void> {
-    const deadline = Date.now() + timeoutMs
+    frameSelector: FrameSelector,
+    selector: string | null,
+    probeKey: string | null,
+    context?: CommandExecutionContext,
+  ): Promise<ProbeOutcome> {
+    const epoch = getPageEpoch(state, tabId)
+    const check = () => {
+      context?.throwIfCancelled()
+      if (getPageEpoch(state, tabId) !== epoch) {
+        throw Object.assign(new Error('page changed during media probe'), {
+          code: 'STALE_MEDIA_STATE',
+        })
+      }
+    }
+    const before = new Set(collectNetworkCandidates(state, tabId).map((item) => item.url))
+    const probe = await runPlayProbe(tabId, frameSelector, selector, probeKey, context)
+    check()
+    if (!probe.played) return { observed: [], probe }
+    const deadline = Date.now() + MEDIA_SOURCE_WAIT_MS
     while (Date.now() < deadline) {
-      const current = collectNetworkCandidates(state, tabId)
-      if (current.some((candidate) => !before.has(candidate.url))) return
+      check()
+      if (collectNetworkCandidates(state, tabId).some((item) => !before.has(item.url))) break
       await sleep(100)
+    }
+    check()
+    return {
+      observed: collectNetworkCandidates(state, tabId).filter(
+        (candidate) => !before.has(candidate.url),
+      ),
+      probe,
     }
   }
 
@@ -705,50 +709,132 @@ export function createMediaDomain({ state, evaluateInTabContext }: MediaDomainDe
    *
    * @param tabId 目标 tab（需已解析成数字 id）
    * @param frameSelector 目标 frame，'top'/null 表示主文档
-   * @param resolve 视频只有 blob:/无源时，是否允许一次静音短播来触发网络请求
+   * @param options resolve / selector / includeBackground
    * @param context 命令执行上下文（用于取消检查）
    */
   async function list(
     tabId: number,
     frameSelector: FrameSelector,
-    resolve = false,
+    options: MediaListOptions = {},
     context?: CommandExecutionContext,
   ): Promise<MediaListResult> {
     context?.throwIfCancelled()
-    const { value } = await evaluateInTabContext<unknown>(
+    const resolve = options.resolve === true
+    const selector =
+      typeof options.selector === 'string' && options.selector.trim()
+        ? options.selector.trim()
+        : null
+    const includeBackground = options.includeBackground === true
+    const observedAt = new Date().toISOString()
+    const pageEpoch = getPageEpoch(state, tabId)
+
+    const { value, tab } = await evaluateInTabContext<unknown>(
       tabId,
-      MEDIA_COLLECT_SCRIPT,
+      buildMediaCollectScript({ selector, includeBackground }),
       frameOptions(frameSelector, context),
     )
-    const rawItems = parseRawMedia(value)
-    let candidates = collectNetworkCandidates(state, tabId)
-    let items = buildItems(rawItems, candidates)
+    const raw = parseRawPageResult(value)
+    const rawItems = raw.items
+    const tabUrl = typeof tab?.url === 'string' ? tab.url : null
+    const pageUrl = raw.pageUrl ?? tabUrl
 
-    const needsResolve = items.some((item) => item.type === 'video' && item.sources.length === 0)
-    if (!resolve || !needsResolve) {
-      return { media: items }
+    const assertFresh = () => {
+      context?.throwIfCancelled()
+      if (getPageEpoch(state, tabId) !== pageEpoch) {
+        throw Object.assign(new Error('page changed during media collection; collect again'), {
+          code: 'STALE_MEDIA_STATE',
+        })
+      }
+    }
+    assertFresh()
+    const scopedBySelector = selector !== null
+    const unresolved = rawItems.filter(
+      (item) => item.type === 'video' && !hasFetchableDomSource(item),
+    )
+    const outcomes = new Map<number, ProbeOutcome>()
+    if (resolve) {
+      let probed = 0
+      for (const target of unresolved) {
+        if (probed >= MEDIA_RESOLVE_MAX_VIDEOS) break
+        if (target.probeIndex === null) continue
+        assertFresh()
+        probed += 1
+        const outcome = await probeVideoForSource(
+          tabId,
+          frameSelector,
+          selector,
+          target.probeKey,
+          context,
+        )
+        assertFresh()
+        outcomes.set(target.index, outcome)
+      }
     }
 
-    context?.throwIfCancelled()
-    const before = new Set(candidates.map((candidate) => candidate.url))
-    const probe = await runPlayProbe(tabId, frameSelector, context)
-    if (probe.played) {
-      await waitForNewCandidates(tabId, before, MEDIA_SOURCE_WAIT_MS)
-    }
+    const items = rawItems.map((raw) =>
+      raw.type === 'video'
+        ? buildVideoItem(raw, outcomes.get(raw.index)?.observed ?? [])
+        : buildImageItem(raw),
+    )
 
-    // 播放后重新收集：播放器可能刚刚发起了新的媒体请求
-    candidates = collectNetworkCandidates(state, tabId)
-    items = buildItems(rawItems, candidates)
-
+    const ambiguous = unresolved.length > 1
     for (const item of items) {
-      if (item.type !== 'video' || item.sources.length > 0) continue
-      item.error = probe.played
-        ? 'no media source was observed after a short muted playback probe'
-        : `unable to resolve the media stream: ${probe.error || 'playback was blocked'}`
-      item.suggestedAction = MEDIA_PLAYBACK_SUGGESTED_ACTION
+      if (item.type !== 'video' || item.sources.some((source) => isHttpUrl(source.url))) continue
+      const outcome = outcomes.get(item.index)
+      if (resolve) {
+        item.error = !outcome
+          ? 'video was not probed (resolve limit or missing target identity)'
+          : outcome.probe.played
+            ? 'no verified DOM source; observed network candidates are unverified and not downloadable'
+            : `unable to resolve the media stream: ${outcome.probe.error || 'playback was blocked'}`
+        item.suggestedAction =
+          'Narrow the scope with --selector, or expose a direct DOM source manually and collect again.'
+      } else if (ambiguous) {
+        item.error = MEDIA_AMBIGUOUS_SOURCES_ERROR
+        item.suggestedAction = MEDIA_AMBIGUOUS_SOURCES_SUGGESTED_ACTION
+      } else if (scopedBySelector) {
+        item.error = MEDIA_SCOPED_SOURCE_ERROR
+        item.suggestedAction = MEDIA_SCOPED_SOURCE_SUGGESTED_ACTION
+      }
     }
 
-    return { media: items }
+    const warnings: string[] = []
+    if (raw.scope.mode === 'selector' && raw.scope.matchedCount === 0) {
+      warnings.push(`Scope selector ${raw.scope.selector || selector} matched no elements.`)
+    }
+    if (items.length === 0) warnings.push('No media was discovered in the current scope.')
+    if (
+      resolve &&
+      unresolved.filter((item) => item.probeIndex !== null).length > MEDIA_RESOLVE_MAX_VIDEOS
+    ) {
+      warnings.push(
+        `Resolve limit reached: at most ${MEDIA_RESOLVE_MAX_VIDEOS} videos are probed per list.`,
+      )
+    }
+    for (const item of items) {
+      if (item.error) warnings.push(`Media ${item.index}: ${item.error}`)
+      else if (!item.url || item.primarySource === 'none' || !isHttpUrl(item.url)) {
+        warnings.push(`Media ${item.index}: no resolved HTTP(S) source was discovered.`)
+      }
+      const probe = outcomes.get(item.index)?.probe
+      const probeError =
+        probe?.error || (probe && !probe.played ? 'playback was blocked or not attempted' : null)
+      if (probeError && !item.error?.includes(probeError)) {
+        warnings.push(`Media ${item.index} playback probe: ${probeError}`)
+      }
+    }
+
+    assertFresh()
+    return {
+      media: items,
+      complete: warnings.length === 0,
+      warnings,
+      observedAt,
+      pageEpoch,
+      pageUrl,
+      scope: raw.scope,
+      includeBackground,
+    }
   }
 
   return {
