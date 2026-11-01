@@ -76,6 +76,9 @@ export function createConnectionRuntime({
   const RECONNECT_BASE_DELAY_MS = 1_000
   const RECONNECT_MAX_DELAY_MS = 60_000
   const RECONNECT_MAX_EXPONENT = 6
+  // Chrome 允许的最小周期就是 0.5 分钟；用它做 MV3 service worker 的保活唤醒
+  const KEEPALIVE_ALARM_NAME = 'autobrowser-keepalive'
+  const KEEPALIVE_ALARM_PERIOD_MINUTES = 0.5
 
   function pushBounded<T>(list: T[], item: T, maxSize: number): void {
     list.push(item)
@@ -800,6 +803,44 @@ export function createConnectionRuntime({
       if (needsReconnect) {
         requestReconnect()
       }
+    })
+
+    ensureKeepaliveAlarm()
+    chrome.alarms?.onAlarm?.addListener((alarm) => {
+      if (alarm?.name === KEEPALIVE_ALARM_NAME) {
+        reconnectIfDisconnected()
+      }
+    })
+  }
+
+  /**
+   * MV3 的 service worker 会被浏览器回收，没有 alarm 时只能等下一个用户事件才会重连，
+   * 表现出来就是 CLI 长时间停在 "extension: waiting"。注册一个最小周期的 alarm，
+   * 让被回收的 worker 也能定期醒来重新拨号。
+   */
+  function ensureKeepaliveAlarm(): void {
+    try {
+      chrome.alarms?.create?.(KEEPALIVE_ALARM_NAME, {
+        periodInMinutes: KEEPALIVE_ALARM_PERIOD_MINUTES,
+      })
+    } catch (error) {
+      console.warn('failed to register autobrowser keepalive alarm', error)
+    }
+  }
+
+  /** 只有当前没有可用连接时才重拨，避免把正常的连接打掉重来 */
+  function reconnectIfDisconnected(): void {
+    const socket = state.connection.socket
+    if (
+      socket &&
+      socket.readyState !== WebSocket.CLOSED &&
+      socket.readyState !== WebSocket.CLOSING
+    ) {
+      return
+    }
+
+    connect().catch((error) => {
+      console.error('failed to reconnect autobrowser extension on keepalive', error)
     })
   }
 

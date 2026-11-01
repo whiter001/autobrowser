@@ -195,6 +195,8 @@ autobrowser extension info
 
 `extension reload` 从磁盘重载扩展代码；`extension reconnect` 只重建扩展与 relay 的连接，不加载新代码，与刷新页面的 `reload` 也不同。两者先返回成功回执（`reloading:true` / `reconnecting:true`，并带 `reconnectExpected:true`），约 50ms 后异步执行；回执表示已安排操作，不表示恢复完成。稍等后用 `status` 确认重新连接，再继续页面命令。命令仅用于已连接的 Chromium 扩展，不绑定 tab、不进入页面队列；首次升级到支持此命令的版本仍需在 chrome://extensions 手动重新加载。
 
+扩展注册了 30 秒周期的 keepalive alarm：service worker 被浏览器回收后会在一个周期内自行重连，不用再手动打开扩展页。如果 `status` 持续显示 `waiting for extension` 超过 1 分钟，再回到上面的重载步骤，或确认 relay 是否还在运行。该机制随扩展代码生效，首次升级仍需要先手动重载一次。
+
 加载完成后，运行 `autobrowser connect` 可以打开扩展连接页；它会自动保存 token 和中继端口，而你传入的 `--extension-id`、`--browser-command` 或 `--browser-arg` 也会保存在 `~/.autobrowser/config.json` 中供后续复用。仓库开发者如果还没跑 `bun run link:bun`，可以直接用 `bun run src/cli.ts connect` 代替；命令名其余部分完全一致。`options` 页面仍然可以作为手动兜底，并显示诊断信息。
 
 ## 网络

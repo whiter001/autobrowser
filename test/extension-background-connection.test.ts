@@ -380,4 +380,83 @@ describe('extension background connection', () => {
       MockWebSocket.instances = []
     }
   })
+  test('registers a keepalive alarm and redials only when the connection is gone', async () => {
+    const originalGlobals = { chrome: globalThis.chrome, WebSocket: globalThis.WebSocket }
+    const alarmListeners: Array<(alarm: { name?: string }) => void> = []
+    const createdAlarms: Array<{ name: string; periodInMinutes?: number }> = []
+
+    defineGlobalValue('chrome', {
+      runtime: {
+        id: 'ext-id',
+        getManifest: () => ({ version: '1.2.3' }),
+        lastError: undefined,
+        onInstalled: { addListener: () => {} },
+        onStartup: { addListener: () => {} },
+        onMessage: { addListener: () => {} },
+        openOptionsPage: async () => {},
+      },
+      storage: {
+        local: { set: async () => {}, get: async () => ({}) },
+        onChanged: { addListener: () => {} },
+      },
+      tabs: { onRemoved: { addListener: () => {} } },
+      debugger: { onEvent: { addListener: () => {} } },
+      alarms: {
+        create: (name: string, info: { periodInMinutes?: number } = {}) => {
+          createdAlarms.push({ name, periodInMinutes: info.periodInMinutes })
+        },
+        onAlarm: {
+          addListener: (listener: (alarm: { name?: string }) => void) =>
+            alarmListeners.push(listener),
+        },
+      },
+    })
+    defineGlobalValue('WebSocket', MockWebSocket)
+    MockWebSocket.instances.length = 0
+
+    const state = createExtensionState(57978)
+    const runtime = createConnectionRuntime({
+      state,
+      network: { handleRequestPaused: async () => {}, handleEvent: async () => {} },
+      listTabs: async () => [],
+      handleCommand: async () => ({ ok: true }),
+      sendDebuggerCommand: async <TResult = unknown>(): Promise<TResult> => ({}) as TResult,
+      storageLocalGet: (async (keys: string | string[] | null) => {
+        if (Array.isArray(keys)) {
+          return Object.fromEntries(keys.map((key) => [key, key === STORAGE_KEY ? 't' : 57978]))
+        }
+        if (typeof keys === 'string') return { [keys]: keys === STORAGE_KEY ? 't' : 57978 }
+        return { [STORAGE_KEY]: 't', [RELAY_PORT_STORAGE_KEY]: 57978 }
+      }) as never,
+      storageLocalSet: async () => {},
+      clearTabRuntimeState: () => {},
+      detachDebugger: async () => {},
+      getDialogStatus: () => ({}),
+    })
+
+    try {
+      runtime.registerChromeListeners()
+      expect(createdAlarms).toEqual([{ name: 'autobrowser-keepalive', periodInMinutes: 0.5 }])
+      expect(alarmListeners).toHaveLength(1)
+
+      runtime.initialize()
+      await flushMicrotasks()
+      expect(MockWebSocket.instances).toHaveLength(1)
+
+      // 连接还活着时，alarm 不应把正常连接踢掉重来
+      MockWebSocket.instances[0].readyState = MockWebSocket.OPEN
+      alarmListeners[0]({ name: 'autobrowser-keepalive' })
+      await flushMicrotasks()
+      expect(MockWebSocket.instances).toHaveLength(1)
+
+      // service worker 被回收后连接是 CLOSED，alarm 应把拨号补回来
+      MockWebSocket.instances[0].readyState = MockWebSocket.CLOSED
+      alarmListeners[0]({ name: 'autobrowser-keepalive' })
+      await flushMicrotasks()
+      expect(MockWebSocket.instances).toHaveLength(2)
+    } finally {
+      defineGlobalValue('chrome', originalGlobals.chrome)
+      defineGlobalValue('WebSocket', originalGlobals.WebSocket)
+    }
+  })
 })
