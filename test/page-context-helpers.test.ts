@@ -11,12 +11,15 @@ import {
 } from '../extension/background/page-context-helpers.js'
 
 function evaluateSerializedHelpers<TResult>(expression: string): TResult {
-  return (0, eval)(`(() => {
+  // 这些 helper 是靠 toString() 拼进页面脚本执行的，正常 import 调用验证不到序列化后的行为，
+  // 用 new Function 还原注入后的执行环境（与下方 boundPageText 的校验方式保持一致）。
+  const evaluate = new Function(`return (() => {
 ${collapseWhitespace.toString()}
 ${splitWhitespaceTokens.toString()}
 ${parsePageContextElementRefIndex.toString()}
 return (${expression});
-})()`) as TResult
+})()`) as () => TResult
+  return evaluate()
 }
 
 type StubNameNode = {
