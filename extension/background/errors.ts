@@ -14,7 +14,8 @@ export interface SerializedCommandError {
 // Keep details intact for compatibility, and expose its result in both response paths.
 
 /**
- * 把异常转成 {ok:false, error} 形式的命令响应；保留 result 字段用于“部分成功”场景。
+ * 把异常转成 {ok:false, error} 形式的命令响应；若错误 details 里带 result
+ *（部分成功时留下的结果），一并透出给调用方。
  */
 export function serializeCommandFailure(error: unknown): {
   ok: false

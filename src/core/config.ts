@@ -259,7 +259,9 @@ async function mergeCliConfig(
 
 /**
  * 解析打开 connect 页所需的浏览器启动配置与扩展 ID：
- * 显式参数优先，其次本地配置，最后回落到默认值，选中的结果会写回配置供下次复用。
+ * 扩展 ID 优先级为 显式参数 > 本地配置 > 环境变量 > 内置默认；
+ * 浏览器命令依次取显式参数、配置文件、环境变量，环境变量里的额外启动参数再并入 args（同前缀不重复）。
+ * 只有与已存配置不同的值才会合并写回，避免热路径上反复重写配置文件。
  */
 export async function resolveConnectLaunchConfig(
   homeDir: string = getHomeDir(),
@@ -311,7 +313,8 @@ export async function resolveConnectLaunchConfig(
 }
 
 /**
- * 解析扩展 ID：显式值 > 配置文件 > 环境变量 > 内置默认，并把最终结果落盘。
+ * 解析扩展 ID：显式值 > 配置文件 > 环境变量 > 内置默认。
+ * 除直接命中配置的分支外，选中的 ID 都会写回配置，避免下次再走一遍探测。
  */
 export async function resolveExtensionId(
   homeDir: string = getHomeDir(),

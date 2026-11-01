@@ -90,7 +90,8 @@ export function resolveTabHandle(
 }
 
 /**
- * 统一解析 tabId 入参：数字直接使用，tN 走句柄表，其余情况回落到当前目标。
+ * 统一解析 tabId 入参：数字直接使用，tN 走句柄表，纯数字字符串按标签 ID 处理；
+ * 都解析不出时返回 null，由调用方决定是否回退到当前目标。
  */
 export function resolveTabInput(state: ExtensionState, tabId: TabInput): number | null {
   if (typeof tabId === 'number') {
@@ -246,7 +247,8 @@ export function assertFreshFrameRef(
 }
 
 /**
- * 计算本次命令实际作用的 frame：显式传参优先，否则使用该标签已选定的 frame。
+ * 计算本次命令实际作用的 frame：显式传参优先，否则取该标签已选定的 frame；
+ * top/main/default 归一为 null（表示主框架）。
  */
 export function resolveEffectiveFrameSelector(
   state: ExtensionState,
