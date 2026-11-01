@@ -1,4 +1,4 @@
-export interface SearchQuerySpec {
+interface SearchQuerySpec {
   /** 是否为 /pattern/flags 正则形式；false 表示纯文本子串匹配 */
   literal: boolean
   /** 编译后的 RegExp（用于校验与单测） */

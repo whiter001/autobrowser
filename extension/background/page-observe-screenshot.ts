@@ -1,4 +1,4 @@
-import { createElementNotFoundError } from './page-input.js'
+import { createElementNotFoundError } from './page-input-helpers.js'
 import type { PageObserveDependencies } from './page-observe-context.js'
 import { PAGE_CONTEXT_DEEP_DOM_HELPERS_SOURCE } from './page-observe-helpers.js'
 import { resolveEffectiveFrameSelector, withFrameSelectorOptions } from './targeting.js'

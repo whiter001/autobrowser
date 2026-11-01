@@ -71,7 +71,7 @@ export function encodeBase64(value: string): string {
   return btoa(binary)
 }
 
-export interface BodyFetchTask {
+interface BodyFetchTask {
   record: NetworkRequestRecord
   capture: HarCapture | null
   maxBodyBytes: number | null
@@ -80,7 +80,7 @@ export interface BodyFetchTask {
   settled: boolean
 }
 
-export interface BodyFetcher {
+interface BodyFetcher {
   /** 抓取响应体；同一记录只抓一次，已抓过或不可用时立即返回 */
   fetchRequestBody(record: NetworkRequestRecord, session: HarCapture | null): Promise<void>
   /** 清掉已失效的排队任务并补满并发槽位 */

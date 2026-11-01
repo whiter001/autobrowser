@@ -34,7 +34,7 @@ export interface DialogState {
 }
 
 /** 对话框被处理/关闭后留档的记录，让 agent 感知发生过但已自动处理的对话框 */
-export interface LastDialogRecord {
+interface LastDialogRecord {
   tabId: number
   type: string
   message: string
@@ -107,7 +107,7 @@ export interface InitScriptRecord {
   identifiersByTab: Map<number, string>
 }
 
-export interface NetworkState {
+interface NetworkState {
   routes: NetworkRoute[]
   requests: NetworkRequestRecord[]
   requestMap: Map<string, NetworkRequestRecord>
@@ -132,7 +132,7 @@ export interface ConsoleMessageRecord {
   pageEpoch?: number | null
 }
 
-export interface PageErrorRecord {
+interface PageErrorRecord {
   error: string
   url: string | null
   line?: number
@@ -144,7 +144,7 @@ export interface PageErrorRecord {
 }
 
 /** WebSocket 连接生命周期与诊断信息 */
-export interface ConnectionState {
+interface ConnectionState {
   socket: WebSocket | null
   reconnectTimer: number | ReturnType<typeof setTimeout> | null
   /** 当前已重试次数，用于计算指数退避延迟 */
@@ -167,7 +167,7 @@ export interface ConnectionState {
 }
 
 /** Tab/Frame 路由与调试器附加状态 */
-export interface TargetingState {
+interface TargetingState {
   attachedTabs: Set<number>
   selectedFrames: Map<number, string>
   targetTabId: number | null
@@ -189,7 +189,7 @@ export interface EmulationOverrides {
   headers?: string[]
 }
 
-export interface MediaEmulationState {
+interface MediaEmulationState {
   media?: string
   features: Record<string, string>
 }
@@ -210,7 +210,7 @@ export interface DownloadRecord {
   error?: string | null
 }
 
-export interface ActionRecord {
+interface ActionRecord {
   id: string | null
   command: string
   tabId: number | null
@@ -223,7 +223,7 @@ export interface ActionRecord {
 }
 
 /** 页面会话级别的可观测状态 */
-export interface SessionState {
+interface SessionState {
   /** 当前打开的 JS 对话框，按 tab 记录 */
   dialogs: Map<number, DialogState>
   /** 最近一次对话框处理/关闭记录（含自动 accept），null 表示从未发生过 */
@@ -257,7 +257,7 @@ export type TabInput = number | string | null | undefined
 export type FrameSelector = string | null | undefined
 export type TabWithId = chrome.tabs.Tab & { id: number }
 
-export interface SavedStateCookie {
+interface SavedStateCookie {
   name: string
   value: string
   domain?: string

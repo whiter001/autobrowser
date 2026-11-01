@@ -1,6 +1,6 @@
 import { isRecord } from './client.js'
 
-export interface NetworkRequestsJsonlExportResult {
+interface NetworkRequestsJsonlExportResult {
   content: string
   recordCount: number
 }

@@ -16,7 +16,7 @@ import type { ExtensionMetadata, PendingRequest } from './runtime-types.js'
  * pending 请求表、当前连接以及"响应组装完成"的回调。
  */
 
-export interface RuntimeTransferOptions {
+interface RuntimeTransferOptions {
   /** 上传落盘的根目录（state 目录） */
   homeDir: string
   /** pending 命令表：上传偏移必须挂在仍然 pending 的请求上 */
@@ -29,7 +29,7 @@ export interface RuntimeTransferOptions {
   onResponseReady: (response: Record<string, unknown>) => void
 }
 
-export interface RuntimeTransfer {
+interface RuntimeTransfer {
   /** 查询大响应已持久化的字节偏移 */
   responseUploadOffset: (transferId: string) => ResponseUploadProgress
   /** 写入一段大响应数据，完成后复用普通响应流程 */

@@ -29,8 +29,6 @@ import {
   type TrackPlan,
 } from './hls-tools.js'
 
-export { HlsDownloadError } from './hls-error.js'
-export { buildLocalPlaylist } from './hls-tools.js'
 export type { HlsTool, HlsToolRunner } from './hls-tools.js'
 
 export interface BrowserDownloadResult {
@@ -42,7 +40,7 @@ export interface BrowserDownloadResult {
   path: string
 }
 
-export interface HlsDownloadResult extends BrowserDownloadResult {
+interface HlsDownloadResult extends BrowserDownloadResult {
   hls?: boolean
   duration?: number
   width?: number
@@ -50,7 +48,7 @@ export interface HlsDownloadResult extends BrowserDownloadResult {
   segments?: number
 }
 
-export interface HlsDownloadOptions {
+interface HlsDownloadOptions {
   sourceUrl: string
   outputPath: string
   /** best/worst 或高度（720、720p），默认 best */
@@ -75,15 +73,15 @@ export interface HlsDownloadOptions {
   tools?: HlsToolRunner
 }
 
-export const DEFAULT_HLS_CONCURRENCY = 4
-export const MAX_HLS_CONCURRENCY = 16
-export const DEFAULT_HLS_TIMEOUT_MS = 120_000
+const DEFAULT_HLS_CONCURRENCY = 4
+const MAX_HLS_CONCURRENCY = 16
+const DEFAULT_HLS_TIMEOUT_MS = 120_000
 /** 允许下载的最大分片数量 */
 export const MAX_HLS_SEGMENTS = 2048
 /** 任务总字节上限（2GiB） */
-export const MAX_HLS_TOTAL_BYTES = 2 * 1024 * 1024 * 1024
+const MAX_HLS_TOTAL_BYTES = 2 * 1024 * 1024 * 1024
 /** 播放列表递归层数上限 */
-export const MAX_HLS_PLAYLIST_DEPTH = 4
+const MAX_HLS_PLAYLIST_DEPTH = 4
 
 interface DownloadTask {
   kind: 'init' | 'segment'

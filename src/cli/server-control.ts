@@ -26,7 +26,7 @@ export interface ServerSnapshotStatus {
   extensionConnected?: boolean
 }
 
-export interface PersistedConnectionInfo {
+interface PersistedConnectionInfo {
   token: string
   relayPort: number
   ipcPort: number
@@ -392,7 +392,7 @@ export function buildServerLaunchArgs(
   ]
 }
 
-function normalizeSavedPort(value: unknown, fallback: number): number {
+export function normalizeSavedPort(value: unknown, fallback: number): number {
   const port = Number(value)
   return Number.isInteger(port) && port >= 1 && port <= 65535 ? port : fallback
 }
@@ -442,5 +442,3 @@ export async function readPersistedConnectionInfo(
     ipcPort: normalizeSavedPort(stateRecord?.ipcPort, fallbackIpcPort),
   }
 }
-
-export { normalizeSavedPort }

@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test'
+import { feedItemDedupeKey } from '../extension/background/page-observe-feed.js'
 import {
   createPageObserveDomain,
-  feedItemDedupeKey,
   type FeedCollectionResult,
 } from '../extension/background/page-observe.js'
 import type { ExtensionState, TabWithId } from '../extension/background/types.js'

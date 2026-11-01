@@ -1,10 +1,10 @@
-export interface DeepDomNodeLike {
+interface DeepDomNodeLike {
   id?: string | null
   shadowRoot?: DeepDomRootLike | null
   matches?: (selector: string) => boolean
 }
 
-export interface DeepDomRootLike {
+interface DeepDomRootLike {
   activeElement?: DeepDomNodeLike | null
   querySelectorAll: (selector: string) => ArrayLike<DeepDomNodeLike> | Iterable<DeepDomNodeLike>
 }

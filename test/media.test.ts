@@ -1,9 +1,6 @@
 import { describe, expect, test } from 'bun:test'
-import {
-  createMediaDomain,
-  MEDIA_PLAY_PROBE_MARKER,
-  type MediaEvaluateResult,
-} from '../extension/background/media.js'
+import { createMediaDomain, type MediaEvaluateResult } from '../extension/background/media.js'
+import { MEDIA_PLAY_PROBE_MARKER } from '../extension/background/media-dom.js'
 import { createExtensionState } from '../extension/background/state.js'
 import type {
   ExtensionState,

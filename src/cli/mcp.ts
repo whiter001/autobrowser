@@ -16,7 +16,7 @@ import {
 } from './mcp-response.js'
 import { MCP_TOOLS, MCP_TOOLS_BY_NAME } from './mcp-tools.js'
 
-export interface McpServerDependencies {
+interface McpServerDependencies {
   name?: string
   version?: string
   requestCommand: (command: string, args: Record<string, unknown>) => Promise<CommandResponse>

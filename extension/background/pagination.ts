@@ -1,5 +1,5 @@
 /** console/errors/network requests 列表的分页状态，语义对齐 chrome-devtools-mcp */
-export interface PaginationState {
+interface PaginationState {
   currentPage: number
   totalPages: number
   hasNextPage: boolean
@@ -10,7 +10,7 @@ export interface PaginationState {
   invalidPage: boolean
 }
 
-export interface PaginatedList<T> {
+interface PaginatedList<T> {
   items: T[]
   pagination: PaginationState
 }

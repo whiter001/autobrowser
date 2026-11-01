@@ -33,7 +33,7 @@ function sessionError(message: string, code: string, suggestedAction?: string): 
   return error
 }
 
-export function normalizeSessionName(name: string | null | undefined): string {
+function normalizeSessionName(name: string | null | undefined): string {
   const normalized = typeof name === 'string' ? name.trim() : ''
   if (!normalized || normalized === 'default') return ''
   if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(normalized)) {

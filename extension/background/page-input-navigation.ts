@@ -6,7 +6,7 @@ import type { PageInputContext } from './page-input-context.js'
 // 导航类命令（goto/open/back/forward/reload）等待"导航发生 + 页面稳定"的默认总预算
 const DEFAULT_NAVIGATION_WAIT_TIMEOUT_MS = 10000
 
-export interface WaitForPageSettledOptions {
+interface WaitForPageSettledOptions {
   timeoutMs?: number
   waitUntil?: string
   domQuietMs?: number

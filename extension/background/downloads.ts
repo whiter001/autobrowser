@@ -30,7 +30,7 @@ interface DownloadDeltaLike {
   error?: { current?: string | null }
 }
 
-export interface DownloadsDomainOptions {
+interface DownloadsDomainOptions {
   /** 终态刷新用的快照查询，默认走 chrome.downloads.search；测试可注入 */
   searchDownloads?: (query: { id: number }) => Promise<DownloadItemLike[]>
 }

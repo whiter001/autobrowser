@@ -1,4 +1,4 @@
-export interface DevicePreset {
+interface DevicePreset {
   width: number
   height: number
   deviceScaleFactor: number
@@ -6,7 +6,7 @@ export interface DevicePreset {
   userAgent: string
 }
 
-export const DEVICE_PRESETS: Record<string, DevicePreset> = {
+const DEVICE_PRESETS: Record<string, DevicePreset> = {
   'desktop-chrome': {
     width: 1280,
     height: 720,

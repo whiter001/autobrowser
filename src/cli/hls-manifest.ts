@@ -3,7 +3,7 @@
  * 这里只做纯文本解析，不发起任何网络访问，所有字节必须由调用方通过浏览器下载通道取得。
  */
 
-export interface HlsVariant {
+interface HlsVariant {
   /** 变体播放列表地址（已解析为绝对地址） */
   url: string
   bandwidth: number
@@ -17,7 +17,7 @@ export interface HlsVariant {
   name: string | null
 }
 
-export interface HlsRendition {
+interface HlsRendition {
   type: string
   groupId: string
   name: string
@@ -28,12 +28,12 @@ export interface HlsRendition {
   language: string | null
 }
 
-export interface HlsMasterPlaylist {
+interface HlsMasterPlaylist {
   variants: HlsVariant[]
   renditions: HlsRendition[]
 }
 
-export interface HlsSegment {
+interface HlsSegment {
   url: string
   duration: number
   /** EXT-X-MAP 指定的初始化分片地址 */
@@ -57,7 +57,7 @@ const STREAM_INF_TAG = '#EXT-X-STREAM-INF:'
 const MEDIA_TAG = '#EXT-X-MEDIA:'
 
 /** 把相对地址按播放列表自身地址解析为绝对地址，保留 query。 */
-export function resolveHlsUrl(uri: string, baseUrl: string): string {
+function resolveHlsUrl(uri: string, baseUrl: string): string {
   try {
     return new URL(uri, baseUrl).toString()
   } catch {
@@ -69,7 +69,7 @@ export function resolveHlsUrl(uri: string, baseUrl: string): string {
  * 解析 HLS 属性列表，例如 BANDWIDTH=1000,CODECS="a,b",RESOLUTION=640x360。
  * 值里的逗号可能出现在引号内（CODECS 常见），所以不能直接按逗号切分。
  */
-export function parseHlsAttributes(input: string): Record<string, string> {
+function parseHlsAttributes(input: string): Record<string, string> {
   const attributes: Record<string, string> = {}
   let index = 0
   while (index < input.length) {

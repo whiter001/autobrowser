@@ -11,8 +11,6 @@ import {
   MAX_FILE_UPLOAD_BYTES,
 } from './file-transfer.js'
 
-export { FILE_UPLOAD_IDLE_TIMEOUT_MS, MAX_FILE_UPLOAD_BYTES }
-
 const MAX_FILE_UPLOADS = 128
 
 const CONTENT_RANGE_PATTERN = /^bytes (\d+)-(\d+)\/(\d+)$/

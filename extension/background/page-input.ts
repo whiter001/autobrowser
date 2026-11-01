@@ -6,7 +6,6 @@ import { createKeyboardCommands } from './page-input-keyboard.js'
 import { createNavigationCommands } from './page-input-navigation.js'
 import { createPointerCommands } from './page-input-pointer.js'
 
-export { createElementNotFoundError } from './page-input-helpers.js'
 export type { FillFormField } from './page-input-context.js'
 
 // 多步骤动作把执行上下文按可选末位参数传下来，在每个 await 之后、发出下一个 CDP 副作用

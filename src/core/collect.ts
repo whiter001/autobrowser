@@ -1,4 +1,4 @@
-export interface FeedCollectSpec {
+interface FeedCollectSpec {
   selector?: string
   limit?: number
   dedupe?: 'url' | 'text' | 'none'
@@ -9,13 +9,13 @@ export interface FeedCollectSpec {
   waitTimeoutMs?: number
 }
 
-export interface NetworkCollectSpec {
+interface NetworkCollectSpec {
   urlPattern: string
   itemsPath: string
   nextPath?: string
 }
 
-export interface CollectSpec {
+interface CollectSpec {
   name: string
   mode: 'feed' | 'network'
   startUrl?: string
@@ -25,7 +25,7 @@ export interface CollectSpec {
   network?: NetworkCollectSpec
 }
 
-export interface CollectItemMeta {
+interface CollectItemMeta {
   task: string
   mode: 'feed' | 'network'
   page: number
@@ -38,7 +38,7 @@ export interface CollectItem extends Record<string, unknown> {
   _meta: CollectItemMeta
 }
 
-export interface CollectFailure {
+interface CollectFailure {
   at: string
   page: number
   sourceUrl: string

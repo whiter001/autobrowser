@@ -1,8 +1,6 @@
 import { describe, expect, test } from 'bun:test'
-import {
-  computeStableRefIndexes,
-  createPageObserveDomain,
-} from '../extension/background/page-observe.js'
+import { createPageObserveDomain } from '../extension/background/page-observe.js'
+import { computeStableRefIndexes } from '../extension/background/page-observe-helpers.js'
 import type { DialogState } from '../extension/background/types.js'
 import { serializeCommandError } from '../extension/background/errors.js'
 

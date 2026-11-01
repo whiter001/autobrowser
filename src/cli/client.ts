@@ -10,7 +10,7 @@ export interface CommandResponse {
   }
 }
 
-export interface RequestCommandOptions {
+interface RequestCommandOptions {
   token?: string | null
 }
 

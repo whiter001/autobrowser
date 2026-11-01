@@ -10,7 +10,7 @@ import type { CommandQueue } from './command-queue.js'
 import type { ExtensionControlDomain } from './extension-control.js'
 import type { ExtensionState, TabInput, TabSummary, TabWithId } from './types.js'
 
-export interface TabsCommandDependencies {
+interface TabsCommandDependencies {
   state: ExtensionState
   extensionControl: ExtensionControlDomain
   listTabs: () => Promise<TabSummary[]>

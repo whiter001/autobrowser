@@ -6,7 +6,7 @@ export const AGENT_FRAME_REF_PREFIX = '@f'
 const AGENT_TAB_HANDLE_PATTERN = /^t(\d+)$/i
 const AGENT_FRAME_REF_PATTERN = /^@f(\d+)(?:#p(\d+))?$/i
 
-export interface AgentFrameRefInfo {
+interface AgentFrameRefInfo {
   ref: string
   pageEpoch: number | null
 }

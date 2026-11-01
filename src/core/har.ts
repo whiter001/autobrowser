@@ -1,10 +1,10 @@
-export interface HarSortableRecord {
+interface HarSortableRecord {
   id?: string | null
   requestId?: string | null
   startedAt?: string | null
 }
 
-export interface HarPayload extends Record<string, unknown> {
+interface HarPayload extends Record<string, unknown> {
   log: {
     version: string
     creator: {

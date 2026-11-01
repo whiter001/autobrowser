@@ -9,7 +9,7 @@
 export const MEDIA_PLAY_PROBE_MARKER = 'autobrowser:media-resolve-play'
 
 /** 播放探测里每个视频的最长播放时长（毫秒），总计不超过约 1 秒 */
-export const MEDIA_PLAY_PROBE_MS = 600
+const MEDIA_PLAY_PROBE_MS = 600
 
 /** 采集作用域的描述：既能表达用户限定的容器，也能如实表达默认作用域 */
 export interface MediaScope {
@@ -21,7 +21,7 @@ export interface MediaScope {
   matchedCount: number
 }
 
-export function mediaToAbsolute(value: unknown, baseURI: string): string {
+function mediaToAbsolute(value: unknown, baseURI: string): string {
   if (!value) return ''
   try {
     return new URL(String(value), baseURI).href
@@ -30,7 +30,7 @@ export function mediaToAbsolute(value: unknown, baseURI: string): string {
   }
 }
 
-export function mediaIsVisible(node: Element, view: Window): boolean {
+function mediaIsVisible(node: Element, view: Window): boolean {
   try {
     const rect = node.getBoundingClientRect()
     if (!rect || rect.width <= 0 || rect.height <= 0) return false
@@ -46,7 +46,7 @@ export function mediaIsVisible(node: Element, view: Window): boolean {
   }
 }
 
-export function mediaParseSrcset(value: string | null): string[] {
+function mediaParseSrcset(value: string | null): string[] {
   if (!value) return []
   return value
     .split(',')
@@ -58,7 +58,7 @@ export function mediaParseSrcset(value: string | null): string[] {
  * 解析采集作用域。
  * 指定选择器时只保留匹配到的容器；未指定时沿用默认作用域（页面内的 article 容器）。
  */
-export function mediaResolveScope(doc: Document, selector: string | null) {
+function mediaResolveScope(doc: Document, selector: string | null) {
   const trimmed = typeof selector === 'string' ? selector.trim() : ''
   if (trimmed) {
     const roots = Array.from(doc.querySelectorAll(trimmed))
@@ -79,7 +79,7 @@ export function mediaResolveScope(doc: Document, selector: string | null) {
  * 选择器模式只保留容器内的媒体（容器自身是 img/video 时也包含），并优先可见元素；
  * 默认模式保留原有行为：优先 article 内的可见媒体，退回 article 内媒体，再退回整页可见媒体。
  */
-export function mediaCollectMediaElements(
+function mediaCollectMediaElements(
   doc: Document,
   view: Window,
   roots: Element[],
@@ -115,7 +115,7 @@ export function mediaCollectMediaElements(
 }
 
 /** 作用域内的视频元素，顺序与采集到的媒体顺序一致 */
-export function mediaScopedVideos(
+function mediaScopedVideos(
   doc: Document,
   view: Window,
   roots: Element[],
@@ -130,7 +130,7 @@ export function mediaScopedVideos(
  * 视频是否已经能从 DOM 直接拿到可下载的源。
  * 相对地址先按 baseURI 解析再判断，保证与采集脚本里的判定口径一致。
  */
-export function mediaHasFetchableSource(video: Element, baseURI: string): boolean {
+function mediaHasFetchableSource(video: Element, baseURI: string): boolean {
   const currentSrc = (video as HTMLVideoElement).currentSrc || ''
   if (/^https?:/i.test(mediaToAbsolute(currentSrc, baseURI))) return true
   for (const source of Array.from(video.querySelectorAll('source'))) {
@@ -157,7 +157,7 @@ export function mediaProbeTargets(
 }
 
 /** 收集作用域内的全部元素，用于读取 CSS background-image */
-export function mediaCollectBackgroundElements(
+function mediaCollectBackgroundElements(
   doc: Document,
   roots: Element[],
   mode: 'selector' | 'default',
@@ -181,11 +181,7 @@ export function mediaCollectBackgroundElements(
  * 读取元素的 CSS background-image。
  * 优先 computed style，其次内联 style；多背景只取第一层，避免把装饰层当成内容图。
  */
-export function mediaReadBackgroundUrl(
-  element: Element,
-  view: Window,
-  baseURI: string,
-): string | null {
+function mediaReadBackgroundUrl(element: Element, view: Window, baseURI: string): string | null {
   let value = ''
   try {
     const style = view.getComputedStyle(element)
@@ -205,7 +201,7 @@ export function mediaReadBackgroundUrl(
 }
 
 /** 最近的祖先 article 容器 */
-export function mediaNearestArticle(node: Element): Element | null {
+function mediaNearestArticle(node: Element): Element | null {
   let current: Element | null = node
   while (current) {
     if (current.tagName === 'ARTICLE') return current
@@ -218,7 +214,7 @@ export function mediaNearestArticle(node: Element): Element | null {
  * 条目的来源链接：最近 article 内首个指向 /status/ 的绝对链接。
  * 没有 article 或没有这类链接时返回 null。
  */
-export function mediaReadPermalink(node: Element, baseURI: string): string | null {
+function mediaReadPermalink(node: Element, baseURI: string): string | null {
   const article = mediaNearestArticle(node)
   if (!article) return null
   for (const link of Array.from(article.querySelectorAll('a[href]'))) {
@@ -233,7 +229,7 @@ export function mediaReadPermalink(node: Element, baseURI: string): string | nul
  * 采集与探测是两次页面求值，中间 DOM 可能变化（下标会漂移），
  * 靠身份标识比对可以避免把请求算到别的视频头上。
  */
-export function mediaVideoIdentity(video: Element): string {
+function mediaVideoIdentity(video: Element): string {
   const registry = mediaElementRegistry(video.ownerDocument)
   let token = registry.tokens.get(video)
   if (!token) {
@@ -245,7 +241,7 @@ export function mediaVideoIdentity(video: Element): string {
 }
 
 /** 保存在同一 document 的 isolated world 中，不依赖 DOM 顺序或 URL。 */
-export function mediaElementRegistry(doc: Document) {
+function mediaElementRegistry(doc: Document) {
   const target = doc as Document & {
     __autobrowserMediaRegistry?: {
       next: number
@@ -413,7 +409,7 @@ ${buildMediaDomHelpersSource()}
 }
 
 /** 注入页面所需的辅助函数源码（自包含，按依赖顺序拼接） */
-export function buildMediaDomHelpersSource(): string {
+function buildMediaDomHelpersSource(): string {
   return [
     mediaToAbsolute,
     mediaIsVisible,

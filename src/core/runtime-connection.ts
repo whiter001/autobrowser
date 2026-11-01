@@ -9,9 +9,9 @@ import type { ErrorWithCode, ExtensionMetadata, RuntimeState, Snapshot } from '.
  */
 
 /** 连接丢失的原因：被新连接顶替，或扩展主动断开 */
-export type ExtensionConnectionLostReason = 'replaced' | 'disconnected'
+type ExtensionConnectionLostReason = 'replaced' | 'disconnected'
 
-export interface ExtensionConnectionOptions {
+interface ExtensionConnectionOptions {
   /** 运行时状态对象，连接模块直接维护 extensionSocket / extensionId */
   runtime: RuntimeState
   /** 共享快照对象，连接模块直接维护 snapshot.extension */
@@ -24,7 +24,7 @@ export interface ExtensionConnectionOptions {
   onConnectionChanged: () => void
 }
 
-export interface ExtensionConnection {
+interface ExtensionConnection {
   /** 关联一个新的扩展连接，并接管旧连接 */
   attach: (socket: Bun.ServerWebSocket<ExtensionMetadata>, meta?: ExtensionMetadata) => void
   /** 断开扩展连接；传入 socket 时仅当它是当前连接才断开（防重连竞态） */

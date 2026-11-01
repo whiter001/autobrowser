@@ -2,7 +2,7 @@ import { describe, expect, test } from 'bun:test'
 import { chmod, mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
-import { BrowserProfileLockError } from '../src/cli.js'
+import { BrowserProfileLockError } from '../src/cli/browser-launch.js'
 import { runCli } from './command-line-test-utils.js'
 
 describe('cli command routing', () => {

@@ -8,7 +8,7 @@ import {
   fileContentRange,
 } from '../../src/core/file-transfer.js'
 
-export interface FileUploadSocket {
+interface FileUploadSocket {
   readonly readyState: number
   send(data: string): void
 }
@@ -26,7 +26,7 @@ export interface FileUploadRegistry {
   dispose: () => void
 }
 
-export interface FileUploadOptions {
+interface FileUploadOptions {
   socket: FileUploadSocket
   registry: FileUploadRegistry
   relayPort: () => number
@@ -44,13 +44,13 @@ export interface FileUploadOptions {
   maxRetries?: number
 }
 
-export interface FileUploadResult {
+interface FileUploadResult {
   transferId: string
   receivedBytes: number
   totalBytes: number
 }
 
-export interface FileStreamUploadOptions {
+interface FileStreamUploadOptions {
   socket: FileUploadSocket
   registry: FileUploadRegistry
   relayPort: () => number
@@ -70,7 +70,7 @@ export interface FileStreamUploadOptions {
   chunkBytes?: number
 }
 
-export interface FileStreamUploadResult {
+interface FileStreamUploadResult {
   transferId: string
   receivedBytes: number
   totalBytes: number
@@ -83,7 +83,7 @@ const DEFAULT_MAX_RETRIES = 3
 /** 可重试的 HTTP 状态：停滞、超时和 offset 冲突都可以从已确认偏移续传 */
 const RETRYABLE_STATUS = new Set([408, 409])
 
-export class FileUploadClientError extends Error {
+class FileUploadClientError extends Error {
   constructor(
     message: string,
     readonly retryable = false,

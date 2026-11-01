@@ -13,7 +13,7 @@ const evalResultEncoder = new TextEncoder()
 
 // 结果大小按 relay 实际发送的 JSON 文本（UTF-8）计算；undefined 视为 0 字节。
 // 不可序列化的值（循环引用等）本就无法 relay，返回 null 让后续序列化报告原有错误
-export function measureEvalResultBytes(value: unknown): number | null {
+function measureEvalResultBytes(value: unknown): number | null {
   if (value === undefined) return 0
   try {
     return evalResultEncoder.encode(JSON.stringify(value) ?? '').byteLength

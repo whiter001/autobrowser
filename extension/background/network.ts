@@ -81,7 +81,7 @@ interface FetchRequestPausedParams {
   timestamp?: number
 }
 
-export interface NetworkRouteOptions {
+interface NetworkRouteOptions {
   abort?: boolean
   body?: unknown
   status?: number

@@ -1,11 +1,5 @@
 import type { CommandExecutionContext } from './command-queue.js'
-import {
-  buildMediaCollectScript,
-  buildMediaPlayProbeScript,
-  MEDIA_PLAY_PROBE_MARKER,
-  MEDIA_PLAY_PROBE_MS,
-  type MediaScope,
-} from './media-dom.js'
+import { buildMediaCollectScript, buildMediaPlayProbeScript, type MediaScope } from './media-dom.js'
 import { getPageEpoch } from './targeting.js'
 import type {
   EvaluateInTabContextOptions,
@@ -29,13 +23,11 @@ import type {
  * - 唯一的副作用是 resolve 模式下的一次静音短播放（随后 pause），不导航、不刷新。
  */
 
-export { MEDIA_PLAY_PROBE_MARKER, MEDIA_PLAY_PROBE_MS }
-
 /** 播放后等待新网络请求出现的时间上限（毫秒） */
-export const MEDIA_SOURCE_WAIT_MS = 1000
+const MEDIA_SOURCE_WAIT_MS = 1000
 
 /** 单次 list 最多逐个探测的视频数量，避免长页面被拖住 */
-export const MEDIA_RESOLVE_MAX_VIDEOS = 3
+const MEDIA_RESOLVE_MAX_VIDEOS = 3
 
 const MEDIA_AMBIGUOUS_SOURCES_ERROR =
   'multiple videos in scope have no fetchable source, so the observed network candidates cannot be attributed to one of them'
@@ -49,26 +41,18 @@ const MEDIA_SCOPED_SOURCE_ERROR =
 const MEDIA_SCOPED_SOURCE_SUGGESTED_ACTION =
   'Expose a direct DOM source manually; --resolve only provides unverified network diagnostics, not downloadable sources.'
 
-export type MediaKind =
-  | 'image'
-  | 'hls'
-  | 'hls-variant'
-  | 'mp4'
-  | 'dash'
-  | 'segment'
-  | 'audio'
-  | 'unknown'
+type MediaKind = 'image' | 'hls' | 'hls-variant' | 'mp4' | 'dash' | 'segment' | 'audio' | 'unknown'
 
-export interface MediaSource {
+interface MediaSource {
   url: string
   kind: MediaKind
   contentType?: string
 }
 
 /** 主来源：dom=DOM 属性或 CSS，none=没有可用源 */
-export type MediaPrimarySource = 'dom' | 'none'
+type MediaPrimarySource = 'dom' | 'none'
 
-export interface MediaItem {
+interface MediaItem {
   /** DOM 顺序下标，从 0 开始 */
   index: number
   type: 'image' | 'video'
@@ -95,7 +79,7 @@ export interface MediaItem {
   background: boolean
 }
 
-export interface MediaListResult {
+interface MediaListResult {
   media: MediaItem[]
   /** 本次发现无已知缺口；不保证尚未渲染的媒体不存在 */
   complete: boolean
@@ -111,7 +95,7 @@ export interface MediaListResult {
   includeBackground: boolean
 }
 
-export interface MediaListOptions {
+interface MediaListOptions {
   /** 是否允许静音短播以暴露网络源 */
   resolve?: boolean
   /** 限定采集范围的 CSS 选择器 */
@@ -126,7 +110,7 @@ export interface MediaEvaluateResult<TValue = unknown> {
   value: TValue | null
 }
 
-export interface MediaDomainDependencies {
+interface MediaDomainDependencies {
   state: ExtensionState
   evaluateInTabContext: <TValue = unknown>(
     tabId: TabInput,

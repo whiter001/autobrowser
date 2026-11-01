@@ -132,7 +132,7 @@ export function getPageEpoch(state: ExtensionState, tabId: number): number {
   return 1
 }
 
-export function bumpPageEpoch(state: ExtensionState, tabId: number): number {
+function bumpPageEpoch(state: ExtensionState, tabId: number): number {
   const nextEpoch = getPageEpoch(state, tabId) + 1
   state.targeting.pageEpochs.set(tabId, nextEpoch)
   return nextEpoch
@@ -147,7 +147,7 @@ export function clearRemovedPageEpoch(state: ExtensionState, tabId: number): voi
   state.targeting.pageEpochs.delete(tabId)
 }
 
-export function createStaleRefError(
+function createStaleRefError(
   refType: 'element' | 'frame',
   selector: string | null | undefined,
   expectedPageEpoch: number | null,

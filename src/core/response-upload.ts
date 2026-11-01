@@ -5,7 +5,7 @@ import path from 'node:path'
 import { getStateDir } from './protocol.js'
 import { MAX_RESPONSE_BYTES, ResponseTransferError } from './response-transfer.js'
 
-export const RESPONSE_UPLOAD_IDLE_TIMEOUT_MS = 15_000
+const RESPONSE_UPLOAD_IDLE_TIMEOUT_MS = 15_000
 const MAX_UPLOADS = 128
 const TRANSFER_ID_PATTERN = /^[A-Za-z0-9_-]{16,128}$/
 const SHA256_PATTERN = /^[a-f0-9]{64}$/
@@ -27,7 +27,7 @@ export interface ResponseUploadProgress {
   totalBytes: number
 }
 
-export type ResponseUploadResult =
+type ResponseUploadResult =
   | (ResponseUploadProgress & { done: false })
   | (ResponseUploadProgress & { done: true; text: string })
 

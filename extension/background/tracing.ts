@@ -1,6 +1,6 @@
 import type { TabInput, TabWithId } from './types.js'
 
-export const TRACING_MAX_BYTES = 32 * 1024 * 1024
+const TRACING_MAX_BYTES = 32 * 1024 * 1024
 const TRACING_COMPLETION_TIMEOUT_MS = 10_000
 const encoder = new TextEncoder()
 

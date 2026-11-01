@@ -2,8 +2,8 @@ import { afterEach, describe, expect, test } from 'bun:test'
 import { mkdtemp, mkdir, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
+import { buildLocalPlaylist } from '../src/cli/hls-tools.js'
 import {
-  buildLocalPlaylist,
   detectHls,
   downloadMediaWithHls,
   MAX_HLS_SEGMENTS,

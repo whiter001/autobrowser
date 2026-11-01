@@ -7,9 +7,9 @@ const MAX_BATCH_RETRIES = 1_000
 
 // 与 extension/background/page-observe.ts 的 collectFeed 默认值/上限对齐，
 // 否则 relay 会在扩展仍在滚动采集时提前取消命令。
-export const FEED_DEFAULT_MAX_SCROLLS = 20
+const FEED_DEFAULT_MAX_SCROLLS = 20
 export const FEED_MAX_SCROLLS = 40
-export const FEED_DEFAULT_PAUSE_MS = 900
+const FEED_DEFAULT_PAUSE_MS = 900
 /** 滚动之外的页内解析余量，对齐扩展 withFrameSelectorOptions 的 +60s */
 export const FEED_EXECUTION_ALLOWANCE_MS = 60_000
 

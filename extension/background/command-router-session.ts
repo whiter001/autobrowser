@@ -80,7 +80,7 @@ export interface SessionDomain {
   loadStateByName: (tabId: TabInput, name: string) => Promise<unknown>
 }
 
-export interface SessionCommandDependencies {
+interface SessionCommandDependencies {
   state: ExtensionState
   session: SessionDomain
 }

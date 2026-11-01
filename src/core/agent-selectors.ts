@@ -2,7 +2,7 @@ export const AGENT_ELEMENT_REF_ATTRIBUTE = 'data-autobrowser-ref'
 
 const AGENT_ELEMENT_REF_PATTERN = /^@e(\d+)(?:#p(\d+))?$/i
 
-export interface AgentElementRefInfo {
+interface AgentElementRefInfo {
   ref: string
   pageEpoch: number | null
 }

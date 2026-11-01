@@ -1,4 +1,4 @@
-export interface CommandQueueEntry {
+interface CommandQueueEntry {
   id: string
   key: string
   state:

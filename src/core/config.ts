@@ -6,19 +6,19 @@ export interface BrowserLaunchConfig {
   args: string[]
 }
 
-export interface CliConfig {
+interface CliConfig {
   extensionId?: string
   browserCommand?: string
   browserArgs?: string[]
 }
 
-export interface ResolveConnectLaunchOptions {
+interface ResolveConnectLaunchOptions {
   extensionId?: string | null
   browserCommand?: string | null
   browserArgs?: string[]
 }
 
-export interface ResolvedConnectLaunchConfig {
+interface ResolvedConnectLaunchConfig {
   extensionId: string
   browserConfig: BrowserLaunchConfig | null
 }
@@ -235,7 +235,7 @@ function applyCliConfigUpdates(
   return changed
 }
 
-export async function readCliConfig(homeDir: string = getHomeDir()): Promise<CliConfig> {
+async function readCliConfig(homeDir: string = getHomeDir()): Promise<CliConfig> {
   const rawConfig = await readRawCliConfig(homeDir)
   return normalizeCliConfig(rawConfig)
 }
@@ -330,33 +330,4 @@ export async function resolveExtensionId(
   const fallbackExtensionId = getExtensionId()
   await mergeCliConfig(homeDir, { extensionId: fallbackExtensionId })
   return fallbackExtensionId
-}
-
-export async function resolveBrowserLaunchConfig(
-  homeDir: string = getHomeDir(),
-  explicitBrowserCommand?: string | null,
-  explicitBrowserArgs: string[] = [],
-): Promise<BrowserLaunchConfig | null> {
-  const config = await readCliConfig(homeDir)
-  const explicitCommand = normalizeString(explicitBrowserCommand)
-  if (explicitCommand) {
-    const browserConfig = {
-      command: explicitCommand,
-      args: normalizeStringArray(explicitBrowserArgs),
-    }
-    await mergeCliConfig(homeDir, {
-      browserCommand: browserConfig.command,
-      browserArgs: browserConfig.args,
-    })
-    return browserConfig
-  }
-
-  const browserConfig = normalizeBrowserLaunchConfig(config.browserCommand, config.browserArgs)
-  return mergeBrowserLaunchConfigEnvironmentArgs(
-    browserConfig ||
-      normalizeBrowserLaunchConfigFromEnv(
-        process.env.AUTOBROWSER_BROWSER_COMMAND,
-        process.env.AUTOBROWSER_BROWSER_ARGS,
-      ),
-  )
 }

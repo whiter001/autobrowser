@@ -7,8 +7,6 @@ import { createSnapshotFeature } from './page-observe-snapshot.js'
 import { createWaitFeature } from './page-observe-wait.js'
 
 export type { PageObserveDependencies } from './page-observe-context.js'
-export { computeStableRefIndexes } from './page-observe-helpers.js'
-export { feedItemDedupeKey } from './page-observe-feed.js'
 export type {
   CollectFeedOptions,
   FeedCollectionItem,
@@ -20,7 +18,6 @@ export type {
   SemanticTargetMatch,
   SemanticTargetResult,
 } from './page-observe-find.js'
-export { computeSearchPageTextMatches } from './page-observe-search.js'
 export type {
   SearchMatchLine,
   SearchPageTextOptions,

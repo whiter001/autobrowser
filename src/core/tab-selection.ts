@@ -1,4 +1,4 @@
-export interface TabLike {
+interface TabLike {
   id: number
   active: boolean
 }

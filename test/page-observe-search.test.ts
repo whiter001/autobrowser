@@ -1,8 +1,6 @@
 import { describe, expect, test } from 'bun:test'
-import {
-  computeSearchPageTextMatches,
-  createPageObserveDomain,
-} from '../extension/background/page-observe.js'
+import { createPageObserveDomain } from '../extension/background/page-observe.js'
+import { computeSearchPageTextMatches } from '../extension/background/page-observe-search.js'
 import { createObserveState } from './page-observe.test.js'
 
 describe('page observe search', () => {

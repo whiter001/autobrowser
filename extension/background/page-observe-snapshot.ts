@@ -1,7 +1,7 @@
 import { AGENT_FRAME_REF_ATTRIBUTE, AGENT_FRAME_REF_PREFIX } from '../../src/core/agent-handles.js'
 import { AGENT_ELEMENT_REF_ATTRIBUTE } from '../../src/core/agent-selectors.js'
 import { boundPageText } from './page-context-helpers.js'
-import { createElementNotFoundError } from './page-input.js'
+import { createElementNotFoundError } from './page-input-helpers.js'
 import type { PageObserveDependencies } from './page-observe-context.js'
 import {
   PAGE_CONTEXT_SNAPSHOT_HELPERS_SOURCE,

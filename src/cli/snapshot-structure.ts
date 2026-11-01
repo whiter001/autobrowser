@@ -1,6 +1,6 @@
 import { isRecord } from './client.js'
 
-export interface SnapshotFieldJsonlExportResult {
+interface SnapshotFieldJsonlExportResult {
   content: string
   recordCount: number
 }

@@ -2,7 +2,7 @@ import type { ExtensionState, NetworkRequestRecord } from './types.js'
 
 export const DEFAULT_HAR_MAX_REQUESTS = 1000
 export const DEFAULT_HAR_MAX_BODY_BYTES = 256 * 1024
-export const HAR_CHECKPOINT_STORAGE_KEY = 'autobrowser.harCheckpoint'
+const HAR_CHECKPOINT_STORAGE_KEY = 'autobrowser.harCheckpoint'
 
 export interface HarCapture {
   id: string
@@ -15,7 +15,7 @@ export interface HarCapture {
   pending: Set<Promise<void>>
 }
 
-export function getHarMaxRequests(state: ExtensionState): number | null {
+function getHarMaxRequests(state: ExtensionState): number | null {
   return state.network.harMaxRequests === null
     ? null
     : (state.network.harMaxRequests ?? DEFAULT_HAR_MAX_REQUESTS)
@@ -27,7 +27,7 @@ export function getHarMaxBodyBytes(state: ExtensionState): number | null {
     : (state.network.harMaxBodyBytes ?? DEFAULT_HAR_MAX_BODY_BYTES)
 }
 
-export interface HarCaptureController {
+interface HarCaptureController {
   /** 当前 capture 会话；未录制时为 null */
   getCapture(): HarCapture | null
   /** 切换当前 capture 会话（startHar） */

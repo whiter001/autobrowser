@@ -3,16 +3,13 @@ import { createConnection } from 'node:net'
 import os from 'node:os'
 import path from 'node:path'
 
-export const APP_NAME = 'autobrowser'
 export const DEFAULT_RELAY_PORT = 57978
 export const DEFAULT_IPC_PORT = 57979
-export const STATE_DIR_NAME = '.autobrowser'
-export const CONFIG_FILE_NAME = 'config.json'
-export const TOKEN_FILE_NAME = 'token'
-export const STATE_FILE_NAME = 'state.json'
-export { DEFAULT_REQUEST_TIMEOUT_MS } from './command-budget.js'
-
-export interface ResponseInit {
+const STATE_DIR_NAME = '.autobrowser'
+const CONFIG_FILE_NAME = 'config.json'
+const TOKEN_FILE_NAME = 'token'
+const STATE_FILE_NAME = 'state.json'
+interface ResponseInit {
   headers?: Record<string, string>
   status?: number
 }
@@ -84,17 +81,10 @@ export function isValidPort(port: number): boolean {
   return Number.isInteger(port) && port >= 1 && port <= 65535
 }
 
-/**
- * 确保 .autobrowser 状态目录存在。
- */
-export async function ensureStateDir(homeDir: string = getHomeDir()): Promise<void> {
-  await mkdir(getStateDir(homeDir), { recursive: true })
-}
-
 /** 状态文件临时文件命名：<basename>.<pid>.<uuid>.tmp */
 const TEMP_FILE_NAME_PATTERN = /^(state\.json|token|config\.json)\.[^/]+\.tmp$/
 /** 启动清理时仅删除明显是上一次崩溃残留的临时文件（默认老于 5s），避免误删并发写入中的临时文件 */
-export const STALE_TEMP_FILE_MAX_AGE_MS = 5_000
+const STALE_TEMP_FILE_MAX_AGE_MS = 5_000
 
 /**
  * 清理状态目录中由崩溃中断（如 SIGKILL）残留的临时文件。

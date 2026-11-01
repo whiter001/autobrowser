@@ -15,7 +15,7 @@ import {
   MAX_DOWNLOAD_RETRY_DELAY_MS,
 } from '../../src/core/file-transfer.js'
 
-export interface FileTransferResult {
+interface FileTransferResult {
   /** CLI 请求的原始地址 */
   sourceUrl: string
   /** 跟随重定向后的最终地址 */
@@ -39,7 +39,7 @@ export interface FileTransferDomain {
   dispose: () => void
 }
 
-export interface FileTransferOptions {
+interface FileTransferOptions {
   state: ExtensionState
   registry?: FileUploadRegistry
   fetchImpl?: typeof fetch

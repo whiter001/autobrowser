@@ -3,7 +3,7 @@ import type { CommandExecutionContext } from './command-queue.js'
 import type { CommandArgs, ErrorWithCode } from './types.js'
 
 /** batch 步骤的条件：引用前置步骤的结果，再按 path/谓词匹配 */
-export interface BatchStepCondition {
+interface BatchStepCondition {
   step: string | number
   path?: string
   equals?: unknown
@@ -11,7 +11,7 @@ export interface BatchStepCondition {
   exists?: boolean
 }
 
-export interface BatchCommandStep {
+interface BatchCommandStep {
   command: string
   args: CommandArgs
   label: string | null
@@ -20,7 +20,7 @@ export interface BatchCommandStep {
   skipRemainingOnFailure?: boolean
 }
 
-export interface BatchCommandStepResult {
+interface BatchCommandStepResult {
   index: number
   command: string
   args: CommandArgs
@@ -31,13 +31,13 @@ export interface BatchCommandStepResult {
   response?: { ok: true; result: unknown } | { ok: false; error: SerializedCommandError }
 }
 
-export interface BatchCommandOptions {
+interface BatchCommandOptions {
   continueOnError: boolean
   retries: number
   retryDelayMs: number
 }
 
-export interface BatchCommandSummary {
+interface BatchCommandSummary {
   total: number
   completed: number
   succeeded: number
@@ -51,7 +51,7 @@ export interface BatchCommandSummary {
 }
 
 /** batch 步骤复用的命令执行入口；由路由器注入同一个 executeCommand，保持单一入口 */
-export type BatchCommandExecutor = (
+type BatchCommandExecutor = (
   command: string,
   args?: CommandArgs,
   skipQueue?: boolean,

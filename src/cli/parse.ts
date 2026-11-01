@@ -1,6 +1,6 @@
 import { parseSearchQueryRegex } from '../core/search.js'
 
-export interface WaitArgs {
+interface WaitArgs {
   timeout: number
   type?: string
   selector?: string
@@ -12,7 +12,7 @@ export interface WaitArgs {
   gone?: boolean
 }
 
-export interface FindArgs {
+interface FindArgs {
   strategy: 'role' | 'text' | 'label' | 'placeholder' | 'alt' | 'title' | 'test-id' | 'exact-name'
   role?: string
   query?: string
@@ -37,7 +37,7 @@ export interface ScreenshotArgs {
   quality: number | null
 }
 
-export interface SnapshotArgs {
+interface SnapshotArgs {
   /** 子树截取目标（CSS selector 或 @eN ref） */
   target: string | null
   /** role 过滤列表；null 表示不过滤（保持默认行为） */
@@ -46,7 +46,7 @@ export interface SnapshotArgs {
   changed: boolean
 }
 
-export interface SearchArgs {
+interface SearchArgs {
   /** 查询串：纯文本子串或 /pattern/flags 正则 */
   query: string
   /** 每个匹配窗口包含的上下文行数 */
@@ -57,7 +57,7 @@ export interface SearchArgs {
   startLine?: number
 }
 
-export interface NetworkHarStartArgs {
+interface NetworkHarStartArgs {
   maxRequests: number | null
   maxBodyBytes: number | null
   includePattern?: string
@@ -67,7 +67,7 @@ export interface NetworkHarStartArgs {
 const DEFAULT_HAR_MAX_REQUESTS = 1000
 const DEFAULT_HAR_MAX_BODY_BYTES = 256 * 1024
 
-export interface NumberArgOptions {
+interface NumberArgOptions {
   min?: number
   max?: number
   integer?: boolean
@@ -280,7 +280,7 @@ export function parseNetworkHarStartArgs(rest: string[]): NetworkHarStartArgs {
   return result
 }
 
-export interface NetworkRouteArgs {
+interface NetworkRouteArgs {
   url: string
   abort: boolean
   body?: unknown
@@ -394,8 +394,8 @@ export function parseNetworkRouteArgs(rest: string[]): NetworkRouteArgs {
   return result
 }
 
-export const CONSOLE_LEVELS = ['error', 'warning', 'info', 'debug'] as const
-export type ConsoleLevel = (typeof CONSOLE_LEVELS)[number]
+const CONSOLE_LEVELS = ['error', 'warning', 'info', 'debug'] as const
+type ConsoleLevel = (typeof CONSOLE_LEVELS)[number]
 
 export function parseConsoleArgs(rest: string[]): {
   level: ConsoleLevel | null

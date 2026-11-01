@@ -1,8 +1,8 @@
 import { resolveAgentSelector } from '../../src/core/agent-selectors.js'
 import type { EvaluateInTabContextOptions, FrameSelector, TabInput, TabWithId } from './types.js'
 
-export const VIDEO_MAX_BYTES = 64 * 1024 * 1024
-export const VIDEO_DEFAULT_MAX_DURATION_MS = 10 * 60_000
+const VIDEO_MAX_BYTES = 64 * 1024 * 1024
+const VIDEO_DEFAULT_MAX_DURATION_MS = 10 * 60_000
 
 interface VideoChapter {
   title: string

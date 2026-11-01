@@ -41,7 +41,7 @@ export interface NetworkDomain {
   recoverHar: () => Promise<unknown>
 }
 
-export interface NetworkCommandDependencies {
+interface NetworkCommandDependencies {
   state: ExtensionState
   network: NetworkDomain
 }

@@ -2,11 +2,8 @@ import { describe, expect, test } from 'bun:test'
 import { mkdtemp, readFile, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
-import {
-  buildSystemOpenCommand,
-  detectBrowserProfileLock,
-  parseWindowsNetstatListeningPid,
-} from '../src/cli.js'
+import { buildSystemOpenCommand, detectBrowserProfileLock } from '../src/cli/browser-launch.js'
+import { parseWindowsNetstatListeningPid } from '../src/cli/server-control.js'
 import {
   parseFindArgs,
   parseNetworkHarStartArgs,

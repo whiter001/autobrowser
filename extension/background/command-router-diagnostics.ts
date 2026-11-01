@@ -39,7 +39,7 @@ export interface VideoDomain {
   ) => Promise<void>
 }
 
-export interface DiagnosticsCommandDependencies {
+interface DiagnosticsCommandDependencies {
   state: ExtensionState
   tracing: TracingDomain
   video: VideoDomain

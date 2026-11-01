@@ -7,9 +7,9 @@ import { promisify } from 'node:util'
 const execFileAsync = promisify(execFile)
 const rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 
-export type LauncherTarget = { goos: string; goarch: string; name: string }
+type LauncherTarget = { goos: string; goarch: string; name: string }
 
-export type LauncherLdflagOptions = { bunPath?: string; distEntry?: string }
+type LauncherLdflagOptions = { bunPath?: string; distEntry?: string }
 
 // cmd/go 用 quoted.Split 解析 -ldflags：引号内的内容原样保留、不做反转义，
 // 只按同种引号配对。所以路径里的空格要靠引号整体包住，JSON 风格的 \ 转义反而会留下多余反斜杠。
@@ -63,7 +63,7 @@ export function launcherTargets(
   })
 }
 
-export type LauncherBuildEnv = { GOOS: string; GOARCH: string; CGO_ENABLED: string }
+type LauncherBuildEnv = { GOOS: string; GOARCH: string; CGO_ENABLED: string }
 
 // 当前宿主的构建目标：显式覆盖外部可能存在的 GOOS/GOARCH 交叉编译设置。
 export function currentBuildEnv(
@@ -74,7 +74,7 @@ export function currentBuildEnv(
   return { GOOS: target.goos, GOARCH: target.goarch, CGO_ENABLED: '0' }
 }
 
-export async function buildLaunchers(args: string[]): Promise<void> {
+async function buildLaunchers(args: string[]): Promise<void> {
   const targets = launcherTargets(args)
   try {
     await execFileAsync('go', ['version'])

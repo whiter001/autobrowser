@@ -3,7 +3,6 @@ import {
   cleanupStaleTempFiles,
   createId,
   createToken,
-  DEFAULT_REQUEST_TIMEOUT_MS,
   DEFAULT_IPC_PORT,
   DEFAULT_RELAY_PORT,
   getHomeDir,
@@ -13,7 +12,7 @@ import {
   writeJsonFile,
 } from './protocol.js'
 import { validateCommandArgs } from './command-spec.js'
-import { getCommandRequestBudgetMs } from './command-budget.js'
+import { DEFAULT_REQUEST_TIMEOUT_MS, getCommandRequestBudgetMs } from './command-budget.js'
 import { ResponseAssembler, ResponseTransferError } from './response-transfer.js'
 import type { ResponseUploadProgress } from './response-upload.js'
 import type { FileUploadProgress } from './file-upload.js'

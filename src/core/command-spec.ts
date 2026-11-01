@@ -2,13 +2,13 @@ import { parseSearchQueryRegex } from './search.js'
 import { getCommandRequestBudgetMs } from './command-budget.js'
 import { MAX_DOWNLOAD_RETRIES, MAX_DOWNLOAD_RETRY_DELAY_MS } from './file-transfer.js'
 
-export interface CommandSpec {
+interface CommandSpec {
   name: string
   supportsTabTarget?: boolean
   supportsFrameTarget?: boolean
 }
 
-export interface CommandArgsValidationError extends Error {
+interface CommandArgsValidationError extends Error {
   code?: string
   details?: unknown
 }
