@@ -128,8 +128,8 @@ export async function listSessions(baseHomeDir: string): Promise<SessionRecord[]
 }
 
 /**
- * 创建命名会话：显式指定的端口被占用时直接报错，未指定时才从固定起点挑一对可用端口；
- * 最后落盘会话记录。
+ * 创建命名会话：先校验名称（空名或重名直接报错），显式指定的端口被占用时也直接报错；
+ * 只有未指定端口时才从固定起点挑一对可用端口，最后落盘会话记录。
  */
 export async function createSession(
   baseHomeDir: string,

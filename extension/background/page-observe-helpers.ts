@@ -51,8 +51,8 @@ export function computeStableRefIndexes<
 // 同一算法用于页内构造与扩展防御；逐字段/条目计费，不反复序列化整个增长中的结果。
 
 /**
- * 快照超过字节上限时按预算重新装箱：字符串按字段截断（text 5KB、其余 1KB），
- * 数组按剩余预算逐项保留，放不下就丢弃后续项——宁可丢尾部数据也不返回超预算响应。
+ * 快照超过字节上限时按预算重新装箱：先预留约 2KB 给截断说明字段，
+ * 字符串按字段截断（text 5KB、其余 1KB），数组按剩余预算逐项保留，放不下就丢弃后续项。
  */
 export function truncateSnapshotToByteLimit(
   result: Record<string, unknown>,
