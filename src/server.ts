@@ -182,19 +182,24 @@ function connectPage(
       <div class="actions">
         ${
           revealToken
-            ? `<a class="button" href="${escapeHtml(extensionConnectUrl)}">Open extension connect page</a>`
+            ? `<button id="copy-extension-url" data-url="${escapeHtml(extensionConnectUrl)}">Copy extension page URL</button>`
             : ''
         }
         ${revealToken ? '<button id="copy-token">Copy token</button>' : ''}
         <a class="button" href="/status">Open status JSON</a>
       </div>
+      ${
+        revealToken
+          ? '<p class="small">Chrome/Edge 禁止网页直接跳转 chrome-extension://（会落到 chrome-extension://invalid/）。点上面的按钮复制地址后粘贴到地址栏，或直接运行 autobrowser connect。</p>'
+          : ''
+      }
 
       <pre>${
         revealToken
-          ? `1. Open the extension connect page.
-2. Let it save the token and relay port automatically.
-3. Reload the extension if it does not connect automatically.
-4. Use the CLI against http://127.0.0.1:${snapshot.ipcPort}.`
+          ? `1. 点 Copy extension page URL，把地址粘贴到浏览器地址栏打开。
+2. 页面会自动保存 token 与 relay 端口。
+3. 若仍不自动连接，去 chrome://extensions 重新加载扩展。
+4. CLI 地址：http://127.0.0.1:${snapshot.ipcPort}`
           : `1. 本页未携带 token，仅展示连接信息。
 2. 运行 autobrowser connect 可打开自动带上 token 的引导页。
 3. 需要手动粘贴时，token 见 ~/.autobrowser/token。
@@ -211,6 +216,13 @@ function connectPage(
       document.getElementById("copy-token")?.addEventListener("click", async () => {
         const token = document.getElementById("token")?.textContent || "";
         await navigator.clipboard.writeText(token);
+      });
+      // 网页无法直接导航到 chrome-extension://（会被浏览器拦成 chrome-extension://invalid/），
+      // 只能复制地址让用户在地址栏里发起导航。
+      document.getElementById("copy-extension-url")?.addEventListener("click", async (event) => {
+        const button = event.currentTarget;
+        await navigator.clipboard.writeText(button.dataset.url || "");
+        button.textContent = "Copied - paste it into the address bar";
       });
     </script>
   </body>

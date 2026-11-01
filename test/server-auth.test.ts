@@ -222,7 +222,12 @@ describe('server command authentication', () => {
       headers: { origin },
     })
     expect(connect.status).toBe(200)
-    expect(await connect.text()).toContain('host-token')
+    const revealHtml = await connect.text()
+    expect(revealHtml).toContain('host-token')
+    // 网页无法直接导航到 chrome-extension://（会被浏览器拦成 invalid），
+    // 所以凭证页只能提供"复制地址"，不能提供可点击的深链。
+    expect(revealHtml).not.toContain('href="chrome-extension://')
+    expect(revealHtml).toContain('id="copy-extension-url"')
     expect((await fetch(`http://127.0.0.1:${relayPort}/ws?token=wrong`)).status).toBe(401)
     const BunWebSocket = WebSocket as unknown as {
       new (url: string, options: Bun.WebSocketOptions): WebSocket
