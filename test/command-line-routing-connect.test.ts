@@ -207,6 +207,10 @@ describe('cli command routing', () => {
     expect(result.openCalls[0]).toContain('connect.html')
     // 回退页必须带 token：否则拿到的是脱敏版本，用户反而看不到凭证
     expect(result.openCalls[1]).toBe('http://127.0.0.1:48011/connect?token=live-token')
+    // 静默回退会让 --browser-command 写错的人以为扩展页已打开，必须留痕
+    expect(result.stderr).toContain(
+      'warning: failed to open the extension connect page (browser launch failed)',
+    )
   })
 
   test('connect repairs an invalid persisted extension id', async () => {

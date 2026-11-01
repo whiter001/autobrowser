@@ -197,6 +197,8 @@ autobrowser extension info
 
 扩展注册了 30 秒周期的 keepalive alarm：service worker 被浏览器回收后会在一个周期内自行重连，不用再手动打开扩展页。如果 `status` 持续显示 `waiting for extension` 超过 1 分钟，再回到上面的重载步骤，或确认 relay 是否还在运行。该机制随扩展代码生效，首次升级仍需要先手动重载一次。
 
+操作系统都不为 `chrome-extension://` 注册协议关联，所以打开扩展页必须显式指定浏览器：首次调用时传 `--browser-command "<msedge.exe 或 chrome.exe 路径>"`，之后该值会从 `~/.autobrowser/config.json` 复用。没有指定时 CLI 会直接报错并改为打开 relay 的 `/connect` 页，而不是把链接交给系统弹出"没有可打开此链接的应用"。
+
 加载完成后，运行 `autobrowser connect` 可以打开扩展连接页；它会自动保存 token 和中继端口，而你传入的 `--extension-id`、`--browser-command` 或 `--browser-arg` 也会保存在 `~/.autobrowser/config.json` 中供后续复用。仓库开发者如果还没跑 `bun run link:bun`，可以直接用 `bun run src/cli.ts connect` 代替；命令名其余部分完全一致。`options` 页面仍然可以作为手动兜底，并显示诊断信息。
 
 ## 网络

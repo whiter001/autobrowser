@@ -180,6 +180,13 @@ export function createConnectionFlow(options: ConnectionFlowOptions): Connection
         throw error
       }
 
+      // 浏览器启动失败必须留痕：否则 --browser-command 写错也只会静默打开回退页，
+      // 用户会以为"扩展页已经打开了"。回退本身保留，只是不再无声。
+      const reason = error instanceof Error ? error.message : String(error)
+      process.stderr.write(
+        `warning: failed to open the extension connect page (${reason}); opened the relay connect page instead\n`,
+      )
+
       if (recoveryHints) {
         recoveryHints.connectPageAttempted = true
       }

@@ -76,6 +76,18 @@ export async function openUrl(
     return
   }
 
+  // chrome-extension:// 没有任何系统级协议关联：交给 rundll32/open/xdg-open 只会弹出
+  // "没有可打开此链接的应用"（Windows 还会诱导去 Microsoft Store）。
+  // 这里直接失败并给出可执行建议，把错误留在 CLI 里而不是系统弹窗里。
+  if (/^chrome-extension:\/\//i.test(url)) {
+    throw new Error(
+      'cannot open a chrome-extension:// URL without an explicit browser: ' +
+        'no OS associates this scheme.\n' +
+        'Pass one explicitly (the value is remembered in ~/.autobrowser/config.json):\n' +
+        '  autobrowser connect --browser-command "<path to msedge.exe or chrome.exe>"',
+    )
+  }
+
   const systemOpenCommand = buildSystemOpenCommand(process.platform, url)
   await execFileAsync(systemOpenCommand.command, systemOpenCommand.args)
 }

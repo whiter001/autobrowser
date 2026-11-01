@@ -2,7 +2,11 @@ import { describe, expect, test } from 'bun:test'
 import { mkdtemp, readFile, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
-import { buildSystemOpenCommand, detectBrowserProfileLock } from '../src/cli/browser-launch.js'
+import {
+  buildSystemOpenCommand,
+  detectBrowserProfileLock,
+  openUrl,
+} from '../src/cli/browser-launch.js'
 import { parseWindowsNetstatListeningPid } from '../src/cli/server-control.js'
 import {
   parseFindArgs,
@@ -29,6 +33,14 @@ describe('cli helpers', () => {
         'chrome-extension://bfccnpkjkbhceghimfjgnkigilidldep/connect.html?token=a&relayPort=1&ipcPort=2',
       ],
     })
+  })
+
+  test('refuses to hand a chrome-extension URL to the system opener', async () => {
+    // 没有显式浏览器时，交给 rundll32/open/xdg-open 只会弹"没有可打开此链接的应用"，
+    // 所以必须在这里直接失败，把可执行建议留在 CLI 输出里。
+    await expect(openUrl('chrome-extension://abc/connect.html', null)).rejects.toThrow(
+      /cannot open a chrome-extension:\/\/ URL without an explicit browser/,
+    )
   })
 
   test('detects browser profile lock signatures in stderr', () => {

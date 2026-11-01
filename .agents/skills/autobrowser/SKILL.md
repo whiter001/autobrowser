@@ -78,6 +78,7 @@ autobrowser 是一个面向 Chrome/Edge 的浏览器自动化 CLI，通过本地
 - `server` 会启动 relay 和 IPC 服务。
 - `connect` 会打开扩展连接页，并自动保存 token、relay port，以及后续运行所需的浏览器配置。
 - 操作系统都不为 `chrome-extension://` 注册协议关联，打开扩展页必须显式指定浏览器（`--browser-command`，首次传入后会写进 `~/.autobrowser/config.json` 复用）；没指定时 CLI 直接报错并改为打开 relay 的 `/connect` 页，不会交给系统弹窗。
+- 操作系统都不为 `chrome-extension://` 注册协议关联，打开扩展页必须显式指定浏览器（`--browser-command`，首次传入后会写进 `~/.autobrowser/config.json` 复用）；没指定时 CLI 直接报错并改为打开 relay 的 `/connect` 页，不会交给系统弹窗。
 - 如果 `connect` 传入了有效 token 且扩展已经报告 `connected`，连接页可能会自动关闭；这通常表示连接成功。
 - `status` 是确认扩展是否已连接的最快方式。
 - 扩展已在线时，修改代码并 `bun run build:chrome` 后用 `extension reload` 重载磁盘代码；只需重建 relay 连接时用 `extension reconnect`，它不会加载新代码。两者与刷新页面的 `reload` 不同，均不绑定 tab、不进入页面队列，仅用于 Chromium 扩展。
