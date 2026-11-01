@@ -26,8 +26,15 @@ function publicSnapshot(runtime: Runtime) {
   return publicStatus
 }
 
-function connectPage(snapshot: SnapshotData, extensionId?: string | null): string {
-  const token = escapeHtml(snapshot.token)
+function connectPage(
+  snapshot: SnapshotData,
+  extensionId?: string | null,
+  options: { revealToken?: boolean } = {},
+): string {
+  // 本机任何进程都能访问 /connect，明文回吐 token 等于绕过 ~/.autobrowser/token 的文件权限，
+  // 所以只有带正确 ?token= 的请求（CLI 打开时）才渲染凭证面板与扩展深链。
+  const revealToken = options.revealToken === true
+  const token = revealToken ? escapeHtml(snapshot.token) : ''
   const relayUrl = `ws://127.0.0.1:${snapshot.relayPort}/ws`
   const ipcUrl = `http://127.0.0.1:${snapshot.ipcPort}`
   const extensionConnectUrl = getExtensionUrl(
@@ -160,7 +167,11 @@ function connectPage(snapshot: SnapshotData, extensionId?: string | null): strin
         </section>
         <section class="panel">
           <div class="label">Token</div>
-          <div class="value"><code id="token">${token}</code></div>
+          <div class="value">${
+            revealToken
+              ? `<code id="token">${token}</code>`
+              : '<span class="small">hidden — run <code>autobrowser connect</code> for the credential page</span>'
+          }</div>
         </section>
         <section class="panel">
           <div class="label">Current status</div>
@@ -169,16 +180,31 @@ function connectPage(snapshot: SnapshotData, extensionId?: string | null): strin
       </div>
 
       <div class="actions">
-        <a class="button" href="${escapeHtml(extensionConnectUrl)}">Open extension connect page</a>
-        <button id="copy-token">Copy token</button>
+        ${
+          revealToken
+            ? `<a class="button" href="${escapeHtml(extensionConnectUrl)}">Open extension connect page</a>`
+            : ''
+        }
+        ${revealToken ? '<button id="copy-token">Copy token</button>' : ''}
         <a class="button" href="/status">Open status JSON</a>
       </div>
 
-      <pre>1. Open the extension connect page.
+      <pre>${
+        revealToken
+          ? `1. Open the extension connect page.
 2. Let it save the token and relay port automatically.
 3. Reload the extension if it does not connect automatically.
-4. Use the CLI against http://127.0.0.1:${snapshot.ipcPort}.</pre>
-      <p class="small">If the browser cannot open the extension page directly, you can still copy the token and paste it in the options page.</p>
+4. Use the CLI against http://127.0.0.1:${snapshot.ipcPort}.`
+          : `1. 本页未携带 token，仅展示连接信息。
+2. 运行 autobrowser connect 可打开自动带上 token 的引导页。
+3. 需要手动粘贴时，token 见 ~/.autobrowser/token。
+4. CLI 地址：http://127.0.0.1:${snapshot.ipcPort}.`
+      }</pre>
+      ${
+        revealToken
+          ? '<p class="small">If the browser cannot open the extension page directly, you can still copy the token and paste it in the options page.</p>'
+          : ''
+      }
     </main>
 
     <script>
@@ -354,7 +380,11 @@ export async function startServers(options: ServerOptions = {}): Promise<StartSe
       }
 
       if (url.pathname === '/connect' || url.pathname === '/') {
-        return htmlResponse(connectPage(runtime.snapshot(), options.extensionId))
+        // 只有带正确 token 的请求才拿到凭证页；无凭证访问得到脱敏版本，并且不缓存。
+        const revealToken = url.searchParams.get('token') === runtime.runtime.token
+        return htmlResponse(connectPage(runtime.snapshot(), options.extensionId, { revealToken }), {
+          headers: { 'cache-control': 'no-store' },
+        })
       }
 
       if (url.pathname === '/status') {

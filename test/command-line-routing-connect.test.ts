@@ -157,6 +157,40 @@ describe('cli command routing', () => {
     expect(result.stderr).toContain('already in use')
   })
 
+  test('opens the plain relay connect page when the server reports no token', async () => {
+    const result = await runCli(
+      ['connect'],
+      { ok: true, relayPort: 48011, ipcPort: 48012 },
+      { openUrl: async () => {} },
+    )
+
+    expect(result.exitCode).toBe(0)
+    // 没有 token 可带，页面会渲染脱敏版本
+    expect(result.openCalls).toEqual(['http://127.0.0.1:48011/connect'])
+  })
+
+  test('falls back to the relay connect page with the token when the extension page cannot open', async () => {
+    let attempts = 0
+    const result = await runCli(
+      ['connect'],
+      { ok: true, token: 'live-token', relayPort: 48011, ipcPort: 48012 },
+      {
+        openUrl: async () => {
+          attempts += 1
+          if (attempts === 1) {
+            throw new Error('browser launch failed')
+          }
+        },
+      },
+    )
+
+    expect(result.exitCode).toBe(0)
+    expect(result.openCalls).toHaveLength(2)
+    expect(result.openCalls[0]).toContain('connect.html')
+    // 回退页必须带 token：否则拿到的是脱敏版本，用户反而看不到凭证
+    expect(result.openCalls[1]).toBe('http://127.0.0.1:48011/connect?token=live-token')
+  })
+
   test('connect repairs an invalid persisted extension id', async () => {
     const homeDir = await mkdtemp(path.join(os.tmpdir(), 'autobrowser-invalid-config-'))
     const stateDir = path.join(homeDir, '.autobrowser')

@@ -81,8 +81,10 @@ export function createConnectionFlow(options: ConnectionFlowOptions): Connection
   let connectPageOpened = false
   let commandToken: string | null | undefined
 
-  const openRelayConnectPage = async (relayPort: number): Promise<void> => {
-    await launchUrl(`http://127.0.0.1:${relayPort}/connect`, null)
+  // 带 token 打开才能看到凭证面板；没有 token 时页面是脱敏版本，只提示从哪里取。
+  const openRelayConnectPage = async (relayPort: number, token: string | null): Promise<void> => {
+    const query = token ? `?token=${encodeURIComponent(token)}` : ''
+    await launchUrl(`http://127.0.0.1:${relayPort}/connect${query}`, null)
   }
 
   async function resolveConnectionTarget(
@@ -156,7 +158,7 @@ export function createConnectionFlow(options: ConnectionFlowOptions): Connection
       if (recoveryHints) {
         recoveryHints.connectPageAttempted = true
       }
-      await openRelayConnectPage(target.relayPort)
+      await openRelayConnectPage(target.relayPort, target.token || null)
       if (recoveryHints) {
         recoveryHints.connectPageOpened = true
       }
@@ -181,7 +183,7 @@ export function createConnectionFlow(options: ConnectionFlowOptions): Connection
       if (recoveryHints) {
         recoveryHints.connectPageAttempted = true
       }
-      await openRelayConnectPage(target.relayPort)
+      await openRelayConnectPage(target.relayPort, target.token || null)
       if (recoveryHints) {
         recoveryHints.connectPageOpened = true
       }

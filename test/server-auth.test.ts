@@ -207,7 +207,20 @@ describe('server command authentication', () => {
     const server = await startServers({ homeDir, relayPort, ipcPort, token: 'host-token' })
     servers.push(server)
     const origin = 'chrome-extension://bfccnpkjkbhceghimfjgnkigilidldep'
-    const connect = await fetch(`http://127.0.0.1:${relayPort}/connect`, { headers: { origin } })
+    // 未带 token 的引导页必须脱敏：/connect 对本机任何进程可读，回吐 token 等于绕过文件权限。
+    const anonymousConnect = await fetch(`http://127.0.0.1:${relayPort}/connect`, {
+      headers: { origin },
+    })
+    expect(anonymousConnect.status).toBe(200)
+    expect(anonymousConnect.headers.get('cache-control')).toBe('no-store')
+    expect(await anonymousConnect.text()).not.toContain('host-token')
+
+    const wrongTokenConnect = await fetch(`http://127.0.0.1:${relayPort}/connect?token=wrong`)
+    expect(await wrongTokenConnect.text()).not.toContain('host-token')
+
+    const connect = await fetch(`http://127.0.0.1:${relayPort}/connect?token=host-token`, {
+      headers: { origin },
+    })
     expect(connect.status).toBe(200)
     expect(await connect.text()).toContain('host-token')
     expect((await fetch(`http://127.0.0.1:${relayPort}/ws?token=wrong`)).status).toBe(401)
