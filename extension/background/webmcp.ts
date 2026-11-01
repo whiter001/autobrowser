@@ -138,6 +138,9 @@ function callExpression(name: string, args: Record<string, unknown>): string {
   })()`
 }
 
+/**
+ * 创建 WebMCP 域：把页面内注册的 MCP 工具桥接给外部客户端。
+ */
 export function createWebMcpDomain({
   getTargetTab,
   resolveFrameTarget,

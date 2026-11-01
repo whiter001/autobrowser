@@ -528,6 +528,9 @@ interface CommandRouterDependencies {
   ) => Promise<TResult>
 }
 
+/**
+ * 组装命令路由表：把各域的命令合并成一张 name → handler 映射，供连接层直接派发。
+ */
 export function createCommandRouter({
   state,
   extensionControl,

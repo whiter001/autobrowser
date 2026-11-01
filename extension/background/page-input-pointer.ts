@@ -13,6 +13,10 @@ import type { createNavigationCommands } from './page-input-navigation.js'
 
 // 鼠标相关命令：坐标测量、点击/双击/悬停、拖拽、坐标移动与拖放数据投递。
 // 坐标测量与导航等待都来自共享的 navigation 模块，避免重复实现
+
+/**
+ * 创建指针类命令：鼠标移动、按下抬起、滚轮与拖拽。
+ */
 export function createPointerCommands(
   pageContext: PageInputContext,
   navigation: ReturnType<typeof createNavigationCommands>,

@@ -26,6 +26,9 @@ export interface SnapshotTabOptions {
   changed?: boolean
 }
 
+/**
+ * 创建快照能力：把页面结构转成带 @eN 引用的紧凑文本，并维护引用与代次。
+ */
 export function createSnapshotFeature({
   state,
   getTargetTab,

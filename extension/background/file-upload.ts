@@ -99,6 +99,9 @@ interface PendingRegistration {
   timer: ReturnType<typeof setTimeout>
 }
 
+/**
+ * 创建文件上传登记表，管理待上传项的登记、取出与超时清理。
+ */
 export function createFileUploadRegistry(): FileUploadRegistry {
   const pending = new Map<string, PendingRegistration>()
 

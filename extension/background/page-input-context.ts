@@ -101,6 +101,10 @@ export interface PageInputContext {
   sleep: (ms: number) => Promise<void>
 }
 
+/**
+ * 组装页面输入类命令的共享上下文（目标标签、元素选择器解析、页面求值入口），
+ * 让各子域不必互相 import。
+ */
 export function createPageInputContext({
   state,
   getTargetTab,

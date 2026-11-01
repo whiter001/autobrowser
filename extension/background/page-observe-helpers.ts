@@ -49,6 +49,11 @@ export function computeStableRefIndexes<
 }
 
 // 同一算法用于页内构造与扩展防御；逐字段/条目计费，不反复序列化整个增长中的结果。
+
+/**
+ * 快照超过字节上限时逐步裁掉细节字段，保证响应仍在传输预算内，
+ * 同时保留结构信息供 agent 继续定位。
+ */
 export function truncateSnapshotToByteLimit(
   result: Record<string, unknown>,
   maxBytes = 200_000,
@@ -91,6 +96,10 @@ export function truncateSnapshotToByteLimit(
 
 // command-spec 路径下这些字段是可选的，undefined 时 Math.floor 会得到 NaN，
 // 导致 limit 变成 NaN 而静默返回 0 条；这里统一兜底到与 CLI 一致的默认值
+
+/**
+ * 把 feed 数量参数归一到非负整数，非法值回落到默认值。
+ */
 export function normalizeFeedCount(value: number | undefined, fallback: number): number {
   if (typeof value !== 'number' || !Number.isFinite(value)) {
     return fallback

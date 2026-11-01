@@ -176,6 +176,9 @@ interface PendingInterception {
   superseded: boolean
 }
 
+/**
+ * 创建网络域：请求列表与详情、拦截规则，以及 HAR 录制导出。
+ */
 export function createNetworkDomain({
   state,
   getTargetTab,

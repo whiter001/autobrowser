@@ -32,6 +32,9 @@ const DEVICE_PRESETS: Record<string, DevicePreset> = {
   },
 }
 
+/**
+ * 按名称取设备预设，不存在返回 null（由调用方决定是报错还是忽略）。
+ */
 export function getDevicePreset(name: string): DevicePreset | null {
   return DEVICE_PRESETS[name] || null
 }

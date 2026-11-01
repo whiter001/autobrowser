@@ -47,6 +47,9 @@ function buildMutationQuietExpression(hardCapMs: number, quietMs: number): strin
     })()`
 }
 
+/**
+ * 创建导航命令：goto、back、forward、reload，并负责等待页面稳定。
+ */
 export function createNavigationCommands(pageContext: PageInputContext) {
   const {
     state,

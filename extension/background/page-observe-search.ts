@@ -142,6 +142,9 @@ export function computeSearchPageTextMatches(
 
 const SEARCH_TEXT_MATCH_HELPERS_SOURCE = computeSearchPageTextMatches.toString()
 
+/**
+ * 创建页面文本搜索域，支持分页游标与正则匹配。
+ */
 export function createSearchFeature({
   state,
   getTargetTab,

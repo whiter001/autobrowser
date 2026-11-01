@@ -73,6 +73,9 @@ const defaultSearchDownloads = async (query: { id: number }): Promise<DownloadIt
 /** 快照作废后的补偿查询次数上限，防止持续有 delta 时无限重查 */
 const SNAPSHOT_RETRY_LIMIT = 2
 
+/**
+ * 创建下载域命令：列出、等待与取消浏览器下载任务。
+ */
 export function createDownloadsDomain(
   state: ExtensionState,
   options: DownloadsDomainOptions = {},

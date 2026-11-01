@@ -52,6 +52,9 @@ interface ConnectionRuntimeDependencies {
   getDialogStatus: () => Record<string, unknown>
 }
 
+/**
+ * 创建与 relay 的连接运行时：管理握手、心跳、重连以及连接状态广播。
+ */
 export function createConnectionRuntime({
   state,
   network,

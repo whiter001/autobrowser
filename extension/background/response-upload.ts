@@ -58,6 +58,10 @@ async function responseProgress(response: Response): Promise<number> {
   return result.receivedBytes
 }
 
+/**
+ * 创建响应上传发送器：优先走分片上传，失败时回落到普通发送，
+ * 保证大响应在受限通道上也能送达。
+ */
 export function createUploadResponseSender(socket: UploadSocket, options: UploadSenderOptions) {
   const fallback = createResponseSender(socket)
   const fetchImpl = options.fetchImpl || fetch

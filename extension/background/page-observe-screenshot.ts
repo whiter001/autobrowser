@@ -11,6 +11,9 @@ interface ScreenshotAnnotationResult {
   count?: number
 }
 
+/**
+ * 创建截图能力：整页/元素截图，支持格式与质量参数。
+ */
 export function createScreenshotFeature({
   state,
   getTargetTab,

@@ -71,6 +71,10 @@ function buildRecord(
   }
 }
 
+/**
+ * 读取命名会话记录。记录缺失、名字不符或端口非法时抛 SESSION_NOT_FOUND，
+ * 让用户重新 attach，而不是拿着坏数据继续起服务。
+ */
 export async function readSession(baseHomeDir: string, nameInput: string): Promise<SessionRecord> {
   const name = normalizeSessionName(nameInput)
   if (!name) throw sessionError('a named session is required', 'SESSION_NOT_FOUND')
@@ -100,6 +104,9 @@ export async function readSession(baseHomeDir: string, nameInput: string): Promi
   )
 }
 
+/**
+ * 列出全部命名会话并按名字排序；会话根目录不存在时视为空列表。
+ */
 export async function listSessions(baseHomeDir: string): Promise<SessionRecord[]> {
   let entries
   try {
@@ -120,6 +127,9 @@ export async function listSessions(baseHomeDir: string): Promise<SessionRecord[]
   return sessions.sort((left, right) => left.name.localeCompare(right.name))
 }
 
+/**
+ * 创建命名会话并分配端口，端口冲突时按传入的探测函数顺延，最终落盘会话记录。
+ */
 export async function createSession(
   baseHomeDir: string,
   nameInput: string,
@@ -200,6 +210,9 @@ export async function createSession(
   return record
 }
 
+/**
+ * 删除命名会话的数据目录。默认会话永远不允许删除，避免一条命令抹掉主环境。
+ */
 export async function deleteSessionData(
   baseHomeDir: string,
   nameInput: string,

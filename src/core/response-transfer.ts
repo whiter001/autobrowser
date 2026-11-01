@@ -23,6 +23,9 @@ export class ResponseTransferError extends Error {
   }
 }
 
+/**
+ * 计算文本的 UTF-8 字节数。分块编码是为了不给超大响应再额外分配一份等大的字节数组。
+ */
 export function responseByteLength(text: string): number {
   let bytes = 0
   // 分段编码只用于计数，避免为 512MiB 响应再分配一个同样大的临时字节数组。
@@ -40,6 +43,9 @@ export function* responseChunks(text: string): Generator<string> {
   }
 }
 
+/**
+ * 解析并校验分片传输回来的响应体，JSON 非法或 type 不匹配时抛 ResponseTransferError。
+ */
 export function parseTransferredResponse(text: string, id: string): Record<string, unknown> {
   let response: unknown
   try {
@@ -170,6 +176,9 @@ interface SendJob {
   reject: (error: Error) => void
 }
 
+/**
+ * 串行发送响应并限制在途字节数，避免单个大响应把 socket 缓冲打爆。
+ */
 export function createResponseSender(socket: ResponseSocket) {
   const jobs: SendJob[] = []
   let reservedBytes = 0

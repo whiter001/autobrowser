@@ -6,26 +6,41 @@ export function readStringArg(args: CommandArgs, key: string, fallback = ''): st
   return typeof value === 'string' ? value : fallback
 }
 
+/**
+ * 读取可选字符串参数；类型不符按“未提供”处理，不在读取阶段抛错。
+ */
 export function readOptionalStringArg(args: CommandArgs, key: string): string | undefined {
   const value = args[key]
   return typeof value === 'string' ? value : undefined
 }
 
+/**
+ * 读取数字参数，非有限数回落到默认值，避免 NaN 流进下游计算。
+ */
 export function readNumberArg(args: CommandArgs, key: string, fallback = 0): number {
   const value = args[key]
   return typeof value === 'number' && Number.isFinite(value) ? value : fallback
 }
 
+/**
+ * 读取可选数字参数，非有限数按未提供处理。
+ */
 export function readOptionalNumberArg(args: CommandArgs, key: string): number | undefined {
   const value = args[key]
   return typeof value === 'number' && Number.isFinite(value) ? value : undefined
 }
 
+/**
+ * 读取布尔参数，其它类型一律回落到默认值。
+ */
 export function readBooleanArg(args: CommandArgs, key: string, fallback = false): boolean {
   const value = args[key]
   return typeof value === 'boolean' ? value : fallback
 }
 
+/**
+ * 读取字符串数组参数，并过滤掉非字符串项——agent 常把混合类型塞进数组。
+ */
 export function readStringArrayArg(args: CommandArgs, key: string): string[] {
   const value = args[key]
   return Array.isArray(value)
@@ -33,6 +48,9 @@ export function readStringArrayArg(args: CommandArgs, key: string): string[] {
     : []
 }
 
+/**
+ * 读取普通对象参数；数组与 null 都视为未提供。
+ */
 export function readObjectArg(args: CommandArgs, key: string): Record<string, unknown> | undefined {
   const value = args[key]
   return value && typeof value === 'object' && !Array.isArray(value)
@@ -40,6 +58,9 @@ export function readObjectArg(args: CommandArgs, key: string): Record<string, un
     : undefined
 }
 
+/**
+ * 读取 headers 参数，同时兼容 HAR 风格的 [{name,value}] 与普通对象两种写法。
+ */
 export function readHeadersArg(
   args: CommandArgs,
   key: string,
@@ -55,6 +76,9 @@ export function readHeadersArg(
   return readObjectArg(args, key)
 }
 
+/**
+ * 读取保存的页面状态快照参数（cookies/localStorage 等恢复用）。
+ */
 export function readSavedStateArg(args: CommandArgs, key: string): SavedStateData | undefined {
   const value = args[key]
   return value && typeof value === 'object' && !Array.isArray(value)

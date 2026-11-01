@@ -6,6 +6,9 @@ const GLOBAL_REQUEST_HARD_CAP = 10_000
 /** 已被全局缓冲淘汰的请求对象：淘汰后不再允许异步回写 body */
 export const evictedRequests = new WeakSet<NetworkRequestRecord>()
 
+/**
+ * 把任意 headers 值统一成字符串键值对；未提供时返回空对象，省去调用方到处判空。
+ */
 export function normalizeHeaders(
   headers: Record<string, unknown> | undefined,
 ): Record<string, string> {
@@ -18,16 +21,25 @@ export function normalizeHeaders(
   )
 }
 
+/**
+ * 把 headers 展开成 HAR 需要的 [{name, value}] 形式。
+ */
 export function normalizeHeaderPairs(
   headers: Record<string, string>,
 ): Array<{ name: string; value: string }> {
   return Object.entries(headers).map(([name, value]) => ({ name, value }))
 }
 
+/**
+ * 生成 `tabId:requestId` 复合键；无标签的请求用 global 前缀，以区分全局抓包与页面抓包。
+ */
 export function createNetworkRequestKey(tabId: number | null, requestId: string): string {
   return `${tabId === null ? 'global' : tabId}:${requestId}`
 }
 
+/**
+ * 按 id 合并写入请求记录：CDP 会分多次事件补全同一条请求，这里保证后到的事件覆盖前值。
+ */
 export function upsertNetworkRequest(
   state: ExtensionState,
   record: NetworkRequestRecord,
@@ -76,6 +88,9 @@ export function upsertNetworkRequest(
   return merged
 }
 
+/**
+ * 优先按复合键精确取，失败后按裸 requestId 兜底，兼容不同来源写入的记录。
+ */
 export function getNetworkRequestById(
   state: ExtensionState,
   requestId: string,
@@ -106,6 +121,9 @@ export function getNetworkRequestById(
   )
 }
 
+/**
+ * 输出请求摘要；只有 includeDetails 时才附带请求/响应细节，用于控制响应体积。
+ */
 export function summarizeNetworkRequest(
   record: NetworkRequestRecord,
   includeDetails = false,
@@ -170,6 +188,9 @@ function parseNetworkStatusFilter(
   }
 }
 
+/**
+ * 按文本、资源类型等过滤条件判断请求是否命中，供 list 与 HAR 导出复用。
+ */
 export function matchesNetworkRequestFilters(
   record: NetworkRequestRecord,
   filters: Record<string, unknown>,

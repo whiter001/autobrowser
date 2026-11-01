@@ -42,6 +42,9 @@ function readCompletion(
   return null
 }
 
+/**
+ * 创建 tracing 域：开始/结束录制并导出 trace 数据。
+ */
 export function createTracingDomain(
   { getTargetTab, sendDebuggerCommand }: TracingDependencies,
   maxBytes = TRACING_MAX_BYTES,

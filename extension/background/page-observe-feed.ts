@@ -47,6 +47,9 @@ export interface CollectFeedOptions {
   stallRounds: number
 }
 
+/**
+ * 按策略生成 feed 条目去重键：none 不去重，url 缺失时回落到作者+正文。
+ */
 export function feedItemDedupeKey(
   strategy: FeedDedupeStrategy,
   item: { url: string | null; author: string | null; handle: string | null; text: string },
@@ -56,6 +59,9 @@ export function feedItemDedupeKey(
   return [item.author || '', item.handle || '', item.text].join('|').trim()
 }
 
+/**
+ * 创建 feed 采集域：滚动收集条目、按策略去重并维护翻页状态。
+ */
 export function createFeedFeature({
   state,
   getTargetTab,

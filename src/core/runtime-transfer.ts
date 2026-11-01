@@ -50,6 +50,10 @@ interface RuntimeTransfer {
   clear: () => void
 }
 
+/**
+ * 聚合响应传输与文件上传的登记表，连接断开时统一清理，
+ * 避免失败任务在内存里长期占位。
+ */
 export async function createRuntimeTransfer(
   options: RuntimeTransferOptions,
 ): Promise<RuntimeTransfer> {

@@ -5,6 +5,10 @@ import { assertEvalResultWithinLimit, createElementNotFoundError } from './page-
 
 // eval / locator / highlight 三个页面求值工具：
 // 都基于页面内表达式执行，共享 selector 解析与求值入口
+
+/**
+ * 创建脚本执行命令：eval 与相关的注入执行入口。
+ */
 export function createEvalCommands(pageContext: PageInputContext) {
   const { resolveElementSelectorForTab, evaluateInTabContext } = pageContext
 

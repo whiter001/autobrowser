@@ -119,14 +119,23 @@ export const COMMAND_SPECS: CommandSpec[] = TAB_TARGET_COMMANDS.map((name) => ({
 
 const COMMAND_SPECS_BY_NAME = new Map(COMMAND_SPECS.map((spec) => [spec.name, spec]))
 
+/**
+ * 按命令名查规格；未知命令返回 undefined，由调用方按“不支持显式目标”处理。
+ */
 export function getCommandSpec(command: string): CommandSpec | undefined {
   return COMMAND_SPECS_BY_NAME.get(command)
 }
 
+/**
+ * 判断命令是否支持显式 tab 目标。未知命令一律返回 false——宁可少注入，也不要把 tabId 塞给不认识它的命令。
+ */
 export function commandSupportsTabTarget(command: string): boolean {
   return getCommandSpec(command)?.supportsTabTarget === true
 }
 
+/**
+ * 判断命令是否支持显式 frame 目标，语义与 tab 判定一致。
+ */
 export function commandSupportsFrameTarget(command: string): boolean {
   return getCommandSpec(command)?.supportsFrameTarget === true
 }
@@ -505,6 +514,10 @@ function validateBatchStep(value: unknown, index: number): void {
   }
 }
 
+/**
+ * 命令下发前的统一校验入口：先算请求预算，再按各命令的字段约束做浅层检查，
+ * 把明显非法的参数挡在本地，避免无意义的往返。
+ */
 export function validateCommandArgs(command: string, args: unknown): void {
   const normalizedArgs = requireRecordArgs(command, args)
   getCommandRequestBudgetMs(command, normalizedArgs)

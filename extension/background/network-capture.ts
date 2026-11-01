@@ -21,6 +21,9 @@ function getHarMaxRequests(state: ExtensionState): number | null {
     : (state.network.harMaxRequests ?? DEFAULT_HAR_MAX_REQUESTS)
 }
 
+/**
+ * 取当前 HAR 记录的单条响应体上限；null 表示不限制。
+ */
 export function getHarMaxBodyBytes(state: ExtensionState): number | null {
   return state.network.harMaxBodyBytes === null
     ? null

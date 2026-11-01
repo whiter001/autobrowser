@@ -36,6 +36,9 @@ function runChromeVoidCallback(invoke: (callback: () => void) => void): Promise<
   })
 }
 
+/**
+ * chrome.storage.local.get 的 Promise 封装。
+ */
 export function storageLocalGet<T extends Record<string, unknown> = Record<string, unknown>>(
   keys: string | string[] | null,
 ): Promise<T> {
@@ -44,30 +47,45 @@ export function storageLocalGet<T extends Record<string, unknown> = Record<strin
   })
 }
 
+/**
+ * chrome.storage.local.set 的 Promise 封装。
+ */
 export function storageLocalSet(items: Record<string, unknown>): Promise<void> {
   return runChromeVoidCallback((callback) => {
     chrome.storage.local.set(items, callback)
   })
 }
 
+/**
+ * chrome.tabs.get 的 Promise 封装。
+ */
 export function tabsGet(tabId: number): Promise<TabWithId> {
   return runChromeCallback((callback) => {
     chrome.tabs.get(tabId, (tab) => callback(tab as TabWithId))
   })
 }
 
+/**
+ * chrome.tabs.query 的 Promise 封装。
+ */
 export function tabsQuery(queryInfo: chrome.tabs.QueryInfo): Promise<chrome.tabs.Tab[]> {
   return runChromeCallback((callback) => {
     chrome.tabs.query(queryInfo, callback)
   })
 }
 
+/**
+ * chrome.tabs.remove 的 Promise 封装，支持单个或批量标签 ID。
+ */
 export function tabsRemove(tabIds: number | number[]): Promise<void> {
   return runChromeVoidCallback((callback) => {
     chrome.tabs.remove(Array.isArray(tabIds) ? tabIds : [tabIds], callback)
   })
 }
 
+/**
+ * chrome.tabs.update 的 Promise 封装。
+ */
 export function tabsUpdate(
   tabId: number,
   updateProperties: chrome.tabs.UpdateProperties,
@@ -77,6 +95,9 @@ export function tabsUpdate(
   })
 }
 
+/**
+ * chrome.tabs.create 的 Promise 封装。
+ */
 export function tabsCreate(
   createProperties: chrome.tabs.CreateProperties,
 ): Promise<chrome.tabs.Tab | undefined> {
@@ -85,6 +106,9 @@ export function tabsCreate(
   })
 }
 
+/**
+ * chrome.windows.create 的 Promise 封装。
+ */
 export function windowsCreate(
   createData: chrome.windows.CreateData,
 ): Promise<chrome.windows.Window | undefined> {
@@ -93,6 +117,9 @@ export function windowsCreate(
   })
 }
 
+/**
+ * chrome.windows.update 的 Promise 封装。
+ */
 export function windowsUpdate(
   windowId: number,
   updateInfo: chrome.windows.UpdateInfo,
@@ -102,6 +129,9 @@ export function windowsUpdate(
   })
 }
 
+/**
+ * chrome.debugger.attach 的 Promise 封装，失败原因由统一的回调错误处理转成异常。
+ */
 export function debuggerAttach(
   target: chrome.debugger.Debuggee,
   requiredVersion: string,
@@ -111,12 +141,18 @@ export function debuggerAttach(
   })
 }
 
+/**
+ * chrome.debugger.detach 的 Promise 封装。
+ */
 export function debuggerDetach(target: chrome.debugger.Debuggee): Promise<void> {
   return runChromeVoidCallback((callback) => {
     chrome.debugger.detach(target, callback)
   })
 }
 
+/**
+ * chrome.debugger.sendCommand 的 Promise 封装，CDP 调用统一从这里走。
+ */
 export function debuggerSendCommand<TResult = unknown>(
   target: chrome.debugger.DebuggerSession,
   method: string,

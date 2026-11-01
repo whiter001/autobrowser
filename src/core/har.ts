@@ -26,6 +26,10 @@ function toStartedAtTimestamp(value: string | null | undefined): number {
   return Number.isFinite(parsed) ? parsed : Number.POSITIVE_INFINITY
 }
 
+/**
+ * HAR 条目排序：先按 startedAt 升序，时间相同时用 id 兜底，
+ * 保证同一批请求的导出顺序在多进程下也稳定。
+ */
 export function compareHarRecords(left: HarSortableRecord, right: HarSortableRecord): number {
   const leftStartedAt = toStartedAtTimestamp(left.startedAt)
   const rightStartedAt = toStartedAtTimestamp(right.startedAt)
@@ -39,6 +43,9 @@ export function compareHarRecords(left: HarSortableRecord, right: HarSortableRec
   return leftId.localeCompare(rightId)
 }
 
+/**
+ * 把已收集的条目包装成标准 HAR 1.2 载荷。
+ */
 export function buildHarPayload(entries: Iterable<Record<string, unknown>>): HarPayload {
   return {
     log: {

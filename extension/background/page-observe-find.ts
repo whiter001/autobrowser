@@ -38,6 +38,9 @@ export interface FindSemanticTargetOptions {
   requireUnique?: boolean
 }
 
+/**
+ * 创建语义定位能力：多策略匹配（文本、placeholder、test-id 等）与 Top-N 排序。
+ */
 export function createSemanticFindFeature({
   state,
   getTargetTab,

@@ -7,6 +7,10 @@ import { createElementNotFoundError, FILL_VALUE_HELPER_SOURCE } from './page-inp
 import { PAGE_CONTEXT_DEEP_DOM_HELPERS_SOURCE } from './page-input-context.js'
 
 // 元素读取与填写：属性读取、状态判定、焦点/选中/勾选、填充与滚动
+
+/**
+ * 创建元素操作命令：click、fill、type、select、hover 等。
+ */
 export function createElementCommands(pageContext: PageInputContext) {
   const {
     state,

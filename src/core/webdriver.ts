@@ -38,6 +38,9 @@ function getSessionPath(homeDir: string, engine: WebDriverEngine): string {
   return path.join(getStateDir(homeDir), `webdriver-${engine}.json`)
 }
 
+/**
+ * 创建 WebDriver 客户端。会话 ID 落盘复用，保证多条命令落在同一个浏览器会话上。
+ */
 export function createWebDriverClient({
   engine,
   driverUrl,

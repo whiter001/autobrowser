@@ -52,6 +52,9 @@ function videoError(message: string, code: string): Error {
   return error
 }
 
+/**
+ * 创建视频域：播放探测、录制与下载。
+ */
 export function createVideoDomain({
   getTargetTab,
   evaluateInTabContext,

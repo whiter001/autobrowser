@@ -94,6 +94,9 @@ function matchesUrlPattern(currentUrl: string, pattern: string): boolean {
   return false
 }
 
+/**
+ * 创建等待能力：按条件轮询页面状态，带超时预算与取消支持。
+ */
 export function createWaitFeature({
   getTargetTab,
   resolveElementSelectorForTab,

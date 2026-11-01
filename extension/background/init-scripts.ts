@@ -35,6 +35,9 @@ function summarizeInitScript(record: InitScriptRecord): Record<string, unknown> 
   }
 }
 
+/**
+ * 创建注入脚本域：注册/移除在页面加载前执行的初始化脚本。
+ */
 export function createInitScriptDomain({
   state,
   sendRawDebuggerCommand,

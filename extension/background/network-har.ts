@@ -107,6 +107,9 @@ function buildHarTimings(record: NetworkRequestRecord): Record<string, number> {
   }
 }
 
+/**
+ * 把内部请求记录转换成一条 HAR entry（headers、body、timings 等）。
+ */
 export function buildHarEntry(record: NetworkRequestRecord): Record<string, unknown> {
   const requestHeaders = normalizeHeaderPairs(normalizeHeaders(record.requestHeaders))
   const responseHeaders = normalizeHeaderPairs(normalizeHeaders(record.responseHeaders))
@@ -192,6 +195,10 @@ export function buildHarEntry(record: NetworkRequestRecord): Record<string, unkn
   }
 }
 
+/**
+ * 把请求记录整理成完整 HAR：先按原始请求分组，再按跳序排列，
+ * 避免同毫秒的多次跳转被随机 id 打乱顺序。
+ */
 export function buildHar(records: NetworkRequestRecord[]): Record<string, unknown> {
   const ordered = [...records].sort((left, right) => {
     // 同毫秒多跳不能按随机归档 id 排序；先按原始请求分组再按跳序排列。

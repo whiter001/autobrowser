@@ -56,10 +56,17 @@ export interface CollectCheckpoint {
   failures: CollectFailure[]
 }
 
+/**
+ * 判断值是否是普通对象。collect 的输入来自用户提供的 JSON，需要先收窄再取字段。
+ */
 export function isCollectRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
 }
 
+/**
+ * 按 `a.b.0.c` 形式读取 JSON 路径，数字段按数组下标处理。
+ * 取不到时返回 undefined 而不是抛错，让调用方用默认值兜底。
+ */
 export function readJsonPath(value: unknown, path: string): unknown {
   const parts = path
     .split('.')
@@ -79,12 +86,19 @@ export function readJsonPath(value: unknown, path: string): unknown {
   return current
 }
 
+/**
+ * 生成条目去重键：剔除 _meta 后序列化。
+ * _meta 里是采集位置等易变信息，参与哈希会让同一内容被反复写入。
+ */
 export function collectItemKey(item: Record<string, unknown>): string {
   const { _meta, ...data } = item
   void _meta
   return JSON.stringify(data)
 }
 
+/**
+ * 校验并规范化 collect spec（名称、模式、输出、翻页上限），保证写进 checkpoint 前字段完整。
+ */
 export function normalizeCollectSpec(value: unknown): CollectSpec {
   if (!isCollectRecord(value)) throw new Error('collect spec must be a JSON object')
   const name = typeof value.name === 'string' ? value.name.trim() : ''

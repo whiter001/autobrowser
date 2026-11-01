@@ -257,6 +257,10 @@ async function mergeCliConfig(
   await writeCliConfig(homeDir, nextConfig)
 }
 
+/**
+ * 解析打开 connect 页所需的浏览器启动配置与扩展 ID：
+ * 显式参数优先，其次本地配置，最后回落到默认值，选中的结果会写回配置供下次复用。
+ */
 export async function resolveConnectLaunchConfig(
   homeDir: string = getHomeDir(),
   options: ResolveConnectLaunchOptions = {},
@@ -306,6 +310,9 @@ export async function resolveConnectLaunchConfig(
   }
 }
 
+/**
+ * 解析扩展 ID：显式值 > 配置文件 > 环境变量 > 内置默认，并把最终结果落盘。
+ */
 export async function resolveExtensionId(
   homeDir: string = getHomeDir(),
   explicitExtensionId?: string | null,

@@ -10,6 +10,11 @@ export type { FillFormField } from './page-input-context.js'
 
 // 多步骤动作把执行上下文按可选末位参数传下来，在每个 await 之后、发出下一个 CDP 副作用
 // 之前检查取消；keyUp/mouseReleased 这类收尾清理不传 context。
+
+/**
+ * 组装页面输入域：先建共享上下文，再把各子域命令挂上去，
+ * 子域之间只通过依赖注入互相调用。
+ */
 export function createPageInputDomain(dependencies: PageInputDependencies) {
   // 共享上下文：依赖、页面求值入口和等待工具在这里统一注入，
   // 各子域命令再通过依赖注入拿到彼此的能力，避免模块之间互相 import

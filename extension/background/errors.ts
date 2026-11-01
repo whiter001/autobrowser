@@ -12,6 +12,10 @@ export interface SerializedCommandError {
 
 // Failed commands can retain completed work (for example navigation before a wait).
 // Keep details intact for compatibility, and expose its result in both response paths.
+
+/**
+ * 把异常转成 {ok:false, error} 形式的命令响应；保留 result 字段用于“部分成功”场景。
+ */
 export function serializeCommandFailure(error: unknown): {
   ok: false
   error: SerializedCommandError
@@ -30,6 +34,11 @@ export function serializeCommandFailure(error: unknown): {
 
 // 单命令响应和 batch 步骤共用的错误序列化：
 // suggestedAction/ref/pageEpoch 等引导字段对 AI 自愈很关键，两条路径都不能丢
+
+/**
+ * 把任意异常收敛成结构化错误（message/code/suggestion/details），
+ * 保证扩展侧的机器可读信息在 CLI 端不丢失。
+ */
 export function serializeCommandError(error: unknown): SerializedCommandError {
   const err = error as ErrorWithCode
   return {

@@ -52,6 +52,10 @@ export function createExtensionDisconnectedError(
   return error
 }
 
+/**
+ * 维护扩展 WebSocket 的连接状态与心跳超时，向上层提供等待连接、
+ * 等待断开以及“扩展是否在线”的统一视图。
+ */
 export function createExtensionConnection(
   options: ExtensionConnectionOptions,
 ): ExtensionConnection {

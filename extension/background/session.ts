@@ -85,6 +85,9 @@ function updateEmulation(
   }
 }
 
+/**
+ * 创建会话域命令：保存与恢复登录态（cookies、storage）。
+ */
 export function createSessionDomain({
   state,
   getTargetTab,

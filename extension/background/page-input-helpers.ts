@@ -2,6 +2,11 @@ import type { ErrorWithCode } from './types.js'
 
 // 元素找不到时统一抛带 STALE_REFERENCE code 和 suggestedAction 的错误，
 // 让调用方（AI Agent）能区分"选择器失效"和其它失败，并知道下一步该重新 snapshot
+
+/**
+ * 构造带 code 与 suggestedAction 的“元素不存在”错误，
+ * 直接提示 agent 重新 snapshot 取新引用，而不是让它反复重试旧选择器。
+ */
 export function createElementNotFoundError(selector: string): Error {
   return Object.assign(new Error(`element not found: ${selector}`), {
     code: `STALE_REFERENCE`,
@@ -23,6 +28,10 @@ function measureEvalResultBytes(value: unknown): number | null {
 }
 
 // 只在显式传入 --max-result-bytes 时生效，且只报错不截断，保持 eval 返回原样
+
+/**
+ * eval 结果超过字节上限时抛错，防止大对象把响应通道撑爆。
+ */
 export function assertEvalResultWithinLimit(value: unknown, maxResultBytes?: number): void {
   if (maxResultBytes === undefined) return
   const bytes = measureEvalResultBytes(value)
@@ -45,6 +54,11 @@ export function assertEvalResultWithinLimit(value: unknown, maxResultBytes?: num
 // - contenteditable：按纯文本写入；其余元素仅当拥有 value 属性时赋值。
 // 返回 { found, ... }；found:false + reason 由调用方转成带 selector 的 throw。
 // 用 tagName/type 而非 instanceof，避免跨 iframe realm 的实例判断失效。
+
+/**
+ * 按元素类型选择写入方式（select / checkbox / radio / contenteditable / 普通输入），
+ * 返回是否真正写入以及失败原因。
+ */
 export function applyFillValue(
   node: any,
   value: string,
@@ -153,6 +167,9 @@ const SPECIAL_KEY_DEFINITIONS: Record<string, { key?: string; code: string; keyC
   "'": { code: 'Quote', keyCode: 222 },
 }
 
+/**
+ * 把按键名解析成 CDP 需要的 key/code/keyCode：单字符走 KeyX 规则，其余查特殊键表。
+ */
 export function getKeyboardKeyDescriptor(keyName: string) {
   const special = SPECIAL_KEY_DEFINITIONS[keyName]
   if (special) return { key: special.key || keyName, ...special }
@@ -171,6 +188,9 @@ export function getKeyboardKeyDescriptor(keyName: string) {
   return { key: keyName, code: keyName, keyCode: 0 }
 }
 
+/**
+ * 解析 `Control+Shift+K` 这类组合键，输出基础键名与修饰位掩码。
+ */
 export function parseKeyboardKey(key: string): { key: string; modifiers: number } {
   const modifiers = { shift: false, ctrl: false, alt: false, meta: false }
   let remaining = key

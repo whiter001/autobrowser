@@ -611,6 +611,9 @@ interface ProbeOutcome {
   probe: PlayProbeResult
 }
 
+/**
+ * 创建媒体采集域：发现页面视频/音频源、播放探测与下载。
+ */
 export function createMediaDomain({ state, evaluateInTabContext }: MediaDomainDependencies) {
   function frameOptions(
     frameSelector: FrameSelector,

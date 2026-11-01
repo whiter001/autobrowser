@@ -26,10 +26,17 @@ interface TabSummarySource {
   windowId?: number
 }
 
+/**
+ * 记录当前目标标签，供后续省略 tabId 的命令沿用。
+ */
 export function rememberTargetTab(state: ExtensionState, tabId: number | null | undefined): void {
   state.targeting.targetTabId = typeof tabId === 'number' ? tabId : null
 }
 
+/**
+ * 为标签分配并复用稳定句柄 tN。句柄一旦分配就不再变化，
+ * agent 才能跨轮次引用同一个标签。
+ */
 export function getOrCreateTabHandle(
   state: ExtensionState,
   tabId: number | undefined,
@@ -53,6 +60,9 @@ export function getOrCreateTabHandle(
   return handle
 }
 
+/**
+ * 标签关闭后回收句柄映射，避免 tN 继续指向已不存在的标签。
+ */
 export function clearRemovedTabHandle(state: ExtensionState, tabId: number): void {
   const handle = state.targeting.tabHandles.get(tabId)
   if (!handle) {
@@ -63,6 +73,9 @@ export function clearRemovedTabHandle(state: ExtensionState, tabId: number): voi
   state.targeting.tabIdsByHandle.delete(handle)
 }
 
+/**
+ * 把 tN 句柄还原成标签 ID；句柄不存在时返回 null，由调用方决定报错还是回退。
+ */
 export function resolveTabHandle(
   state: ExtensionState,
   tabHandle: string | null | undefined,
@@ -76,6 +89,9 @@ export function resolveTabHandle(
   return typeof tabId === 'number' ? tabId : null
 }
 
+/**
+ * 统一解析 tabId 入参：数字直接使用，tN 走句柄表，其余情况回落到当前目标。
+ */
 export function resolveTabInput(state: ExtensionState, tabId: TabInput): number | null {
   if (typeof tabId === 'number') {
     return tabId
@@ -105,6 +121,9 @@ export function createStaleTabHandleError(tabId: TabInput): ErrorWithCode {
   return error
 }
 
+/**
+ * 组装对外稳定的标签摘要（含 handle），保证同一标签在多次响应里可被持续引用。
+ */
 export function toTabSummary(state: ExtensionState, tab: TabSummarySource): TabSummary {
   return {
     id: typeof tab.id === 'number' ? tab.id : null,
@@ -118,10 +137,16 @@ export function toTabSummary(state: ExtensionState, tab: TabSummarySource): TabS
   }
 }
 
+/**
+ * 清掉该标签选定的 frame，防止标签复用后命令继续命中旧 frame。
+ */
 export function clearSelectedFrame(state: ExtensionState, tabId: number): void {
   state.targeting.selectedFrames.delete(tabId)
 }
 
+/**
+ * 取页面代次，没有则初始化为 1。代次是判定 @eN/@fN 引用是否过期的依据。
+ */
 export function getPageEpoch(state: ExtensionState, tabId: number): number {
   const currentEpoch = state.targeting.pageEpochs.get(tabId)
   if (typeof currentEpoch === 'number' && currentEpoch > 0) {
@@ -138,11 +163,17 @@ function bumpPageEpoch(state: ExtensionState, tabId: number): number {
   return nextEpoch
 }
 
+/**
+ * DOM 质变（导航、重载）后推进代次并清空选中 frame，让旧引用立即失效。
+ */
 export function invalidatePageRefs(state: ExtensionState, tabId: number): number {
   clearSelectedFrame(state, tabId)
   return bumpPageEpoch(state, tabId)
 }
 
+/**
+ * 标签关闭后清理其代次记录，避免句柄与代次表随标签数量无限增长。
+ */
 export function clearRemovedPageEpoch(state: ExtensionState, tabId: number): void {
   state.targeting.pageEpochs.delete(tabId)
 }
@@ -165,6 +196,9 @@ function createStaleRefError(
   return error
 }
 
+/**
+ * 元素引用带代次且已过期时抛出可读的 stale 错误，否则直接放行。
+ */
 export function assertFreshElementRef(
   state: ExtensionState,
   tabId: number,
@@ -183,6 +217,9 @@ export function assertFreshElementRef(
   )
 }
 
+/**
+ * frame 引用的过期校验，语义与元素引用一致。
+ */
 export function assertFreshFrameRef(
   state: ExtensionState,
   tabId: number,
@@ -208,6 +245,9 @@ export function assertFreshFrameRef(
   }
 }
 
+/**
+ * 计算本次命令实际作用的 frame：显式传参优先，否则使用该标签已选定的 frame。
+ */
 export function resolveEffectiveFrameSelector(
   state: ExtensionState,
   tab: Pick<TabSummarySource, 'id'>,
@@ -227,6 +267,9 @@ export function resolveEffectiveFrameSelector(
   return ['top', 'main', 'default'].includes(selector.toLowerCase()) ? null : selector
 }
 
+/**
+ * 把 frame 选择器合并进命令执行选项；空值时保持原样，避免用空值覆盖已有配置。
+ */
 export function withFrameSelectorOptions(
   frameSelector: string | null | undefined,
   options: EvaluateInTabContextOptions = {},

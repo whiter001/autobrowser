@@ -137,6 +137,9 @@ export function deepQuerySelectorAll(
   return results
 }
 
+/**
+ * 在 DOM 与各层 shadow root 中做深度查询，返回第一个命中元素。
+ */
 export function deepQuerySelector(
   root: DeepDomRootLike | null | undefined,
   selector: string,
@@ -145,6 +148,9 @@ export function deepQuerySelector(
   return deepQuerySelectorAll(root, selector, maxDepth, 1)[0] || null
 }
 
+/**
+ * 深度查找指定 id 的元素：原生 getElementById 穿不透 shadow DOM，这里逐层递归。
+ */
 export function deepGetElementById(
   root: DeepDomRootLike | null | undefined,
   id: string | null | undefined,
@@ -176,6 +182,9 @@ export function deepGetElementById(
   return visit(root, 0)
 }
 
+/**
+ * 判断节点是否是当前焦点元素，包括包裹在 shadow DOM 里的输入框。
+ */
 export function isDeepActiveElement(
   root: DeepDomRootLike | null | undefined,
   node: DeepDomNodeLike | null | undefined,
@@ -204,6 +213,9 @@ export function isDeepActiveElement(
   return false
 }
 
+/**
+ * 把深度遍历 helper 序列化成源码字符串，供注入页面的脚本使用（页面侧没有模块系统）。
+ */
 export function buildDeepDomTraversalHelpersSource(): string {
   return [
     toArray.toString(),

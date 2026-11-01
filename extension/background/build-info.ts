@@ -1,5 +1,8 @@
 import type { ExtensionInfo } from './extension-control.js'
 
+/**
+ * 读取扩展页面暴露的构建信息（构建时间、commit），用于诊断 CLI 与扩展版本不一致。
+ */
 export async function readExtensionBuildInfo(
   url: string,
   fetchBuildInfo: (url: string) => Promise<Response> = fetch,

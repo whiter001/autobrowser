@@ -10,6 +10,10 @@ import type { createElementCommands } from './page-input-element.js'
 const INSERT_TEXT_CHUNK_SIZE = 50
 
 // 键盘与文本输入命令：按键事件、文本插入和带提交语义的输入
+
+/**
+ * 创建键盘命令：press、type、inserttext 及按键组合。
+ */
 export function createKeyboardCommands(
   pageContext: PageInputContext,
   element: ReturnType<typeof createElementCommands>,

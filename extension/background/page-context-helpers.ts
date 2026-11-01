@@ -1,20 +1,35 @@
+/**
+ * 把任意空白折叠成单个空格并 trim，用于快照与 find 的文本归一化，
+ * 避免源码缩进、换行让同一段文案匹配不上。
+ */
 export function collapseWhitespace(value: unknown): string {
   return String(value || '')
     .replace(/\s+/g, ' ')
     .trim()
 }
 
+/**
+ * 按任意空白切分 token 列表（aria-labelledby 等属性允许用换行/制表符分隔多个引用）。
+ */
 export function splitWhitespaceTokens(value: unknown): string[] {
   const normalized = collapseWhitespace(value)
   return normalized ? normalized.split(/\s+/) : []
 }
 
+/**
+ * 从 `e42` 形式的属性值里取回序号，非该形式返回 null。
+ */
 export function parsePageContextElementRefIndex(value: unknown): number | null {
   const match = /^e(\d+)$/.exec(collapseWhitespace(value))
   return match ? Number(match[1]) : null
 }
 
 // 状态挂在 document 而不是存活节点上，删除最高编号、清空页面均不能回收编号。
+
+/**
+ * 取出或初始化挂在 document 上的观测状态。编号只增不减：
+ * 删除最高编号元素或清空页面都不会回收编号，避免旧引用被新元素复用。
+ */
 export function getPageObservationState(document: object, epoch: number) {
   const owner = document as {
     __autobrowserObservation?: {
@@ -106,6 +121,11 @@ export function createPageNameIndex(nodes: Iterable<Element>, coveredRoot?: obje
 }
 
 // 先切 UTF-16 长度再编码，避免为巨型属性分配同样巨大的编码缓冲区。
+
+/**
+ * 按 UTF-8 字节数截断文本（不是按字符数），用二分查找安全切点，
+ * 避免把多字节字符切断成乱码。
+ */
 export function boundPageText(value: unknown, maxBytes = 1024): string {
   const text = String(value ?? '').slice(0, maxBytes)
   const encoder = new TextEncoder()

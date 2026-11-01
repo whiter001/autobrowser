@@ -8,6 +8,9 @@ const BODY_FETCH_CONCURRENCY = 4
 const BODY_FETCH_QUEUE_LIMIT = 1000
 const BODY_FETCH_TIMEOUT_MS = 10_000
 
+/**
+ * 估算文本的 UTF-8 字节长度。
+ */
 export function estimateTextByteLength(text: string): number {
   return new TextEncoder().encode(text).length
 }
@@ -31,6 +34,10 @@ function truncateTextByBytes(text: string, maxBytes: number): string {
   return decoder.decode(bytes.subarray(0, maxBytes)).replace(/\uFFFD$/, '')
 }
 
+/**
+ * 按上限截断已存响应体。base64 体用长度 * 0.75 估算解码后大小，
+ * 避免为了判断大小先解码整段内容。
+ */
 export function summarizeStoredBody(
   body: string,
   base64Encoded: boolean,
@@ -55,12 +62,18 @@ export function summarizeStoredBody(
   }
 }
 
+/**
+ * 把响应体转成可存储文本；已是字符串时不再 JSON.stringify，避免出现双重引号。
+ */
 export function stringifyNetworkBody(body: unknown): { text: string; base64Encoded: boolean } {
   // 若 body 已经是字符串则直接使用，避免 JSON.stringify 产生双重引号。
   const text = typeof body === 'string' ? body : `${JSON.stringify(body, null, 2)}\n`
   return { text, base64Encoded: false }
 }
 
+/**
+ * 分块编码再 btoa，避免超大字节数组一次性展开导致调用栈溢出。
+ */
 export function encodeBase64(value: string): string {
   const bytes = new TextEncoder().encode(value)
   const chunk = 8192

@@ -19,6 +19,9 @@ export interface ExtensionControlDomain {
   reconnect: () => { reconnecting: true; reconnectExpected: true }
 }
 
+/**
+ * 创建扩展自身的控制能力：版本信息、重载与重连。
+ */
 export function createExtensionControl({
   info,
   reload,
