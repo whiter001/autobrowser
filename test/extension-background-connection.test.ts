@@ -1,7 +1,11 @@
 import { describe, expect, test } from 'bun:test'
 import { createConnectionRuntime } from '../extension/background/connection.js'
 import { createExtensionState } from '../extension/background/state.js'
-import { RELAY_PORT_STORAGE_KEY, STORAGE_KEY } from '../extension/shared.js'
+import {
+  CONNECTION_DIAGNOSTICS_STORAGE_KEY,
+  RELAY_PORT_STORAGE_KEY,
+  STORAGE_KEY,
+} from '../extension/shared.js'
 
 class MockWebSocket {
   static CONNECTING = 0
@@ -384,6 +388,7 @@ describe('extension background connection', () => {
     const originalGlobals = { chrome: globalThis.chrome, WebSocket: globalThis.WebSocket }
     const alarmListeners: Array<(alarm: { name?: string }) => void> = []
     const createdAlarms: Array<{ name: string; periodInMinutes?: number }> = []
+    const diagnosticsWrites: Array<Record<string, unknown>> = []
 
     defineGlobalValue('chrome', {
       runtime: {
@@ -428,7 +433,9 @@ describe('extension background connection', () => {
         if (typeof keys === 'string') return { [keys]: keys === STORAGE_KEY ? 't' : 57978 }
         return { [STORAGE_KEY]: 't', [RELAY_PORT_STORAGE_KEY]: 57978 }
       }) as never,
-      storageLocalSet: async () => {},
+      storageLocalSet: async (items: Record<string, unknown>) => {
+        diagnosticsWrites.push(items)
+      },
       clearTabRuntimeState: () => {},
       detachDebugger: async () => {},
       getDialogStatus: () => ({}),
@@ -454,6 +461,13 @@ describe('extension background connection', () => {
       alarmListeners[0]({ name: 'autobrowser-keepalive' })
       await flushMicrotasks()
       expect(MockWebSocket.instances).toHaveLength(2)
+
+      // 触发次数要落进诊断，extension info 才能证明 alarm 真的在按时唤醒 worker
+      const latest = diagnosticsWrites.at(-1)?.[CONNECTION_DIAGNOSTICS_STORAGE_KEY] as
+        | { keepalive?: { alarmFires: number; lastAlarmAt: string | null } }
+        | undefined
+      expect(latest?.keepalive?.alarmFires).toBe(2)
+      expect(typeof latest?.keepalive?.lastAlarmAt).toBe('string')
     } finally {
       defineGlobalValue('chrome', originalGlobals.chrome)
       defineGlobalValue('WebSocket', originalGlobals.WebSocket)

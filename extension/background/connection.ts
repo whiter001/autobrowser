@@ -162,6 +162,7 @@ export function createConnectionRuntime({
         lastCommandError: state.connection.lastCommandError,
         lastHeartbeatAt: state.connection.lastHeartbeatAt,
         lastHeartbeatSentAt: state.connection.lastHeartbeatSentAt,
+        keepalive: state.connection.keepalive,
         updatedAt: new Date().toISOString(),
       } satisfies DiagnosticsState,
     }).catch((error: Error) => {
@@ -807,9 +808,16 @@ export function createConnectionRuntime({
 
     ensureKeepaliveAlarm()
     chrome.alarms?.onAlarm?.addListener((alarm) => {
-      if (alarm?.name === KEEPALIVE_ALARM_NAME) {
-        reconnectIfDisconnected()
+      if (alarm?.name !== KEEPALIVE_ALARM_NAME) {
+        return
       }
+
+      // 记录触发次数：service worker 被回收后，这组计数是唯一能从外部确认
+      // "alarm 确实在按时唤醒 worker"的证据（extension info 会带出来）。
+      state.connection.keepalive.alarmFires += 1
+      state.connection.keepalive.lastAlarmAt = new Date().toISOString()
+      persistDiagnostics()
+      reconnectIfDisconnected()
     })
   }
 

@@ -1,4 +1,5 @@
-import { DEFAULT_RELAY_PORT } from './shared.js'
+import { CONNECTION_DIAGNOSTICS_STORAGE_KEY, DEFAULT_RELAY_PORT } from './shared.js'
+import type { DiagnosticsState } from './shared.js'
 import {
   debuggerAttach,
   debuggerDetach,
@@ -159,12 +160,20 @@ const fileTransfer = createFileTransferDomain({ state })
 const media = createMediaDomain({ state, evaluateInTabContext })
 
 const extensionControl = createExtensionControl({
-  info: async () => ({
-    extensionId: chrome.runtime.id,
-    version: chrome.runtime.getManifest().version,
-    userAgent: navigator.userAgent,
-    ...(await readExtensionBuildInfo(chrome.runtime.getURL('build-info.json'))),
-  }),
+  info: async () => {
+    // 诊断信息落在 storage 里（连接状态、心跳、keepalive 计数），这里一并带出，
+    // 让 CLI 侧不用 DevTools 就能判断报警链路是否在工作。
+    const stored = await storageLocalGet<Record<string, unknown>>([
+      CONNECTION_DIAGNOSTICS_STORAGE_KEY,
+    ])
+    return {
+      extensionId: chrome.runtime.id,
+      version: chrome.runtime.getManifest().version,
+      userAgent: navigator.userAgent,
+      ...(await readExtensionBuildInfo(chrome.runtime.getURL('build-info.json'))),
+      diagnostics: (stored?.[CONNECTION_DIAGNOSTICS_STORAGE_KEY] as DiagnosticsState) || null,
+    }
+  },
   reload: () => chrome.runtime.reload(),
   reconnect: () => connection.reconnect(),
 })

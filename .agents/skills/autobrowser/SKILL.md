@@ -84,7 +84,7 @@ autobrowser 是一个面向 Chrome/Edge 的浏览器自动化 CLI，通过本地
 - 扩展已在线时，修改代码并 `bun run build:chrome` 后用 `extension reload` 重载磁盘代码；只需重建 relay 连接时用 `extension reconnect`，它不会加载新代码。两者与刷新页面的 `reload` 不同，均不绑定 tab、不进入页面队列，仅用于 Chromium 扩展。
 - `extension reload/reconnect` 先返回 `reloading:true` / `reconnecting:true` 和 `reconnectExpected:true`，约 50ms 后异步执行。回执不是恢复完成；稍等后用 `status` 确认重新连接，再用 `tab list`、`snapshot` 刷新目标与引用，不要盲目重放原页面动作。离线时先修复连接；首次升级到支持该命令的版本需手动在 chrome://extensions 重载。
 - 扩展注册了 30 秒周期的 keepalive alarm：service worker 被浏览器回收后会在一个周期内自行重连，无需再手动打开扩展页。若 `status` 持续显示 `waiting for extension` 超过 1 分钟，再按上面步骤重载扩展或检查 relay 是否在运行；该机制随扩展代码生效，首次升级仍需先手动重载一次。
-- 重载后先用 `status` 确认恢复，再用 `extension info` 确认实际加载的版本/构建；返回 `extensionId`、`version`、`buildTime`、`commit`、`userAgent`。版本来自 manifest，构建版本与 `package.json` 同步，buildTime/commit 构建时生成；旧构建缺文件、读取失败或字段非法时对应构建字段为 `null`。`capabilities` 继续负责功能兼容协商，不用版本号代替能力判断。info 同样不绑定 tab、不进入页面队列。
+- 重载后先用 `status` 确认恢复，再用 `extension info` 确认实际加载的版本/构建；返回 `extensionId`、`version`、`buildTime`、`commit`、`userAgent`，以及 `diagnostics`（连接状态、心跳、`keepalive.alarmFires`/`lastAlarmAt`）。版本来自 manifest，构建版本与 `package.json` 同步，buildTime/commit 构建时生成；旧构建缺文件、读取失败或字段非法时对应构建字段为 `null`。`capabilities` 继续负责功能兼容协商，不用版本号代替能力判断。info 同样不绑定 tab、不进入页面队列。
 - `tab list` 适合在 `connect` 或 `open` 后确认当前活动标签页。
 - `network har start` 可以在采集前显式设置限额：
   - `--har-max-requests <n>`

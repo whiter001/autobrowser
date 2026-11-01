@@ -1,9 +1,13 @@
+import type { DiagnosticsState } from '../shared.js'
+
 export interface ExtensionInfo {
   extensionId: string
   version: string
   buildTime: string | null
   commit: string | null
   userAgent: string
+  /** 连接诊断快照，含 keepalive alarm 统计；旧构建可能为 null */
+  diagnostics?: DiagnosticsState | null
 }
 
 interface ExtensionControlDependencies {

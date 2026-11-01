@@ -22,6 +22,7 @@ export function createExtensionState(defaultRelayPort: number): ExtensionState {
       lastCommandError: null,
       lastHeartbeatAt: null,
       lastHeartbeatSentAt: null,
+      keepalive: { alarmFires: 0, lastAlarmAt: null },
       fileUploadSupported: false,
     },
     targeting: {

@@ -162,6 +162,8 @@ interface ConnectionState {
   lastCommandError: CommandErrorInfo | null
   lastHeartbeatAt: string | null
   lastHeartbeatSentAt: string | null
+  /** keepalive alarm 的运行统计：用于确认 worker 被回收后仍能自行唤醒重连 */
+  keepalive: { alarmFires: number; lastAlarmAt: string | null }
   /** relay 是否支持文件直传通道（hello capabilities.fileUpload） */
   fileUploadSupported: boolean
 }

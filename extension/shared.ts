@@ -39,6 +39,8 @@ export interface DiagnosticsState {
   lastCommandError: CommandErrorInfo | null
   lastHeartbeatAt: string | null
   lastHeartbeatSentAt: string | null
+  /** keepalive alarm 统计；旧版本扩展不写该字段 */
+  keepalive?: { alarmFires: number; lastAlarmAt: string | null }
   updatedAt: string
 }
 
