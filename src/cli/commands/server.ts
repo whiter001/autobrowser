@@ -8,16 +8,15 @@ import {
   readJsonFile,
 } from '../../core/protocol.js'
 import { isRecord } from '../client.js'
+import { getLocalControlBaseUrl, targetsLocalControlServer } from '../connection.js'
+import { startBackgroundServer } from '../server-boot.js'
 import { isHelpToken } from '../help.js'
 import {
-  buildServerLaunchArgs,
   isServerSnapshotStatus,
   isServerSnapshotOnPorts,
-  killDetachedProcess,
   readPersistedConnectionInfo,
   spawnDetachedProcess,
   stopBackgroundServer,
-  waitForServerStatus,
   type ServerSnapshotStatus,
 } from '../server-control.js'
 import { startServers } from '../../server.js'
@@ -164,25 +163,6 @@ async function handleHelp(rest: string[], context: CommandContext): Promise<numb
   return context.writeHelp(rest)
 }
 
-function getLocalControlBaseUrl(ipcPort: number): string {
-  return `http://127.0.0.1:${ipcPort}`
-}
-
-function isLoopbackHostname(hostname: string): boolean {
-  return hostname === '127.0.0.1' || hostname === 'localhost' || hostname === '::1'
-}
-
-function targetsLocalControlServer(baseUrl: string, ipcPort: number): boolean {
-  try {
-    const url = new URL(baseUrl)
-    const port = Number(url.port || (url.protocol === 'https:' ? '443' : '80'))
-
-    return url.protocol === 'http:' && isLoopbackHostname(url.hostname) && port === ipcPort
-  } catch {
-    return false
-  }
-}
-
 async function ensureBackgroundServer(
   context: CommandContext,
   options: {
@@ -192,91 +172,46 @@ async function ensureBackgroundServer(
   status: ServerSnapshotStatus
   started: boolean
 } | null> {
-  const controlBaseUrl = getLocalControlBaseUrl(context.flags.ipcPort)
-  const existingStatus = await context.getStatus(controlBaseUrl).catch(() => null)
+  const result = await startBackgroundServer({
+    relayPort: context.flags.relayPort,
+    ipcPort: context.flags.ipcPort,
+    session: context.flags.session,
+    resolveExtensionId: () => resolveExtensionId(context.homeDir, context.flags.extensionId),
+    spawnCommand: context.dependencies.spawnDetachedProcess ?? spawnDetachedProcess,
+  })
 
-  if (isServerSnapshotOnPorts(existingStatus, context.flags.relayPort, context.flags.ipcPort)) {
-    if (options.announceAlreadyRunning ?? true) {
-      process.stdout.write('autobrowser server already running\n')
-    }
-    return {
-      status: existingStatus,
-      started: false,
-    }
-  }
-
-  const extensionId = await resolveExtensionId(context.homeDir, context.flags.extensionId)
-  const spawnCommand = context.dependencies.spawnDetachedProcess ?? spawnDetachedProcess
-  let backgroundProcess
-
-  try {
-    backgroundProcess = await spawnCommand(
-      'bun',
-      buildServerLaunchArgs(
-        {
-          relayPort: context.flags.relayPort,
-          ipcPort: context.flags.ipcPort,
-        },
-        extensionId,
-        context.flags.session,
-      ),
-    )
-  } catch (error) {
-    process.stderr.write(
-      `${error instanceof Error ? error.message : 'failed to start background server'}\n`,
-    )
-    return null
-  }
-
-  const readyAbortController = new AbortController()
-  const readyResult = backgroundProcess.waitForExit
-    ? await Promise.race([
-        waitForServerStatus(
-          controlBaseUrl,
-          context.flags.relayPort,
-          context.flags.ipcPort,
-          undefined,
-          undefined,
-          readyAbortController.signal,
-        ).then((status) => ({
-          kind: 'ready' as const,
-          status,
-        })),
-        backgroundProcess.waitForExit().then((exitInfo) => ({
-          kind: 'exit' as const,
-          exitInfo,
-        })),
-      ]).finally(() => readyAbortController.abort())
-    : {
-        kind: 'ready' as const,
-        status: await waitForServerStatus(
-          controlBaseUrl,
-          context.flags.relayPort,
-          context.flags.ipcPort,
-        ),
+  switch (result.kind) {
+    case 'already-running':
+      if (options.announceAlreadyRunning ?? true) {
+        process.stdout.write('autobrowser server already running\n')
       }
+      return { status: result.status, started: false }
 
-  if (readyResult.kind === 'exit') {
-    process.stderr.write(
-      `Background server exited before becoming ready${
-        readyResult.exitInfo.code !== null ? ` (code ${readyResult.exitInfo.code})` : ''
-      }${readyResult.exitInfo.signal ? ` (signal ${readyResult.exitInfo.signal})` : ''}.\n`,
-    )
-    return null
-  }
+    case 'started':
+      process.stdout.write(
+        `autobrowser server started in background\nrelay: http://127.0.0.1:${context.flags.relayPort}\nipc: ${getLocalControlBaseUrl(context.flags.ipcPort)}\n`,
+      )
+      return { status: result.status, started: true }
 
-  if (!readyResult.status) {
-    killDetachedProcess(backgroundProcess)
-    process.stderr.write(`Failed to start background server on ${controlBaseUrl}\n`)
-    return null
-  }
+    case 'spawn-failed':
+      process.stderr.write(
+        `${result.error instanceof Error ? result.error.message : 'failed to start background server'}\n`,
+      )
+      return null
 
-  process.stdout.write(
-    `autobrowser server started in background\nrelay: http://127.0.0.1:${context.flags.relayPort}\nipc: ${controlBaseUrl}\n`,
-  )
-  return {
-    status: readyResult.status,
-    started: true,
+    case 'exited-before-ready':
+      process.stderr.write(
+        `Background server exited before becoming ready${
+          result.exitInfo.code !== null ? ` (code ${result.exitInfo.code})` : ''
+        }${result.exitInfo.signal ? ` (signal ${result.exitInfo.signal})` : ''}.\n`,
+      )
+      return null
+
+    case 'not-ready':
+      process.stderr.write(
+        `Failed to start background server on ${getLocalControlBaseUrl(context.flags.ipcPort)}\n`,
+      )
+      return null
   }
 }
 

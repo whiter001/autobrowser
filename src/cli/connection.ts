@@ -10,7 +10,7 @@ export function getLocalControlBaseUrl(ipcPort: number): string {
   return `http://127.0.0.1:${ipcPort}`
 }
 
-export function isLoopbackHostname(hostname: string): boolean {
+function isLoopbackHostname(hostname: string): boolean {
   return hostname === '127.0.0.1' || hostname === 'localhost' || hostname === '::1'
 }
 
@@ -40,7 +40,7 @@ export function isServerConnectionError(error: unknown): boolean {
   )
 }
 
-export type CommandConnectionFailure = 'not-sent' | 'unknown'
+type CommandConnectionFailure = 'not-sent' | 'unknown'
 
 const RESET_CONNECTION_PATTERNS = [
   'econnreset',
