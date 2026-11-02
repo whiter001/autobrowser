@@ -1,0 +1,427 @@
+import { describe, expect, test } from 'bun:test'
+import { COMMAND_REGISTRY } from '../src/cli/commands/index.js'
+import { COMMAND_ACTIONS, SET_RESETTABLE_VALUE_TYPES } from '../src/cli/commands/actions.js'
+import { HELP_ROOT, type HelpNode } from '../src/cli/help.js'
+import { MCP_TOOLS } from '../src/cli/mcp-tools.js'
+import { validateCommandArgs } from '../src/core/command-spec.js'
+import { runCli } from './command-line-test-utils.js'
+import {
+  extractActionSwitchBranches,
+  extractCliForwardedCommands,
+  extractRouterCommands,
+  extractSkillCommandPaths,
+  extractSkillCommandSection,
+  readCliCommandSources,
+  readWorkspaceFile,
+  SKILL_MARKDOWN_PATH,
+  uniqueSorted,
+} from './command-surface-utils.js'
+
+/**
+ * 命令面一致性契约。
+ *
+ * 同一个命令集合在仓库里被描述了多次：扩展路由（command-router.ts）真正实现了哪些命令，
+ * 命令规格（command-spec.ts）声明了哪些命令支持显式目标，CLI 帮助树（help.ts）告诉 agent
+ * 怎么调用，MCP 工具表（mcp-tools.ts）决定 MCP 客户端能拿到哪些能力。
+ *
+ * 这里锁的是「跨文件的交叉关系」，任何一处漏改都会让另外几处说谎，而且失败必须发生在
+ * 提交之前——否则 agent 读到的帮助和实际能执行的能力就会悄悄对不上。
+ */
+
+const ROUTER_COMMANDS = extractRouterCommands(
+  await readWorkspaceFile('extension/background/command-router.ts'),
+)
+
+const CLI_FORWARDED_COMMANDS = uniqueSorted(
+  (await readCliCommandSources()).flatMap((source) => extractCliForwardedCommands(source)),
+)
+
+const REGISTRY_KEYS = Object.keys(COMMAND_REGISTRY)
+
+const SKILL_COMMAND_PATHS = extractSkillCommandPaths(
+  extractSkillCommandSection(await readWorkspaceFile(SKILL_MARKDOWN_PATH)),
+)
+
+/**
+ * action 表在源码里是 as const 的字面量表，测试只需要「路径 → action 列表」的宽类型，
+ * 否则 Object.entries 会把各条目的字面量联合起来，读 defaultAction 之类的字段会报错。
+ */
+interface ActionEntry {
+  actions: readonly string[]
+  defaultAction?: string
+}
+
+const ACTION_TABLE: Record<string, ActionEntry> = COMMAND_ACTIONS
+
+/**
+ * CLI 里所有 switch 分发的 action 分支，键是被 switch 的变量名（<命令路径>Action）。
+ * 变量名约定让 switch 分支能和 action 表对上，命令实现漏分支时测试会失败。
+ */
+const CLI_ACTION_SWITCH_BRANCHES = new Map<string, string[]>()
+for (const source of await readCliCommandSources()) {
+  for (const [variable, cases] of extractActionSwitchBranches(source)) {
+    CLI_ACTION_SWITCH_BRANCHES.set(variable, cases)
+  }
+}
+
+function topLevelNodes(): HelpNode[] {
+  return HELP_ROOT.children ?? []
+}
+
+function findTopLevelNode(name: string): HelpNode | undefined {
+  return topLevelNodes().find((node) => node.name === name)
+}
+
+/** 命令路径能否在帮助树里逐级走到（顶层命令 + 可选子命令）。 */
+function resolvesToHelpNode(path: string): boolean {
+  let node: HelpNode | undefined = HELP_ROOT
+  for (const part of path.split(' ')) {
+    const children: HelpNode[] = node?.children ?? []
+    node =
+      children.find((child) => child.name === part) ??
+      children.find((child) => child.aliases?.includes(part))
+    if (!node) {
+      return false
+    }
+  }
+  return true
+}
+
+/** 帮助树里声明的全部别名 -> 所属节点。 */
+function aliasOwners(): Map<string, string> {
+  const owners = new Map<string, string>()
+  for (const node of topLevelNodes()) {
+    for (const alias of node.aliases ?? []) {
+      owners.set(alias, node.name)
+    }
+  }
+  return owners
+}
+
+describe('command surface consistency', () => {
+  test('every command the extension router implements is documented in the help tree', () => {
+    // 扩展实现了但帮助里没有的命令，agent 就永远不会知道它存在。
+    const undocumented = ROUTER_COMMANDS.filter((command) => {
+      if (!command.includes('.')) {
+        return !findTopLevelNode(command)
+      }
+      // 带命名空间的命令（tab.list）对应帮助树里的命名空间 + 子命令。
+      const [namespace, action] = command.split('.')
+      return !findTopLevelNode(namespace)?.children?.some((child) => child.name === action)
+    })
+
+    expect(undocumented).toEqual([])
+  })
+
+  test('the help tree only documents dispatchable CLI commands', () => {
+    // 帮助里写了但 CLI 根本不认识的命令，agent 照着做只会拿到 unknown command。
+    const phantom = topLevelNodes()
+      .map((node) => node.name)
+      .filter((name) => !REGISTRY_KEYS.includes(name))
+
+    expect(phantom).toEqual([])
+  })
+
+  test('every CLI command is reachable from the help tree', () => {
+    // CLI 注册了但帮助里没写的命令，agent 只能靠猜参数。
+    const documented = new Set<string>(topLevelNodes().map((node) => node.name))
+    for (const alias of aliasOwners().keys()) {
+      documented.add(alias)
+    }
+
+    const undocumented = REGISTRY_KEYS.filter((key) => !documented.has(key))
+
+    expect(undocumented).toEqual([])
+  })
+
+  test('declared aliases point at commands that actually exist', () => {
+    const owners = aliasOwners()
+
+    // 别名必须是 CLI 真实接受的顶层命令，否则帮助里出现了却调不通。
+    const dangling = [...owners.keys()].filter((alias) => !REGISTRY_KEYS.includes(alias))
+    expect(dangling).toEqual([])
+
+    // 别名不能和真实命令重名，否则顶层分发会有歧义。
+    const collisions = [...owners.keys()].filter((alias) => findTopLevelNode(alias))
+    expect(collisions).toEqual([])
+  })
+
+  test('the CLI reaches exactly the commands the extension router implements', () => {
+    // 两个方向都要锁：
+    // - CLI 发扩展不认识的命令，用户会看到 unsupported command；
+    // - 扩展实现了 CLI 够不着的命令，这条能力对用户等于不存在。
+    const routerSet = new Set(ROUTER_COMMANDS)
+    const forwardedSet = new Set(CLI_FORWARDED_COMMANDS)
+
+    expect(CLI_FORWARDED_COMMANDS.filter((command) => !routerSet.has(command))).toEqual([])
+    expect(ROUTER_COMMANDS.filter((command) => !forwardedSet.has(command))).toEqual([])
+  })
+
+  test('MCP tools only point at commands the extension router implements', () => {
+    const routerSet = new Set(ROUTER_COMMANDS)
+    const unknown = MCP_TOOLS.filter((tool) => !routerSet.has(tool.command)).map(
+      (tool) => `${tool.name} -> ${tool.command}`,
+    )
+
+    expect(unknown).toEqual([])
+  })
+
+  test('MCP tool names stay unique and follow the MCP naming constraints', () => {
+    const names = MCP_TOOLS.map((tool) => tool.name)
+
+    const duplicates = uniqueSorted(names.filter((name, index) => names.indexOf(name) !== index))
+    expect(duplicates).toEqual([])
+
+    const invalid = names.filter((name) => !/^[a-z][a-z0-9_]{0,63}$/.test(name))
+    expect(invalid).toEqual([])
+
+    const undescribed = MCP_TOOLS.filter((tool) => !tool.description.trim()).map(
+      (tool) => tool.name,
+    )
+    expect(undescribed).toEqual([])
+  })
+
+  test('every MCP tool command is reachable from the CLI', () => {
+    // MCP 走的是同一条 relay 通道；CLI 够不着的命令，MCP 客户端也用不了。
+    const forwardedSet = new Set(CLI_FORWARDED_COMMANDS)
+    const unreachable = MCP_TOOLS.filter((tool) => !forwardedSet.has(tool.command)).map(
+      (tool) => `${tool.name} -> ${tool.command}`,
+    )
+
+    expect(unreachable).toEqual([])
+  })
+})
+
+describe('cli argument parsing matches the command spec', () => {
+  // parse.ts 把 CLI 旗标翻译成命令参数，command-spec.ts 再校验同一批参数。
+  // 两处各写一遍字段名，一旦漂移，只有真正发请求时才会报错；这里用真实 CLI 调用把两层钉在一起。
+  const PARSER_BACKED_COMMANDS = [
+    { argv: ['search', 'hello'], command: 'search' },
+    { argv: ['wait', '500'], command: 'wait' },
+    { argv: ['find', 'text', 'Sign in'], command: 'find' },
+    { argv: ['console'], command: 'console' },
+    { argv: ['errors'], command: 'errors' },
+    { argv: ['snapshot'], command: 'snapshot' },
+    { argv: ['network', 'requests'], command: 'network' },
+  ]
+
+  for (const { argv, command } of PARSER_BACKED_COMMANDS) {
+    test(`${command} 的解析结果能被命令规格接受`, async () => {
+      const result = await runCli(argv)
+
+      // 参数没过本地校验时 CLI 根本不会发请求，这里必须能发出去。
+      expect(result.fetchCalls).toHaveLength(1)
+      const body = result.fetchCalls[0].body
+      expect(body?.command).toBe(command)
+      expect(() => validateCommandArgs(command, body?.args ?? {})).not.toThrow()
+    })
+  }
+})
+
+describe('agent skill command list only names real commands', () => {
+  /**
+   * SKILL.md 是 agent 真正加载的那份指引，它的「常用命令」清单比 help 树更容易过期：
+   * help 树改了没人会主动同步 skill 文件，而 agent 读到的是后者。
+   *
+   * 单向锁：清单里写到的命令必须真实存在（CLI 能分发、帮助树里有条目）；
+   * 但不要求清单覆盖全部命令——它本来就是策展子集，漏写不算漂移，写错才算。
+   */
+  test('SKILL.md 常用命令清单里的每条命令都真实存在', () => {
+    // 段落被改名或解析失灵时这里会掉到 0，防止整组断言变成空转。
+    expect(SKILL_COMMAND_PATHS.length).toBeGreaterThanOrEqual(50)
+
+    // 命令必须真的能分发，而不是只在文档里出现过。
+    const unknownCommands = SKILL_COMMAND_PATHS.filter(
+      (path) => !REGISTRY_KEYS.includes(path.split(' ')[0]),
+    )
+    expect(unknownCommands).toEqual([])
+
+    // 带子命令的条目（tab list、network har start）必须在帮助树里有对应层级。
+    const undocumented = SKILL_COMMAND_PATHS.filter((path) => !resolvesToHelpNode(path))
+    expect(undocumented).toEqual([])
+  })
+})
+
+describe('help tree and command action table agree', () => {
+  /**
+   * 命令的 action 白名单现在集中在 src/cli/commands/actions.ts 一处，帮助树是另一处独立描述。
+   * 两者必须逐命名空间一致：
+   * - 帮助树写了 CLI 不接受的 action，agent 照着做只会拿到 unsupported action；
+   * - CLI 接受了但帮助树没写的 action，agent 根本不知道它存在。
+   */
+
+  /**
+   * action 表在源码里是 as const 的字面量表，测试只需要「路径 → action 列表」的宽类型，
+   * 否则 Object.entries 会把各条目的字面量联合起来，读 defaultAction 之类的字段会报错。
+   */
+
+  /**
+   * 帮助树每个节点的子命令，键用点号分隔的命令路径，与 action 表的键同一套写法
+   * （'network.har' 对应 network → har）。
+   */
+  function helpChildrenByPath(): Map<string, string[]> {
+    const children = new Map<string, string[]>()
+    const walk = (node: HelpNode, prefix: string[]): void => {
+      for (const child of node.children ?? []) {
+        const path = [...prefix, child.name]
+        children.set(
+          path.join('.'),
+          (child.children ?? []).map((entry) => entry.name),
+        )
+        walk(child, path)
+      }
+    }
+    walk(HELP_ROOT, [])
+    return children
+  }
+
+  const HELP_CHILDREN = helpChildrenByPath()
+
+  test('every action the CLI accepts is documented in the help tree', () => {
+    const undocumented: string[] = []
+    for (const [path, spec] of Object.entries(ACTION_TABLE)) {
+      const documented = HELP_CHILDREN.get(path) ?? []
+      for (const action of spec.actions) {
+        if (!documented.includes(action)) {
+          undocumented.push(`${path} ${action}`)
+        }
+      }
+    }
+
+    expect(undocumented).toEqual([])
+  })
+
+  test('the help tree does not document actions the CLI would reject', () => {
+    const phantom: string[] = []
+    for (const [path, children] of HELP_CHILDREN) {
+      const spec = ACTION_TABLE[path]
+      // 表里没有这个路径，说明该节点不接子命令；帮助树却写了子命令，就是假的。
+      const accepted = spec ? [...spec.actions] : []
+      for (const child of children) {
+        if (!accepted.includes(child)) {
+          phantom.push(`${path} ${child}`)
+        }
+      }
+    }
+
+    expect(phantom).toEqual([])
+  })
+
+  test('every action path in the table is a real CLI command', () => {
+    const unknown: string[] = []
+    for (const path of Object.keys(ACTION_TABLE)) {
+      const head = path.split('.')[0]!
+      if (!REGISTRY_KEYS.includes(head)) {
+        unknown.push(path)
+      }
+    }
+
+    expect(unknown).toEqual([])
+  })
+
+  test('the action table is internally consistent', () => {
+    const duplicates: string[] = []
+    const badDefaults: string[] = []
+    for (const [path, spec] of Object.entries(ACTION_TABLE)) {
+      if (new Set(spec.actions).size !== spec.actions.length) {
+        duplicates.push(path)
+      }
+      if (spec.defaultAction !== undefined && !spec.actions.includes(spec.defaultAction)) {
+        badDefaults.push(path)
+      }
+    }
+
+    expect(duplicates).toEqual([])
+    expect(badDefaults).toEqual([])
+  })
+
+  test('the default action is always documented in the help tree', () => {
+    const undocumented: string[] = []
+    for (const [path, spec] of Object.entries(ACTION_TABLE)) {
+      if (spec.defaultAction === undefined) {
+        continue
+      }
+      const documented = HELP_CHILDREN.get(path) ?? []
+      if (!documented.includes(spec.defaultAction)) {
+        undocumented.push(`${path} ${spec.defaultAction}`)
+      }
+    }
+
+    expect(undocumented).toEqual([])
+  })
+
+  test('behaviour groupings only reference actions the CLI accepts', () => {
+    const accepted = ACTION_TABLE.set?.actions ?? []
+    const unknown = SET_RESETTABLE_VALUE_TYPES.filter((type) => !accepted.includes(type))
+
+    expect(unknown).toEqual([])
+  })
+})
+
+describe('command action table and implementation branches agree', () => {
+  /**
+   * 改成 switch 分发的命令，其 case 标签就是实现面，必须和 action 表逐个对得上：
+   * - 表里声明了 action 但 switch 没有分支，实现会静默走错路径；
+   * - switch 有分支但表里没声明，帮助树和表就对不上真实能力。
+   *
+   * 变量名约定：<命令路径 camelCase> + 'Action'（tracingAction → 'tracing'）。
+   * 表里没有对应路径的 switch 会被当成孤儿报出来，避免出现没人管的 action 分发。
+   */
+
+  /** 必须走 switch 分发的命令；解析失效时这里会掉到 0，防止整组断言变成空转。 */
+  const SWITCH_DISPATCHED_COMMANDS = [
+    'tracing',
+    'video',
+    'snapshot',
+    'session',
+    'target',
+    'command',
+    'tab',
+  ]
+
+  function tablePathByVariable(): Map<string, string> {
+    const byVariable = new Map<string, string>()
+    for (const path of Object.keys(ACTION_TABLE)) {
+      const camel = path
+        .split('.')
+        .map((part) => part.replace(/-([a-z])/g, (_, char: string) => char.toUpperCase()))
+        .join('')
+      byVariable.set(`${camel}Action`, path)
+    }
+    return byVariable
+  }
+
+  const BRANCHES = CLI_ACTION_SWITCH_BRANCHES
+
+  test('every switch based command dispatch is bound to the action table', () => {
+    const pathByVariable = tablePathByVariable()
+    const orphans = [...BRANCHES.keys()].filter((variable) => !pathByVariable.has(variable))
+
+    expect(orphans).toEqual([])
+  })
+
+  test('the switch based commands are actually extracted', () => {
+    // 抽取逻辑失灵时（例如 switch 写法变了）不能让这组断言空转。
+    const pathByVariable = tablePathByVariable()
+    const found = [...BRANCHES.keys()].map((variable) => pathByVariable.get(variable))
+
+    for (const command of SWITCH_DISPATCHED_COMMANDS) {
+      expect(found).toContain(command)
+    }
+  })
+
+  test('switch branches and the action table list the same actions', () => {
+    const pathByVariable = tablePathByVariable()
+    const mismatched: { path: string; branches: string[]; actions: string[] }[] = []
+
+    for (const [variable, branches] of BRANCHES) {
+      const path = pathByVariable.get(variable)!
+      const actions = [...(ACTION_TABLE[path]?.actions ?? [])].sort()
+      if (JSON.stringify(branches) !== JSON.stringify(actions)) {
+        mismatched.push({ path, branches, actions })
+      }
+    }
+
+    expect(mismatched).toEqual([])
+  })
+})

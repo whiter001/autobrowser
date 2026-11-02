@@ -5,13 +5,12 @@ import {
   requestAndWrite,
   writeCommandError,
 } from './shared.js'
+import { COMMAND_ACTIONS } from './actions.js'
 import type { CommandRegistry } from './types.js'
-
-const WEBMCP_ACTIONS = ['list', 'call'] as const
 
 const handleWebMcp = createActionCommand({
   helpPath: ['webmcp'],
-  allowed: WEBMCP_ACTIONS,
+  allowed: COMMAND_ACTIONS.webmcp.actions,
   handle: async (rest, context, action) => {
     if (action === 'list') {
       if (rest.length) return writeCommandError(`unexpected argument for webmcp list: ${rest[0]}`)

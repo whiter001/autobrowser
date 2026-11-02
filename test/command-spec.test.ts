@@ -1,5 +1,4 @@
 import { describe, expect, test } from 'bun:test'
-import { readdir, readFile } from 'node:fs/promises'
 import {
   COMMAND_SPECS,
   commandSupportsFrameTarget,
@@ -7,6 +6,13 @@ import {
   getCommandSpec,
   validateCommandArgs,
 } from '../src/core/command-spec.js'
+import {
+  extractCliForwardedCommands,
+  extractRouterCommands,
+  readCliCommandSources,
+  readWorkspaceFile,
+  uniqueSorted,
+} from './command-surface-utils.js'
 
 const NON_AMBIENT_ROUTER_COMMANDS = new Set([
   'open',
@@ -22,35 +28,6 @@ const NON_AMBIENT_ROUTER_COMMANDS = new Set([
   'command',
   'extension',
 ])
-
-function uniqueSorted(values: Iterable<string>): string[] {
-  return [...new Set(values)].sort()
-}
-
-function extractRouterCommands(source: string): string[] {
-  return uniqueSorted([...source.matchAll(/case '([^']+)'/g)].map((match) => match[1]))
-}
-
-function extractCliForwardedCommands(source: string): string[] {
-  const matches = source.matchAll(
-    /(?:requestAndWrite\(context,\s*|context\.requestCommand\(context\.flags\.server,\s*|command:\s*)['"]([^'"]+)['"]/g,
-  )
-  return uniqueSorted([...matches].map((match) => match[1]))
-}
-
-async function readWorkspaceFile(relativePath: string): Promise<string> {
-  return await readFile(new URL(`../${relativePath}`, import.meta.url), 'utf8')
-}
-
-async function readCliCommandSources(): Promise<string[]> {
-  const commandsDir = new URL('../src/cli/commands/', import.meta.url)
-  const entries = await readdir(commandsDir)
-  return await Promise.all(
-    entries
-      .filter((entry) => entry.endsWith('.ts') && !['index.ts', 'types.ts'].includes(entry))
-      .map(async (entry) => await readFile(new URL(entry, commandsDir), 'utf8')),
-  )
-}
 
 describe('command specs', () => {
   test('validates media readiness as part of the media request', () => {

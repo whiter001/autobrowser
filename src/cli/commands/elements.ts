@@ -2,6 +2,7 @@ import { readFile, stat } from 'node:fs/promises'
 import path from 'node:path'
 import { DROP_MAX_FILE_BYTES, DROP_MAX_TOTAL_BYTES } from '../../core/command-spec.js'
 import { parseFindArgs, parseOptionalNumberArg } from '../parse.js'
+import { COMMAND_ACTIONS } from './actions.js'
 import {
   createSingleArgRequestCommand,
   helpRequested,
@@ -12,8 +13,6 @@ import {
   writeCommandError,
 } from './shared.js'
 import type { CommandContext, CommandRegistry } from './types.js'
-
-const KEYBOARD_ACTIONS = ['type', 'inserttext', 'keydown', 'keyup'] as const
 
 const handleClick = createSingleArgRequestCommand({
   helpPath: ['click'],
@@ -186,7 +185,7 @@ async function handleType(rest: string[], context: CommandContext): Promise<numb
 }
 
 async function handleKeyboard(rest: string[], context: CommandContext): Promise<number | void> {
-  const action = readAllowedArg(rest[0], context, ['keyboard'], KEYBOARD_ACTIONS)
+  const action = readAllowedArg(rest[0], context, ['keyboard'], COMMAND_ACTIONS.keyboard.actions)
   if (!action) {
     return 0
   }

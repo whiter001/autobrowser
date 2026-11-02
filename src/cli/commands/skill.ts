@@ -2,6 +2,7 @@ import { copyFile, mkdir, readFile, stat } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { COMMAND_ACTIONS } from './actions.js'
 import { createActionCommand, writeCommandError } from './shared.js'
 import type { CommandRegistry } from './types.js'
 
@@ -94,7 +95,7 @@ async function handleStatus(): Promise<number | void> {
 export const skillCommandRegistry: CommandRegistry = {
   skill: createActionCommand({
     helpPath: ['skill'],
-    allowed: ['sync', 'status'],
+    allowed: COMMAND_ACTIONS.skill.actions,
     handle: async (_rest, _context, action) => {
       if (action === 'sync') return handleSync()
       return handleStatus()

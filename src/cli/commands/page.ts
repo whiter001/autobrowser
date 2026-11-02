@@ -12,6 +12,7 @@ import {
 } from '../parse.js'
 import { buildSnapshotJsonl } from '../snapshot-export.js'
 import { buildSnapshotFieldJsonl, type SnapshotFieldSelection } from '../snapshot-structure.js'
+import { COMMAND_ACTIONS, isCommandAction } from './actions.js'
 import {
   createActionCommand,
   createNoArgRequestCommand,
@@ -24,10 +25,7 @@ import {
 } from './shared.js'
 import type { CommandContext, CommandHandler, CommandRegistry } from './types.js'
 
-const WINDOW_ACTIONS = ['new'] as const
-const DIALOG_ACTIONS = ['accept', 'dismiss', 'status', 'auto'] as const
 const FEED_DEDUPE_OPTIONS = ['url', 'text', 'none'] as const
-const SCRIPT_ACTIONS = ['add', 'list', 'remove'] as const
 
 function commandNeedsSelector(attr: string): boolean {
   return !['title', 'url', 'cdp-url'].includes(attr)
@@ -300,7 +298,7 @@ async function handleCdp(rest: string[], context: CommandContext): Promise<numbe
 }
 
 async function handleScript(rest: string[], context: CommandContext): Promise<number | void> {
-  const action = readAllowedArg(rest[0], context, ['script'], SCRIPT_ACTIONS)
+  const action = readAllowedArg(rest[0], context, ['script'], COMMAND_ACTIONS.script.actions)
   if (!action) {
     return 0
   }
@@ -350,85 +348,101 @@ async function handleSnapshot(rest: string[], context: CommandContext): Promise<
     return 0
   }
 
-  if (rest[0] === 'export') {
-    if (helpRequested(rest[1], context, ['snapshot', 'export'])) {
+  // export / extract 是 CLI 本地的子命令；其余 token 是选择器，走普通 snapshot。
+  // switch 分支集合就是 snapshot 的实现面，测试会拿它和 action 表核对。
+  const snapshotAction = rest[0]
+  switch (snapshotAction) {
+    case 'export': {
+      if (helpRequested(rest[1], context, ['snapshot', 'export'])) {
+        return 0
+      }
+
+      const outputPath = await resolveSnapshotExportPath(rest[1] || null)
+      const payload = await context.requestCommand(context.flags.server, 'snapshot', {})
+
+      if (payload.ok === false) {
+        context.writeResult(payload)
+        return 1
+      }
+
+      const snapshot = isRecord(payload.result) ? (payload.result as Record<string, unknown>) : null
+      if (!snapshot) {
+        process.stderr.write('snapshot export requires a structured snapshot result\n')
+        return 1
+      }
+
+      const { content, recordCount } = buildSnapshotJsonl(snapshot)
+      await writeFile(outputPath, content, 'utf8')
+
+      if (context.flags.json) {
+        context.writeResult({
+          ok: true,
+          result: {
+            path: outputPath,
+            format: 'jsonl',
+            recordCount,
+          },
+        })
+        return 0
+      }
+
+      process.stdout.write(`${outputPath}\n`)
       return 0
     }
 
-    const outputPath = await resolveSnapshotExportPath(rest[1] || null)
-    const payload = await context.requestCommand(context.flags.server, 'snapshot', {})
+    case 'extract': {
+      if (helpRequested(rest[1], context, ['snapshot', 'extract'])) {
+        return 0
+      }
 
-    if (payload.ok === false) {
-      context.writeResult(payload)
-      return 1
-    }
+      const parsedExtractArgs = parseOrWriteError(() => parseSnapshotFieldSelectors(rest.slice(1)))
+      if (!parsedExtractArgs) {
+        return 1
+      }
 
-    const snapshot = isRecord(payload.result) ? (payload.result as Record<string, unknown>) : null
-    if (!snapshot) {
-      process.stderr.write('snapshot export requires a structured snapshot result\n')
-      return 1
-    }
+      const resolvedOutputPath = await resolveSnapshotExportPath(parsedExtractArgs.outputPath)
+      const payload = await context.requestCommand(context.flags.server, 'snapshot', {})
 
-    const { content, recordCount } = buildSnapshotJsonl(snapshot)
-    await writeFile(outputPath, content, 'utf8')
+      if (payload.ok === false) {
+        context.writeResult(payload)
+        return 1
+      }
 
-    if (context.flags.json) {
-      context.writeResult({
-        ok: true,
-        result: {
-          path: outputPath,
-          format: 'jsonl',
-          recordCount,
-        },
-      })
+      const snapshot = isRecord(payload.result) ? (payload.result as Record<string, unknown>) : null
+      if (!snapshot) {
+        process.stderr.write('snapshot extract requires a structured snapshot result\n')
+        return 1
+      }
+
+      const { content, recordCount } = buildSnapshotFieldJsonl(
+        snapshot,
+        parsedExtractArgs.selection,
+      )
+      await writeFile(resolvedOutputPath, content, 'utf8')
+
+      if (context.flags.json) {
+        context.writeResult({
+          ok: true,
+          result: {
+            path: resolvedOutputPath,
+            format: 'jsonl',
+            recordCount,
+          },
+        })
+        return 0
+      }
+
+      process.stdout.write(`${resolvedOutputPath}\n`)
       return 0
     }
-
-    process.stdout.write(`${outputPath}\n`)
-    return 0
-  }
-
-  if (rest[0] === 'extract') {
-    if (helpRequested(rest[1], context, ['snapshot', 'extract'])) {
-      return 0
+    default: {
+      // 表里声明了 action 但还没有实现分支：必须报错，不能静默当成普通 snapshot。
+      if (isCommandAction('snapshot', snapshotAction)) {
+        process.stderr.write(`unsupported snapshot action: ${snapshotAction}\n`)
+        return 1
+      }
+      break
     }
-
-    const parsedExtractArgs = parseOrWriteError(() => parseSnapshotFieldSelectors(rest.slice(1)))
-    if (!parsedExtractArgs) {
-      return 1
-    }
-
-    const resolvedOutputPath = await resolveSnapshotExportPath(parsedExtractArgs.outputPath)
-    const payload = await context.requestCommand(context.flags.server, 'snapshot', {})
-
-    if (payload.ok === false) {
-      context.writeResult(payload)
-      return 1
-    }
-
-    const snapshot = isRecord(payload.result) ? (payload.result as Record<string, unknown>) : null
-    if (!snapshot) {
-      process.stderr.write('snapshot extract requires a structured snapshot result\n')
-      return 1
-    }
-
-    const { content, recordCount } = buildSnapshotFieldJsonl(snapshot, parsedExtractArgs.selection)
-    await writeFile(resolvedOutputPath, content, 'utf8')
-
-    if (context.flags.json) {
-      context.writeResult({
-        ok: true,
-        result: {
-          path: resolvedOutputPath,
-          format: 'jsonl',
-          recordCount,
-        },
-      })
-      return 0
-    }
-
-    process.stdout.write(`${resolvedOutputPath}\n`)
-    return 0
   }
 
   const snapshotTarget = parseOrWriteError(() => parseSnapshotArgs(rest))
@@ -592,7 +606,7 @@ async function handleClose(rest: string[], context: CommandContext): Promise<num
 
 const handleWindow = createActionCommand({
   helpPath: ['window'],
-  allowed: WINDOW_ACTIONS,
+  allowed: COMMAND_ACTIONS.window.actions,
   handle: async (_rest, context, action) => {
     await requestAndWrite(context, 'window', { action })
     return 0
@@ -666,7 +680,7 @@ async function handleGet(rest: string[], context: CommandContext): Promise<numbe
 
 const handleDialog = createActionCommand({
   helpPath: ['dialog'],
-  allowed: DIALOG_ACTIONS,
+  allowed: COMMAND_ACTIONS.dialog.actions,
   handle: async (rest, context, action) => {
     if (action === 'status') {
       await requestAndWrite(context, 'dialog', { action: 'status' })
@@ -706,7 +720,7 @@ const handleDownloads: CommandHandler = async (rest, context) => {
   }
 
   // list 是默认 subaction（不带子命令时直接列出），分页参数复用 console/errors 的解析
-  const action = subcommand === 'clear' ? 'clear' : 'list'
+  const action = isCommandAction('downloads', subcommand) ? subcommand : 'list'
   const argRest = subcommand === 'clear' || subcommand === 'list' ? rest.slice(1) : rest
 
   if (action === 'clear') {

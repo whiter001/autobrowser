@@ -1,6 +1,6 @@
 import { isRecord } from './client.js'
 
-interface McpToolDefinition {
+export interface McpToolDefinition {
   name: string
   description: string
   command: string

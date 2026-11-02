@@ -8,6 +8,7 @@ import {
   MAX_DOWNLOAD_RETRIES,
   MAX_DOWNLOAD_RETRY_DELAY_MS,
 } from '../../core/file-transfer.js'
+import { COMMAND_ACTIONS, isCommandAction } from './actions.js'
 import { helpRequested, writeCommandError } from './shared.js'
 import type { CommandContext, CommandHandler, CommandRegistry } from './types.js'
 
@@ -275,7 +276,11 @@ async function handleDownload(rest: string[], context: CommandContext): Promise<
 const handleMedia: CommandHandler = async (rest, context) => {
   if (helpRequested(rest[0], context, ['media'])) return 0
   if (rest[0] === 'list' && helpRequested(rest[1], context, ['media', 'list'])) return 0
-  if (rest[0] !== 'list') return writeCommandError('unsupported media action; expected list')
+  if (!isCommandAction('media', rest[0])) {
+    return writeCommandError(
+      `unsupported media action; expected ${COMMAND_ACTIONS.media.actions.join('|')}`,
+    )
+  }
   const extra = rest.slice(1)
   let resolve = false
   let includeBackground = false

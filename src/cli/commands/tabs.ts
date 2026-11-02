@@ -1,145 +1,180 @@
 import { isRecord, shouldOpenInNewTab, type CommandResponse } from '../client.js'
 import { parseNumberArg } from '../parse.js'
-import { helpRequested, parseOrWriteError, readRequiredArg } from './shared.js'
+import {
+  helpRequested,
+  parseOrWriteError,
+  readRequiredArg,
+  requestAndWrite,
+  resolveCommandAction,
+  runActionCommand,
+} from './shared.js'
 import type { CommandContext, CommandRegistry } from './types.js'
 
 async function handleTab(rest: string[], context: CommandContext): Promise<number | void> {
-  const [subcommand, ...tabArgs] = rest
-  if (helpRequested(subcommand, context, ['tab'])) {
+  const resolution = resolveCommandAction(rest[0], 'tab', context, ['tab'])
+  if (resolution.kind === 'help') return 0
+  // 没有子命令时打印帮助；不认识的子命令当作 tab handle 处理（见下方 unsupported 分支）。
+  if (resolution.kind === 'missing') return context.writeHelp(['tab'])
+  if (resolution.kind === 'unsupported') {
+    // 未识别的子命令当作 tab handle 处理：`autobrowser tab t3` 等价于 `tab select t3`。
+    await requestAndWrite(context, 'tab.select', { handle: resolution.token })
     return 0
   }
 
-  if (subcommand === 'list') {
-    if (helpRequested(tabArgs[0], context, ['tab', 'list'])) {
-      return 0
-    }
-    const args: Record<string, unknown> = {}
-    for (let index = 0; index < tabArgs.length; index += 1) {
-      const value = tabArgs[index]
-      if (value === '--active' || value === '--current-window') {
-        args[value === '--active' ? 'active' : 'currentWindow'] = true
-        continue
+  const tabAction = resolution.action
+  const tabArgs = rest.slice(1)
+  // switch 分支集合就是 tab 的实现面，测试会拿它和 action 表核对。
+  switch (tabAction) {
+    case 'list': {
+      if (helpRequested(tabArgs[0], context, ['tab', 'list'])) {
+        return 0
       }
-      if (value === '--filter') {
-        const filter = tabArgs[index + 1]
-        if (filter === undefined) {
-          throw new Error('missing value for --filter')
-        }
-        args.filter = filter
-        index += 1
-        continue
-      }
-      if (value === '--page' || value === '--page-idx') {
-        args.pageIdx = parseNumberArg(tabArgs[++index], 'page idx', { min: 0, integer: true })
-        continue
-      }
-      if (value === '--page-size') {
-        args.pageSize = parseNumberArg(tabArgs[++index], 'page size', {
-          min: 1,
-          max: 200,
-          integer: true,
-        })
-        continue
-      }
-      return context.writeHelp(['tab', 'list'])
-    }
-    const payload = await context.requestCommand(context.flags.server, 'tab.list', args)
-    context.writeResult(payload)
-    return 0
-  }
-
-  if (subcommand === 'new') {
-    if (helpRequested(tabArgs[0], context, ['tab', 'new'])) {
-      return 0
-    }
-    const parsed = parseOrWriteError(() => {
+      const args: Record<string, unknown> = {}
       for (let index = 0; index < tabArgs.length; index += 1) {
-        const value = tabArgs[index]!
-        if (value === '--wait-for') index += 2
-        else if (value === '--timeout-ms') index += 1
-        else if (value.startsWith('--')) throw new Error(`unsupported tab new option: ${value}`)
+        const value = tabArgs[index]
+        if (value === '--active' || value === '--current-window') {
+          args[value === '--active' ? 'active' : 'currentWindow'] = true
+          continue
+        }
+        if (value === '--filter') {
+          const filter = tabArgs[index + 1]
+          if (filter === undefined) {
+            throw new Error('missing value for --filter')
+          }
+          args.filter = filter
+          index += 1
+          continue
+        }
+        if (value === '--page' || value === '--page-idx') {
+          args.pageIdx = parseNumberArg(tabArgs[++index], 'page idx', { min: 0, integer: true })
+          continue
+        }
+        if (value === '--page-size') {
+          args.pageSize = parseNumberArg(tabArgs[++index], 'page size', {
+            min: 1,
+            max: 200,
+            integer: true,
+          })
+          continue
+        }
+        return context.writeHelp(['tab', 'list'])
       }
-      const options = parseGotoArgs(tabArgs)
-      if (options.timeoutMs !== undefined && !options.waitFor) {
-        throw new Error('--timeout-ms requires --wait-for for tab new')
-      }
-      return options
-    })
-    if (!parsed) return 1
-    const payload = await createTabAndWait(context, parsed.url || 'about:blank', parsed)
-    context.writeResult(payload)
-    return payload.ok === false ? 1 : 0
-  }
-
-  if (subcommand === 'select') {
-    const handle = readRequiredArg(tabArgs[0], context, ['tab', 'select'])
-    if (!handle) {
+      await requestAndWrite(context, 'tab.list', args)
       return 0
     }
-    const payload = await context.requestCommand(context.flags.server, 'tab.select', { handle })
-    context.writeResult(payload)
-    return 0
-  }
 
-  if (subcommand === 'close') {
-    const handle = tabArgs[0]
-    if (helpRequested(handle, context, ['tab', 'close'])) {
+    case 'new': {
+      if (helpRequested(tabArgs[0], context, ['tab', 'new'])) {
+        return 0
+      }
+      const parsed = parseOrWriteError(() => {
+        for (let index = 0; index < tabArgs.length; index += 1) {
+          const value = tabArgs[index]!
+          if (value === '--wait-for') index += 2
+          else if (value === '--timeout-ms') index += 1
+          else if (value.startsWith('--')) throw new Error(`unsupported tab new option: ${value}`)
+        }
+        const options = parseGotoArgs(tabArgs)
+        if (options.timeoutMs !== undefined && !options.waitFor) {
+          throw new Error('--timeout-ms requires --wait-for for tab new')
+        }
+        return options
+      })
+      if (!parsed) return 1
+      const payload = await createTabAndWait(context, parsed.url || 'about:blank', parsed)
+      context.writeResult(payload)
+      return payload.ok === false ? 1 : 0
+    }
+
+    case 'select': {
+      const handle = readRequiredArg(tabArgs[0], context, ['tab', 'select'])
+      if (!handle) {
+        return 0
+      }
+      await requestAndWrite(context, 'tab.select', { handle })
       return 0
     }
-    const payload = await context.requestCommand(
-      context.flags.server,
-      'tab.close',
-      handle ? { handle } : {},
-    )
-    context.writeResult(payload)
-    return 0
-  }
 
-  if (subcommand) {
-    const payload = await context.requestCommand(context.flags.server, 'tab.select', {
-      handle: subcommand,
-    })
-    context.writeResult(payload)
-    return 0
-  }
+    case 'close': {
+      const handle = tabArgs[0]
+      if (helpRequested(handle, context, ['tab', 'close'])) {
+        return 0
+      }
+      await requestAndWrite(context, 'tab.close', handle ? { handle } : {})
+      return 0
+    }
 
-  return context.writeHelp(['tab'])
+    default: {
+      // 表里声明了 action 但还没有实现分支：必须报错，不能静默当成功。
+      process.stderr.write(`tab action is not implemented: ${tabAction}\n`)
+      return 1
+    }
+  }
 }
 
 async function handleTarget(rest: string[], context: CommandContext): Promise<number | void> {
-  const action = rest[0] || 'show'
-  if (helpRequested(action, context, ['target'])) return 0
-  if (!['show', 'clear', 'active', 'set'].includes(action)) return context.writeHelp(['target'])
-  const handle = action === 'set' ? readRequiredArg(rest[1], context, ['target', 'set']) : undefined
-  if (action === 'set' && !handle) return 0
-  const payload = await context.requestCommand(context.flags.server, 'target', {
-    action,
-    ...(handle ? { handle } : {}),
-  })
-  context.writeResult(payload)
-  return payload.ok === false ? 1 : 0
+  const resolution = resolveCommandAction(rest[0], 'target', context, ['target'])
+  if (resolution.kind === 'help') return 0
+  if (resolution.kind !== 'action') return context.writeHelp(['target'])
+
+  const targetAction = resolution.action
+  // switch 分支集合就是 target 的实现面，测试会拿它和 action 表核对。
+  switch (targetAction) {
+    case 'show':
+    case 'clear':
+    case 'active': {
+      return await runActionCommand(context, 'target', { action: targetAction })
+    }
+    case 'set': {
+      const handle = readRequiredArg(rest[1], context, ['target', 'set'])
+      if (!handle) return 0
+      return await runActionCommand(context, 'target', { action: 'set', handle })
+    }
+    default: {
+      // 表里声明了 action 但还没有实现分支：必须报错，不能静默当成功。
+      process.stderr.write(`target action is not implemented: ${targetAction}\n`)
+      return 1
+    }
+  }
 }
 
 async function handleCommandControl(
   rest: string[],
   context: CommandContext,
 ): Promise<number | void> {
-  const action = rest[0] || 'list'
-  if (helpRequested(action, context, ['command'])) return 0
-  if (!['list', 'status', 'cancel', 'reset'].includes(action)) {
-    return context.writeHelp(['command'])
+  const resolution = resolveCommandAction(rest[0], 'command', context, ['command'])
+  if (resolution.kind === 'help') return 0
+  if (resolution.kind !== 'action') return context.writeHelp(['command'])
+
+  const commandAction = resolution.action
+  // switch 分支集合就是 command 的实现面，测试会拿它和 action 表核对。
+  switch (commandAction) {
+    case 'list': {
+      return await runActionCommand(context, 'command', { action: 'list' })
+    }
+    case 'status': {
+      return await runActionCommand(context, 'command', {
+        action: 'status',
+        ...(rest[1] ? { commandId: rest[1] } : {}),
+      })
+    }
+    case 'cancel': {
+      const commandId = readRequiredArg(rest[1], context, ['command', 'cancel'])
+      if (!commandId) return 0
+      return await runActionCommand(context, 'command', { action: 'cancel', commandId })
+    }
+    case 'reset': {
+      return await runActionCommand(context, 'command', {
+        action: 'reset',
+        ...(context.flags.tab ? { handle: context.flags.tab } : {}),
+      })
+    }
+    default: {
+      // 表里声明了 action 但还没有实现分支：必须报错，不能静默当成功。
+      process.stderr.write(`command action is not implemented: ${commandAction}\n`)
+      return 1
+    }
   }
-  const commandId =
-    action === 'cancel' ? readRequiredArg(rest[1], context, ['command', 'cancel']) : undefined
-  if (action === 'cancel' && !commandId) return 0
-  const payload = await context.requestCommand(context.flags.server, 'command', {
-    action,
-    ...(commandId ? { commandId } : {}),
-    ...(action === 'status' && rest[1] ? { commandId: rest[1] } : {}),
-    ...(action === 'reset' && context.flags.tab ? { handle: context.flags.tab } : {}),
-  })
-  context.writeResult(payload)
-  return payload.ok === false ? 1 : 0
 }
 
 interface GotoArgs {

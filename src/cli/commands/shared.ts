@@ -1,4 +1,5 @@
 import { isHelpToken } from '../help.js'
+import { findCommandDefaultAction, isCommandAction, type CommandActionPath } from './actions.js'
 import type { CommandContext, CommandHandler } from './types.js'
 
 export function helpRequested(
@@ -49,6 +50,47 @@ export function readAllowedArg<T extends string>(
   return value as T
 }
 
+/**
+ * action 入口的解析结果。
+ *
+ * - action：识别出合法 action，交给调用方的 switch 分发；
+ * - help：token 是帮助旗标，帮助已经打印，调用方直接返回即可；
+ * - missing：既没给 action，该命令路径也没有默认 action；
+ * - unsupported：给了 action 但不在白名单里，兜底方式由调用方决定（多半是打印帮助）。
+ */
+export type CommandActionResolution =
+  | { kind: 'action'; action: string }
+  | { kind: 'help' }
+  | { kind: 'missing' }
+  | { kind: 'unsupported'; token: string }
+
+/**
+ * 解析命令的 action。
+ *
+ * target / command / tab 的 action 入口是同一套流程：省略 action 时用 action 表里的默认
+ * action，帮助旗标直接打印帮助，其余 token 交给调用方兜底。收在这里是为了让「默认值从哪
+ * 来、什么算合法 action」只有 action 表一个出处。
+ */
+export function resolveCommandAction(
+  token: string | undefined,
+  path: CommandActionPath,
+  context: CommandContext,
+  helpPath: string[],
+): CommandActionResolution {
+  if (helpRequested(token, context, helpPath)) {
+    return { kind: 'help' }
+  }
+
+  const action = token ?? findCommandDefaultAction(path)
+  if (action === undefined) {
+    return { kind: 'missing' }
+  }
+  if (!isCommandAction(path, action)) {
+    return { kind: 'unsupported', token: action }
+  }
+  return { kind: 'action', action }
+}
+
 export function writeCommandError(error: unknown): 1 {
   process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`)
   return 1
@@ -67,6 +109,20 @@ export async function requestAndWrite(context: CommandContext, command: string, 
   const payload = await context.requestCommand(context.flags.server, command, args)
   context.writeResult(payload)
   return payload
+}
+
+/**
+ * 执行一个 action 命令并返回退出码。
+ *
+ * 扩展返回失败时退出码为 1：脚本靠退出码判断成败，失败不能被当成成功。
+ */
+export async function runActionCommand(
+  context: CommandContext,
+  command: string,
+  args: object = {},
+): Promise<number> {
+  const payload = await requestAndWrite(context, command, args)
+  return payload.ok === false ? 1 : 0
 }
 
 export function createNoArgRequestCommand(options: {

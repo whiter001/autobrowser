@@ -27,6 +27,7 @@ import {
   readSession,
   type SessionRecord,
 } from '../../core/sessions.js'
+import { getCommandDefaultAction, isCommandAction } from './actions.js'
 import type { CommandContext, CommandRegistry } from './types.js'
 
 /** 优雅关闭时等待 state 持久化完成的兜底时长；超时则强制退出，避免 --serve 进程挂死 */
@@ -291,7 +292,7 @@ async function handleServer(rest: string[], context: CommandContext): Promise<nu
     return new Promise(() => {})
   }
 
-  if (rest[0] === 'stop') {
+  if (isCommandAction('server', rest[0])) {
     if (isHelpToken(rest[1])) {
       return context.writeHelp(['server', 'stop'])
     }
@@ -496,129 +497,159 @@ function requireSessionActionName(rest: string[], context: CommandContext): stri
   return rest[1] || context.flags.session || null
 }
 
-async function handleSession(rest: string[], context: CommandContext): Promise<number | void> {
-  if (isHelpToken(rest[0])) return context.writeHelp(['session'])
-  const action = rest[0] || 'list'
-  const baseHomeDir = getHomeDir()
-
-  if (action === 'list') {
-    if (rest.length > 1) {
-      process.stderr.write(`unexpected argument for session list: ${rest[1]}\n`)
-      return 1
-    }
-    const sessions = await listSessions(baseHomeDir)
-    const items = []
-    for (const session of sessions) {
-      const status = await context
-        .getStatus(`http://127.0.0.1:${session.ipcPort}`)
-        .catch(() => null)
-      const running = isServerSnapshotOnPorts(status, session.relayPort, session.ipcPort)
-      const snapshot = running && isRecord(status.snapshot) ? status.snapshot : null
-      items.push({
-        ...session,
-        running,
-        extensionConnected: running && status.extensionConnected === true,
-        targetTabId: typeof snapshot?.targetTabId === 'number' ? snapshot.targetTabId : null,
-      })
-    }
-    context.writeResult({ ok: true, result: { sessions: items } })
-    return 0
-  }
-
-  if (action === 'create') {
-    const name = rest[1]
-    if (!name || rest.length > 2) {
-      process.stderr.write(
-        'usage: autobrowser session create <name> [--relay-port <n> --ipc-port <n>]\n',
-      )
-      return 1
-    }
-    const session = await createSession(baseHomeDir, name, {
-      ...(context.flags.relayPortExplicitlySet ? { relayPort: context.flags.relayPort } : {}),
-      ...(context.flags.ipcPortExplicitlySet ? { ipcPort: context.flags.ipcPort } : {}),
-    })
-    context.writeResult({ ok: true, result: session })
-    return 0
-  }
-
-  if (action === 'kill-all') {
-    if (rest.length > 1) {
-      process.stderr.write(`unexpected argument for kill-all: ${rest[1]}\n`)
-      return 1
-    }
-    const sessions = await listSessions(baseHomeDir)
-    const results = []
-    if (!context.flags.session) {
-      results.push({ name: 'default', ...(await stopCurrentSession(context)) })
-    }
-    for (const session of sessions) results.push(await stopSessionRecord(context, session))
-    context.writeResult({ ok: true, result: { sessions: results } })
-    return 0
-  }
-
+/**
+ * 解析 session 动作要操作的会话名，并做这一组动作共用的前置校验。
+ *
+ * attach/detach/close-all/delete-data 都需要一个会话名：优先取位置参数，其次 --session；
+ * delete-data 没有名字必须报错（默认会话不允许被删），其余动作回落到默认会话 'default'。
+ * 多余参数也在这里拦一次，避免每个分支各写一遍。
+ */
+function resolveSessionTarget(
+  rest: string[],
+  context: CommandContext,
+  action: string,
+): { name: string } | { error: string } {
   const name =
     requireSessionActionName(rest, context) || (action === 'delete-data' ? null : 'default')
   if (!name) {
-    process.stderr.write(`${action} requires a session name or --session <name>\n`)
-    return 1
+    return { error: `${action} requires a session name or --session <name>` }
   }
   if (rest.length > 2) {
-    process.stderr.write(`unexpected extra argument for session ${action}: ${rest[2]}\n`)
-    return 1
+    return { error: `unexpected extra argument for session ${action}: ${rest[2]}` }
   }
+  return { name }
+}
 
-  if (action === 'attach') {
-    if (context.flags.engine !== 'chromium') {
-      const payload = await context.requestCommand(context.flags.server, 'status', {})
-      context.writeResult(payload)
-      return payload.ok === false ? 1 : 0
-    }
-    const server = await ensureBackgroundServer(context, { announceAlreadyRunning: false })
-    if (!server) return 1
-    await context.openConnectFlow({ ...server.status }, true)
-    return 0
-  }
-  if (action === 'detach') {
-    if (context.flags.engine !== 'chromium') {
-      context.writeResult({
-        ok: false,
-        error: {
-          code: 'BROWSER_CAPABILITY_UNSUPPORTED',
-          message: 'WebDriver has no relay to detach; use close-all to end the WebDriver session',
-          details: { engine: context.flags.engine, action: 'detach' },
-        },
-      })
-      return 1
-    }
-    const result = await stopCurrentSession(context)
-    context.writeResult({ ok: true, result: { session: name, ...result } })
-    return 0
-  }
-  if (action === 'close-all') {
-    const payload = await context.requestCommand(context.flags.server, 'close', { all: true })
-    context.writeResult(payload)
-    return payload.ok === false ? 1 : 0
-  }
-  if (action === 'delete-data') {
-    const session = await readSession(baseHomeDir, name).catch((error) => {
-      if ((error as { code?: string }).code === 'SESSION_NOT_FOUND') return null
-      throw error
-    })
-    if (session && context.flags.engine !== 'chromium') {
-      const payload = await context.requestCommand(context.flags.server, 'close', { all: true })
-      if (payload.ok === false) {
-        context.writeResult(payload)
+async function handleSession(rest: string[], context: CommandContext): Promise<number | void> {
+  if (isHelpToken(rest[0])) return context.writeHelp(['session'])
+  // switch 分支集合就是 session 的实现面，测试会拿它和 action 表核对。
+  const sessionAction = rest[0] ?? getCommandDefaultAction('session')
+  const baseHomeDir = getHomeDir()
+
+  switch (sessionAction) {
+    case 'list': {
+      if (rest.length > 1) {
+        process.stderr.write(`unexpected argument for session list: ${rest[1]}\n`)
         return 1
       }
+      const sessions = await listSessions(baseHomeDir)
+      const items = []
+      for (const session of sessions) {
+        const status = await context
+          .getStatus(`http://127.0.0.1:${session.ipcPort}`)
+          .catch(() => null)
+        const running = isServerSnapshotOnPorts(status, session.relayPort, session.ipcPort)
+        const snapshot = running && isRecord(status.snapshot) ? status.snapshot : null
+        items.push({
+          ...session,
+          running,
+          extensionConnected: running && status.extensionConnected === true,
+          targetTabId: typeof snapshot?.targetTabId === 'number' ? snapshot.targetTabId : null,
+        })
+      }
+      context.writeResult({ ok: true, result: { sessions: items } })
+      return 0
     }
-    if (session) await stopSessionRecord(context, session)
-    const result = await deleteSessionData(baseHomeDir, name)
-    context.writeResult({ ok: true, result })
-    return 0
-  }
+    case 'create': {
+      const name = rest[1]
+      if (!name || rest.length > 2) {
+        process.stderr.write(
+          'usage: autobrowser session create <name> [--relay-port <n> --ipc-port <n>]\n',
+        )
+        return 1
+      }
+      const session = await createSession(baseHomeDir, name, {
+        ...(context.flags.relayPortExplicitlySet ? { relayPort: context.flags.relayPort } : {}),
+        ...(context.flags.ipcPortExplicitlySet ? { ipcPort: context.flags.ipcPort } : {}),
+      })
+      context.writeResult({ ok: true, result: session })
+      return 0
+    }
+    case 'kill-all': {
+      if (rest.length > 1) {
+        process.stderr.write(`unexpected argument for kill-all: ${rest[1]}\n`)
+        return 1
+      }
+      const sessions = await listSessions(baseHomeDir)
+      const results = []
+      if (!context.flags.session) {
+        results.push({ name: 'default', ...(await stopCurrentSession(context)) })
+      }
+      for (const session of sessions) results.push(await stopSessionRecord(context, session))
+      context.writeResult({ ok: true, result: { sessions: results } })
+      return 0
+    }
+    // 这四个动作共享「先定会话名、再校验多余参数」的前置流程。
+    case 'attach':
+    case 'detach':
+    case 'close-all':
+    case 'delete-data': {
+      const target = resolveSessionTarget(rest, context, sessionAction)
+      if ('error' in target) {
+        process.stderr.write(`${target.error}\n`)
+        return 1
+      }
+      const { name } = target
 
-  process.stderr.write(`unsupported session action: ${action}\n`)
-  return 1
+      if (sessionAction === 'attach') {
+        if (context.flags.engine !== 'chromium') {
+          const payload = await context.requestCommand(context.flags.server, 'status', {})
+          context.writeResult(payload)
+          return payload.ok === false ? 1 : 0
+        }
+        const server = await ensureBackgroundServer(context, { announceAlreadyRunning: false })
+        if (!server) return 1
+        await context.openConnectFlow({ ...server.status }, true)
+        return 0
+      }
+      if (sessionAction === 'detach') {
+        if (context.flags.engine !== 'chromium') {
+          context.writeResult({
+            ok: false,
+            error: {
+              code: 'BROWSER_CAPABILITY_UNSUPPORTED',
+              message:
+                'WebDriver has no relay to detach; use close-all to end the WebDriver session',
+              details: { engine: context.flags.engine, action: 'detach' },
+            },
+          })
+          return 1
+        }
+        const result = await stopCurrentSession(context)
+        context.writeResult({ ok: true, result: { session: name, ...result } })
+        return 0
+      }
+      if (sessionAction === 'close-all') {
+        const payload = await context.requestCommand(context.flags.server, 'close', { all: true })
+        context.writeResult(payload)
+        return payload.ok === false ? 1 : 0
+      }
+      const session = await readSession(baseHomeDir, name).catch((error) => {
+        if ((error as { code?: string }).code === 'SESSION_NOT_FOUND') return null
+        throw error
+      })
+      if (session && context.flags.engine !== 'chromium') {
+        const payload = await context.requestCommand(context.flags.server, 'close', { all: true })
+        if (payload.ok === false) {
+          context.writeResult(payload)
+          return 1
+        }
+      }
+      if (session) await stopSessionRecord(context, session)
+      const result = await deleteSessionData(baseHomeDir, name)
+      context.writeResult({ ok: true, result })
+      return 0
+    }
+    default: {
+      // 表里声明了 action 但还没有实现分支：不能静默当成功。
+      if (isCommandAction('session', sessionAction)) {
+        process.stderr.write(`session action is not implemented: ${sessionAction}\n`)
+        return 1
+      }
+      process.stderr.write(`unsupported session action: ${sessionAction}\n`)
+      return 1
+    }
+  }
 }
 
 export const serverCommandRegistry: CommandRegistry = {

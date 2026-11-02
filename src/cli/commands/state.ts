@@ -6,6 +6,7 @@ import {
   parseOptionalNumberArg,
 } from '../parse.js'
 import { buildNetworkRequestsJsonl } from '../network-export.js'
+import { COMMAND_ACTIONS, isCommandAction, SET_RESETTABLE_VALUE_TYPES } from './actions.js'
 import {
   createActionCommand,
   helpRequested,
@@ -65,33 +66,9 @@ function parseNetworkTimeoutArgs(
   return result
 }
 
-const COOKIE_ACTIONS = ['list', 'get', 'set', 'clear', 'delete'] as const
-const STORAGE_ACTIONS = ['get', 'set', 'clear', 'delete'] as const
-const SET_ACTIONS = [
-  'viewport',
-  'offline',
-  'auto-snapshot',
-  'headers',
-  'geo',
-  'media',
-  'media-type',
-  'reduced-motion',
-  'forced-colors',
-  'contrast',
-  'device',
-  'permission',
-  'ua',
-  'timezone',
-  'locale',
-] as const
-const CLIPBOARD_ACTIONS = ['read', 'write'] as const
-const STATE_ACTIONS = ['save', 'load'] as const
-const NETWORK_ACTIONS = ['route', 'unroute', 'requests', 'export', 'request', 'har'] as const
-const NETWORK_HAR_ACTIONS = ['start', 'stop', 'status', 'recover'] as const
-
 const handleCookies = createActionCommand({
   helpPath: ['cookies'],
-  allowed: COOKIE_ACTIONS,
+  allowed: COMMAND_ACTIONS.cookies.actions,
   handle: async (rest, context, action) => {
     if (action === 'list' || action === 'get') {
       const filters: Record<string, string> = {}
@@ -151,7 +128,7 @@ const handleCookies = createActionCommand({
 
 const handleStorage = createActionCommand({
   helpPath: ['storage'],
-  allowed: STORAGE_ACTIONS,
+  allowed: COMMAND_ACTIONS.storage.actions,
   handle: async (rest, context, action) => {
     // --session 只解析 -- 之前的选项，之后允许 key/value 使用同名字面量
     const separatorIndex = rest.indexOf('--')
@@ -207,7 +184,7 @@ const handleStorage = createActionCommand({
 })
 
 async function handleSet(rest: string[], context: CommandContext): Promise<number | void> {
-  const type = readAllowedArg(rest[0], context, ['set'], SET_ACTIONS)
+  const type = readAllowedArg(rest[0], context, ['set'], COMMAND_ACTIONS.set.actions)
   const subArgs = rest.slice(1)
   if (!type) {
     return 0
@@ -323,7 +300,7 @@ async function handleSet(rest: string[], context: CommandContext): Promise<numbe
     return 0
   }
 
-  if (['reduced-motion', 'forced-colors', 'contrast'].includes(type)) {
+  if ((SET_RESETTABLE_VALUE_TYPES as readonly string[]).includes(type)) {
     await requestAndWrite(context, 'set', {
       type,
       value: subArgs.includes('--reset') ? '' : subArgs[0] || '',
@@ -348,7 +325,7 @@ async function handleSet(rest: string[], context: CommandContext): Promise<numbe
 
 const handleClipboard = createActionCommand({
   helpPath: ['clipboard'],
-  allowed: CLIPBOARD_ACTIONS,
+  allowed: COMMAND_ACTIONS.clipboard.actions,
   handle: async (rest, context, action) => {
     if (action === 'write') {
       if (helpRequested(rest[0], context, ['clipboard', 'write'])) {
@@ -368,7 +345,7 @@ const handleClipboard = createActionCommand({
 
 const handleState = createActionCommand({
   helpPath: ['state'],
-  allowed: STATE_ACTIONS,
+  allowed: COMMAND_ACTIONS.state.actions,
   handle: async (rest, context, action) => {
     if (action === 'save') {
       await requestAndWrite(context, 'state', {
@@ -405,7 +382,7 @@ const handleState = createActionCommand({
 })
 
 async function handleNetwork(rest: string[], context: CommandContext): Promise<number | void> {
-  const action = readAllowedArg(rest[0], context, ['network'], NETWORK_ACTIONS)
+  const action = readAllowedArg(rest[0], context, ['network'], COMMAND_ACTIONS.network.actions)
   if (!action) {
     return 0
   }
@@ -415,7 +392,7 @@ async function handleNetwork(rest: string[], context: CommandContext): Promise<n
       return 0
     }
 
-    if (rest[1] === 'list') {
+    if (isCommandAction('network.route', rest[1])) {
       await requestAndWrite(context, 'network', {
         action: 'route',
         subaction: 'list',
@@ -567,7 +544,12 @@ async function handleNetwork(rest: string[], context: CommandContext): Promise<n
   }
 
   if (action === 'har') {
-    const subaction = readAllowedArg(rest[1], context, ['network', 'har'], NETWORK_HAR_ACTIONS)
+    const subaction = readAllowedArg(
+      rest[1],
+      context,
+      ['network', 'har'],
+      COMMAND_ACTIONS['network.har'].actions,
+    )
     if (!subaction) {
       return 0
     }
