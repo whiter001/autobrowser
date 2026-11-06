@@ -2013,10 +2013,12 @@ describe('command target pinning', () => {
   })
 
   test('reports a stale handle instead of silently acting on the current tab', async () => {
+    // t99 会先派生回 tabId 99（SW 重启后句柄映射为空时也能解析），
+    // 真正判定"已失效"的是浏览器侧的 tab 存在性校验，这里用同一个契约模拟。
     const { router, state, clickCalls } = createMinimalRouter({
-      getTargetTab: async (tabId?: unknown) => {
-        if (typeof tabId === 'number') return { id: tabId }
-        throw createStaleTabHandleError(tabId as never)
+      clickSelector: async (tabId?: unknown) => {
+        if (tabId === 99) throw createStaleTabHandleError(tabId as never)
+        return { clicked: true }
       },
     })
     state.targeting.targetTabId = 1
@@ -2024,7 +2026,8 @@ describe('command target pinning', () => {
     await expect(
       router.handleCommand({ command: 'click', args: { handle: 't99', selector: '#ok' } }),
     ).rejects.toMatchObject({ code: 'STALE_TAB_HANDLE' })
-    expect(clickCalls).toEqual([])
+    // 目标钉在 t99 上，没有静默回落到当前 tab 1
+    expect(clickCalls).toEqual([{ tabId: 99, selector: '#ok' }])
   })
 
   test('pins each batch step when the step starts instead of pinning the whole batch', async () => {

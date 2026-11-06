@@ -53,7 +53,7 @@ export function getOrCreateTabHandle(
   // handle 由 Chrome tabId 单向派生，而不是由 SW 内存里的计数器顺序分配：
   // MV3 service worker 重启后内存映射虽会清空，但 tabs.query 的枚举顺序不再影响
   // 同一 tab 的 handle；tabId 在浏览器会话内不会被复用，因此已关闭 tab 的旧 handle
-  // 不会静默命中另一个 tab（映射缺失时仍走 STALE_TAB_HANDLE）。
+  // 不会静默命中另一个 tab（存在性由解析后的 tabsGet 校验，见 resolveTabHandle）。
   const handle = formatAgentTabHandle(tabId)
   state.targeting.tabHandles.set(tabId, handle)
   state.targeting.tabIdsByHandle.set(handle, tabId)
@@ -74,7 +74,14 @@ export function clearRemovedTabHandle(state: ExtensionState, tabId: number): voi
 }
 
 /**
- * 把 tN 句柄还原成标签 ID；句柄不存在时返回 null，由调用方决定报错还是回退。
+ * 把 tN 句柄还原成标签 ID；不是句柄时返回 null，由调用方决定报错还是回退。
+ *
+ * 映射表只是缓存：句柄本身由 tabId 单向派生（tN ↔ N）。MV3 service worker 被回收后
+ * 内存映射清空，而 CLI 侧仍持有同一个 tN——只认映射就会把活着的标签页报成
+ * STALE_TAB_HANDLE（重连窗口内的瞬时失败）。所以映射缺失时按 N 兜底，
+ * 标签是否真的存在交给调用方的 tabsGet 校验：已关闭的标签页仍然落到
+ * STALE_TAB_HANDLE，不会命中别的标签页（tabId 在同一浏览器会话内不复用）。
+ * 跨浏览器重启后 tabId 会重新分配，此时映射由 tab 枚举重建，语义与改动前一致。
  */
 export function resolveTabHandle(
   state: ExtensionState,
@@ -85,8 +92,13 @@ export function resolveTabHandle(
     return null
   }
 
-  const tabId = state.targeting.tabIdsByHandle.get(normalizedHandle)
-  return typeof tabId === 'number' ? tabId : null
+  const mappedTabId = state.targeting.tabIdsByHandle.get(normalizedHandle)
+  if (typeof mappedTabId === 'number') {
+    return mappedTabId
+  }
+
+  const derivedTabId = Number(normalizedHandle.slice(1))
+  return Number.isSafeInteger(derivedTabId) && derivedTabId > 0 ? derivedTabId : null
 }
 
 /**

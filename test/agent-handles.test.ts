@@ -77,7 +77,21 @@ describe('stable tab handles across extension state instances', () => {
     expect(resolveTabHandle(afterRestart, 't12')).toBe(12)
   })
 
-  test('cleared handles of closed tabs never silently hit another tab', () => {
+  test('resolves a handle after the service worker loses its memory maps', () => {
+    // 现象：SW 重启后句柄映射为空，CLI 仍拿着重连前的 t12，曾经短时返回 STALE_TAB_HANDLE。
+    // 句柄由 tabId 单向派生，映射只是缓存，映射缺失时按 t12 → 12 兜底。
+    const afterRestart = createExtensionState(1234)
+    expect(afterRestart.targeting.tabIdsByHandle.size).toBe(0)
+
+    expect(resolveTabHandle(afterRestart, 't12')).toBe(12)
+    expect(resolveTabInput(afterRestart, 't12')).toBe(12)
+    // 容忍大小写与空白，与 parseAgentTabHandle 保持一致
+    expect(resolveTabInput(afterRestart, ' T12 ')).toBe(12)
+    // 非句柄字符串不会被当成 tabId
+    expect(resolveTabInput(afterRestart, 'tab-twelve')).toBeNull()
+  })
+
+  test('closed tabs resolve to their own tabId and never to another tab', () => {
     const state = createExtensionState(1234)
     expect(getOrCreateTabHandle(state, 12)).toBe('t12')
     expect(getOrCreateTabHandle(state, 42)).toBe('t42')
@@ -86,13 +100,14 @@ describe('stable tab handles across extension state instances', () => {
 
     expect(state.targeting.tabHandles.has(12)).toBe(false)
     expect(state.targeting.tabIdsByHandle.has('t12')).toBe(false)
-    expect(resolveTabHandle(state, 't12')).toBeNull()
-    // 数字兜底也不能把 t12 误判成 tabId
-    expect(resolveTabInput(state, 't12')).toBeNull()
+    // 兜底解析出的是 t12 自己的 tabId；标签已关闭时由调用方的 tabsGet 抛 STALE_TAB_HANDLE，
+    // 不会落到别的标签页上
+    expect(resolveTabHandle(state, 't12')).toBe(12)
+    expect(resolveTabInput(state, 't12')).toBe(12)
+    expect(resolveTabInput(state, 't42')).toBe(42)
 
     // 新登记的 tab 不会复用旧 handle
     expect(getOrCreateTabHandle(state, 13)).toBe('t13')
-    expect(resolveTabHandle(state, 't12')).toBeNull()
 
     // 同一 tabId 再次登记（例如会话恢复）仍得到同一 handle
     expect(getOrCreateTabHandle(state, 12)).toBe('t12')
