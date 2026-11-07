@@ -659,19 +659,22 @@ describe('HLS 下载', () => {
 })
 
 describe('本地播放列表重写', () => {
-  test('只引用本地文件路径并保留 EXT-X-MAP/EXTINF/ENDLIST', () => {
+  test('使用 playlist 相对路径，兼容 Windows 与特殊文件名', () => {
     const media = parseHlsMediaPlaylist(MEDIA_PLAYLIST, 'https://v.example.com/hls/v/index.m3u8')
+    const playlistDir = path.resolve('tmp')
     const files = new Map<string, string>([
-      ['https://v.example.com/hls/v/init.mp4', '/tmp/parts/init.part'],
-      ['https://v.example.com/hls/v/seg0.m4s', '/tmp/parts/seg0.part'],
-      ['https://cdn.example.com/seg1.m4s?sig=xyz', '/tmp/parts/seg1.part'],
+      ['https://v.example.com/hls/v/init.mp4', path.join(playlistDir, 'init.part')],
+      ['https://v.example.com/hls/v/seg0.m4s', path.join(playlistDir, 'video 0#?.part')],
+      ['https://cdn.example.com/seg1.m4s?sig=xyz', path.join(playlistDir, 'seg1.part')],
     ])
-    const playlist = buildLocalPlaylist({ kind: 'video', playlist: media }, files)
+    const playlist = buildLocalPlaylist({ kind: 'video', playlist: media }, files, playlistDir)
 
-    expect(playlist).toContain('#EXT-X-MAP:URI="/tmp/parts/init.part"')
+    expect(playlist).toContain('#EXT-X-MAP:URI="init.part"')
     expect(playlist).toContain('#EXTINF:6.000,')
-    expect(playlist).toContain('/tmp/parts/seg0.part')
-    expect(playlist).toContain('/tmp/parts/seg1.part')
+    expect(playlist).toContain('video 0#?.part')
+    expect(playlist).toContain('seg1.part')
+    expect(playlist).not.toContain('\\')
+    expect(playlist).not.toContain(playlistDir)
     expect(playlist).toContain('#EXT-X-ENDLIST')
     expect(playlist).not.toMatch(/https?:\/\//)
   })

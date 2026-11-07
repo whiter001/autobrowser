@@ -84,11 +84,20 @@ export function resolveContainer(outputPath: string): string {
   return 'mp4'
 }
 
+function localPlaylistPath(filePath: string, playlistDir: string): string {
+  // 相对路径避免 Windows 盘符被当作协议；分隔符统一为正斜杠，兼容 ffmpeg 的 HLS 读取。
+  return path.relative(playlistDir, filePath).replaceAll('\\', '/')
+}
+
 /**
- * 本地重写的播放列表：只引用本地文件路径，ffmpeg 因此不会访问任何远程地址。
+ * 本地重写的播放列表：只引用 playlist 同目录的本地分片，ffmpeg 不会访问远程地址。
  * EXT-X-MAP 在初始化分片切换的位置原样输出，保持 fMP4 的分片边界语义。
  */
-export function buildLocalPlaylist(plan: TrackPlan, files: Map<string, string>): string {
+export function buildLocalPlaylist(
+  plan: TrackPlan,
+  files: Map<string, string>,
+  playlistDir: string,
+): string {
   const lines: string[] = ['#EXTM3U', '#EXT-X-VERSION:7']
   const targetDuration = Math.max(1, Math.ceil(plan.playlist.targetDuration || 0))
   lines.push(`#EXT-X-TARGETDURATION:${targetDuration}`)
@@ -101,7 +110,7 @@ export function buildLocalPlaylist(plan: TrackPlan, files: Map<string, string>):
       if (!initPath) {
         throw new HlsDownloadError(`本地播放列表缺少初始化分片: ${segment.initUrl}`)
       }
-      lines.push(`#EXT-X-MAP:URI="${initPath}"`)
+      lines.push(`#EXT-X-MAP:URI="${localPlaylistPath(initPath, playlistDir)}"`)
       currentInit = segment.initUrl
     }
     lines.push(`#EXTINF:${segment.duration.toFixed(3)},`)
@@ -109,7 +118,7 @@ export function buildLocalPlaylist(plan: TrackPlan, files: Map<string, string>):
     if (!local) {
       throw new HlsDownloadError(`本地播放列表缺少分片文件: ${segment.url}`)
     }
-    lines.push(local)
+    lines.push(localPlaylistPath(local, playlistDir))
   }
   if (plan.playlist.endList) lines.push('#EXT-X-ENDLIST')
   return `${lines.join('\n')}\n`

@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 import { buildCliErrorPayload } from '../src/cli/cli-error.js'
+import { HlsDownloadError } from '../src/cli/hls-error.js'
 import { toErrorResult } from '../src/cli/mcp-response.js'
 import { createToolError } from '../src/core/tool-error.js'
 import { createSemanticFindFeature } from '../extension/background/page-observe-find.js'
@@ -31,6 +32,15 @@ describe('error recovery contract', () => {
 
     const cli = buildCliErrorPayload(timeout, { command: 'eval' })
     expect(cli.error).toMatchObject({ code: 'COMMAND_TIMEOUT', retryable: true })
+
+    const hls = buildCliErrorPayload(
+      new HlsDownloadError('ffmpeg 执行失败（退出码 254）', 'Error opening local segment'),
+      { command: 'download' },
+    )
+    expect(hls.error.details).toMatchObject({
+      command: 'download',
+      detail: 'Error opening local segment',
+    })
 
     const mcp = toErrorResult('WAIT_NOT_CONFIRMED', 'selector is not visible')
     expect(mcp.structuredContent).toMatchObject({

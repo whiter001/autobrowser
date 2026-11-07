@@ -468,10 +468,10 @@ export async function downloadMediaWithHls(
   const videoTrack = tracks.find((track) => track.kind === 'video')!
   const audioTrack = tracks.find((track) => track.kind === 'audio')
   const videoPlaylistPath = path.join(outputDir, `${filePrefix}-local-video.m3u8`)
-  await writeFile(videoPlaylistPath, buildLocalPlaylist(videoTrack, localFiles))
+  await writeFile(videoPlaylistPath, buildLocalPlaylist(videoTrack, localFiles, outputDir))
   const audioPlaylistPath = path.join(outputDir, `${filePrefix}-local-audio.m3u8`)
   if (audioTrack) {
-    await writeFile(audioPlaylistPath, buildLocalPlaylist(audioTrack, localFiles))
+    await writeFile(audioPlaylistPath, buildLocalPlaylist(audioTrack, localFiles, outputDir))
   }
 
   const demuxerOptions = await detectHlsDemuxerOptions(tools)

@@ -69,7 +69,13 @@ export function toCliError(error: unknown, code?: string): CliUsageError {
   }
 
   const message = error instanceof Error ? error.message : String(error)
-  const details = (error as { details?: unknown } | null | undefined)?.details
+  const source = error as { details?: unknown; detail?: unknown } | null | undefined
+  const details =
+    source?.details !== undefined
+      ? source.details
+      : source?.detail !== undefined
+        ? { detail: source.detail }
+        : undefined
   return new CliUsageError(message, {
     code: code ?? resolveCliErrorCode(error),
     details,
