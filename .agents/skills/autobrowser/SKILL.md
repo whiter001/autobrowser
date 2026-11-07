@@ -156,6 +156,8 @@ autobrowser 是一个面向 Chrome/Edge 的浏览器自动化 CLI，通过本地
 - 已注册的 init script 会持久化：扩展被回收或重载后，重新 attach 时自动 replay。`script list` 为空就是确实没有注册，不要把它当成"已注册但没生效"。
 - `--tab tN` 的句柄由 Chrome tabId 直接派生：扩展重连、句柄表还没重建时依然可用；真正已关闭的标签页仍然返回 `STALE_TAB_HANDLE`，按建议先 `tab list`。
 - `pageEpoch` 是扩展内存态，重连或重载后从 1 重新计，旧的 `@eN#pX` / `@fN#pX` 会被判过期——先 `snapshot` 再操作，不要误判成元素丢失。
+- 未显式指定 `--tab` 时，兜底目标会跳过浏览器自身页面（`chrome-extension://`、`chrome://`、`edge://`、`devtools://`、`about:`）。如果只剩下这类页面，命令会直接报没有可用目标——先 `tab new <url>` 或显式指定 tab，而不是反复重试或怀疑连接。
+- MCP 客户端无需走 CLI：导航类可用 `navigate` / `reload` / `back` / `forward`，脚本与扩展控制用 `script` / `extension`，参数与 CLI 同名（`tab` / `frame` 由工具自动注入）。
 
 ## 搜索、引用与歧义恢复
 
