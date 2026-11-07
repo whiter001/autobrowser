@@ -1,7 +1,7 @@
 import { MAX_BATCH_DEPTH } from '../../core/command-budget.js'
 import { commandSupportsFrameTarget, commandSupportsTabTarget } from '../../core/command-spec.js'
 import { isRecord } from '../client.js'
-import { helpRequested, parseOrWriteError } from './shared.js'
+import { helpRequested, parseOrThrow } from './shared.js'
 import type { CommandContext, CommandRegistry } from './types.js'
 
 interface BatchStepWhen {
@@ -344,10 +344,7 @@ async function handleBatch(rest: string[], context: CommandContext): Promise<num
   }
 
   const rawInput = await context.resolveEvalScript(rest)
-  const input = parseOrWriteError(() => parseBatchInput(rawInput))
-  if (!input) {
-    return 1
-  }
+  const input = parseOrThrow(() => parseBatchInput(rawInput))
 
   const dispatchSteps = input.steps.map((step) => normalizeBatchStepForDispatch(step, context))
   const payload = await context.requestCommand(

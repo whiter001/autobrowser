@@ -2,7 +2,7 @@ import { describe, expect, test } from 'bun:test'
 import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
-import { runCli } from './command-line-test-utils.js'
+import { cliErrorPayload, runCli } from './command-line-test-utils.js'
 
 describe('cli command routing', () => {
   test('allows title reads without a selector', async () => {
@@ -129,11 +129,12 @@ describe('cli command routing', () => {
     )
 
     expect(result.exitCode).toBe(1)
-    expect(result.stderr).toContain('autobrowser could not reach its local control server')
-    expect(result.stderr).toContain('Recovery status:')
-    expect(result.stderr).toContain('tried to start the local server automatically')
-    expect(result.stderr).toContain('Run `autobrowser connect`')
-    expect(result.stderr).toContain('status unavailable')
+    const error = cliErrorPayload(result.stdout).error
+    expect(error.message).toContain('autobrowser could not reach its local control server')
+    expect(error.message).toContain('Recovery status:')
+    expect(error.message).toContain('tried to start the local server automatically')
+    expect(error.message).toContain('Run `autobrowser connect`')
+    expect(error.message).toContain('status unavailable')
   })
 
   test('sends the persisted token as bearer auth for commands', async () => {
@@ -616,13 +617,14 @@ describe('cli command routing', () => {
     )
 
     expect(result.exitCode).toBe(1)
-    expect(result.stderr).toContain('autobrowser could not reach its local control server')
-    expect(result.stderr).toContain('Recovery status:')
-    expect(result.stderr).toContain('tried to start the local server automatically')
-    expect(result.stderr).toContain('Run `autobrowser connect`')
-    expect(result.stderr).toContain('extension installed and enabled')
-    expect(result.stderr).toContain('autobrowser status')
-    expect(result.stderr).toContain('Unable to connect. Is the computer able to access the url?')
+    const error = cliErrorPayload(result.stdout).error
+    expect(error.message).toContain('autobrowser could not reach its local control server')
+    expect(error.message).toContain('Recovery status:')
+    expect(error.message).toContain('tried to start the local server automatically')
+    expect(error.message).toContain('Run `autobrowser connect`')
+    expect(error.message).toContain('extension installed and enabled')
+    expect(error.message).toContain('autobrowser status')
+    expect(error.message).toContain('Unable to connect. Is the computer able to access the url?')
   })
 
   test('open reports that the connect page was already opened automatically when retry still needs a connection', async () => {

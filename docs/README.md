@@ -17,3 +17,5 @@
 - [`agent-design.md`](agent-design.md) — 面向 agent 的历史设计草稿；其中的缺口和建议不代表当前实现状态。
 - [`usage-issues.md`](usage-issues.md) — 2026-08-20 的历史使用体验问题及处理状态。
 - [`usage-issues-2026-10-31.md`](usage-issues-2026-10-31.md) — 2026-10-31 抓取 HLS 视频流场景下的历史使用体验问题及处理状态。
+- [`usage-issues-2026-11-06.md`](usage-issues-2026-11-06.md) — 2026-11-06 reload 超时与扩展短暂断连后的观测状态问题及处理状态。
+- [`usability-analysis-2026-11-07.md`](usability-analysis-2026-11-07.md) — 2026-11-07 的横向易用性评估：解析期错误契约、help 与实现漂移、参数命名一致性、上手路径。

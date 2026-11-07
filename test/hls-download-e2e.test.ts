@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test'
 import { spawn } from 'node:child_process'
-import { mkdtemp, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises'
+import { existsSync } from 'node:fs'
+import { mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { downloadMediaWithHls } from '../src/cli/hls-download.js'
@@ -48,7 +49,8 @@ describe('HLS 真实合并（需要本机 ffmpeg）', () => {
       // 用 ffmpeg 造一个极小的 HLS 素材，避免依赖真实网络媒体
       const fixtureDir = path.join(dir, 'fixture')
       await Bun.write(path.join(dir, 'placeholder'), '')
-      await runCommand('mkdir', ['-p', fixtureDir])
+      // mkdir 在 Windows 上只是 cmd 内建命令，spawn 不到；用 fs 建目录才能跨平台
+      await mkdir(fixtureDir, { recursive: true })
       const generate = await runCommand('ffmpeg', [
         '-hide_banner',
         '-loglevel',
@@ -74,7 +76,10 @@ describe('HLS 真实合并（需要本机 ffmpeg）', () => {
       ])
       expect(generate.code).toBe(0)
 
-      const playlist = await readFile(path.join(fixtureDir, 'index.m3u8'), 'utf8')
+      // ffmpeg 打不开输出文件时只打印错误、退出码仍是 0，必须显式确认产物存在
+      const playlistPath = path.join(fixtureDir, 'index.m3u8')
+      expect(existsSync(playlistPath)).toBe(true)
+      const playlist = await readFile(playlistPath, 'utf8')
       const segmentFiles = await readdir(fixtureDir)
       const segments = segmentFiles.filter((name) => name.endsWith('.ts')).sort()
 

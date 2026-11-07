@@ -3,10 +3,10 @@ import { parseNumberArg } from '../parse.js'
 import { optionHintSuffix } from '../option-hints.js'
 import {
   helpRequested,
-  parseOrWriteError,
+  parseOrThrow,
   readRequiredArg,
   requestAndWrite,
-  writeCommandError,
+  throwCommandError,
   resolveCommandAction,
   runActionCommand,
 } from './shared.js'
@@ -61,7 +61,7 @@ async function handleTab(rest: string[], context: CommandContext): Promise<numbe
         }
         // 未知参数此前会打印帮助并以 0 退出，调用方容易误以为列表已返回
         if (value.startsWith('--')) {
-          return writeCommandError(
+          return throwCommandError(
             `unsupported tab list option: ${value}` +
               optionHintSuffix(value, [
                 '--active',
@@ -82,7 +82,7 @@ async function handleTab(rest: string[], context: CommandContext): Promise<numbe
       if (helpRequested(tabArgs[0], context, ['tab', 'new'])) {
         return 0
       }
-      const parsed = parseOrWriteError(() => {
+      const parsed = parseOrThrow(() => {
         for (let index = 0; index < tabArgs.length; index += 1) {
           const value = tabArgs[index]!
           if (value === '--wait-for') index += 2
@@ -95,7 +95,6 @@ async function handleTab(rest: string[], context: CommandContext): Promise<numbe
         }
         return options
       })
-      if (!parsed) return 1
       const payload = await createTabAndWait(context, parsed.url || 'about:blank', parsed)
       context.writeResult(payload)
       return payload.ok === false ? 1 : 0
@@ -121,8 +120,7 @@ async function handleTab(rest: string[], context: CommandContext): Promise<numbe
 
     default: {
       // 表里声明了 action 但还没有实现分支：必须报错，不能静默当成功。
-      process.stderr.write(`tab action is not implemented: ${tabAction}\n`)
-      return 1
+      return throwCommandError(`tab action is not implemented: ${tabAction}`)
     }
   }
 }
@@ -147,8 +145,7 @@ async function handleTarget(rest: string[], context: CommandContext): Promise<nu
     }
     default: {
       // 表里声明了 action 但还没有实现分支：必须报错，不能静默当成功。
-      process.stderr.write(`target action is not implemented: ${targetAction}\n`)
-      return 1
+      return throwCommandError(`target action is not implemented: ${targetAction}`)
     }
   }
 }
@@ -186,8 +183,7 @@ async function handleCommandControl(
     }
     default: {
       // 表里声明了 action 但还没有实现分支：必须报错，不能静默当成功。
-      process.stderr.write(`command action is not implemented: ${commandAction}\n`)
-      return 1
+      return throwCommandError(`command action is not implemented: ${commandAction}`)
     }
   }
 }
@@ -331,10 +327,7 @@ async function handleOpenOrGoto(
     return 0
   }
 
-  const parsedArgs = parseOrWriteError(() => parseGotoArgs(rest))
-  if (!parsedArgs) {
-    return 1
-  }
+  const parsedArgs = parseOrThrow(() => parseGotoArgs(rest))
 
   const url = readRequiredArg(parsedArgs.url, context, [command])
   if (!url) {

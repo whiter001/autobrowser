@@ -2,7 +2,7 @@ import { describe, expect, test } from 'bun:test'
 import { mkdtemp, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
-import { runCli } from './command-line-test-utils.js'
+import { cliErrorPayload, runCli } from './command-line-test-utils.js'
 
 describe('cli command routing', () => {
   test('batch runs commands in sequence from file input', async () => {
@@ -137,7 +137,9 @@ describe('cli command routing', () => {
 
     expect(result.exitCode).toBe(1)
     expect(result.fetchCalls).toHaveLength(0)
-    expect(result.stderr).toContain('invalid batch step 1: args must be an object')
+    expect(cliErrorPayload(result.stdout).error.message).toContain(
+      'invalid batch step 1: args must be an object',
+    )
   })
 
   test('batch rejects invalid nested command argument types before sending requests', async () => {

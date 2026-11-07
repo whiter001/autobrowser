@@ -33,6 +33,21 @@ export const ERROR_ACTIONS: Record<string, ErrorAction> = {
     action:
       'Use a Chromium target or a command the current engine supports; capability rejection is not transient.',
   },
+  CLI_ERROR: {
+    retryable: false,
+    action:
+      "Inspect 'status' and the current page state before retrying; keep using autobrowser rather than switching to another automation framework.",
+  },
+  CLI_INVALID_ARGUMENT: {
+    retryable: false,
+    action:
+      "Run 'autobrowser help' to see the supported commands and global flags, then run the command again with a corrected value.",
+  },
+  CLI_UNKNOWN_COMMAND: {
+    retryable: false,
+    action:
+      "Run 'autobrowser help' to list the available commands, then retry with an exact command name.",
+  },
   COLLECT_TASK_FAILED: {
     retryable: true,
     action:

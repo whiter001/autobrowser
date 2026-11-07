@@ -3,7 +3,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { COMMAND_ACTIONS } from './actions.js'
-import { createActionCommand, writeCommandError } from './shared.js'
+import { createActionCommand, throwCommandError } from './shared.js'
 import type { CommandRegistry } from './types.js'
 
 /**
@@ -48,7 +48,7 @@ async function firstExisting(candidates: string[]): Promise<string | null> {
 async function handleSync(): Promise<number | void> {
   const source = await firstExisting(packageSkillCandidates())
   if (!source) {
-    return writeCommandError(
+    return throwCommandError(
       'package SKILL.md not found; if you installed via npm, ensure the package ships .agents/skills/autobrowser/SKILL.md',
     )
   }

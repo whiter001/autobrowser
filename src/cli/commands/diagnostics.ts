@@ -3,12 +3,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { isRecord } from '../client.js'
 import { parseOptionalNumberArg } from '../parse.js'
-import {
-  createActionCommand,
-  parseOrWriteError,
-  requestAndWrite,
-  writeCommandError,
-} from './shared.js'
+import { createActionCommand, parseOrThrow, requestAndWrite, throwCommandError } from './shared.js'
 import { COMMAND_ACTIONS } from './actions.js'
 import type { CommandContext, CommandRegistry } from './types.js'
 
@@ -25,13 +20,13 @@ async function handleTracing(rest: string[], context: CommandContext): Promise<n
     case 'start':
     case 'status': {
       if (rest.length > 1)
-        return writeCommandError(`unexpected argument for tracing ${tracingAction}: ${rest[1]}`)
+        return throwCommandError(`unexpected argument for tracing ${tracingAction}: ${rest[1]}`)
       await requestAndWrite(context, 'tracing', { action: tracingAction })
       return 0
     }
     case 'stop': {
       if (rest.length > 2)
-        return writeCommandError(`unexpected extra argument for tracing stop: ${rest[2]}`)
+        return throwCommandError(`unexpected extra argument for tracing stop: ${rest[2]}`)
       const payload = await context.requestCommand(context.flags.server, 'tracing', {
         action: tracingAction,
       })
@@ -40,7 +35,7 @@ async function handleTracing(rest: string[], context: CommandContext): Promise<n
         return 1
       }
       if (!isRecord(payload.result) || typeof payload.result.data !== 'string')
-        return writeCommandError('tracing stop returned no trace data')
+        return throwCommandError('tracing stop returned no trace data')
       const { data, ...summary } = payload.result
       const outputPath = await resolveTracePath(rest[1] || null)
       await writeFile(outputPath, data, summary.base64Encoded === true ? 'base64' : 'utf8')
@@ -48,7 +43,7 @@ async function handleTracing(rest: string[], context: CommandContext): Promise<n
       return 0
     }
     default:
-      return writeCommandError(`unsupported tracing action: ${tracingAction || '(empty)'}`)
+      return throwCommandError(`unsupported tracing action: ${tracingAction || '(empty)'}`)
   }
 }
 
@@ -79,10 +74,7 @@ async function handleVideo(rest: string[], context: CommandContext): Promise<num
       return 0
     }
     case 'start': {
-      const options = parseOrWriteError(() =>
-        readVideoOptions(rest.slice(1), ['--max-duration-ms']),
-      )
-      if (!options) return 1
+      const options = parseOrThrow(() => readVideoOptions(rest.slice(1), ['--max-duration-ms']))
       await requestAndWrite(context, 'video', {
         action: videoAction,
         ...(options['--max-duration-ms']
@@ -93,11 +85,10 @@ async function handleVideo(rest: string[], context: CommandContext): Promise<num
     }
     case 'chapter': {
       const title = rest[1]
-      if (!title) return writeCommandError('missing title for video chapter')
-      const options = parseOrWriteError(() =>
+      if (!title) return throwCommandError('missing title for video chapter')
+      const options = parseOrThrow(() =>
         readVideoOptions(rest.slice(2), ['--description', '--duration']),
       )
-      if (!options) return 1
       await requestAndWrite(context, 'video', {
         action: videoAction,
         title,
@@ -114,10 +105,9 @@ async function handleVideo(rest: string[], context: CommandContext): Promise<num
       return 0
     }
     case 'show-actions': {
-      const options = parseOrWriteError(() =>
+      const options = parseOrThrow(() =>
         readVideoOptions(rest.slice(1), ['--duration', '--position', '--highlight-style']),
       )
-      if (!options) return 1
       await requestAndWrite(context, 'video', {
         action: videoAction,
         ...(options['--duration']
@@ -139,7 +129,7 @@ async function handleVideo(rest: string[], context: CommandContext): Promise<num
     }
     case 'stop': {
       if (rest.length > 2)
-        return writeCommandError(`unexpected extra argument for video stop: ${rest[2]}`)
+        return throwCommandError(`unexpected extra argument for video stop: ${rest[2]}`)
       const payload = await context.requestCommand(context.flags.server, 'video', {
         action: videoAction,
       })
@@ -148,7 +138,7 @@ async function handleVideo(rest: string[], context: CommandContext): Promise<num
         return 1
       }
       if (!isRecord(payload.result) || typeof payload.result.data !== 'string')
-        return writeCommandError('video stop returned no video data')
+        return throwCommandError('video stop returned no video data')
       const { data, ...summary } = payload.result
       const outputPath = await resolveVideoPath(rest[1] || null)
       await writeFile(outputPath, data, 'base64')
@@ -161,7 +151,7 @@ async function handleVideo(rest: string[], context: CommandContext): Promise<num
       return 0
     }
     default:
-      return writeCommandError(`unsupported video action: ${videoAction || '(empty)'}`)
+      return throwCommandError(`unsupported video action: ${videoAction || '(empty)'}`)
   }
 }
 
@@ -170,7 +160,7 @@ const handleActions = createActionCommand({
   allowed: COMMAND_ACTIONS.actions.actions,
   handle: async (rest, context, action) => {
     if (rest.length)
-      return writeCommandError(`unexpected argument for actions ${action}: ${rest[0]}`)
+      return throwCommandError(`unexpected argument for actions ${action}: ${rest[0]}`)
     await requestAndWrite(context, 'actions', { action })
     return 0
   },

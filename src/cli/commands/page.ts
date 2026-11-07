@@ -18,10 +18,10 @@ import {
   createNoArgRequestCommand,
   createSingleArgRequestCommand,
   helpRequested,
-  parseOrWriteError,
+  parseOrThrow,
   readAllowedArg,
   requestAndWrite,
-  writeCommandError,
+  throwCommandError,
 } from './shared.js'
 import type { CommandContext, CommandHandler, CommandRegistry } from './types.js'
 
@@ -280,19 +280,18 @@ async function handleEval(rest: string[], context: CommandContext): Promise<numb
 async function handleCdp(rest: string[], context: CommandContext): Promise<number | void> {
   if (helpRequested(rest[0], context, ['cdp'])) return 0
   const method = rest[0]
-  if (!method) return writeCommandError('missing CDP method')
+  if (!method) return throwCommandError('missing CDP method')
   let paramsText = '{}'
   if (rest[1] === '--params') {
-    if (!rest[2]) return writeCommandError('missing value for --params')
-    if (rest.length > 3) return writeCommandError(`unexpected extra argument for cdp: ${rest[3]}`)
+    if (!rest[2]) return throwCommandError('missing value for --params')
+    if (rest.length > 3) return throwCommandError(`unexpected extra argument for cdp: ${rest[3]}`)
     paramsText = rest[2]
   } else {
     paramsText = rest.slice(1).join(' ') || '{}'
   }
-  const params = parseOrWriteError(() => JSON.parse(paramsText) as unknown)
-  if (params === undefined) return 1
+  const params = parseOrThrow(() => JSON.parse(paramsText) as unknown)
   if (!isRecord(params) || Array.isArray(params))
-    return writeCommandError('CDP params must be a JSON object')
+    return throwCommandError('CDP params must be a JSON object')
   await requestAndWrite(context, 'cdp', { method, params })
   return 0
 }
@@ -312,8 +311,7 @@ async function handleScript(rest: string[], context: CommandContext): Promise<nu
     // 源码输入与 eval 完全同一条管线：位置参数、--file、--stdin、--base64
     const source = (await context.resolveEvalScript(scriptArgs)).trim()
     if (!source) {
-      process.stderr.write('missing script source\n')
-      return 1
+      return throwCommandError('missing script source')
     }
 
     await requestAndWrite(context, 'script', { action: 'add', source })
@@ -367,8 +365,7 @@ async function handleSnapshot(rest: string[], context: CommandContext): Promise<
 
       const snapshot = isRecord(payload.result) ? (payload.result as Record<string, unknown>) : null
       if (!snapshot) {
-        process.stderr.write('snapshot export requires a structured snapshot result\n')
-        return 1
+        return throwCommandError('snapshot export requires a structured snapshot result')
       }
 
       const { content, recordCount } = buildSnapshotJsonl(snapshot)
@@ -395,10 +392,7 @@ async function handleSnapshot(rest: string[], context: CommandContext): Promise<
         return 0
       }
 
-      const parsedExtractArgs = parseOrWriteError(() => parseSnapshotFieldSelectors(rest.slice(1)))
-      if (!parsedExtractArgs) {
-        return 1
-      }
+      const parsedExtractArgs = parseOrThrow(() => parseSnapshotFieldSelectors(rest.slice(1)))
 
       const resolvedOutputPath = await resolveSnapshotExportPath(parsedExtractArgs.outputPath)
       const payload = await context.requestCommand(context.flags.server, 'snapshot', {})
@@ -410,8 +404,7 @@ async function handleSnapshot(rest: string[], context: CommandContext): Promise<
 
       const snapshot = isRecord(payload.result) ? (payload.result as Record<string, unknown>) : null
       if (!snapshot) {
-        process.stderr.write('snapshot extract requires a structured snapshot result\n')
-        return 1
+        return throwCommandError('snapshot extract requires a structured snapshot result')
       }
 
       const { content, recordCount } = buildSnapshotFieldJsonl(
@@ -438,17 +431,13 @@ async function handleSnapshot(rest: string[], context: CommandContext): Promise<
     default: {
       // 表里声明了 action 但还没有实现分支：必须报错，不能静默当成普通 snapshot。
       if (isCommandAction('snapshot', snapshotAction)) {
-        process.stderr.write(`unsupported snapshot action: ${snapshotAction}\n`)
-        return 1
+        return throwCommandError(`unsupported snapshot action: ${snapshotAction}`)
       }
       break
     }
   }
 
-  const snapshotTarget = parseOrWriteError(() => parseSnapshotArgs(rest))
-  if (!snapshotTarget) {
-    return 1
-  }
+  const snapshotTarget = parseOrThrow(() => parseSnapshotArgs(rest))
 
   const payload = await context.requestCommand(context.flags.server, 'snapshot', {
     ...(snapshotTarget.target ? { selector: snapshotTarget.target } : {}),
@@ -466,10 +455,7 @@ async function handleSearch(rest: string[], context: CommandContext): Promise<nu
     return 0
   }
 
-  const searchArgs = parseOrWriteError(() => parseSearchArgs(rest))
-  if (!searchArgs) {
-    return 1
-  }
+  const searchArgs = parseOrThrow(() => parseSearchArgs(rest))
 
   const payload = await context.requestCommand(context.flags.server, 'search', searchArgs)
   context.writeResult(payload)
@@ -482,10 +468,7 @@ async function handleFeed(rest: string[], context: CommandContext): Promise<numb
     return 0
   }
 
-  const feedArgs = parseOrWriteError(() => parseFeedArgs(feedRest))
-  if (!feedArgs) {
-    return 1
-  }
+  const feedArgs = parseOrThrow(() => parseFeedArgs(feedRest))
 
   const payload = await context.requestCommand(context.flags.server, 'feed', feedArgs)
   context.writeResult(payload)
@@ -497,10 +480,7 @@ async function handleScreenshot(rest: string[], context: CommandContext): Promis
     return 0
   }
 
-  const screenshotArgs = parseOrWriteError(() => parseScreenshotArgs(rest))
-  if (!screenshotArgs) {
-    return 1
-  }
+  const screenshotArgs = parseOrThrow(() => parseScreenshotArgs(rest))
 
   const payload = await context.requestCommand(context.flags.server, 'screenshot', {
     full: screenshotArgs.full,
@@ -561,7 +541,7 @@ const handleReload: CommandHandler = async (rest, context) => {
           'domquiet',
         ].includes(waitUntil || '')
       ) {
-        return writeCommandError(
+        return throwCommandError(
           'reload --wait-until must be none|commit|domcontentloaded|interactive|load|networkidle|domquiet',
         )
       }
@@ -577,17 +557,17 @@ const handleReload: CommandHandler = async (rest, context) => {
       const waitFor = rest[index + 1]
       const waitValue = rest[index + 2]
       if (waitFor !== 'url' && waitFor !== 'selector') {
-        return writeCommandError('reload --wait-for must be url or selector')
+        return throwCommandError('reload --wait-for must be url or selector')
       }
       if (waitValue === undefined) {
-        return writeCommandError(`missing reload --wait-for ${waitFor} value`)
+        return throwCommandError(`missing reload --wait-for ${waitFor} value`)
       }
       args.waitFor = waitFor
       args[waitFor] = waitValue
       index += 2
       continue
     }
-    return writeCommandError(`unsupported reload option: ${value}`)
+    return throwCommandError(`unsupported reload option: ${value}`)
   }
   await requestAndWrite(context, 'reload', args)
   return 0
@@ -662,13 +642,12 @@ async function handleGet(rest: string[], context: CommandContext): Promise<numbe
       context.writeResult(cdpUrl)
       return 0
     } catch (error) {
-      return writeCommandError(error)
+      return throwCommandError(error)
     }
   }
 
   if (commandNeedsSelector(attr) && !selector) {
-    process.stderr.write('missing selector\n')
-    return 1
+    return throwCommandError('missing selector')
   }
 
   await requestAndWrite(context, 'get', {
@@ -699,7 +678,7 @@ const handleDialog = createActionCommand({
         return 0
       }
       if (rawValue !== undefined) {
-        return writeCommandError(`unexpected dialog auto argument: ${rawValue}`)
+        return throwCommandError(`unexpected dialog auto argument: ${rawValue}`)
       }
       await requestAndWrite(context, 'dialog', { action: 'auto' })
       return 0
@@ -725,16 +704,13 @@ const handleDownloads: CommandHandler = async (rest, context) => {
 
   if (action === 'clear') {
     if (argRest.length > 0) {
-      return writeCommandError(`unexpected downloads clear argument: ${argRest[0]}`)
+      return throwCommandError(`unexpected downloads clear argument: ${argRest[0]}`)
     }
     await requestAndWrite(context, 'downloads', { action: 'clear' })
     return 0
   }
 
-  const listArgs = parseOrWriteError(() => parseConsoleArgs(argRest))
-  if (!listArgs) {
-    return 1
-  }
+  const listArgs = parseOrThrow(() => parseConsoleArgs(argRest))
   await requestAndWrite(context, 'downloads', {
     action: 'list',
     ...(listArgs.pageIdx !== undefined ? { pageIdx: listArgs.pageIdx } : {}),
@@ -748,10 +724,7 @@ async function handleWait(rest: string[], context: CommandContext): Promise<numb
     return 0
   }
 
-  const waitArgs = parseOrWriteError(() => parseWaitArgs(rest))
-  if (!waitArgs) {
-    return 1
-  }
+  const waitArgs = parseOrThrow(() => parseWaitArgs(rest))
 
   await requestAndWrite(context, 'wait', waitArgs)
   return 0
@@ -762,10 +735,7 @@ const handleConsole: CommandHandler = async (rest, context) => {
     return 0
   }
 
-  const consoleArgs = parseOrWriteError(() => parseConsoleArgs(rest))
-  if (!consoleArgs) {
-    return 1
-  }
+  const consoleArgs = parseOrThrow(() => parseConsoleArgs(rest))
 
   const payload = await context.requestCommand(context.flags.server, 'console', {
     action: consoleArgs.action || 'list',
@@ -784,10 +754,7 @@ const handleErrors: CommandHandler = async (rest, context) => {
     return 0
   }
 
-  const errorsArgs = parseOrWriteError(() => parseConsoleArgs(rest))
-  if (!errorsArgs) {
-    return 1
-  }
+  const errorsArgs = parseOrThrow(() => parseConsoleArgs(rest))
 
   await requestAndWrite(context, 'errors', {
     action: errorsArgs.action || 'list',

@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { originalFetch, runCli } from './command-line-test-utils.js'
+import { cliErrorPayload, originalFetch, runCli } from './command-line-test-utils.js'
 
 describe('command safety regressions', () => {
   for (const { argv, command, args, error } of [
@@ -32,7 +32,7 @@ describe('command safety regressions', () => {
       const missing = await runCli(argv)
       expect(missing.exitCode).toBe(1)
       expect(missing.fetchCalls).toHaveLength(0)
-      expect(missing.stderr).toContain(error)
+      expect(cliErrorPayload(missing.stdout).error.message).toContain(error)
       for (const value of ['', '   ']) {
         const explicit = await runCli([...argv, value])
         expect(explicit.exitCode).toBe(0)

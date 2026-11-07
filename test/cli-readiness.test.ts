@@ -4,6 +4,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { tabCommandRegistry } from '../src/cli/commands/tabs.js'
 import type { CommandContext } from '../src/cli/commands/types.js'
+import { cliErrorPayload } from './command-line-test-utils.js'
 
 // Run real CLI processes so ambient targets, response exit codes and multi-request output
 // are tested without replacing process-global streams in other CLI suites.
@@ -137,7 +138,7 @@ describe('CLI navigation and media readiness', () => {
       test(`rejects duplicate readiness flags: ${[...command, ...options].join(' ')}`, async () => {
         const result = await runCli([...command, ...options], [])
         expect(result.exitCode).toBe(1)
-        expect(result.stderr).toContain('duplicate')
+        expect(cliErrorPayload(result.stdout).error.message).toContain('duplicate')
         expect(result.requests).toHaveLength(0)
       })
     }
@@ -171,7 +172,7 @@ describe('CLI navigation and media readiness', () => {
       expect(result.requests).toEqual([
         { command: 'network', args: { action: 'har', subaction: 'status', tabId: 't3' } },
       ])
-      expect(result.stderr).toContain('stop was not sent')
+      expect(cliErrorPayload(result.stdout).error.message).toContain('stop was not sent')
     })
   }
 
@@ -192,7 +193,7 @@ describe('CLI navigation and media readiness', () => {
           args: { action: 'har', subaction: 'stop', captureId: 'wanted', tabId: 't3' },
         },
       ])
-      expect(result.stderr).toContain('network har recover')
+      expect(cliErrorPayload(result.stdout).error.message).toContain('network har recover')
     })
   }
 
@@ -204,8 +205,9 @@ describe('CLI navigation and media readiness', () => {
     expect(result.exitCode).toBe(1)
     expect(result.requests).toHaveLength(1)
     expect(result.requests[0]?.args.subaction).toBe('stop')
-    expect(result.stderr).toContain('capture may already be stopped')
-    expect(result.stderr).toContain('network har recover')
+    const error = cliErrorPayload(result.stdout).error
+    expect(error.message).toContain('capture may already be stopped')
+    expect(error.message).toContain('network har recover')
   })
 
   for (const waited of [success, failure]) {
@@ -379,7 +381,7 @@ describe('CLI navigation and media readiness', () => {
     test(`rejects old/unconfirmed extension response: ${extra.join(' ')} ${JSON.stringify(result)}`, async () => {
       const reply = await runCli(['media', 'list', ...extra], [{ ok: true, result }])
       expect(reply.exitCode).toBe(1)
-      expect(reply.stderr).toContain('did not confirm')
+      expect(cliErrorPayload(reply.stdout).error.message).toContain('did not confirm')
       expect(reply.requests).toHaveLength(1)
     })
   }

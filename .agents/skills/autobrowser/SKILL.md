@@ -80,11 +80,11 @@ autobrowser 是一个面向 Chrome/Edge 的浏览器自动化 CLI，通过本地
 - `server` 会启动 relay 和 IPC 服务。
 - `connect` 会打开扩展连接页，并自动保存 token、relay port，以及后续运行所需的浏览器配置。
 - 操作系统都不为 `chrome-extension://` 注册协议关联，打开扩展页必须显式指定浏览器（`--browser-command`，首次传入后会写进 `~/.autobrowser/config.json` 复用）；没指定时 CLI 直接报错并改为打开 relay 的 `/connect` 页，不会交给系统弹窗。
-- 操作系统都不为 `chrome-extension://` 注册协议关联，打开扩展页必须显式指定浏览器（`--browser-command`，首次传入后会写进 `~/.autobrowser/config.json` 复用）；没指定时 CLI 直接报错并改为打开 relay 的 `/connect` 页，不会交给系统弹窗。
 - 如果 `connect` 传入了有效 token 且扩展已经报告 `connected`，连接页可能会自动关闭；这通常表示连接成功。
 - `status` 是确认扩展是否已连接的最快方式。
 - `version`（或 `autobrowser --version`）报告 CLI 自身的 version/commit/buildTime；relay 已在运行时还会带上扩展的 manifest 版本并给出 `versionSkew`。`consistent:false` 表示扩展是旧的没重载，或 CLI 是旧的——先 `bun run build:chrome` + `extension reload`（或升级 CLI）再信任版本相关行为；扩展的 commit/buildTime 用 `extension info` 查。
 - 每个错误码都带默认 `suggestedAction`（来自 `src/core/error-actions.ts`），按它给出的下一步排查；扩展自带的更具体建议优先。看到不认识的错误码也先按建议查 `status`/页面状态，而不是换方案。
+- 解析期错误（缺参、多参、取值非法、未知选项、未知命令）和运行期错误走同一套 JSON 契约：stdout 上是 `{ok:false,error:{message,code,details,suggestedAction}}`，退出码 1。参数类错误码是 `CLI_INVALID_ARGUMENT`，未知命令是 `CLI_UNKNOWN_COMMAND`（`details.candidates` 给出最接近的命令名），其余 CLI 层失败是 `CLI_ERROR`。stdout 始终是 JSON，不要从 stderr 猜错误内容。
 - 扩展已在线时，修改代码并 `bun run build:chrome` 后用 `extension reload` 重载磁盘代码；只需重建 relay 连接时用 `extension reconnect`，它不会加载新代码。两者与刷新页面的 `reload` 不同，均不绑定 tab、不进入页面队列，仅用于 Chromium 扩展。
 - `extension reload/reconnect` 先返回 `reloading:true` / `reconnecting:true` 和 `reconnectExpected:true`，约 50ms 后异步执行。回执不是恢复完成；稍等后用 `status` 确认重新连接，再用 `tab list`、`snapshot` 刷新目标与引用，不要盲目重放原页面动作。离线时先修复连接；首次升级到支持该命令的版本需手动在 chrome://extensions 重载。
 - 扩展注册了 30 秒周期的 keepalive alarm：service worker 被浏览器回收后会在一个周期内自行重连，无需再手动打开扩展页。若 `status` 持续显示 `waiting for extension` 超过 1 分钟，再按上面步骤重载扩展或检查 relay 是否在运行；该机制随扩展代码生效，首次升级仍需先手动重载一次。
@@ -176,6 +176,7 @@ autobrowser 是一个面向 Chrome/Edge 的浏览器自动化 CLI，通过本地
 ## CLI 参数与回放
 
 - `--file`、`--stdin`、`--base64` 互斥；未知选项、冲突模式和缺参会返回非零退出码，不要把帮助文本或退出码 0 当成命令已执行。
+- 命令名写错时返回 `CLI_UNKNOWN_COMMAND` 并给出最接近的命令名（不再打印整页帮助），按 `details.candidates` 改写命令即可。
 - 最终标准命令响应为 `ok:false` 时进程退出码为 1，JSON `error` 仍保留；脚本可同时检查 return code 和 JSON。goto fallback 的最终成功结果、batch 的最终聚合响应决定退出状态，内部已恢复步骤不会误报。
 - 需要输入与选项同名的字面量时，在 `--` 后传值，例如 `type '#field' -- '--submit'`。
 - `replay` 会拒绝包含 `[redacted]` 的历史命令，防止把脱敏占位符当成真实参数执行；需要重放敏感操作时重新检查页面并显式构造命令。

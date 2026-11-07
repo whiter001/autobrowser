@@ -1,5 +1,5 @@
 import { isRecord } from '../client.js'
-import { helpRequested, parseOrWriteError } from './shared.js'
+import { helpRequested, parseOrThrow } from './shared.js'
 import type { CommandContext, CommandRegistry } from './types.js'
 
 interface FillFormField {
@@ -52,10 +52,7 @@ async function handleFillForm(rest: string[], context: CommandContext): Promise<
   }
 
   const rawInput = await context.resolveEvalScript(rest)
-  const fields = parseOrWriteError(() => parseFillFormInput(rawInput))
-  if (!fields) {
-    return 1
-  }
+  const fields = parseOrThrow(() => parseFillFormInput(rawInput))
 
   const payload = await context.requestCommand(context.flags.server, 'fillform', { fields })
   context.writeResult(payload)

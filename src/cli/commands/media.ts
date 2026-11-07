@@ -9,7 +9,7 @@ import {
   MAX_DOWNLOAD_RETRY_DELAY_MS,
 } from '../../core/file-transfer.js'
 import { COMMAND_ACTIONS, isCommandAction } from './actions.js'
-import { helpRequested, writeCommandError } from './shared.js'
+import { helpRequested, throwCommandError } from './shared.js'
 import type { CommandContext, CommandHandler, CommandRegistry } from './types.js'
 
 interface DownloadOptions {
@@ -269,7 +269,7 @@ async function handleDownload(rest: string[], context: CommandContext): Promise<
     context.writeResult({ ok: true, result })
     return 0
   } catch (error) {
-    return writeCommandError(error)
+    return throwCommandError(error)
   }
 }
 
@@ -277,7 +277,7 @@ const handleMedia: CommandHandler = async (rest, context) => {
   if (helpRequested(rest[0], context, ['media'])) return 0
   if (rest[0] === 'list' && helpRequested(rest[1], context, ['media', 'list'])) return 0
   if (!isCommandAction('media', rest[0])) {
-    return writeCommandError(
+    return throwCommandError(
       `unsupported media action; expected ${COMMAND_ACTIONS.media.actions.join('|')}`,
     )
   }
@@ -289,47 +289,47 @@ const handleMedia: CommandHandler = async (rest, context) => {
   let timeoutMs: number | undefined
   for (let index = 0; index < extra.length; index += 1) {
     if (extra[index] === '--timeout-ms') {
-      if (timeoutMs !== undefined) return writeCommandError('duplicate option: --timeout-ms')
+      if (timeoutMs !== undefined) return throwCommandError('duplicate option: --timeout-ms')
       try {
         timeoutMs = parseNumberArg(extra[++index], 'timeout ms', { min: 1, integer: true })
       } catch (error) {
-        return writeCommandError(error)
+        return throwCommandError(error)
       }
       continue
     }
     if (extra[index] === '--wait-for') {
-      if (waitFor !== undefined) return writeCommandError('duplicate option: --wait-for')
+      if (waitFor !== undefined) return throwCommandError('duplicate option: --wait-for')
       const next = extra[++index]
-      if (!next || next.startsWith('--')) return writeCommandError('missing value for --wait-for')
+      if (!next || next.startsWith('--')) return throwCommandError('missing value for --wait-for')
       waitFor = next
       continue
     }
     const value = extra[index]!
     if (value === '--resolve') {
-      if (resolve) return writeCommandError('duplicate option: --resolve')
+      if (resolve) return throwCommandError('duplicate option: --resolve')
       resolve = true
       continue
     }
     if (value === '--include-background') {
-      if (includeBackground) return writeCommandError('duplicate option: --include-background')
+      if (includeBackground) return throwCommandError('duplicate option: --include-background')
       includeBackground = true
       continue
     }
     if (value === '--selector') {
-      if (selector !== undefined) return writeCommandError('duplicate option: --selector')
+      if (selector !== undefined) return throwCommandError('duplicate option: --selector')
       const next = extra[index + 1]
       if (!next || next.startsWith('--') || !next.trim())
-        return writeCommandError('missing value for --selector')
+        return throwCommandError('missing value for --selector')
       selector = next.trim()
       index += 1
       continue
     }
-    return writeCommandError(
+    return throwCommandError(
       'usage: autobrowser media list [--resolve] [--selector <css>] [--include-background] [--wait-for <css>] [--timeout-ms <ms>]',
     )
   }
   if (waitFor === undefined && timeoutMs !== undefined) {
-    return writeCommandError('--timeout-ms requires --wait-for')
+    return throwCommandError('--timeout-ms requires --wait-for')
   }
   try {
     const payload = await context.requestCommand(context.flags.server, 'media', {
@@ -349,7 +349,7 @@ const handleMedia: CommandHandler = async (rest, context) => {
     context.writeResult(payload)
     return payload.ok ? 0 : 1
   } catch (error) {
-    return writeCommandError(error)
+    return throwCommandError(error)
   }
 }
 

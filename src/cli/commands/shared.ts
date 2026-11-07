@@ -1,3 +1,4 @@
+import { CLI_ERROR_CODES, CliUsageError, toCliError } from '../cli-error.js'
 import { isHelpToken } from '../help.js'
 import { findCommandDefaultAction, isCommandAction, type CommandActionPath } from './actions.js'
 import type { CommandContext, CommandHandler } from './types.js'
@@ -25,7 +26,9 @@ export function readRequiredArg(
     return undefined
   }
   if (!value) {
-    throw new Error(`missing value for ${helpPath.join(' ')}`)
+    throw new CliUsageError(`missing value for ${helpPath.join(' ')}`, {
+      details: { path: helpPath.join(' ') },
+    })
   }
 
   return value
@@ -42,8 +45,9 @@ export function readAllowedArg<T extends string>(
     return undefined
   }
   if (!value || !allowed.includes(value as T)) {
-    throw new Error(
+    throw new CliUsageError(
       `unsupported ${helpPath.join(' ')} action: ${value || '(empty)'} (expected ${allowed.join('|')})`,
+      { details: { path: helpPath.join(' ') } },
     )
   }
 
@@ -91,17 +95,24 @@ export function resolveCommandAction(
   return { kind: 'action', action }
 }
 
-export function writeCommandError(error: unknown): 1 {
-  process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`)
-  return 1
+/**
+ * 命令级错误统一抛给 CLI 出口（src/cli.ts），由出口按 JSON 契约输出。
+ *
+ * 这里不再就地写 stderr：解析期错误直接落文本会让 agent 的 "stdout 永远是 JSON"
+ * 假设在最常见的误用场景上失效。
+ */
+export function throwCommandError(error: unknown): never {
+  throw toCliError(error)
 }
 
-export function parseOrWriteError<T>(parser: () => T): T | undefined {
+/**
+ * 解析命令参数；失败时抛解析期错误，由统一出口输出带错误码的 JSON。
+ */
+export function parseOrThrow<T>(parser: () => T): T {
   try {
     return parser()
   } catch (error) {
-    writeCommandError(error)
-    return undefined
+    throw toCliError(error, CLI_ERROR_CODES.INVALID_ARGUMENT)
   }
 }
 
@@ -135,7 +146,9 @@ export function createNoArgRequestCommand(options: {
       return 0
     }
     if (rest.length > 0) {
-      throw new Error(`unexpected argument for ${options.helpPath.join(' ')}: ${rest[0]}`)
+      throw new CliUsageError(`unexpected argument for ${options.helpPath.join(' ')}: ${rest[0]}`, {
+        details: { path: options.helpPath.join(' ') },
+      })
     }
 
     await requestAndWrite(context, options.command, options.args ?? {})
@@ -155,7 +168,10 @@ export function createSingleArgRequestCommand(options: {
       return 0
     }
     if (args.length > 1) {
-      throw new Error(`unexpected extra argument for ${options.helpPath.join(' ')}: ${args[1]}`)
+      throw new CliUsageError(
+        `unexpected extra argument for ${options.helpPath.join(' ')}: ${args[1]}`,
+        { details: { path: options.helpPath.join(' ') } },
+      )
     }
 
     await requestAndWrite(context, options.command, {

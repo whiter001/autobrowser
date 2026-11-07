@@ -3,7 +3,7 @@ import { chmod, mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { BrowserProfileLockError } from '../src/cli/browser-launch.js'
-import { runCli } from './command-line-test-utils.js'
+import { cliErrorPayload, runCli } from './command-line-test-utils.js'
 
 describe('cli command routing', () => {
   test('connect opens the extension page when the server reports a token', async () => {
@@ -153,8 +153,9 @@ describe('cli command routing', () => {
     // 不应回退到 relay 页：浏览器根本没起来，回退没有意义
     expect(result.openCalls).toHaveLength(1)
     expect(result.openCalls[0]).toContain('connect.html')
-    expect(result.stderr).toContain('--user-data-dir')
-    expect(result.stderr).toContain('already in use')
+    const error = cliErrorPayload(result.stdout).error
+    expect(error.message).toContain('--user-data-dir')
+    expect(error.message).toContain('already in use')
   })
 
   test('prints the persisted token without opening the browser', async () => {
@@ -337,7 +338,9 @@ describe('cli command routing', () => {
     expect(result.exitCode).toBe(1)
     expect(result.spawnCalls).toHaveLength(1)
     expect(result.openCalls).toEqual([])
-    expect(result.stderr).toContain('Background server exited before becoming ready')
+    expect(cliErrorPayload(result.stdout).error.message).toContain(
+      'Background server exited before becoming ready',
+    )
   })
 
   test('connect keeps working when config persistence is unavailable', async () => {

@@ -9,6 +9,7 @@ import {
 } from '../../core/protocol.js'
 import { compareVersions, readCliBuildInfo } from '../build-info.js'
 import { isRecord } from '../client.js'
+import { CLI_ERROR_CODES, CliUsageError } from '../cli-error.js'
 import { getLocalControlBaseUrl, targetsLocalControlServer } from '../connection.js'
 import { startBackgroundServer } from '../server-boot.js'
 import { isHelpToken } from '../help.js'
@@ -29,6 +30,7 @@ import {
   type SessionRecord,
 } from '../../core/sessions.js'
 import { getCommandDefaultAction, isCommandAction } from './actions.js'
+import { throwCommandError } from './shared.js'
 import type { CommandContext, CommandRegistry } from './types.js'
 
 /** 优雅关闭时等待 state 持久化完成的兜底时长；超时则强制退出，避免 --serve 进程挂死 */
@@ -223,25 +225,33 @@ async function ensureBackgroundServer(
       return { status: result.status, started: true }
 
     case 'spawn-failed':
-      process.stderr.write(
-        `${result.error instanceof Error ? result.error.message : 'failed to start background server'}\n`,
+      throwServerStartupError(
+        result.error instanceof Error ? result.error.message : 'failed to start background server',
       )
-      return null
 
     case 'exited-before-ready':
-      process.stderr.write(
+      throwServerStartupError(
         `Background server exited before becoming ready${
           result.exitInfo.code !== null ? ` (code ${result.exitInfo.code})` : ''
-        }${result.exitInfo.signal ? ` (signal ${result.exitInfo.signal})` : ''}.\n`,
+        }${result.exitInfo.signal ? ` (signal ${result.exitInfo.signal})` : ''}.`,
       )
-      return null
 
     case 'not-ready':
-      process.stderr.write(
-        `Failed to start background server on ${getLocalControlBaseUrl(context.flags.ipcPort)}\n`,
+      throwServerStartupError(
+        `Failed to start background server on ${getLocalControlBaseUrl(context.flags.ipcPort)}`,
       )
-      return null
   }
+}
+
+/**
+ * 后台服务起不来是运行期失败而不是用法错误，给出"先看状态、再前台启动看报错"的下一步。
+ */
+function throwServerStartupError(message: string): never {
+  throw new CliUsageError(message, {
+    code: CLI_ERROR_CODES.FAILED,
+    suggestedAction:
+      "Run 'autobrowser status' to check the server state, then start it again; if it keeps failing, run 'autobrowser server --serve' in a foreground terminal to see the startup error.",
+  })
 }
 
 async function handleServer(rest: string[], context: CommandContext): Promise<number | void> {
@@ -252,13 +262,11 @@ async function handleServer(rest: string[], context: CommandContext): Promise<nu
     ])
 
     if (relayPortInUse) {
-      process.stderr.write(`Server already running on port ${context.flags.relayPort}\n`)
-      return 1
+      return throwCommandError(`Server already running on port ${context.flags.relayPort}`)
     }
 
     if (ipcPortInUse) {
-      process.stderr.write(`Server already running on port ${context.flags.ipcPort}\n`)
-      return 1
+      return throwCommandError(`Server already running on port ${context.flags.ipcPort}`)
     }
 
     const extensionId = await resolveExtensionId(context.homeDir, context.flags.extensionId)
@@ -316,8 +324,7 @@ async function handleServer(rest: string[], context: CommandContext): Promise<nu
     )
 
     if (!persistedConnectionInfo?.token) {
-      process.stderr.write('No persisted background server state found.\n')
-      return 1
+      return throwCommandError('No persisted background server state found.')
     }
 
     try {
@@ -332,10 +339,7 @@ async function handleServer(rest: string[], context: CommandContext): Promise<nu
       process.stdout.write('autobrowser server stopped\n')
       return
     } catch (error) {
-      process.stderr.write(
-        `${error instanceof Error ? error.message : 'failed to stop background server'}\n`,
-      )
-      return 1
+      return throwCommandError(error)
     }
   }
 
@@ -365,10 +369,9 @@ async function handleConnect(rest: string[], context: CommandContext): Promise<n
       context.homeDir,
     )
     if (!persisted) {
-      process.stderr.write(
-        'no token found yet; run `autobrowser status` once to start the server and create one\n',
+      return throwCommandError(
+        'no token found yet; run `autobrowser status` once to start the server and create one',
       )
-      return 1
     }
     process.stdout.write(`${persisted.token}\n`)
     return 0
@@ -448,15 +451,13 @@ async function handleReplay(rest: string[], context: CommandContext): Promise<nu
   const lastCommand = getRecordedCommandFromStatus(status)
 
   if (!lastCommand) {
-    process.stderr.write('No recorded command available to replay.\n')
-    return 1
+    return throwCommandError('No recorded command available to replay.')
   }
 
   if (containsRedactedValue(lastCommand.args)) {
-    process.stderr.write(
-      'The recorded command contains redacted arguments and cannot be replayed safely.\n',
+    return throwCommandError(
+      'The recorded command contains redacted arguments and cannot be replayed safely.',
     )
-    return 1
   }
 
   const payload = await context.requestCommand(
@@ -557,8 +558,7 @@ async function handleSession(rest: string[], context: CommandContext): Promise<n
   switch (sessionAction) {
     case 'list': {
       if (rest.length > 1) {
-        process.stderr.write(`unexpected argument for session list: ${rest[1]}\n`)
-        return 1
+        return throwCommandError(`unexpected argument for session list: ${rest[1]}`)
       }
       const sessions = await listSessions(baseHomeDir)
       const items = []
@@ -581,10 +581,9 @@ async function handleSession(rest: string[], context: CommandContext): Promise<n
     case 'create': {
       const name = rest[1]
       if (!name || rest.length > 2) {
-        process.stderr.write(
-          'usage: autobrowser session create <name> [--relay-port <n> --ipc-port <n>]\n',
+        return throwCommandError(
+          'usage: autobrowser session create <name> [--relay-port <n> --ipc-port <n>]',
         )
-        return 1
       }
       const session = await createSession(baseHomeDir, name, {
         ...(context.flags.relayPortExplicitlySet ? { relayPort: context.flags.relayPort } : {}),
@@ -595,8 +594,7 @@ async function handleSession(rest: string[], context: CommandContext): Promise<n
     }
     case 'kill-all': {
       if (rest.length > 1) {
-        process.stderr.write(`unexpected argument for kill-all: ${rest[1]}\n`)
-        return 1
+        return throwCommandError(`unexpected argument for kill-all: ${rest[1]}`)
       }
       const sessions = await listSessions(baseHomeDir)
       const results = []
@@ -614,8 +612,7 @@ async function handleSession(rest: string[], context: CommandContext): Promise<n
     case 'delete-data': {
       const target = resolveSessionTarget(rest, context, sessionAction)
       if ('error' in target) {
-        process.stderr.write(`${target.error}\n`)
-        return 1
+        return throwCommandError(target.error)
       }
       const { name } = target
 
@@ -671,11 +668,9 @@ async function handleSession(rest: string[], context: CommandContext): Promise<n
     default: {
       // 表里声明了 action 但还没有实现分支：不能静默当成功。
       if (isCommandAction('session', sessionAction)) {
-        process.stderr.write(`session action is not implemented: ${sessionAction}\n`)
-        return 1
+        return throwCommandError(`session action is not implemented: ${sessionAction}`)
       }
-      process.stderr.write(`unsupported session action: ${sessionAction}\n`)
-      return 1
+      return throwCommandError(`unsupported session action: ${sessionAction}`)
     }
   }
 }

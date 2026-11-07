@@ -1,3 +1,5 @@
+import { didYouMeanCommand } from './option-hints.js'
+
 export interface HelpNode {
   name: string
   summary: string
@@ -1094,5 +1096,17 @@ export function printHelp(pathParts: string[] = []): string {
     return rendered
   }
 
-  return `${rendered}Unknown command path: ${remainder.join(' ')}\r\n`
+  const candidates = didYouMeanCommand(remainder[0] ?? '', topLevelCommandNames())
+  const hint = candidates.length > 0 ? ` Did you mean: ${candidates.join(', ')}?` : ''
+  return `${rendered}Unknown command path: ${remainder.join(' ')}.${hint}\r\n`
+}
+
+/** 顶层命令名（含别名），用于给写错的命令路径提供纠错候选。 */
+function topLevelCommandNames(): string[] {
+  const names: string[] = []
+  for (const child of HELP_ROOT.children ?? []) {
+    names.push(child.name)
+    names.push(...(child.aliases ?? []))
+  }
+  return names
 }

@@ -17,7 +17,7 @@ import {
   parseSearchArgs,
   parseWaitArgs,
 } from '../src/cli/parse.js'
-import { runCli } from './command-line-test-utils.js'
+import { cliErrorPayload, runCli } from './command-line-test-utils.js'
 
 describe('cli helpers', () => {
   test('uses rundll32 on windows for system url opens', () => {
@@ -238,7 +238,7 @@ describe('cli helpers', () => {
     const missing = await runCli(['eval', '--expr'])
     expect(missing.exitCode).toBe(1)
     expect(missing.fetchCalls).toHaveLength(0)
-    expect(missing.stderr).toContain('missing value for --expr')
+    expect(cliErrorPayload(missing.stdout).error.message).toContain('missing value for --expr')
   })
 
   test('routes CDP JSON params and rejects non-object payloads', async () => {
@@ -263,7 +263,9 @@ describe('cli helpers', () => {
     const invalid = await runCli(['cdp', 'Runtime.evaluate', '[]'])
     expect(invalid.exitCode).toBe(1)
     expect(invalid.fetchCalls).toHaveLength(0)
-    expect(invalid.stderr).toContain('CDP params must be a JSON object')
+    expect(cliErrorPayload(invalid.stdout).error.message).toContain(
+      'CDP params must be a JSON object',
+    )
   })
 
   test('routes WebMCP discovery and object args with strict input validation', async () => {
@@ -277,7 +279,9 @@ describe('cli helpers', () => {
     const invalid = await runCli(['webmcp', 'call', 'lookup', '[]'])
     expect(invalid.exitCode).toBe(1)
     expect(invalid.fetchCalls).toHaveLength(0)
-    expect(invalid.stderr).toContain('WebMCP args must be a JSON object')
+    expect(cliErrorPayload(invalid.stdout).error.message).toContain(
+      'WebMCP args must be a JSON object',
+    )
   })
 
   test('routes feed collect with virtual-list limits and dedupe options', async () => {
@@ -553,9 +557,10 @@ describe('cli helpers', () => {
 
     expect(result.exitCode).toBe(1)
     expect(result.fetchCalls).toHaveLength(0)
-    expect(result.stderr).toContain('unsupported global option: --selecor')
-    expect(result.stderr).toContain('--tab')
-    expect(result.stderr).toContain('--ipc-port')
+    const error = cliErrorPayload(result.stdout).error
+    expect(error.message).toContain('unsupported global option: --selecor')
+    expect(error.message).toContain('--tab')
+    expect(error.message).toContain('--ipc-port')
   })
 
   test('rejects unsupported network har start flags', () => {
@@ -572,7 +577,9 @@ describe('cli helpers', () => {
 
     expect(result.exitCode).toBe(1)
     expect(result.fetchCalls).toHaveLength(0)
-    expect(result.stderr).toContain('unsupported network option: --har-max-request')
+    expect(cliErrorPayload(result.stdout).error.message).toContain(
+      'unsupported network option: --har-max-request',
+    )
   })
 
   test('rejects unsupported network route arguments', () => {
@@ -598,7 +605,7 @@ describe('cli helpers', () => {
 
     expect(result.exitCode).toBe(1)
     expect(result.fetchCalls).toHaveLength(0)
-    expect(result.stderr).toContain('missing value for --tab')
+    expect(cliErrorPayload(result.stdout).error.message).toContain('missing value for --tab')
   })
 
   test('rejects invalid global port values before dispatching commands', async () => {
@@ -607,7 +614,7 @@ describe('cli helpers', () => {
 
       expect(result.exitCode).toBe(1)
       expect(result.fetchCalls).toHaveLength(0)
-      expect(result.stderr).toContain('invalid --ipc-port')
+      expect(cliErrorPayload(result.stdout).error.message).toContain('invalid --ipc-port')
     }
   })
 
@@ -628,7 +635,7 @@ describe('cli helpers', () => {
 
       expect(result.exitCode).toBe(1)
       expect(result.fetchCalls).toHaveLength(0)
-      expect(result.stderr).toContain(testCase.message)
+      expect(cliErrorPayload(result.stdout).error.message).toContain(testCase.message)
     }
   })
 
@@ -656,7 +663,7 @@ describe('cli helpers', () => {
       const result = await runCli(testCase.argv)
       expect(result.exitCode).toBe(1)
       expect(result.fetchCalls).toHaveLength(0)
-      expect(result.stderr).toContain(testCase.message)
+      expect(cliErrorPayload(result.stdout).error.message).toContain(testCase.message)
     }
   })
 
@@ -681,7 +688,9 @@ describe('cli helpers', () => {
 
     expect(result.exitCode).toBe(1)
     expect(result.fetchCalls).toHaveLength(0)
-    expect(result.stderr).toContain('unsupported network option: --filtter')
+    expect(cliErrorPayload(result.stdout).error.message).toContain(
+      'unsupported network option: --filtter',
+    )
   })
 
   test('forwards console and errors pagination flags to the extension', async () => {
@@ -750,12 +759,12 @@ describe('cli helpers', () => {
     const oversized = await runCli(['console', '--page-size', '201'])
     expect(oversized.exitCode).toBe(1)
     expect(oversized.fetchCalls).toHaveLength(0)
-    expect(oversized.stderr).toContain('invalid page size')
+    expect(cliErrorPayload(oversized.stdout).error.message).toContain('invalid page size')
 
     const negative = await runCli(['console', '--page-idx', '-1'])
     expect(negative.exitCode).toBe(1)
     expect(negative.fetchCalls).toHaveLength(0)
-    expect(negative.stderr).toContain('invalid page idx')
+    expect(cliErrorPayload(negative.stdout).error.message).toContain('invalid page idx')
   })
 
   test('routes HAR start limits and capture filters to the extension', async () => {

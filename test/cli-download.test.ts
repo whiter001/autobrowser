@@ -93,18 +93,16 @@ async function createContext(
   return { context, directory, requestCalls, written }
 }
 
-async function captureStderr(run: () => Promise<number | void>) {
-  const original = process.stderr.write.bind(process.stderr)
-  let stderr = ''
-  process.stderr.write = ((chunk: string | Uint8Array) => {
-    stderr += typeof chunk === 'string' ? chunk : new TextDecoder().decode(chunk)
-    return true
-  }) as typeof process.stderr.write
+/**
+ * 命令处理器失败时抛出带错误码的异常，由 CLI 出口统一输出 JSON 契约；
+ * 这里把异常收敛成 {code, message} 便于断言。
+ */
+async function captureFailure(run: () => Promise<number | void>) {
   try {
     const code = await run()
-    return { code, stderr }
-  } finally {
-    process.stderr.write = original
+    return { code, message: '' }
+  } catch (error) {
+    return { code: 1, message: error instanceof Error ? error.message : String(error) }
   }
 }
 
@@ -149,7 +147,7 @@ describe('cli download command', () => {
     const oldPath = process.env.PATH
     process.env.PATH = `${directory}${path.delimiter}${oldPath ?? ''}`
     try {
-      const { code, stderr } = await captureStderr(
+      const { code, message } = await captureFailure(
         async () =>
           await mediaCommandRegistry.download!(
             [
@@ -168,7 +166,7 @@ describe('cli download command', () => {
           ),
       )
       expect(code).toBe(1)
-      expect(stderr).toContain('simulated segment failure')
+      expect(message).toContain('simulated segment failure')
       expect(requestCalls.map((call) => call.args.url)).toEqual([
         `${base}master.m3u8`,
         `${base}video.m3u8`,
@@ -198,7 +196,7 @@ describe('cli download command', () => {
         [option, 'NaN'],
         [option, option === '--retries' ? '6' : '60001'],
       ]) {
-        const { code, stderr } = await captureStderr(
+        const { code, message } = await captureFailure(
           async () =>
             await mediaCommandRegistry.download!(
               ['https://example.com/file', '/tmp/out.bin', ...extra],
@@ -206,7 +204,7 @@ describe('cli download command', () => {
             ),
         )
         expect(code).toBe(1)
-        expect(stderr).toContain(option)
+        expect(message).toContain(option)
       }
     }
     expect(requestCalls).toHaveLength(0)
@@ -265,7 +263,7 @@ describe('cli download command', () => {
       const { context, directory, requestCalls } = await createContext({
         media: [{ index: 0, url: sourceUrl, sources: [] }],
       })
-      const { code, stderr } = await captureStderr(
+      const { code, message } = await captureFailure(
         async () =>
           await mediaCommandRegistry.download!(
             [
@@ -293,7 +291,7 @@ describe('cli download command', () => {
       })
       expect(code).toBe(epoch === 1 ? 0 : 1)
       expect(requestCalls).toHaveLength(epoch === 1 ? 2 : 1)
-      if (epoch !== 1) expect(stderr).toContain('STALE_MEDIA_STATE')
+      if (epoch !== 1) expect(message).toContain('STALE_MEDIA_STATE')
     }
   })
 
@@ -308,7 +306,7 @@ describe('cli download command', () => {
         media: [{ index: 0, url: 'https://example.com/v.mp4', sources: [] }],
         mediaResult,
       })
-      const { code } = await captureStderr(
+      const { code } = await captureFailure(
         async () =>
           await mediaCommandRegistry.download!(
             [
@@ -340,7 +338,7 @@ describe('cli download command', () => {
         },
       ],
     })
-    const { code, stderr } = await captureStderr(
+    const { code, message } = await captureFailure(
       async () =>
         await mediaCommandRegistry.download!(
           ['--media', '0', path.join(directory, 'out.mp4')],
@@ -348,7 +346,7 @@ describe('cli download command', () => {
         ),
     )
     expect(code).toBe(1)
-    expect(stderr).toContain('no downloadable')
+    expect(message).toContain('no downloadable')
     expect(requestCalls).toHaveLength(1)
   })
 
@@ -360,11 +358,11 @@ describe('cli download command', () => {
       ['--resolve', '--resolve'],
       ['--include-background', '--include-background'],
     ]) {
-      const { code, stderr } = await captureStderr(
+      const { code, message } = await captureFailure(
         async () => await mediaCommandRegistry.media!(['list', ...extra], context),
       )
       expect(code).toBe(1)
-      expect(stderr).toContain('duplicate option')
+      expect(message).toContain('duplicate option')
     }
     for (const extra of [
       ['--selector', 'a', '--selector', 'b'],
@@ -372,40 +370,40 @@ describe('cli download command', () => {
       ['--media-epoch', '1', '--media-epoch', '2'],
       ['--timeout-ms', '1', '--timeout-ms', '2'],
     ]) {
-      const { code, stderr } = await captureStderr(
+      const { code, message } = await captureFailure(
         async () =>
           await mediaCommandRegistry.download!(['--media', '0', '/tmp/out', ...extra], context),
       )
       expect(code).toBe(1)
-      expect(stderr).toContain('duplicate option')
+      expect(message).toContain('duplicate option')
     }
     expect(requestCalls).toHaveLength(0)
   })
 
   test('rejects non http(s) urls without contacting the relay', async () => {
     const { context, requestCalls } = await createContext()
-    const { code, stderr } = await captureStderr(
+    const { code, message } = await captureFailure(
       async () =>
         await mediaCommandRegistry.download!(['file:///etc/passwd', '/tmp/out.bin'], context),
     )
     expect(code).toBe(1)
-    expect(stderr).toContain('http or https')
+    expect(message).toContain('http or https')
     expect(requestCalls).toHaveLength(0)
   })
 
   test('requires an output path or output directory', async () => {
     const { context, requestCalls } = await createContext()
-    const { code, stderr } = await captureStderr(
+    const { code, message } = await captureFailure(
       async () => await mediaCommandRegistry.download!(['https://example.com/image.png'], context),
     )
     expect(code).toBe(1)
-    expect(stderr).toContain('output path or --output-dir')
+    expect(message).toContain('output path or --output-dir')
     expect(requestCalls).toHaveLength(0)
   })
 
   test('rejects unknown options and conflicting output arguments', async () => {
     const { context, requestCalls } = await createContext()
-    const unknown = await captureStderr(
+    const unknown = await captureFailure(
       async () =>
         await mediaCommandRegistry.download!(
           ['https://example.com/image.png', '/tmp/out.bin', '--resume'],
@@ -413,9 +411,9 @@ describe('cli download command', () => {
         ),
     )
     expect(unknown.code).toBe(1)
-    expect(unknown.stderr).toContain('--resume')
+    expect(unknown.message).toContain('--resume')
 
-    const conflict = await captureStderr(
+    const conflict = await captureFailure(
       async () =>
         await mediaCommandRegistry.download!(
           ['https://example.com/image.png', '/tmp/out.bin', '--output-dir', '/tmp'],
@@ -423,7 +421,7 @@ describe('cli download command', () => {
         ),
     )
     expect(conflict.code).toBe(1)
-    expect(conflict.stderr).toContain('cannot be combined')
+    expect(conflict.message).toContain('cannot be combined')
     expect(requestCalls).toHaveLength(0)
   })
 
@@ -431,7 +429,7 @@ describe('cli download command', () => {
     const { context, directory, requestCalls } = await createContext()
     const outputPath = path.join(directory, 'existing.bin')
     await writeFile(outputPath, 'previous')
-    const { code, stderr } = await captureStderr(
+    const { code, message } = await captureFailure(
       async () =>
         await mediaCommandRegistry.download!(
           ['https://example.com/image.bin', outputPath, '--no-clobber'],
@@ -439,7 +437,7 @@ describe('cli download command', () => {
         ),
     )
     expect(code).toBe(1)
-    expect(stderr).toContain('拒绝覆盖')
+    expect(message).toContain('拒绝覆盖')
     expect(await readFile(outputPath, 'utf8')).toBe('previous')
     expect(requestCalls).toHaveLength(0)
   })
@@ -472,24 +470,24 @@ describe('cli download command', () => {
 
   test('media list rejects duplicated options and a missing selector value', async () => {
     const { context, requestCalls } = await createContext()
-    const duplicated = await captureStderr(
+    const duplicated = await captureFailure(
       async () =>
         await mediaCommandRegistry.media!(['list', '--selector', 'a', '--selector', 'b'], context),
     )
     expect(duplicated.code).toBe(1)
-    expect(duplicated.stderr).toContain('duplicate option: --selector')
+    expect(duplicated.message).toContain('duplicate option: --selector')
 
-    const missing = await captureStderr(
+    const missing = await captureFailure(
       async () => await mediaCommandRegistry.media!(['list', '--selector'], context),
     )
     expect(missing.code).toBe(1)
-    expect(missing.stderr).toContain('missing value for --selector')
+    expect(missing.message).toContain('missing value for --selector')
 
-    const unknown = await captureStderr(
+    const unknown = await captureFailure(
       async () => await mediaCommandRegistry.media!(['list', '--all'], context),
     )
     expect(unknown.code).toBe(1)
-    expect(unknown.stderr).toContain('usage: autobrowser media list')
+    expect(unknown.message).toContain('usage: autobrowser media list')
     expect(requestCalls).toHaveLength(0)
   })
 })

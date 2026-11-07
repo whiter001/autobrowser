@@ -3,7 +3,7 @@ import { mkdir, mkdtemp, writeFile } from 'node:fs/promises'
 import { createServer } from 'node:net'
 import os from 'node:os'
 import path from 'node:path'
-import { runCli } from './command-line-test-utils.js'
+import { cliErrorPayload, runCli } from './command-line-test-utils.js'
 
 describe('cli command routing', () => {
   test('server starts the detached background process and waits for status', async () => {
@@ -95,7 +95,9 @@ describe('cli command routing', () => {
       expect(result.fetchCalls).toHaveLength(0)
       expect(result.spawnCalls).toHaveLength(0)
       expect(result.stdout).not.toContain('autobrowser server started')
-      expect(result.stderr).toContain(`Server already running on port ${busyAddress.port}`)
+      expect(cliErrorPayload(result.stdout).error.message).toContain(
+        `Server already running on port ${busyAddress.port}`,
+      )
     } finally {
       await new Promise((resolve, reject) => {
         busyServer.close((error) => {
@@ -376,6 +378,6 @@ describe('cli command routing', () => {
 
     expect(result.exitCode).toBe(1)
     expect(killCalls).toEqual([])
-    expect(result.stderr).toContain('not an autobrowser server')
+    expect(cliErrorPayload(result.stdout).error.message).toContain('not an autobrowser server')
   })
 })

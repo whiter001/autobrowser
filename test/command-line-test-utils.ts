@@ -73,6 +73,24 @@ const originalStdoutWrite = process.stdout.write.bind(process.stdout)
 const originalStderrWrite = process.stderr.write.bind(process.stderr)
 let cliRunQueue: Promise<unknown> = Promise.resolve()
 
+export interface CliErrorPayload {
+  ok: false
+  error: {
+    message: string
+    code: string
+    details?: unknown
+    suggestedAction: string
+  }
+}
+
+/**
+ * CLI 失败统一走 JSON 契约（stdout 上的 {ok:false,error:{...}}），
+ * 测试里从这里取错误消息，避免到处散落 JSON.parse。
+ */
+export function cliErrorPayload(stdout: string): CliErrorPayload {
+  return JSON.parse(stdout) as CliErrorPayload
+}
+
 export function interceptStream(chunks: string[]): typeof process.stdout.write {
   return ((chunk: unknown, encoding?: unknown, callback?: unknown) => {
     chunks.push(String(chunk))

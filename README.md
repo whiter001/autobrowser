@@ -510,6 +510,27 @@ autobrowser dialog auto --off
 autobrowser dialog auto --on
 ```
 
+## 错误输出契约
+
+命令失败时 stdout 上永远是同一套 JSON，退出码为 1：
+
+```json
+{
+  "ok": false,
+  "error": {
+    "message": "missing value for click",
+    "code": "CLI_INVALID_ARGUMENT",
+    "details": { "path": "click", "command": "click" },
+    "suggestedAction": "Run 'autobrowser help click' to see the accepted arguments, then run the command again with a corrected value."
+  }
+}
+```
+
+- 参数类错误（缺参、多参、取值非法、未知选项）用 `CLI_INVALID_ARGUMENT`，未知命令用 `CLI_UNKNOWN_COMMAND`，其余 CLI 层失败用 `CLI_ERROR`；运行期错误仍用扩展/relay 自己的错误码。
+- `suggestedAction` 是每个错误码的默认下一步（见 `src/core/error-actions.ts`），扩展给出的更具体建议优先。
+- 命令名写错时不会打印整页帮助，而是直接报出未知命令，并在 `details.candidates` 里给出最接近的命令名（例如 `autobrowser snap` → `snapshot`）。
+- `--raw` / `--brief` 会退回纯文本：错误写在 stderr，并附一行 `[AI SUGGESTION]` 建议。
+
 ## MCP 服务器（Model Context Protocol）
 
 `autobrowser mcp` 通过 stdio 暴露一个 MCP（Model Context Protocol）服务器，把核心命令包装成 MCP tools，供 Claude Desktop 等 MCP 客户端直接调用：

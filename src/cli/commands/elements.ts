@@ -6,11 +6,11 @@ import { COMMAND_ACTIONS } from './actions.js'
 import {
   createSingleArgRequestCommand,
   helpRequested,
-  parseOrWriteError,
+  parseOrThrow,
   readAllowedArg,
   readRequiredArg,
   requestAndWrite,
-  writeCommandError,
+  throwCommandError,
 } from './shared.js'
 import type { CommandContext, CommandRegistry } from './types.js'
 
@@ -32,7 +32,7 @@ async function handleFill(rest: string[], context: CommandContext): Promise<numb
     return 0
   }
   if (rest.length < 2) {
-    return writeCommandError('missing value for fill')
+    return throwCommandError('missing value for fill')
   }
   const value = rest.slice(1).join(' ')
 
@@ -48,10 +48,7 @@ async function handleFind(rest: string[], context: CommandContext): Promise<numb
     return 0
   }
 
-  const findArgs = parseOrWriteError(() => parseFindArgs(rest))
-  if (!findArgs) {
-    return 1
-  }
+  const findArgs = parseOrThrow(() => parseFindArgs(rest))
 
   const payload = await context.requestCommand(context.flags.server, 'find', findArgs)
   context.writeResult(payload)
@@ -107,13 +104,10 @@ async function handleScroll(rest: string[], context: CommandContext): Promise<nu
     return 0
   }
 
-  const scrollArgs = parseOrWriteError(() => ({
+  const scrollArgs = parseOrThrow(() => ({
     deltaX: parseOptionalNumberArg(rest[1], 'scroll deltaX', 0),
     deltaY: parseOptionalNumberArg(rest[2], 'scroll deltaY', 100),
   }))
-  if (!scrollArgs) {
-    return 1
-  }
 
   await requestAndWrite(context, 'scroll', {
     selector: rest[0] || null,
@@ -172,7 +166,7 @@ async function handleType(rest: string[], context: CommandContext): Promise<numb
     ...literalParts,
   ]
   if (valueParts.length === 0) {
-    return writeCommandError('missing value for type')
+    return throwCommandError('missing value for type')
   }
   const value = valueParts.join(' ')
 
@@ -190,7 +184,7 @@ async function handleKeyboard(rest: string[], context: CommandContext): Promise<
     return 0
   }
   if (rest.length < 2) {
-    return writeCommandError(`missing text for keyboard ${action}`)
+    return throwCommandError(`missing text for keyboard ${action}`)
   }
   const value = rest.slice(1).join(' ')
 
@@ -220,15 +214,15 @@ async function handleHighlight(rest: string[], context: CommandContext): Promise
     }
     if (value === '--style') {
       style = rest[++index]
-      if (!style) return writeCommandError('missing value for --style')
+      if (!style) return throwCommandError('missing value for --style')
       continue
     }
-    if (value.startsWith('--')) return writeCommandError(`unsupported highlight option: ${value}`)
-    if (selector) return writeCommandError(`unexpected extra argument for highlight: ${value}`)
+    if (value.startsWith('--')) return throwCommandError(`unsupported highlight option: ${value}`)
+    if (selector) return throwCommandError(`unexpected extra argument for highlight: ${value}`)
     selector = value
   }
-  if (!selector && !hide) return writeCommandError('highlight requires a selector or --hide')
-  if (hide && style) return writeCommandError('--style cannot be combined with --hide')
+  if (!selector && !hide) return throwCommandError('highlight requires a selector or --hide')
+  if (hide && style) return throwCommandError('--style cannot be combined with --hide')
   await requestAndWrite(context, 'highlight', {
     ...(selector ? { selector } : {}),
     ...(style ? { style } : {}),
@@ -246,7 +240,7 @@ function parseMouseNumber(value: string | undefined, name: string): number {
 function createMouseNumberHandler(command: 'mousemove' | 'mousewheel') {
   return async (rest: string[], context: CommandContext): Promise<number | void> => {
     if (helpRequested(rest[0], context, [command])) return 0
-    if (rest.length !== 2) return writeCommandError(`${command} requires two numeric arguments`)
+    if (rest.length !== 2) return throwCommandError(`${command} requires two numeric arguments`)
     const first = parseMouseNumber(rest[0], command === 'mousemove' ? 'x' : 'deltaX')
     const second = parseMouseNumber(rest[1], command === 'mousemove' ? 'y' : 'deltaY')
     await requestAndWrite(
@@ -262,10 +256,10 @@ function createMouseButtonHandler(command: 'mousedown' | 'mouseup') {
   return async (rest: string[], context: CommandContext): Promise<number | void> => {
     if (helpRequested(rest[0], context, [command])) return 0
     if (rest.length > 1)
-      return writeCommandError(`unexpected extra argument for ${command}: ${rest[1]}`)
+      return throwCommandError(`unexpected extra argument for ${command}: ${rest[1]}`)
     const button = rest[0] || 'left'
     if (!['left', 'right', 'middle', 'back', 'forward'].includes(button))
-      return writeCommandError(`unsupported mouse button: ${button}`)
+      return throwCommandError(`unsupported mouse button: ${button}`)
     await requestAndWrite(context, command, { button })
     return 0
   }
@@ -302,7 +296,7 @@ async function readDropFile(filePath: string) {
 async function handleDrop(rest: string[], context: CommandContext): Promise<number | void> {
   if (helpRequested(rest[0], context, ['drop'])) return 0
   const selector = rest[0]
-  if (!selector) return writeCommandError('missing selector for drop')
+  if (!selector) return throwCommandError('missing selector for drop')
   const data: Record<string, string> = {}
   const files: Array<{ name: string; mimeType: string; dataBase64: string }> = []
   let totalBytes = 0
@@ -312,25 +306,25 @@ async function handleDrop(rest: string[], context: CommandContext): Promise<numb
     const inlineData = option.startsWith('--data=') ? option.slice('--data='.length) : null
     if (option === '--path' || inlinePath !== null) {
       const filePath = inlinePath ?? rest[++index]
-      if (!filePath) return writeCommandError('missing value for --path')
+      if (!filePath) return throwCommandError('missing value for --path')
       const file = await readDropFile(filePath)
       totalBytes += file.size
-      if (totalBytes > DROP_MAX_TOTAL_BYTES) return writeCommandError('drop files exceed 64MiB')
+      if (totalBytes > DROP_MAX_TOTAL_BYTES) return throwCommandError('drop files exceed 64MiB')
       files.push({ name: file.name, mimeType: file.mimeType, dataBase64: file.dataBase64 })
       continue
     }
     if (option === '--data' || inlineData !== null) {
       const item = inlineData ?? rest[++index]
-      if (!item) return writeCommandError('missing value for --data')
+      if (!item) return throwCommandError('missing value for --data')
       const separator = item.indexOf('=')
-      if (separator <= 0) return writeCommandError('--data must use mimeType=text format')
+      if (separator <= 0) return throwCommandError('--data must use mimeType=text format')
       data[item.slice(0, separator)] = item.slice(separator + 1)
       continue
     }
-    return writeCommandError(`unsupported drop option: ${option}`)
+    return throwCommandError(`unsupported drop option: ${option}`)
   }
   if (!Object.keys(data).length && !files.length)
-    return writeCommandError('drop requires at least one --path or --data item')
+    return throwCommandError('drop requires at least one --path or --data item')
   await requestAndWrite(context, 'drop', { selector, data, files })
   return 0
 }

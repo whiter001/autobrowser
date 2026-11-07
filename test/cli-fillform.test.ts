@@ -105,18 +105,17 @@ describe('cli fillform command', () => {
       rawInput: JSON.stringify([{ value: 'x' }]),
     })
 
-    const result = await fillFormCommandRegistry.fillform([], context)
-
-    expect(result).toBe(1)
+    // 参数错误由 CLI 出口统一输出 JSON 契约，处理器本身直接抛错
+    await expect(fillFormCommandRegistry.fillform([], context)).rejects.toThrow(
+      'selector must be a non-empty string',
+    )
     expect(requestCalls).toEqual([])
   })
 
   test('rejects malformed JSON without sending a request', async () => {
     const { context, requestCalls } = createContext({ rawInput: 'not json' })
 
-    const result = await fillFormCommandRegistry.fillform([], context)
-
-    expect(result).toBe(1)
+    await expect(fillFormCommandRegistry.fillform([], context)).rejects.toThrow()
     expect(requestCalls).toEqual([])
   })
 

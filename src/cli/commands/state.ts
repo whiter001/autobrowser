@@ -10,10 +10,10 @@ import { COMMAND_ACTIONS, isCommandAction, SET_RESETTABLE_VALUE_TYPES } from './
 import {
   createActionCommand,
   helpRequested,
-  parseOrWriteError,
+  parseOrThrow,
   readAllowedArg,
   requestAndWrite,
-  writeCommandError,
+  throwCommandError,
 } from './shared.js'
 import type { CommandContext, CommandRegistry } from './types.js'
 import { mkdtemp, writeFile } from 'node:fs/promises'
@@ -77,13 +77,13 @@ const handleCookies = createActionCommand({
         if (value === '--domain' || value === '--path') {
           const rawValue = rest[index + 1]
           if (rawValue === undefined) {
-            return writeCommandError(`missing value for ${value}`)
+            return throwCommandError(`missing value for ${value}`)
           }
           filters[value.slice(2)] = rawValue
           index += 1
           continue
         }
-        return writeCommandError(`unexpected cookies ${action} argument: ${value}`)
+        return throwCommandError(`unexpected cookies ${action} argument: ${value}`)
       }
 
       await requestAndWrite(context, 'cookies', { action: 'get', ...filters })
@@ -113,7 +113,7 @@ const handleCookies = createActionCommand({
       return context.writeHelp(['cookies', 'set'])
     }
     if (value === undefined) {
-      return writeCommandError('missing value for cookies set')
+      return throwCommandError('missing value for cookies set')
     }
 
     await requestAndWrite(context, 'cookies', {
@@ -140,17 +140,17 @@ const handleStorage = createActionCommand({
       return 0
     }
     if (action === 'set' && args.length === 1 && args[0]) {
-      return writeCommandError('missing value for storage set')
+      return throwCommandError('missing value for storage set')
     }
     const expectedCount = action === 'set' ? 2 : action === 'clear' ? 0 : 1
     const validCount = action === 'get' ? args.length <= 1 : args.length === expectedCount
     if (!validCount) {
-      return writeCommandError(`storage ${action} expects ${expectedCount} argument(s)`)
+      return throwCommandError(`storage ${action} expects ${expectedCount} argument(s)`)
     }
 
     if (action === 'get' || action === 'delete') {
       if (action === 'delete' && !args[0]) {
-        return writeCommandError('missing key for storage delete')
+        return throwCommandError('missing key for storage delete')
       }
       await requestAndWrite(context, 'storage', {
         action,
@@ -170,7 +170,7 @@ const handleStorage = createActionCommand({
 
     const [key, value] = args
     if (!key) {
-      return writeCommandError('missing key for storage set')
+      return throwCommandError('missing key for storage set')
     }
 
     await requestAndWrite(context, 'storage', {
@@ -191,7 +191,7 @@ async function handleSet(rest: string[], context: CommandContext): Promise<numbe
   }
 
   if (type === 'viewport') {
-    const viewportArgs = parseOrWriteError(() => ({
+    const viewportArgs = parseOrThrow(() => ({
       width: parseOptionalNumberArg(subArgs[0], 'viewport width', 1280, {
         min: 1,
         integer: true,
@@ -205,9 +205,6 @@ async function handleSet(rest: string[], context: CommandContext): Promise<numbe
       }),
       mobile: subArgs[3] === 'mobile',
     }))
-    if (!viewportArgs) {
-      return 1
-    }
 
     await requestAndWrite(context, 'set', {
       type: 'viewport',
@@ -249,14 +246,11 @@ async function handleSet(rest: string[], context: CommandContext): Promise<numbe
   }
 
   if (type === 'geo') {
-    const geoArgs = parseOrWriteError(() => ({
+    const geoArgs = parseOrThrow(() => ({
       latitude: parseOptionalNumberArg(subArgs[0], 'latitude', 0, { min: -90, max: 90 }),
       longitude: parseOptionalNumberArg(subArgs[1], 'longitude', 0, { min: -180, max: 180 }),
       accuracy: parseOptionalNumberArg(subArgs[2], 'accuracy', 1, { min: 0 }),
     }))
-    if (!geoArgs) {
-      return 1
-    }
 
     await requestAndWrite(context, 'set', {
       type: 'geo',
@@ -332,7 +326,7 @@ const handleClipboard = createActionCommand({
         return 0
       }
       if (rest.length === 0) {
-        return writeCommandError('missing text for clipboard write')
+        return throwCommandError('missing text for clipboard write')
       }
     }
     await requestAndWrite(context, 'clipboard', {
@@ -400,10 +394,7 @@ async function handleNetwork(rest: string[], context: CommandContext): Promise<n
       return 0
     }
 
-    const routeArgs = parseOrWriteError(() => parseNetworkRouteArgs(rest.slice(1)))
-    if (!routeArgs) {
-      return 1
-    }
+    const routeArgs = parseOrThrow(() => parseNetworkRouteArgs(rest.slice(1)))
 
     if (!routeArgs.url) {
       return context.writeHelp(['network', 'route'])
@@ -476,8 +467,7 @@ async function handleNetwork(rest: string[], context: CommandContext): Promise<n
 
       const result = isRecord(payload.result) ? (payload.result as Record<string, unknown>) : null
       if (!result) {
-        process.stderr.write('network export requires a structured request list\n')
-        return 1
+        return throwCommandError('network export requires a structured request list')
       }
 
       const page = Array.isArray(result.requests) ? (result.requests as unknown[]) : []
@@ -533,8 +523,7 @@ async function handleNetwork(rest: string[], context: CommandContext): Promise<n
       return context.writeHelp(['network', 'request'])
     }
 
-    const timeoutArgs = parseOrWriteError(() => parseNetworkTimeoutArgs(rest.slice(2)))
-    if (!timeoutArgs) return 1
+    const timeoutArgs = parseOrThrow(() => parseNetworkTimeoutArgs(rest.slice(2)))
     await requestAndWrite(context, 'network', {
       action: 'request',
       requestId,
@@ -574,10 +563,9 @@ async function handleNetwork(rest: string[], context: CommandContext): Promise<n
 
     if (subaction === 'stop' || subaction === 'recover') {
       const outputPath = rest[2] && !rest[2].startsWith('--') ? rest[2] : null
-      const timeoutArgs = parseOrWriteError(() =>
+      const timeoutArgs = parseOrThrow(() =>
         parseNetworkTimeoutArgs(outputPath ? rest.slice(3) : rest.slice(2), subaction === 'stop'),
       )
-      if (!timeoutArgs) return 1
       if (timeoutArgs.captureId !== undefined) {
         // Use the same ambient --tab as stop. Never send a destructive request unless
         // the extension proves it understands capture identities before stopping.
@@ -591,7 +579,7 @@ async function handleNetwork(rest: string[], context: CommandContext): Promise<n
           return 1
         }
         if (!isRecord(status.result) || status.result.captureId !== timeoutArgs.captureId) {
-          return writeCommandError(
+          return throwCommandError(
             'HAR status did not confirm the requested captureId; stop was not sent (extension may be outdated or captureId does not match)',
           )
         }
@@ -609,12 +597,12 @@ async function handleNetwork(rest: string[], context: CommandContext): Promise<n
 
       const result = isRecord(payload.result) ? (payload.result as NetworkHarStopResult) : undefined
       if (timeoutArgs.captureId !== undefined && result?.captureId !== timeoutArgs.captureId) {
-        return writeCommandError(
+        return throwCommandError(
           'HAR stop did not confirm the requested captureId (capture may have changed); capture may already be stopped. Use network har recover to recover the capture.',
         )
       }
       if (timeoutArgs.includeUrls && !Array.isArray(result?.urls)) {
-        return writeCommandError(
+        return throwCommandError(
           '--include-urls requires an extension that returns capture URLs; capture may already be stopped. Use network har recover to recover the capture.',
         )
       }
@@ -656,7 +644,7 @@ async function handleNetwork(rest: string[], context: CommandContext): Promise<n
     }
   }
 
-  return writeCommandError(`unsupported network action: ${action}`)
+  return throwCommandError(`unsupported network action: ${action}`)
 }
 
 export const stateCommandRegistry: CommandRegistry = {

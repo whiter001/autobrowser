@@ -5,6 +5,7 @@ import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprot
 import type { CallToolResult, Tool } from '@modelcontextprotocol/sdk/types.js'
 import { commandSupportsFrameTarget, commandSupportsTabTarget } from '../core/command-spec.js'
 import { isRecord, type CommandResponse } from './client.js'
+import { CLI_ERROR_CODES } from './cli-error.js'
 import { helpRequested } from './commands/shared.js'
 import type { CommandContext } from './commands/types.js'
 import {
@@ -84,7 +85,11 @@ export class AutobrowserMcpServer {
         commandArgs.frame = args.frame
       }
     } catch (error) {
-      return toErrorResult(undefined, error instanceof Error ? error.message : String(error))
+      // 参数不合法与 CLI 解析期错误同源，给同一个错误码，调用方才能统一分支处理
+      return toErrorResult(
+        CLI_ERROR_CODES.INVALID_ARGUMENT,
+        error instanceof Error ? error.message : String(error),
+      )
     }
 
     let payload: CommandResponse

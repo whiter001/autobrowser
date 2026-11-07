@@ -2,7 +2,7 @@ import { describe, expect, test } from 'bun:test'
 import { mkdtemp, readFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
-import { runCli } from './command-line-test-utils.js'
+import { cliErrorPayload, runCli } from './command-line-test-utils.js'
 
 describe('cli command routing', () => {
   test('routes computed styles requests to the extension', async () => {
@@ -153,7 +153,7 @@ describe('cli command routing', () => {
 
     expect(result.exitCode).toBe(1)
     expect(result.fetchCalls).toHaveLength(0)
-    expect(result.stderr).toContain('missing selector')
+    expect(cliErrorPayload(result.stdout).error.message).toContain('missing selector')
   })
 
   test('passes full prompt text to dialog commands', async () => {
@@ -445,7 +445,7 @@ describe('cli command routing', () => {
 
     expect(result.exitCode).toBe(1)
     expect(result.fetchCalls).toHaveLength(0)
-    expect(result.stderr).toContain('cannot be combined')
+    expect(cliErrorPayload(result.stdout).error.message).toContain('cannot be combined')
   })
 
   test('routes text-gone waits to the extension', async () => {
@@ -577,13 +577,17 @@ describe('cli command routing', () => {
   test('rejects find candidates combined with position', async () => {
     const result = await runCli(['find', 'text', 'Save', '--candidates', '3', '--position', 'last'])
     expect(result.exitCode).toBe(1)
-    expect(result.stderr).toContain('--candidates cannot be combined with --position')
+    expect(cliErrorPayload(result.stdout).error.message).toContain(
+      '--candidates cannot be combined with --position',
+    )
   })
 
   test('rejects find candidates with a non-locate action', async () => {
     const result = await runCli(['find', 'text', 'Save', '--candidates', '3', 'click'])
     expect(result.exitCode).toBe(1)
-    expect(result.stderr).toContain('--candidates only supports the locate action')
+    expect(cliErrorPayload(result.stdout).error.message).toContain(
+      '--candidates only supports the locate action',
+    )
   })
 
   test('adds global tab and frame overrides to selector commands', async () => {
@@ -681,22 +685,26 @@ describe('cli command routing', () => {
   test('rejects invalid search invocations', async () => {
     const missingQuery = await runCli(['search'])
     expect(missingQuery.exitCode).toBe(1)
-    expect(missingQuery.stderr).toContain('missing search query')
+    expect(cliErrorPayload(missingQuery.stdout).error.message).toContain('missing search query')
     expect(missingQuery.fetchCalls).toHaveLength(0)
 
     const badRegex = await runCli(['search', '/foo[/'])
     expect(badRegex.exitCode).toBe(1)
-    expect(badRegex.stderr).toContain('invalid search regex')
+    expect(cliErrorPayload(badRegex.stdout).error.message).toContain('invalid search regex')
     expect(badRegex.fetchCalls).toHaveLength(0)
 
     const badOption = await runCli(['search', 'x', '--bogus'])
     expect(badOption.exitCode).toBe(1)
-    expect(badOption.stderr).toContain('unsupported search option: --bogus')
+    expect(cliErrorPayload(badOption.stdout).error.message).toContain(
+      'unsupported search option: --bogus',
+    )
     expect(badOption.fetchCalls).toHaveLength(0)
 
     const extraArg = await runCli(['search', 'x', 'extra'])
     expect(extraArg.exitCode).toBe(1)
-    expect(extraArg.stderr).toContain('unexpected extra search argument: extra')
+    expect(cliErrorPayload(extraArg.stdout).error.message).toContain(
+      'unexpected extra search argument: extra',
+    )
     expect(extraArg.fetchCalls).toHaveLength(0)
   })
 

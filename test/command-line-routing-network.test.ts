@@ -2,7 +2,7 @@ import { describe, expect, test } from 'bun:test'
 import { mkdtemp, readFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
-import { runCli } from './command-line-test-utils.js'
+import { cliErrorPayload, runCli } from './command-line-test-utils.js'
 
 describe('cli command routing', () => {
   test('routes requests to the configured ipc port', async () => {
@@ -64,7 +64,7 @@ describe('cli command routing', () => {
     const invalid = await runCli(['network', 'requests', '--sort', 'random'])
     expect(invalid.exitCode).toBe(1)
     expect(invalid.fetchCalls).toHaveLength(0)
-    expect(invalid.stderr).toContain('expected oldest|newest')
+    expect(cliErrorPayload(invalid.stdout).error.message).toContain('expected oldest|newest')
   })
 
   test('writes HAR output when stopping a recording', async () => {

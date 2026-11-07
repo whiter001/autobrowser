@@ -2,7 +2,7 @@ import { describe, expect, test } from 'bun:test'
 import { mkdtemp } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
-import { runCli } from './command-line-test-utils.js'
+import { cliErrorPayload, runCli } from './command-line-test-utils.js'
 
 describe('cli command routing', () => {
   test('replay refuses redacted arguments without dispatching a command', async () => {
@@ -30,7 +30,7 @@ describe('cli command routing', () => {
     expect(result.exitCode).toBe(1)
     expect(result.fetchCalls).toHaveLength(1)
     expect(String(result.fetchCalls[0].url)).toBe('http://127.0.0.1:57979/status')
-    expect(result.stderr).toContain('cannot be replayed safely')
+    expect(cliErrorPayload(result.stdout).error.message).toContain('cannot be replayed safely')
   })
 
   test('named sessions isolate status/config routing and support repeated data cleanup', async () => {
@@ -151,7 +151,9 @@ describe('cli command routing', () => {
     const invalid = await runCli(['--engine', 'other', 'status'])
     expect(invalid.exitCode).toBe(1)
     expect(invalid.fetchCalls).toHaveLength(0)
-    expect(invalid.stderr).toContain('--engine must be chromium, firefox or webkit')
+    expect(cliErrorPayload(invalid.stdout).error.message).toContain(
+      '--engine must be chromium, firefox or webkit',
+    )
   })
 
   test('saves state under the requested name', async () => {
