@@ -56,7 +56,7 @@ import {
 } from '../src/core/agent-handles.js'
 import { resolveAgentSelector } from '../src/core/agent-selectors.js'
 import { buildDeepDomTraversalHelpersSource } from './background/deep-dom.js'
-import { clearRemovedTabId, pickLastNonActiveTab } from '../src/core/tab-selection.js'
+import { clearRemovedTabId, pickFallbackTab } from '../src/core/tab-selection.js'
 
 const DEFAULT_SERVER_PORT = DEFAULT_RELAY_PORT
 const FRAME_WORLD_NAME = 'autobrowser-frame'
@@ -92,6 +92,9 @@ const network = createNetworkDomain({
 const initScripts = createInitScriptDomain({
   state,
   sendRawDebuggerCommand,
+  // 用 storage.local 而非 storage.session：实测 chrome.runtime.reload() 会清掉 session 区，
+  // 而重载扩展正是"升级后脚本还在不在"的主要场景；脚本本身是配置，跨浏览器会话保留也符合预期
+  storage: { get: storageLocalGet, set: storageLocalSet },
 })
 
 const pageInput = createPageInputDomain({
@@ -245,7 +248,8 @@ async function loadTargetTab(tabId: TabInput): Promise<TabWithId | null> {
   const tabs = await tabsQuery({
     currentWindow: true,
   })
-  const fallbackTab = pickLastNonActiveTab(
+  // 兜底目标要排除浏览器自身页面：否则没指定 tab 时会打到扩展管理页/devtools 上
+  const fallbackTab = pickFallbackTab(
     tabs
       .filter(
         (candidate): candidate is chrome.tabs.Tab & { id: number } =>

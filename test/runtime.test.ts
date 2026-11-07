@@ -816,6 +816,11 @@ describe('runtime snapshot', () => {
       code: 'COMMAND_TIMEOUT',
       suggestedAction: expect.stringContaining('network har recover'),
     })
+    // 导航超时最常见的其实是"已经刷新了但没回执"，不能提示无条件重发
+    await expect(runtime.dispatchCommand('reload', {})).rejects.toMatchObject({
+      code: 'COMMAND_TIMEOUT',
+      suggestedAction: expect.stringContaining('may have navigated'),
+    })
   })
 
   test('records the last success time without clearing the historical error', async () => {

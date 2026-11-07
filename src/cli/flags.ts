@@ -200,6 +200,13 @@ export function parseCli(argv: string[]): ParsedCli {
       continue
     }
 
+    // --version 是 version 命令的速记：放在命令名前时直接当成命令名，
+    // 不再走"未知全局参数"分支（此前 autobrowser --version 会直接报错）
+    if (args.length === 0 && value === '--version') {
+      args.push('version')
+      continue
+    }
+
     // 命令名（首个位置参数）之前的 --flag 只能是全局 flag；
     // 拼错时直接报错，避免被静默当成命令名/位置参数发给扩展
     if (args.length === 0 && value.startsWith('--') && value !== '--help') {

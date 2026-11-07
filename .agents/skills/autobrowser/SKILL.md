@@ -25,6 +25,7 @@ autobrowser 是一个面向 Chrome/Edge 的浏览器自动化 CLI，通过本地
 - `server`
 - `server stop`
 - `status`
+- `version` / `--version`
 - `connect`
 - `extension info` / `extension reload` / `extension reconnect`
 - `open <url>` / `goto <url>`（均可加 `--wait-for url <pattern>|selector <css>`）
@@ -59,6 +60,7 @@ autobrowser 是一个面向 Chrome/Edge 的浏览器自动化 CLI，通过本地
 - `download <url|--media <index>> [output-path]`
 - `media list [--resolve] [--selector <css>] [--include-background]`
 - `network route` / `network unroute` / `network requests` / `network request` / `network har start` / `network har stop` / `network har status` / `network har recover`
+- `script add [--stdin|--file <path>|--base64] <source>` / `script list` / `script remove <id|--all>`
 
 ## 浏览器引擎与能力边界
 
@@ -81,6 +83,8 @@ autobrowser 是一个面向 Chrome/Edge 的浏览器自动化 CLI，通过本地
 - 操作系统都不为 `chrome-extension://` 注册协议关联，打开扩展页必须显式指定浏览器（`--browser-command`，首次传入后会写进 `~/.autobrowser/config.json` 复用）；没指定时 CLI 直接报错并改为打开 relay 的 `/connect` 页，不会交给系统弹窗。
 - 如果 `connect` 传入了有效 token 且扩展已经报告 `connected`，连接页可能会自动关闭；这通常表示连接成功。
 - `status` 是确认扩展是否已连接的最快方式。
+- `version`（或 `autobrowser --version`）报告 CLI 自身的 version/commit/buildTime；relay 已在运行时还会带上扩展的 manifest 版本并给出 `versionSkew`。`consistent:false` 表示扩展是旧的没重载，或 CLI 是旧的——先 `bun run build:chrome` + `extension reload`（或升级 CLI）再信任版本相关行为；扩展的 commit/buildTime 用 `extension info` 查。
+- 每个错误码都带默认 `suggestedAction`（来自 `src/core/error-actions.ts`），按它给出的下一步排查；扩展自带的更具体建议优先。看到不认识的错误码也先按建议查 `status`/页面状态，而不是换方案。
 - 扩展已在线时，修改代码并 `bun run build:chrome` 后用 `extension reload` 重载磁盘代码；只需重建 relay 连接时用 `extension reconnect`，它不会加载新代码。两者与刷新页面的 `reload` 不同，均不绑定 tab、不进入页面队列，仅用于 Chromium 扩展。
 - `extension reload/reconnect` 先返回 `reloading:true` / `reconnecting:true` 和 `reconnectExpected:true`，约 50ms 后异步执行。回执不是恢复完成；稍等后用 `status` 确认重新连接，再用 `tab list`、`snapshot` 刷新目标与引用，不要盲目重放原页面动作。离线时先修复连接；首次升级到支持该命令的版本需手动在 chrome://extensions 重载。
 - 扩展注册了 30 秒周期的 keepalive alarm：service worker 被浏览器回收后会在一个周期内自行重连，无需再手动打开扩展页。若 `status` 持续显示 `waiting for extension` 超过 1 分钟，再按上面步骤重载扩展或检查 relay 是否在运行；该机制随扩展代码生效，首次升级仍需先手动重载一次。
@@ -143,6 +147,16 @@ autobrowser 是一个面向 Chrome/Edge 的浏览器自动化 CLI，通过本地
 - `--timeout <ms>` 也是毫秒。
 - 如果页面仍在加载，优先使用 `open <url>` 后再配合短等待，或直接用 `wait --load networkidle`。
 
+## 导航结果、脚本注入与断连恢复
+
+- `goto` / `open` 返回 `outcome`（dispatched|completed|partial）、`phase`（dispatch|commit|settle）、`settled` / `settleReason`；`reload` 另带 `committed`（导航是否已提交）、`dispatchTimedOut`（指令发出但没拿到 CDP 回执）、`observedUrl` / `observedTitle` / `observedEpoch` 和回显的 `waitUntil`；`back` / `forward` 返回 `navigated` / `settled`，等待失败时给 `settleReason`。
+- 读到 `partial` 先按字段判断停在哪一步：`phase:"commit"` + `committed:false` 表示导航没提交；`phase:"settle"` + `committed:true` 表示已提交但页面没稳定（业务页长轮询很常见，不等同失败）。先 `get url`、必要时 `eval document.readyState` 确认页面实际状态，**不要因为 `partial` 就重发 `reload`**。
+- 收不到扩展回执时 relay 报 `COMMAND_TIMEOUT`，此时导航往往已经发生；同样先核对页面再决定是否重发，不要把它当成"没执行"。
+- `script add` 注册的是"下一次文档加载前注入"的脚本：返回 `registration.appliesTo:"next-document-load"`、`attachedTabs`、`failures`，必要时附 `warnings`。`registeredTabs: []` 表示当时没有已附加的标签页——配置已保存但不会注入，要等导航/刷新后才生效；`failures` 非空说明注册失败，不要只看 `ok:true`。
+- 已注册的 init script 会持久化：扩展被回收或重载后，重新 attach 时自动 replay。`script list` 为空就是确实没有注册，不要把它当成"已注册但没生效"。
+- `--tab tN` 的句柄由 Chrome tabId 直接派生：扩展重连、句柄表还没重建时依然可用；真正已关闭的标签页仍然返回 `STALE_TAB_HANDLE`，按建议先 `tab list`。
+- `pageEpoch` 是扩展内存态，重连或重载后从 1 重新计，旧的 `@eN#pX` / `@fN#pX` 会被判过期——先 `snapshot` 再操作，不要误判成元素丢失。
+
 ## 搜索、引用与歧义恢复
 
 - `search "error" --context 3 --limit 20` 只读搜索可见文本。`context` 为 0–50；`limit` 限制匹配窗口数（默认 20、最大 200；0 不返回窗口或续读游标），但每次仍最多返回 200 行、100000 UTF-8 字节，单个合并窗口也可能截断。
@@ -187,7 +201,7 @@ autobrowser 是一个面向 Chrome/Edge 的浏览器自动化 CLI，通过本地
 - 页面命令超时后先运行 `status` 和 `command list`。标签页控制走独立控制面，可继续用 `tab list`、`target clear`、`tab close <tN>` 恢复；不要连续重试并堆积命令。运行中的 `eval` 被取消或超时后会定向执行 `Runtime.terminateExecution`，其他 CDP 操作仍可能继续在浏览器侧完成。`status.lastError` 保留历史最后错误，可结合 `lastSuccessAt` 判断它是否早于最近成功。
 - `goto/open/reload` 可用 `--wait-until none|commit|domcontentloaded|interactive|load|networkidle|domquiet` 选择等待阶段；三者及 `tab new` 还可追加 `--wait-for url <pattern>` 或 `--wait-for selector <sel>` 等最终结果。`tab new` 固定等待新建 handle；等待失败仍在 `result.tab` 保留新 tab。旧扩展缺少 wait 执行证明时 CLI 返回失败，不伪造已等待。
 - `cookies list` 是 `cookies get` 的别名，支持同样的 `--domain` / `--path` 过滤。
-- `network requests` 默认只看目标 tab 的当前页面 epoch；跨 tab 或跨页面历史必须显式使用 `--all-tabs` / `--all-epochs`，headers/body 用 `network request <id>` 或 `--include-details` 获取。默认按最旧记录分页（每页 50，`--page` / `--page-size` 调页），调试最新流量加 `--sort newest`；`total` 是过滤后的总数，不是当前页条数。
+- `network requests` 默认只看目标 tab 的当前页面 epoch；跨 tab 或跨页面历史必须显式使用 `--all-tabs` / `--all-epochs`，headers/body 用 `network request <id>` 或 `--include-details` 获取。默认按最旧记录分页（每页 50，`--page` / `--page-size` 调页；`--limit` 是 `--page-size` 的别名），调试最新流量加 `--sort newest`；`total` 是过滤后的总数，不是当前页条数。
 - HAR start 默认包含目标 tab 的全部请求，可用 `--include-pattern <text>` 只采 URL 子串命中项，或用 `--exclude-pattern <text>` 排除页面播放器/无关流量；过滤不会删除全局请求历史。并发任务保存 start 返回的 captureId，stop 传 `--capture-id <id>` 防止误停其他 capture；stop 加 `--include-urls` 可直接返回本次捕获的去重 URL。中断或 stop 超时后先查 `network har status` 的 `checkpoint.recoverable`，再用 `network har recover [output.har]`；大采集可用 `--timeout-ms <ms>` 延长预算。stop/recover 的 `meta.har` 回显 captureId、原 capture tab 和请求数。
 - 设置默认下载目录需要独立 CDP browser endpoint；当前扩展的 tab session 和 `chrome.debugger.getTargets` 都无法提供该能力，不要反复尝试 `Page.setDownloadBehavior`。
 - 在旧扩展上，`network har stop` 可能只返回元数据；CLI 会自动兜底重建 HAR。

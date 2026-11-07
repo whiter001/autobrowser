@@ -2,7 +2,14 @@ import { describe, expect, test } from 'bun:test'
 import { createPageInputDomain } from '../extension/background/page-input.js'
 import { createExtensionState } from '../extension/background/state.js'
 
-function createNavigateHarness(options: { commit?: boolean; commitDelayMs?: number } = {}) {
+function createNavigateHarness(
+  options: {
+    commit?: boolean
+    commitDelayMs?: number
+    hangDispatch?: boolean
+    hangEvaluate?: boolean
+  } = {},
+) {
   const state = createExtensionState(9222)
   const debuggerCalls: string[] = []
   const evaluateCalls: Array<{ expression: string; afterCommit: boolean }> = []
@@ -22,6 +29,8 @@ function createNavigateHarness(options: { commit?: boolean; commitDelayMs?: numb
     },
     evaluateInTabContext: async <TValue = unknown>(_tabId: unknown, expression: string) => {
       evaluateCalls.push({ expression, afterCommit: committed })
+      // 模拟导航销毁上下文时 CDP 回调丢失：evaluate 永远不 resolve
+      if (options.hangEvaluate) return await new Promise<never>(() => {})
       const value = expression.includes('document.readyState')
         ? ('complete' as TValue)
         : ({ settled: true, reason: null } as TValue)
@@ -33,6 +42,10 @@ function createNavigateHarness(options: { commit?: boolean; commitDelayMs?: numb
     },
     sendDebuggerCommand: async (_tabId: number, method: string) => {
       debuggerCalls.push(method)
+      // 指令已发出但没有回执：导航销毁 renderer 后 CDP 回调可能永远不来
+      if (options.hangDispatch && (method === 'Page.navigate' || method === 'Page.reload')) {
+        return await new Promise<never>(() => {})
+      }
       if ((method === 'Page.navigate' || method === 'Page.reload') && options.commit !== false) {
         // 模拟导航 commit：connection.ts 的 frameNavigated 会递增 epoch；
         // commitDelayMs 模拟慢服务器/慢 commit 窗口
@@ -116,5 +129,49 @@ describe('navigation wait for commit', () => {
     expect(result).toMatchObject({ reloaded: true, settled: true })
     expect(evaluateCalls.length).toBeGreaterThan(0)
     expect(evaluateCalls.every((call) => call.afterCommit)).toBe(true)
+  })
+  test('reloadPage enables the Page domain so navigation commits are observable', async () => {
+    // commit 只能靠 Page.frameNavigated / navigatedWithinDocument 观测，Page 域必须显式 enable，
+    // 否则没跑过 goto 的 tab 上 reload 永远等不到 commit。
+    const { pageInput, debuggerCalls } = createNavigateHarness()
+
+    await pageInput.reloadPage(1)
+
+    expect(debuggerCalls).toEqual(['Page.enable', 'Page.reload'])
+  })
+
+  test('reloadPage finishes even when the reload command gets no CDP ack', async () => {
+    // 现象：导航销毁 renderer 后 Page.reload 的回调可能永远不来。
+    // 不能把命令挂死到 relay 超时，也不能假装它没发出去。
+    const { pageInput } = createNavigateHarness({ commit: false, hangDispatch: true })
+    const startedAt = Date.now()
+
+    const result = await pageInput.reloadPage(1, { timeoutMs: 300 })
+
+    expect(result).toMatchObject({
+      reloaded: true,
+      outcome: 'partial',
+      phase: 'commit',
+      committed: false,
+      dispatchTimedOut: true,
+      settleReason: 'navigation never committed',
+    })
+    expect(Date.now() - startedAt).toBeLessThan(5000)
+  })
+
+  test('reloadPage bounds a hung readyState probe instead of waiting for the relay timeout', async () => {
+    const { pageInput } = createNavigateHarness({ hangEvaluate: true })
+    const startedAt = Date.now()
+
+    const result = await pageInput.reloadPage(1, { timeoutMs: 300, waitUntil: 'domcontentloaded' })
+
+    expect(result).toMatchObject({
+      reloaded: true,
+      outcome: 'partial',
+      phase: 'settle',
+      committed: true,
+      settled: false,
+    })
+    expect(Date.now() - startedAt).toBeLessThan(5000)
   })
 })

@@ -201,6 +201,8 @@ autobrowser extension info
 
 加载完成后，运行 `autobrowser connect` 可以打开扩展连接页；它会自动保存 token 和中继端口，而你传入的 `--extension-id`、`--browser-command` 或 `--browser-arg` 也会保存在 `~/.autobrowser/config.json` 中供后续复用。仓库开发者如果还没跑 `bun run link:bun`，可以直接用 `bun run src/cli.ts connect` 代替；命令名其余部分完全一致。`options` 页面仍然可以作为手动兜底，并显示诊断信息。
 
+`autobrowser version`（或 `autobrowser --version`）报告 CLI 自身的构建：`version` / `commit` / `buildTime` 来自随 `dist/` 安装的 `build-info.json`（`bun src/cli.ts` 这类开发直跑没有该文件，字段为 `null`）。relay 已在运行时还会带上扩展的 manifest 版本，并在两者不一致时给出 `versionSkew.consistent: false` 和处理建议；`status` 同样携带 `versionSkew`，用来判断"命令行为和预期不符"是不是版本错配导致的。扩展侧的 commit/buildTime 仍以 `extension info` 为准。
+
 ## 网络
 
 CLI 也提供了网络检查与拦截命令：

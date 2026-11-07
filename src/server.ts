@@ -249,6 +249,7 @@ interface StartServersResult {
 interface RelaySocketData {
   extensionId: string | null
   userAgent: string | null
+  version: string | null
 }
 
 interface ErrorWithCode extends Error {
@@ -385,6 +386,7 @@ export async function startServers(options: ServerOptions = {}): Promise<StartSe
           data: {
             extensionId: url.searchParams.get('extensionId') || null,
             userAgent: request.headers.get('user-agent'),
+            version: url.searchParams.get('version') || null,
           },
         })
 

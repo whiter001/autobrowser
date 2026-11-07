@@ -519,7 +519,8 @@ export function createConnectionRuntime({
       }
 
       const socket = new WebSocket(
-        `ws://127.0.0.1:${state.connection.relayPort}/ws?token=${encodeURIComponent(state.connection.token)}&extensionId=${encodeURIComponent(chrome.runtime.id)}`,
+        // version 用于 relay 侧做 CLI/扩展版本错配诊断；不带它时旧扩展仍能正常连接
+        `ws://127.0.0.1:${state.connection.relayPort}/ws?token=${encodeURIComponent(state.connection.token)}&extensionId=${encodeURIComponent(chrome.runtime.id)}&version=${encodeURIComponent(chrome.runtime.getManifest().version)}`,
       )
 
       state.connection.socket = socket

@@ -7,6 +7,7 @@ import {
   isPortInUse,
   readJsonFile,
 } from '../../core/protocol.js'
+import { compareVersions, readCliBuildInfo } from '../build-info.js'
 import { isRecord } from '../client.js'
 import { getLocalControlBaseUrl, targetsLocalControlServer } from '../connection.js'
 import { startBackgroundServer } from '../server-boot.js'
@@ -56,6 +57,17 @@ export function formatStatusSummary(status: Record<string, unknown>, brief = fal
   }
 
   lines.push(`extension: ${extensionConnected ? 'connected' : 'waiting for extension'}`)
+
+  // 版本错配会让"命令行为和我预期不一样"变得无法解释，所以在人工摘要里直接点名
+  const versionSkew = isRecord(status.versionSkew) ? status.versionSkew : null
+  if (versionSkew && versionSkew.consistent === false) {
+    lines.push(
+      `version: CLI ${String(versionSkew.cli)} != extension ${String(versionSkew.extension)}`,
+    )
+    if (typeof versionSkew.hint === 'string' && versionSkew.hint) {
+      lines.push(`warning: ${versionSkew.hint}`)
+    }
+  }
 
   if (startedAt) {
     lines.push(`started: ${startedAt}`)
@@ -388,6 +400,22 @@ async function handleConnect(rest: string[], context: CommandContext): Promise<n
   return 0
 }
 
+/** 在 status 里附带 CLI↔扩展的版本对比；拿不到任一侧版本时原样返回，不制造噪音 */
+async function attachVersionSkew(
+  status: Record<string, unknown>,
+): Promise<Record<string, unknown>> {
+  const cli = await readCliBuildInfo()
+  if (!cli.version) {
+    return status
+  }
+  const snapshot = isRecord(status.snapshot) ? status.snapshot : null
+  const extension = snapshot && isRecord(snapshot.extension) ? snapshot.extension : null
+  const extensionVersion =
+    extension && typeof extension.version === 'string' ? extension.version : null
+  const versionSkew = compareVersions(cli.version, extensionVersion)
+  return versionSkew.consistent === null ? status : { ...status, versionSkew }
+}
+
 async function handleStatus(rest: string[], context: CommandContext): Promise<number | void> {
   if (isHelpToken(rest[0])) {
     return context.writeHelp(['status'])
@@ -399,7 +427,7 @@ async function handleStatus(rest: string[], context: CommandContext): Promise<nu
     return payload.ok === false ? 1 : 0
   }
 
-  const status = await context.getCommandStatus(context.flags.server)
+  const status = await attachVersionSkew(await context.getCommandStatus(context.flags.server))
   // status 默认给人读的摘要：json 默认就是 true，只有显式 --json 才输出原始对象，
   // 否则 --raw/--brief 这类「要文本」的用法反而会被默认值吞掉。
   if (!context.flags.json || !context.flags.jsonExplicitlySet) {

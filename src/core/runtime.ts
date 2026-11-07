@@ -12,6 +12,7 @@ import {
   writeJsonFile,
 } from './protocol.js'
 import { validateCommandArgs } from './command-spec.js'
+import { describeErrorCode } from './error-actions.js'
 import { DEFAULT_REQUEST_TIMEOUT_MS, getCommandRequestBudgetMs } from './command-budget.js'
 import { ResponseAssembler, ResponseTransferError } from './response-transfer.js'
 import type { ResponseUploadProgress } from './response-upload.js'
@@ -50,6 +51,25 @@ function rejectPendingRequests(
     pending.reject(error)
     pendingRequests.delete(id)
   }
+}
+
+// 导航类命令的超时几乎都不是"指令没执行"，而是导航已发出、等待阶段没拿到回执。
+// 这类命令有副作用（页面已经变了、表单上下文已经失效），不能建议无条件重发。
+const NAVIGATION_COMMANDS = new Set(['reload', 'goto', 'open', 'back', 'forward'])
+
+/** 超时后的下一步：按命令类别给出"先核对再决定"的路径，而不是统一的 status 提示。 */
+function describeTimeoutAction(command: string, args: Record<string, unknown>): string {
+  if (command === 'network' && args.action === 'har' && args.subaction === 'stop') {
+    return "The extension may still be finalizing the HAR. Run 'network har status', then use 'network har recover [output.har]' when checkpoint.recoverable is true; do not restart capture before checking."
+  }
+  if (NAVIGATION_COMMANDS.has(command)) {
+    return (
+      `The ${command} was already dispatched to the extension, so the page may have navigated even though no result came back. ` +
+      "Check the current state first ('get url', then 'eval document.readyState'), inspect 'command list' to see whether the relay cancelled it before it ran, " +
+      'and only re-issue the navigation if the page clearly did not move.'
+    )
+  }
+  return "Run 'status', then 'command list'. Tab control remains available; use 'tab list', 'target clear', or 'tab close <tN>' to recover before retrying."
 }
 
 function createDefaultSnapshot(): Snapshot {
@@ -443,7 +463,9 @@ export async function createRuntime(options: RuntimeOptions = {}): Promise<Runti
       const error = new Error(message.error?.message || 'extension command failed') as ErrorWithCode
       error.code = message.error?.code || 'EXTENSION_ERROR'
       error.details = message.error?.details || null
-      error.suggestedAction = message.error?.suggestedAction
+      // 扩展侧没写建议时用错误码表兜底：漏设建议会让 agent 只看到一句报错
+      error.suggestedAction =
+        message.error?.suggestedAction || describeErrorCode(error.code)?.action
       pending.reject(error)
       return
     }
@@ -513,10 +535,7 @@ export async function createRuntime(options: RuntimeOptions = {}): Promise<Runti
         ) as ErrorWithCode
         timeoutError.code = 'COMMAND_TIMEOUT'
         timeoutError.details = { commandId: id, command, deadlineAt }
-        timeoutError.suggestedAction =
-          command === 'network' && args.action === 'har' && args.subaction === 'stop'
-            ? "The extension may still be finalizing the HAR. Run 'network har status', then use 'network har recover [output.har]' when checkpoint.recoverable is true; do not restart capture before checking."
-            : "Run 'status', then 'command list'. Tab control remains available; use 'tab list', 'target clear', or 'tab close <tN>' to recover before retrying."
+        timeoutError.suggestedAction = describeTimeoutAction(command, args)
         reject(timeoutError)
       }, budgetMs)
 

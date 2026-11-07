@@ -1,4 +1,24 @@
 import { parseSearchQueryRegex } from '../core/search.js'
+import { optionHintSuffix } from './option-hints.js'
+
+// 参数白名单只用于"报错时给最近邻"，不参与校验本身
+const NETWORK_REQUEST_OPTIONS = [
+  '--all-tabs',
+  '--all-epochs',
+  '--include-details',
+  '--page',
+  '--page-idx',
+  '--page-size',
+  '--sort',
+] as const
+const CONSOLE_OPTIONS = [
+  '--level',
+  '--page',
+  '--page-idx',
+  '--page-size',
+  '--since',
+  '--all-epochs',
+] as const
 
 interface WaitArgs {
   timeout: number
@@ -193,7 +213,8 @@ export function parseNetworkRequestsArgs(rest: string[]): Record<string, unknown
       continue
     }
 
-    if (value === '--page-size') {
+    // --limit 是分页场景的高频误写，直接按 page-size 接受，省掉一轮试错
+    if (value === '--page-size' || value === '--limit') {
       result.pageSize = parseNumberArg(rest[index + 1], 'page size', {
         min: 1,
         max: 200,
@@ -219,7 +240,9 @@ export function parseNetworkRequestsArgs(rest: string[]): Record<string, unknown
     }
 
     if (value.startsWith('--')) {
-      throw new Error(`unsupported network option: ${value}`)
+      throw new Error(
+        `unsupported network option: ${value}${optionHintSuffix(value, NETWORK_REQUEST_OPTIONS)}`,
+      )
     }
 
     throw new Error(`unexpected extra network argument: ${value}`)
@@ -454,7 +477,7 @@ export function parseConsoleArgs(rest: string[]): {
       continue
     }
 
-    if (value === '--page-size') {
+    if (value === '--page-size' || value === '--limit') {
       pageSize = parseNumberArg(rest[index + 1], 'page size', {
         min: 1,
         max: 200,
@@ -465,7 +488,9 @@ export function parseConsoleArgs(rest: string[]): {
     }
 
     if (value.startsWith('--')) {
-      throw new Error(`unsupported console option: ${value}`)
+      throw new Error(
+        `unsupported console option: ${value}${optionHintSuffix(value, CONSOLE_OPTIONS)}`,
+      )
     }
 
     throw new Error(`unexpected extra console argument: ${value}`)

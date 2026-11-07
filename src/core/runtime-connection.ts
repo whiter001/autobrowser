@@ -142,6 +142,7 @@ export function createExtensionConnection(
       connectedAt: new Date().toISOString(),
       userAgent: (meta.userAgent as string) || null,
       lastHeartbeatAt: null,
+      version: typeof meta.version === 'string' && meta.version ? meta.version : null,
     }
     resolveConnectionWaiters(socket)
     scheduleHeartbeatTimeout(socket)

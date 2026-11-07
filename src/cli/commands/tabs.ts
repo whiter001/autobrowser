@@ -1,10 +1,12 @@
 import { isRecord, shouldOpenInNewTab, type CommandResponse } from '../client.js'
 import { parseNumberArg } from '../parse.js'
+import { optionHintSuffix } from '../option-hints.js'
 import {
   helpRequested,
   parseOrWriteError,
   readRequiredArg,
   requestAndWrite,
+  writeCommandError,
   resolveCommandAction,
   runActionCommand,
 } from './shared.js'
@@ -49,13 +51,26 @@ async function handleTab(rest: string[], context: CommandContext): Promise<numbe
           args.pageIdx = parseNumberArg(tabArgs[++index], 'page idx', { min: 0, integer: true })
           continue
         }
-        if (value === '--page-size') {
+        if (value === '--page-size' || value === '--limit') {
           args.pageSize = parseNumberArg(tabArgs[++index], 'page size', {
             min: 1,
             max: 200,
             integer: true,
           })
           continue
+        }
+        // 未知参数此前会打印帮助并以 0 退出，调用方容易误以为列表已返回
+        if (value.startsWith('--')) {
+          return writeCommandError(
+            `unsupported tab list option: ${value}` +
+              optionHintSuffix(value, [
+                '--active',
+                '--current-window',
+                '--filter',
+                '--page',
+                '--page-size',
+              ]),
+          )
         }
         return context.writeHelp(['tab', 'list'])
       }

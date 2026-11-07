@@ -424,7 +424,8 @@ interface NetworkDomain {
 
 interface InitScriptDomain {
   addScript: (source: string) => Promise<unknown>
-  listScripts: () => unknown
+  // list 也要等 storage.session 还原完成，否则 SW 重启后第一次 list 会读到空清单
+  listScripts: () => Promise<unknown>
   removeScript: (id: string) => Promise<unknown>
   removeAllScripts: () => Promise<unknown>
 }
@@ -1483,7 +1484,7 @@ export function createCommandRouter({
             return await initScripts.addScript(readStringArg(args, 'source'))
           }
           if (action === 'list') {
-            return initScripts.listScripts()
+            return await initScripts.listScripts()
           }
           if (action === 'remove') {
             if (readBooleanArg(args, 'all', false)) {

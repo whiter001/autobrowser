@@ -1,7 +1,8 @@
-import { chmod, mkdir, rm } from 'node:fs/promises'
+import { chmod, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
+import { existsSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { execFile } from 'node:child_process'
+import { execFile, execFileSync } from 'node:child_process'
 import { promisify } from 'node:util'
 
 const execFileAsync = promisify(execFile)
@@ -30,6 +31,33 @@ try {
     { cwd: rootDir },
   )
   await chmod(outFile, 0o755)
+
+  // 与扩展的 chrome/build-info.json 对齐：让 `autobrowser version` 能回答"这个 CLI 是
+  // 哪次构建"，并在 status 里和扩展的 manifest 版本做错配提示。
+  const { version } = JSON.parse(await readFile(path.join(rootDir, 'package.json'), 'utf8')) as {
+    version: string
+  }
+  let commit: string | null = null
+  if (existsSync(path.join(rootDir, '.git'))) {
+    try {
+      commit =
+        execFileSync('git', ['rev-parse', '--short', 'HEAD'], {
+          cwd: rootDir,
+          encoding: 'utf8',
+          stdio: ['ignore', 'pipe', 'ignore'],
+          timeout: 5000,
+        }).trim() || null
+    } catch {
+      // 发布包或无 git 的环境仍然可以构建。
+    }
+  }
+  const buildInfo = { version, buildTime: new Date().toISOString(), commit }
+  await writeFile(
+    path.join(distDir, 'build-info.json'),
+    `${JSON.stringify(buildInfo, null, 2)}\n`,
+    'utf8',
+  )
+
   console.log('CLI built successfully to dist/autobrowser.js')
 } catch (error) {
   console.error('Build failed:', error)

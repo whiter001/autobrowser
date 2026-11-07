@@ -80,6 +80,85 @@ export const MCP_TOOLS: McpToolDefinition[] = [
     }),
   },
   {
+    name: 'reload',
+    description:
+      'Reload the current tab. The result reports outcome/phase plus committed (did the navigation commit?) and dispatchTimedOut (no CDP ack); on partial read observedUrl/observedEpoch and check the page before re-issuing the reload.',
+    command: 'reload',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        waitUntil: {
+          type: 'string',
+          enum: [
+            'none',
+            'commit',
+            'domcontentloaded',
+            'interactive',
+            'load',
+            'networkidle',
+            'domquiet',
+          ],
+          description: 'Reload phase to wait for (default domquiet).',
+        },
+        timeoutMs: { type: 'number', description: 'Total reload timeout in milliseconds.' },
+      },
+    },
+    toArgs: (args) => onlyDefined(args, ['waitUntil', 'timeoutMs']),
+  },
+  {
+    name: 'back',
+    description: 'Go back in page history and wait for the navigation to settle.',
+    command: 'back',
+    inputSchema: { type: 'object', properties: {} },
+    toArgs: () => ({}),
+  },
+  {
+    name: 'forward',
+    description: 'Go forward in page history and wait for the navigation to settle.',
+    command: 'forward',
+    inputSchema: { type: 'object', properties: {} },
+    toArgs: () => ({}),
+  },
+  {
+    name: 'script',
+    description:
+      "Manage init scripts injected before the next document load. add returns registration.appliesTo='next-document-load', attachedTabs and per-tab failures: registeredTabs empty means the config is stored but no tab will be injected until it attaches and navigates.",
+    command: 'script',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        action: {
+          type: 'string',
+          enum: ['add', 'list', 'remove'],
+          description: 'Operation to perform.',
+        },
+        source: { type: 'string', description: 'JavaScript source for action=add.' },
+        id: { type: 'string', description: 'Script id for action=remove.' },
+        all: { type: 'boolean', description: 'Remove every registered script (action=remove).' },
+      },
+      required: ['action'],
+    },
+    toArgs: (args) => onlyDefined(args, ['action', 'source', 'id', 'all']),
+  },
+  {
+    name: 'extension',
+    description:
+      'Inspect or control the browser extension: info returns extensionId/version/buildTime/commit plus connection diagnostics; reload reloads code from disk (drops the socket, scripts are re-registered on reattach); reconnect only rebuilds the relay connection.',
+    command: 'extension',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        action: {
+          type: 'string',
+          enum: ['info', 'reload', 'reconnect'],
+          description: 'Operation to perform.',
+        },
+      },
+      required: ['action'],
+    },
+    toArgs: (args) => ({ action: args.action }),
+  },
+  {
     name: 'snapshot',
     description:
       'Capture interactive/visible elements with @eN refs, roles, names and positions, plus @fN frame refs. Refs are not reused within a document, but removed nodes are invalid and navigation makes refs stale: refresh snapshot before acting. Output is bounded to 200000 UTF-8 bytes; when truncated, narrow target/roles or use changed to read changes. Start here to discover targets.',

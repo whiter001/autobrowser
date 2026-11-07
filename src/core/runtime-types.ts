@@ -8,6 +8,8 @@
 export interface ExtensionMetadata {
   extensionId?: string | null
   userAgent?: string | null
+  /** 扩展 manifest 版本，连接时随 URL 上报；旧扩展不带该字段 */
+  version?: string | null
 }
 
 export interface TabInfo {
@@ -25,6 +27,8 @@ export interface ExtensionInfo {
   connectedAt: string
   userAgent: string | null
   lastHeartbeatAt: string | null
+  /** manifest 版本；老协议/手工 attach 可能为 null */
+  version?: string | null
 }
 
 export interface Snapshot {

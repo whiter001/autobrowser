@@ -10,6 +10,7 @@ import { serverCommandRegistry } from './server.js'
 import { skillCommandRegistry } from './skill.js'
 import { stateCommandRegistry } from './state.js'
 import { tabCommandRegistry } from './tabs.js'
+import { versionCommandRegistry } from './version.js'
 import { webmcpCommandRegistry } from './webmcp.js'
 import { handleMcpCommand } from '../mcp.js'
 import type { CommandRegistry } from './types.js'
@@ -28,5 +29,6 @@ export const COMMAND_REGISTRY: CommandRegistry = {
   ...pageCommandRegistry,
   ...diagnosticsCommandRegistry,
   ...webmcpCommandRegistry,
+  ...versionCommandRegistry,
   ...stateCommandRegistry,
 }

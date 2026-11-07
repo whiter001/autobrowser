@@ -13,6 +13,11 @@ import { AutobrowserMcpServer } from '../src/cli/mcp.js'
 
 const KNOWN_TOOL_NAMES = [
   'navigate',
+  'reload',
+  'back',
+  'forward',
+  'script',
+  'extension',
   'snapshot',
   'search',
   'feed',
@@ -85,7 +90,7 @@ function okResult(result: unknown): CommandResponse {
 }
 
 describe('AutobrowserMcpServer.listTools', () => {
-  test('exposes all 46 tools with object-typed input schemas', () => {
+  test('exposes all 51 tools with object-typed input schemas', () => {
     const server = new AutobrowserMcpServer({ requestCommand: async () => okResult({}) })
     const tools = server.listTools()
 
