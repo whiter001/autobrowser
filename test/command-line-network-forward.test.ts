@@ -133,7 +133,7 @@ describe('cli network/session command forwarding', () => {
     expect(filteredOutput.result.messages.map((message: { type: string }) => message.type)).toEqual(
       ['error', 'warning'],
     )
-    expect(filteredOutput.result.pagination).toEqual(payload.result.pagination)
+    expect(filteredOutput.result.pagination).toEqual({ hasMore: true })
 
     const unfiltered = await runCli(['console'], payload)
     expect(unfiltered.fetchCalls[0].body?.args).not.toHaveProperty('level')

@@ -113,6 +113,10 @@ export interface CommandRunScope {
   queryTargetTabId: number | null
   /** 分页页码 */
   pageIdx: number
-  /** 分页大小 */
-  pageSize: number
+  /** 分页大小（兼容旧参数）；缺省值由各列表域决定 */
+  pageSize?: number
+  /** cursor 分页的正式限量参数 */
+  limit?: number
+  /** 上一次响应返回的不透明续页 token */
+  cursor: string
 }

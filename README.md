@@ -134,6 +134,22 @@ autobrowser --engine webkit open https://example.com
 
 能力拒绝目前不是全量参数校验：`goto/open` 的 `waitUntil`、`settleTimeoutMs`、`domQuietMs`、`timeoutMs` 会被接受但不会生效；需要这些等待或超时语义时请使用 Chromium，不要把成功回执当成选项已执行。安装、driver 配置和分引擎 smoke 见 [`docs/install.md`](docs/install.md#firefox--webkitwebdriver)。
 
+## Token 友好的输出
+
+列表与查询默认使用 `concise`，只保留高信号字段并输出紧凑 JSON；需要完整字段时加 `--response-format detailed`。MCP 工具对应参数为 `response_format: "concise" | "detailed"`。
+
+```bash
+autobrowser network requests --limit 20
+autobrowser network requests --limit 20 --cursor '<nextCursor>'
+autobrowser network request r12
+autobrowser snapshot --response-format detailed
+```
+
+- `network/console/errors/actions/downloads/command` 默认最多 20 条，`--limit` 最大 100；`tab list` 和 route list 默认 50 条。使用响应里的 `pagination.nextCursor` 续页，并保持过滤条件不变；旧 `--page/--page-idx/--page-size` 仍兼容。
+- network 列表的 `rN` 是会话内稳定短引用，可直接传给 `network request`；旧 CDP ID 仍可使用。concise 详情去掉重复的 summary/HAR 结构，单个 body 最多 16KiB 并显式标记截断。
+- concise snapshot 默认最多 50 个元素、32KiB；search 默认 10 个窗口、100 行、32KiB；eval 默认结果上限 32KiB。`detailed` 保留原有更高预算。
+- `--raw` 仍表示原始文本输出，不与显式 `--response-format` 混用。大截图、视频、trace 和 HAR 继续落盘后只返回路径与摘要。
+
 ## 状态检查
 
 使用 `is` 查看元素状态：

@@ -91,7 +91,7 @@ describe('CLI response exit codes', () => {
             new Response(child.stderr).text(),
           ])
           expect(exitCode).toBe(payload.ok ? 0 : 1)
-          expect(stdout).toBe(`${JSON.stringify(payload, null, 2)}\n`)
+          expect(stdout).toBe(`${JSON.stringify(payload)}\n`)
           expect(stderr).toBe('')
           expect(requests).toEqual([argv[0] === 'eval' ? 'eval' : 'tab.new'])
         } finally {
@@ -132,7 +132,7 @@ describe('CLI response exit codes', () => {
       payload,
     )
     expect(result.exitCode).toBe(0)
-    expect(result.stdout).toBe(`${JSON.stringify(payload, null, 2)}\n`)
+    expect(result.stdout).toBe(`${JSON.stringify(payload)}\n`)
     expect(result.stderr).toBe('')
   })
 
@@ -164,9 +164,7 @@ describe('CLI response exit codes', () => {
         return code
       })
       expect(result.exitCode).toBe(expected)
-      expect(result.stdout).toBe(
-        outputs.map((output) => `${JSON.stringify(output, null, 2)}\n`).join(''),
-      )
+      expect(result.stdout).toBe(outputs.map((output) => `${JSON.stringify(output)}\n`).join(''))
       expect(result.stderr).toBe('')
     })
   }
@@ -187,7 +185,7 @@ describe('CLI response exit codes', () => {
     })
     expect(result.requestCount).toBe(1)
     expect(result.exitCode).toBe(0)
-    expect(result.stdout).toBe(`${JSON.stringify(success, null, 2)}\n`)
+    expect(result.stdout).toBe(`${JSON.stringify(success)}\n`)
     expect(result.stderr).toBe('')
   })
 

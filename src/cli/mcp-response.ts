@@ -4,6 +4,8 @@ import path from 'node:path'
 import { getHomeDir } from '../core/protocol.js'
 import { isRecord } from './client.js'
 import { extractScreenshotBase64 } from './screenshot.js'
+import { presentCommandResult } from './response-presenters.js'
+import type { ResponseFormat } from './response-format.js'
 
 // 超过该体积的截图 base64 不再内联进 MCP 响应（会爆模型上下文），改为落盘后回文本路径
 const SCREENSHOT_MAX_INLINE_BYTES = 2 * 1024 * 1024
@@ -34,10 +36,18 @@ export function toErrorResult(
   }
 }
 
-export function toSuccessResult(result: unknown): CallToolResult {
-  const structuredContent = isRecord(result) && !Array.isArray(result) ? result : undefined
+export function toSuccessResult(
+  result: unknown,
+  options: { command?: string; responseFormat?: ResponseFormat } = {},
+): CallToolResult {
+  const responseFormat = options.responseFormat ?? 'concise'
+  const presented = options.command
+    ? presentCommandResult(options.command, result, responseFormat)
+    : result
+  const structuredContent = isRecord(presented) && !Array.isArray(presented) ? presented : undefined
+  const spacing = responseFormat === 'concise' ? undefined : 2
   return {
-    content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
+    content: [{ type: 'text', text: JSON.stringify(presented, null, spacing) }],
     ...(structuredContent ? { structuredContent } : {}),
   }
 }

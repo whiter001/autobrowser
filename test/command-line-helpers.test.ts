@@ -267,7 +267,7 @@ describe('cli helpers', () => {
     expect(result.exitCode).toBe(0)
     expect(result.fetchCalls[0].body).toEqual({
       command: 'eval',
-      args: { script, timeoutMs: 5000, maxResultBytes: 1024 },
+      args: { script, timeoutMs: 5000, maxResultBytes: 1024, responseFormat: 'concise' },
     })
 
     const missing = await runCli(['eval', '--expr'])
@@ -424,7 +424,7 @@ describe('cli helpers', () => {
     const evalResult = await runCli(['eval', '--element', '@e1', '--expr', 'el => el.textContent'])
     expect(evalResult.fetchCalls[0].body).toEqual({
       command: 'eval',
-      args: { script: 'el => el.textContent', element: '@e1' },
+      args: { script: 'el => el.textContent', element: '@e1', responseFormat: 'concise' },
     })
     const locator = await runCli(['generate-locator', '@e1'])
     expect(locator.fetchCalls[0].body).toEqual({ command: 'locator', args: { selector: '@e1' } })

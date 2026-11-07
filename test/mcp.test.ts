@@ -215,7 +215,15 @@ describe('AutobrowserMcpServer.callTool', () => {
     await server.callTool('locator', { selector: '@e1', tab: 't2', frame: '@f1' })
     await server.callTool('highlight', { selector: '@e1', style: '2px solid red', hide: false })
     expect(mock.calls).toEqual([
-      { command: 'eval', args: { script: 'el => el.textContent', element: '@e1', frame: '@f1' } },
+      {
+        command: 'eval',
+        args: {
+          script: 'el => el.textContent',
+          element: '@e1',
+          frame: '@f1',
+          responseFormat: 'concise',
+        },
+      },
       { command: 'locator', args: { selector: '@e1', tabId: 't2', frame: '@f1' } },
       { command: 'highlight', args: { selector: '@e1', style: '2px solid red', hide: false } },
     ])
@@ -233,7 +241,7 @@ describe('AutobrowserMcpServer.callTool', () => {
     expect(mock.calls).toEqual([
       {
         command: 'snapshot',
-        args: { roles: ['button', 'link'], selector: '@e4' },
+        args: { roles: ['button', 'link'], selector: '@e4', responseFormat: 'concise' },
       },
     ])
   })
@@ -975,8 +983,20 @@ describe('search interfaces', () => {
       expect(second.exitCode).toBe(0)
       expect(JSON.parse(second.stdout).result).toEqual(secondPage)
       expect(calls.slice(0, 2)).toEqual([
-        { command: 'search', args: { query: 'error', context: 0, limit: 20 } },
-        { command: 'search', args: { query: 'error', context: 0, limit: 20, startLine: 201 } },
+        {
+          command: 'search',
+          args: { query: 'error', context: 0, limit: 10, responseFormat: 'concise' },
+        },
+        {
+          command: 'search',
+          args: {
+            query: 'error',
+            context: 0,
+            limit: 10,
+            responseFormat: 'concise',
+            startLine: 201,
+          },
+        },
       ])
       const invalidCli = await runSearch(['error', '--start-line', '0'])
       expect(invalidCli.exitCode).toBe(1)
@@ -1004,7 +1024,15 @@ describe('search interfaces', () => {
       expect(resumed.structuredContent).toEqual(secondPage)
       expect(calls.at(-1)).toEqual({
         command: 'search',
-        args: { query: 'error', context: 0, limit: 2, startLine: 201, tabId: 't2', frame: '@f1' },
+        args: {
+          query: 'error',
+          context: 0,
+          limit: 2,
+          startLine: 201,
+          tabId: 't2',
+          frame: '@f1',
+          responseFormat: 'concise',
+        },
       })
       for (const args of [
         { startLine: 0 },

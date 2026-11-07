@@ -44,6 +44,8 @@ export interface DownloadsDomain {
   listDownloads: (
     pageIdx?: number,
     pageSize?: number,
+    limit?: number,
+    cursor?: string,
   ) => {
     downloads: DownloadRecord[]
     total: number
@@ -237,8 +239,13 @@ export function createDownloadsDomain(
     }
   }
 
-  function listDownloads(pageIdx?: number, pageSize?: number) {
-    const { items, pagination } = paginateList(state.session.downloads, pageIdx, pageSize)
+  function listDownloads(pageIdx?: number, pageSize?: number, limit?: number, cursor?: string) {
+    const { items, pagination } = paginateList(state.session.downloads, pageIdx, pageSize, {
+      limit,
+      cursor,
+      queryKey: 'downloads',
+      getKey: (item) => String(item.id),
+    })
     return {
       downloads: items,
       total: state.session.downloads.length,

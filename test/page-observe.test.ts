@@ -941,8 +941,8 @@ describe('page observe snapshot byte cap', () => {
     expect(result.totalElements).toBe(60)
     expect(result.returnedElements).toBeLessThan(60)
     expect(result.elements).toHaveLength(result.returnedElements)
-    // 截断后整包仍必须不超过字节上限
-    expect(JSON.stringify(result).length).toBeLessThanOrEqual(200_000)
+    // concise 截断后整包仍必须不超过 32KiB
+    expect(new TextEncoder().encode(JSON.stringify(result)).byteLength).toBeLessThanOrEqual(32_768)
   })
 
   test('does not attach truncation fields when the snapshot fits', async () => {
@@ -1476,7 +1476,10 @@ describe('executed observation expressions', () => {
     const h = expressionHarness(doc)
     const seen = new Set<unknown>()
     for (let i = 0; i < 20 && seen.size < 260; i++) {
-      const result = (await h.domain.snapshotTab(1, null, { changed: true })) as ObservedSnapshot
+      const result = (await h.domain.snapshotTab(1, null, {
+        changed: true,
+        responseFormat: 'detailed',
+      })) as ObservedSnapshot
       expect(result.truncated).toBe(true)
       expect(new TextEncoder().encode(JSON.stringify(result)).length).toBeLessThanOrEqual(200000)
       expect(
@@ -1521,10 +1524,16 @@ describe('executed observation expressions', () => {
     host.shadowRoot = new ObserveDocument([shadowButton, label])
     const doc = new ObserveDocument([...nodes, host])
     const h = expressionHarness(doc)
-    const first = (await h.domain.snapshotTab(1, null, { changed: true })) as ObservedSnapshot
+    const first = (await h.domain.snapshotTab(1, null, {
+      changed: true,
+      responseFormat: 'detailed',
+    })) as ObservedSnapshot
     expect(first.elements).toHaveLength(200)
     expect(first.truncated).toBe(true)
-    const second = (await h.domain.snapshotTab(1, null, { changed: true })) as ObservedSnapshot
+    const second = (await h.domain.snapshotTab(1, null, {
+      changed: true,
+      responseFormat: 'detailed',
+    })) as ObservedSnapshot
     expect(second.elements).toHaveLength(6)
     expect(second.elements.at(-1)!.name).toBe('Shadow Save')
     const found = await h.domain.findSemanticTarget(
@@ -1652,7 +1661,10 @@ describe('executed observation expressions', () => {
     })
     const doc = new ObserveDocument([label, panel])
     const h = expressionHarness(doc)
-    const scoped = (await h.domain.snapshotTab(1, null, { selector: '#panel' })) as ObservedSnapshot
+    const scoped = (await h.domain.snapshotTab(1, null, {
+      selector: '#panel',
+      responseFormat: 'detailed',
+    })) as ObservedSnapshot
     expect(scoped.elements).toHaveLength(100)
     expect(scoped.elements[0]!.name).toBe('Shipping panel')
     expect(scoped.elements.slice(1).every((element) => element.name === '')).toBe(true)
@@ -1670,7 +1682,9 @@ describe('executed observation expressions', () => {
         doc.nodes.push(button)
       }
       const h = expressionHarness(doc)
-      const snapshot = (await h.domain.snapshotTab(1, null)) as ObservedSnapshot
+      const snapshot = (await h.domain.snapshotTab(1, null, {
+        responseFormat: 'detailed',
+      })) as ObservedSnapshot
       expect(snapshot.elements).toHaveLength(count)
       const found = await h.domain.findSemanticTarget(
         1,
@@ -1734,7 +1748,7 @@ describe('executed observation expressions', () => {
     const h = expressionHarness(doc)
     const lines: number[] = []
     let startLine = 1
-    for (let i = 0; i < 4; i++) {
+    for (let i = 0; i < 10; i++) {
       const result = await h.domain.searchPageText(
         1,
         { query: '/hit/g', context: 100, startLine },

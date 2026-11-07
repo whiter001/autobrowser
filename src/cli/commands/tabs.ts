@@ -1,5 +1,5 @@
 import { isRecord, shouldOpenInNewTab, type CommandResponse } from '../client.js'
-import { parseNumberArg } from '../parse.js'
+import { parseNumberArg, parsePaginationArgs } from '../parse.js'
 import { optionHintSuffix } from '../option-hints.js'
 import {
   helpRequested,
@@ -52,11 +52,21 @@ async function handleTab(rest: string[], context: CommandContext): Promise<numbe
           continue
         }
         if (value === '--page-size' || value === '--limit') {
-          args.pageSize = parseNumberArg(tabArgs[++index], 'page size', {
-            min: 1,
-            max: 200,
-            integer: true,
-          })
+          const size = parseNumberArg(
+            tabArgs[++index],
+            value === '--limit' ? 'limit' : 'page size',
+            {
+              min: 1,
+              max: 200,
+              integer: true,
+            },
+          )
+          if (value === '--limit') args.limit = size
+          else args.pageSize = size
+          continue
+        }
+        if (value === '--cursor') {
+          args.cursor = readRequiredArg(tabArgs[++index], context, ['tab', 'list'])
           continue
         }
         // 未知参数此前会打印帮助并以 0 退出，调用方容易误以为列表已返回
@@ -162,7 +172,8 @@ async function handleCommandControl(
   // switch 分支集合就是 command 的实现面，测试会拿它和 action 表核对。
   switch (commandAction) {
     case 'list': {
-      return await runActionCommand(context, 'command', { action: 'list' })
+      const pagination = parseOrThrow(() => parsePaginationArgs(rest.slice(1)))
+      return await runActionCommand(context, 'command', { action: 'list', ...pagination })
     }
     case 'status': {
       return await runActionCommand(context, 'command', {

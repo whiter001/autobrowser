@@ -16,6 +16,16 @@ import {
   toVideoResult,
 } from './mcp-response.js'
 import { MCP_TOOLS, MCP_TOOLS_BY_NAME } from './mcp-tools.js'
+import { parseResponseFormat } from './response-format.js'
+
+const CURSOR_LIST_COMMANDS = new Set([
+  'tab.list',
+  'console',
+  'errors',
+  'network',
+  'actions',
+  'command',
+])
 
 interface McpServerDependencies {
   name?: string
@@ -36,7 +46,26 @@ export class AutobrowserMcpServer {
 
   listTools(): Tool[] {
     return MCP_TOOLS.map((definition) => {
-      const properties: Record<string, object> = { ...definition.inputSchema.properties }
+      const properties: Record<string, object> = {
+        ...definition.inputSchema.properties,
+        response_format: {
+          type: 'string',
+          enum: ['concise', 'detailed'],
+          description: 'Response detail level (default concise).',
+        },
+      }
+      if (CURSOR_LIST_COMMANDS.has(definition.command)) {
+        properties.limit = {
+          type: 'integer',
+          minimum: 1,
+          maximum: 100,
+          description: 'Maximum records to return (default 20; tab lists default 50).',
+        }
+        properties.cursor = {
+          type: 'string',
+          description: 'Opaque nextCursor from the previous response using the same filters.',
+        }
+      }
       if (commandSupportsTabTarget(definition.command)) {
         properties.tab = {
           type: 'string',
@@ -72,8 +101,17 @@ export class AutobrowserMcpServer {
     }
 
     const commandArgs: Record<string, unknown> = {}
+    let responseFormat: ReturnType<typeof parseResponseFormat> = 'concise'
     try {
+      responseFormat = parseResponseFormat(args?.response_format)
       Object.assign(commandArgs, definition.toArgs(args ?? {}))
+      if (['snapshot', 'search', 'eval'].includes(definition.command)) {
+        commandArgs.responseFormat = responseFormat
+      }
+      if (CURSOR_LIST_COMMANDS.has(definition.command)) {
+        if (args?.limit !== undefined) commandArgs.limit = args.limit
+        if (args?.cursor !== undefined) commandArgs.cursor = args.cursor
+      }
       if (commandSupportsTabTarget(definition.command) && args?.tab !== undefined) {
         commandArgs.tabId = args.tab
       }
@@ -136,7 +174,10 @@ export class AutobrowserMcpServer {
       }
     }
 
-    return toSuccessResult(payload.result)
+    return toSuccessResult(payload.result, {
+      command: definition.command,
+      responseFormat,
+    })
   }
 
   async connect(transport: Transport): Promise<void> {

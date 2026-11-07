@@ -51,6 +51,7 @@ export interface SearchPageTextOptions {
   context?: number
   limit?: number
   startLine?: number
+  responseFormat?: 'concise' | 'detailed'
 }
 
 /** 纯函数通过 toString 注入，不能引用模块闭包。续取按原始行号裁窗口，避免上下文重复。 */
@@ -64,6 +65,8 @@ export function computeSearchPageTextMatches(
   lineMax: number,
   readyState: string,
   startLine = 1,
+  byteMax = 100_000,
+  lineLimit = 200,
 ): Omit<SearchPageTextResult, 'pageEpoch'> {
   const escapeRegExpSource = (value: string): string => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
   const literal = !/^\/(.+)\/([a-zA-Z]*)$/.test(query)
@@ -103,7 +106,7 @@ export function computeSearchPageTextMatches(
     truncated: query.length > 1024 || pattern.length > 1024,
     windows,
   }
-  let remaining = 100_000 - encoder.encode(JSON.stringify(result)).length - 1024
+  let remaining = byteMax - encoder.encode(JSON.stringify(result)).length - 1024
   let count = 0
   outer: for (const range of merged) {
     if (windows.length >= limit) {
@@ -123,7 +126,7 @@ export function computeSearchPageTextMatches(
         truncated: text.length > lineMax,
       }
       const cost = encoder.encode(JSON.stringify(item)).length + 1
-      if (count >= 200 || cost > remaining) {
+      if (count >= lineLimit || cost > remaining) {
         result.truncated = true
         result.nextStartLine = line
         break outer
@@ -163,7 +166,9 @@ export function createSearchFeature({
     const limit =
       typeof options.limit === 'number' && Number.isFinite(options.limit)
         ? Math.min(SEARCH_MAX_LIMIT, Math.max(0, Math.floor(options.limit)))
-        : 20
+        : options.responseFormat === 'detailed'
+          ? 20
+          : 10
     const startLine =
       typeof options.startLine === 'number' && Number.isFinite(options.startLine)
         ? Math.max(1, Math.floor(options.startLine))
@@ -211,7 +216,9 @@ export function createSearchFeature({
         const rawText = document.body?.innerText ?? '';
 ${SEARCH_TEXT_MATCH_HELPERS_SOURCE}
         return computeSearchPageTextMatches(rawText, query, pattern, regexFlags,
-          context, limit, lineMax, readyState, ${startLine});
+          context, limit, lineMax, readyState, ${startLine},
+          ${options.responseFormat === 'detailed' ? 100_000 : 32_768},
+          ${options.responseFormat === 'detailed' ? 200 : 100});
       })()`,
       withFrameSelectorOptions(frameSelector),
     )

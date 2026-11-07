@@ -474,6 +474,7 @@ describe('cli command routing', () => {
       command: 'snapshot',
       args: {
         selector: '#panel',
+        responseFormat: 'concise',
       },
     })
   })
@@ -488,6 +489,7 @@ describe('cli command routing', () => {
       args: {
         roles: ['button', 'link'],
         changed: true,
+        responseFormat: 'concise',
       },
     })
   })
@@ -645,7 +647,8 @@ describe('cli command routing', () => {
       args: {
         query: 'Sign in',
         context: 3,
-        limit: 20,
+        limit: 10,
+        responseFormat: 'concise',
       },
     })
   })
@@ -661,6 +664,7 @@ describe('cli command routing', () => {
         query: '/foo/i',
         context: 5,
         limit: 2,
+        responseFormat: 'concise',
       },
     })
   })
@@ -675,7 +679,8 @@ describe('cli command routing', () => {
       args: {
         query: 'Sign in',
         context: 3,
-        limit: 20,
+        limit: 10,
+        responseFormat: 'concise',
         tabId: 't2',
         frame: '@f1',
       },

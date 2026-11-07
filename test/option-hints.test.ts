@@ -47,9 +47,8 @@ describe('dispatch-wide option hints', () => {
 })
 
 describe('pagination aliases', () => {
-  test('network requests accepts --limit as a page-size alias', () => {
-    // 实测里最容易写错的一处：--limit 在分页命令上应等同于 --page-size
-    expect(parseNetworkRequestsArgs(['--limit', '5'])).toMatchObject({ pageSize: 5 })
+  test('network requests uses limit and retains page-size compatibility', () => {
+    expect(parseNetworkRequestsArgs(['--limit', '5'])).toMatchObject({ limit: 5 })
     expect(parseNetworkRequestsArgs(['--page-size', '5'])).toMatchObject({ pageSize: 5 })
     expect(() => parseNetworkRequestsArgs(['--limit', '0'])).toThrow('expected >= 1')
   })
@@ -61,7 +60,7 @@ describe('pagination aliases', () => {
   })
 
   test('console accepts --limit and suggests options on typos', () => {
-    expect(parseConsoleArgs(['--limit', '10'])).toMatchObject({ pageSize: 10 })
+    expect(parseConsoleArgs(['--limit', '10'])).toMatchObject({ limit: 10 })
     expect(() => parseConsoleArgs(['--levl', 'error'])).toThrow(
       'unsupported console option: --levl (did you mean --level?)',
     )

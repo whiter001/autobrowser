@@ -94,7 +94,7 @@ export function createMinimalRouter(overrides?: {
   const waitTextCalls: Array<{ text: unknown; gone?: unknown }> = []
   const typeCalls: Array<{ tabId: unknown; selector: unknown; value: unknown; submit?: unknown }> =
     []
-  const evalCalls: Array<{ tabId: unknown; script: unknown }> = []
+  const evalCalls: Array<{ tabId: unknown; script: unknown; maxResultBytes?: number }> = []
   const cookieGetCalls: Array<{ tabId: unknown; filters: unknown }> = []
   const clickCalls: Array<{ tabId: unknown; selector: unknown }> = []
   const listRequestsCalls: Array<Record<string, unknown>> = []
@@ -157,8 +157,15 @@ export function createMinimalRouter(overrides?: {
           }
           return { navigated: true, url }
         }),
-      evaluateScript: async (tabId: unknown, script: unknown) => {
-        evalCalls.push({ tabId, script })
+      evaluateScript: async (
+        tabId: unknown,
+        script: unknown,
+        _frame: unknown,
+        _timeout: unknown,
+        _element: unknown,
+        maxResultBytes?: number,
+      ) => {
+        evalCalls.push({ tabId, script, maxResultBytes })
         if (overrides?.evaluateScript) return overrides.evaluateScript(tabId, script)
         return undefined
       },
@@ -863,7 +870,11 @@ describe('command router playwright parity commands', () => {
     })
 
     expect(searchCalls).toEqual([
-      { tabId: 1, options: { query: 'Sign in', context: 3, limit: 20 }, frameSelector: null },
+      {
+        tabId: 1,
+        options: { query: 'Sign in', context: 3, limit: 10, responseFormat: 'concise' },
+        frameSelector: null,
+      },
     ])
     expect(result).toEqual(
       expect.objectContaining({
@@ -1077,7 +1088,7 @@ describe('command router modal blocking', () => {
     expect(searchCalls).toHaveLength(1)
     expect(searchCalls[0]).toEqual({
       tabId: 1,
-      options: { query: 'Sign in', context: 2, limit: 5 },
+      options: { query: 'Sign in', context: 2, limit: 5, responseFormat: 'concise' },
       frameSelector: null,
     })
     expect(result).toEqual(
@@ -1206,6 +1217,18 @@ describe('command router recovery control plane', () => {
 })
 
 describe('command router eval cancellation', () => {
+  test('applies the concise result budget and leaves detailed eval uncapped by default', async () => {
+    const { router, evalCalls } = createMinimalRouter()
+
+    await router.handleCommand({ command: 'eval', args: { script: '1 + 1' } })
+    await router.handleCommand({
+      command: 'eval',
+      args: { script: '1 + 1', responseFormat: 'detailed' },
+    })
+
+    expect(evalCalls.map((call) => call.maxResultBytes)).toEqual([32_768, undefined])
+  })
+
   test('terminates a running eval and lets subsequent tab commands run', async () => {
     let releaseEval!: (value: unknown) => void
     let evalEntered!: () => void
@@ -1491,7 +1514,7 @@ describe('command router list pagination', () => {
       'msg 1',
       'msg 2',
     ])
-    expect(first.pagination).toEqual({
+    expect(first.pagination).toMatchObject({
       currentPage: 0,
       totalPages: 3,
       hasNextPage: true,
@@ -1500,6 +1523,7 @@ describe('command router list pagination', () => {
       endIndex: 2,
       invalidPage: false,
     })
+    expect(first.pagination.nextCursor).toBeString()
 
     const middle = (await router.handleCommand({
       command: 'console',

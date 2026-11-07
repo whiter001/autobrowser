@@ -1,11 +1,13 @@
 import { DEFAULT_IPC_PORT, DEFAULT_RELAY_PORT, isValidPort } from '../core/protocol.js'
 import { optionHintSuffix } from './option-hints.js'
+import { parseResponseFormat } from './response-format.js'
 import { type CliFlags, type ParsedCli } from './types.js'
 
 const SUPPORTED_GLOBAL_FLAGS = [
   '--json',
   '--raw',
   '--brief',
+  '--response-format',
   '--stdin',
   '--base64',
   '--print-token',
@@ -53,6 +55,8 @@ export function parseCli(argv: string[]): ParsedCli {
     json: true,
     jsonExplicitlySet: false,
     brief: false,
+    responseFormat: 'concise',
+    responseFormatExplicitlySet: false,
     server: `http://127.0.0.1:${DEFAULT_IPC_PORT}`,
     session: '',
     engine: 'chromium',
@@ -96,6 +100,13 @@ export function parseCli(argv: string[]): ParsedCli {
     if (value === '--brief') {
       flags.json = false
       flags.brief = true
+      continue
+    }
+
+    if (value === '--response-format') {
+      flags.responseFormat = parseResponseFormat(readFlagValue(argv, index, value))
+      flags.responseFormatExplicitlySet = true
+      index += 1
       continue
     }
 
@@ -217,6 +228,10 @@ export function parseCli(argv: string[]): ParsedCli {
     }
 
     args.push(value)
+  }
+
+  if (!flags.json && !flags.brief && flags.responseFormatExplicitlySet) {
+    throw new Error('--response-format cannot be combined with --raw')
   }
 
   const inputSources = [flags.stdin, flags.file !== null, flags.base64].filter(Boolean).length

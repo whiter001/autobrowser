@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 import { createNetworkDomain } from '../extension/background/network.js'
+import { upsertNetworkRequest } from '../extension/background/network-records.js'
 import { createExtensionState } from '../extension/background/state.js'
 
 describe('network domain routes', () => {
@@ -755,6 +756,40 @@ describe('network domain request list pagination', () => {
     return { network, state }
   }
 
+  test('assigns stable rN refs and resolves them after list reordering', async () => {
+    const state = createExtensionState(57978)
+    const first = upsertNetworkRequest(state, {
+      id: '1:first',
+      requestId: 'first-cdp-id',
+      tabId: 1,
+      url: 'https://example.com/first',
+      responseBody: 'first',
+    })
+    const second = upsertNetworkRequest(state, {
+      id: '1:second',
+      requestId: 'second-cdp-id',
+      tabId: 1,
+      url: 'https://example.com/second',
+      responseBody: 'second',
+    })
+    const network = createNetworkDomain({
+      state,
+      getTargetTab: async () => ({ id: 1 }) as never,
+      sendRawDebuggerCommand: async <TResult = unknown>() => ({}) as TResult,
+      sendDebuggerCommand: async <TResult = unknown>() => ({}) as TResult,
+    })
+
+    expect(first.ref).toBe('r1')
+    expect(second.ref).toBe('r2')
+    state.network.requests.reverse()
+    await expect(network.getRequestDetail('r2', 1)).resolves.toMatchObject({
+      request: { id: '1:second', ref: 'r2' },
+    })
+    await expect(network.getRequestDetail('r99', 1)).rejects.toMatchObject({
+      code: 'STALE_REQUEST_REF',
+    })
+  })
+
   test('paginates after filters with pageIdx/pageSize and reports hasNextPage', () => {
     const { network } = createListHarness()
 
@@ -767,7 +802,7 @@ describe('network domain request list pagination', () => {
     // 过滤先于分页：/api/ 只命中 r1/r2/r4 三条，第二页是 r2
     expect(result.total).toBe(3)
     expect(result.requests.map((request) => request.id)).toEqual(['1:r2'])
-    expect(result.pagination).toEqual({
+    expect(result.pagination).toMatchObject({
       currentPage: 1,
       totalPages: 3,
       hasNextPage: true,
@@ -776,6 +811,7 @@ describe('network domain request list pagination', () => {
       endIndex: 2,
       invalidPage: false,
     })
+    expect(result.pagination.nextCursor).toBeString()
   })
 
   test('falls back to the first page with invalidPage for an out-of-range pageIdx', () => {
@@ -822,7 +858,7 @@ describe('network domain request list pagination', () => {
     // newest 在过滤之后、分页之前反转：第一页是最新两条，total 仍是过滤后的总数
     expect(first.total).toBe(4)
     expect(first.requests.map((request) => request.id)).toEqual(['2:r4', '1:r3'])
-    expect(first.pagination).toEqual({
+    expect(first.pagination).toMatchObject({
       currentPage: 0,
       totalPages: 2,
       hasNextPage: true,

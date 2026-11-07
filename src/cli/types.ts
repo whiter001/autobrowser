@@ -1,11 +1,14 @@
 import type { BrowserLaunchConfig } from '../core/config.js'
 import type { DetachedProcessHandle } from './server-control.js'
+import type { ResponseFormat } from './response-format.js'
 
 export interface CliFlags {
   json: boolean
   /** 是否显式传了 --json（默认 json 就是 true，需要区分"默认"和"显式要求 JSON"） */
   jsonExplicitlySet: boolean
   brief: boolean
+  responseFormat: ResponseFormat
+  responseFormatExplicitlySet: boolean
   server: string
   session: string
   engine: 'chromium' | 'firefox' | 'webkit'

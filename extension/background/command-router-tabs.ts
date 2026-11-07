@@ -2,6 +2,7 @@ import { tabsCreate, tabsRemove, tabsUpdate, windowsUpdate } from './chrome.js'
 import { getOrCreateTabHandle, rememberTargetTab, toTabSummary } from './targeting.js'
 import { paginateList } from './pagination.js'
 import {
+  readOptionalNumberArg,
   readOptionalStringArg,
   readStringArg,
   type CommandRunScope,
@@ -100,7 +101,19 @@ export function createTabsCommandHandler({
             `${tab.handle || ''} ${tab.title} ${tab.url}`.toLowerCase().includes(filter),
           )
         }
-        const { items, pagination } = paginateList(tabs, pageIdx, pageSize)
+        const { items, pagination } = paginateList(tabs, pageIdx, pageSize, {
+          limit: readOptionalNumberArg(args, 'limit'),
+          cursor: readStringArg(args, 'cursor'),
+          defaultLimit: 50,
+          maxLimit: 200,
+          queryKey: {
+            filter,
+            active: args.active,
+            currentWindow: args.currentWindow,
+            queryTargetTabId,
+          },
+          getKey: (tab) => String(tab.handle || tab.id),
+        })
         return { tabs: items, total: tabs.length, pagination }
       }
       case 'tab.select':
@@ -141,9 +154,14 @@ export function createTabsCommandHandler({
         if (action === 'list' || action === 'status') {
           const commandId = readOptionalStringArg(args, 'commandId')
           const commands = commandQueue.list()
-          return {
-            commands: commandId ? commands.filter((entry) => entry.id === commandId) : commands,
-          }
+          const filtered = commandId ? commands.filter((entry) => entry.id === commandId) : commands
+          const { items, pagination } = paginateList(filtered, pageIdx, pageSize, {
+            limit: readOptionalNumberArg(args, 'limit'),
+            cursor: readStringArg(args, 'cursor'),
+            queryKey: { commandId },
+            getKey: (item) => String(item.id),
+          })
+          return { commands: items, total: filtered.length, pagination }
         }
         if (action === 'cancel') {
           const commandId = readStringArg(args, 'commandId')

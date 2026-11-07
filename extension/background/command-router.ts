@@ -14,7 +14,6 @@ import { createSessionCommandHandler } from './command-router-session.js'
 import { createTabsCommandHandler } from './command-router-tabs.js'
 import type { CommandRunScope } from './command-router-context.js'
 import { getCommandRequestBudgetMs } from '../../src/core/command-budget.js'
-import { DEFAULT_PAGE_SIZE } from './pagination.js'
 import type { ExtensionControlDomain } from './extension-control.js'
 import { commandSupportsTabTarget, validateCommandArgs } from '../../src/core/command-spec.js'
 import type {
@@ -431,7 +430,7 @@ interface InitScriptDomain {
 }
 
 interface DownloadsDomain {
-  listDownloads: (pageIdx?: number, pageSize?: number) => unknown
+  listDownloads: (pageIdx?: number, pageSize?: number, limit?: number, cursor?: string) => unknown
   clearDownloads: () => unknown
 }
 
@@ -1090,9 +1089,11 @@ export function createCommandRouter({
     const feedStallRounds = readNumberArg(args, 'stallRounds', 3)
     const searchQuery = readStringArg(args, 'query')
     const searchContext = readNumberArg(args, 'context', 3)
-    const searchLimit = readNumberArg(args, 'limit', 20)
+    const searchLimit = readNumberArg(args, 'limit', args.responseFormat === 'detailed' ? 20 : 10)
     const pageIdx = readNumberArg(args, 'pageIdx', 0)
-    const pageSize = readNumberArg(args, 'pageSize', DEFAULT_PAGE_SIZE)
+    const pageSize = readOptionalNumberArg(args, 'pageSize')
+    const limit = readOptionalNumberArg(args, 'limit')
+    const cursor = readStringArg(args, 'cursor')
 
     // fallback note 与查询口径都要用固定之前的目标，取值时机不能晚于 pinCommandTargetTabId
     const targetTabIdBeforeCommand = state.targeting.targetTabId
@@ -1126,6 +1127,8 @@ export function createCommandRouter({
         queryTargetTabId,
         pageIdx,
         pageSize,
+        limit,
+        cursor,
       }
       switch (command) {
         case 'extension':
@@ -1202,7 +1205,8 @@ export function createCommandRouter({
             frameSelector,
             readOptionalNumberArg(args, 'timeoutMs'),
             readOptionalStringArg(args, 'element'),
-            readOptionalNumberArg(args, 'maxResultBytes'),
+            readOptionalNumberArg(args, 'maxResultBytes') ??
+              (args.responseFormat === 'detailed' ? undefined : 32_768),
           )
         case 'locator':
           return await pageInput.generateLocator(tabId, selector, frameSelector)
@@ -1230,6 +1234,7 @@ export function createCommandRouter({
             selector: selector.trim() || undefined,
             ...(snapshotRoles.length > 0 ? { roles: snapshotRoles } : {}),
             ...(snapshotChanged ? { changed: true } : {}),
+            responseFormat: args.responseFormat === 'detailed' ? 'detailed' : 'concise',
           })
         case 'feed':
           return await pageObserve.collectFeed(
@@ -1251,6 +1256,7 @@ export function createCommandRouter({
               query: searchQuery,
               context: searchContext,
               limit: searchLimit,
+              responseFormat: args.responseFormat === 'detailed' ? 'detailed' : 'concise',
               ...(args.startLine !== undefined
                 ? { startLine: readNumberArg(args, 'startLine', 1) }
                 : {}),
@@ -1421,7 +1427,9 @@ export function createCommandRouter({
             return downloads.clearDownloads()
           }
           // list 是默认 subaction，复用 console/errors 的分页参数
-          return downloads.listDownloads(pageIdx, pageSize)
+          return limit === undefined && !cursor
+            ? downloads.listDownloads(pageIdx, pageSize)
+            : downloads.listDownloads(pageIdx, pageSize, limit, cursor)
         case 'download':
           // 落盘路径由 relay 决定，扩展只负责取字节并直传
           return await fileTransfer.download({

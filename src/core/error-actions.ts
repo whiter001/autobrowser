@@ -99,6 +99,11 @@ export const ERROR_ACTIONS: Record<string, ErrorAction> = {
     retryable: false,
     action: "See 'autobrowser help <command>' for supported options and value ranges.",
   },
+  INVALID_CURSOR: {
+    retryable: false,
+    action:
+      'Restart the list query without cursor or with the original filters, then use its nextCursor.',
+  },
   INVALID_DEVICE_PRESET: {
     retryable: false,
     action: "Use a documented device preset, or 'set device --reset' to clear overrides.",
@@ -129,9 +134,18 @@ export const ERROR_ACTIONS: Record<string, ErrorAction> = {
     retryable: true,
     action: 'Close the browser using that profile, then retry; do not force-delete the directory.',
   },
+  STALE_CURSOR: {
+    retryable: false,
+    action:
+      'Restart the list query without cursor; the previous continuation point no longer exists.',
+  },
   STALE_ELEMENT_REF: {
     retryable: false,
     action: "Run 'snapshot' again; the page moved to a new epoch.",
+  },
+  STALE_REQUEST_REF: {
+    retryable: false,
+    action: 'Run network requests again and use a ref from the current result.',
   },
   STALE_FEED_STATE: {
     retryable: false,

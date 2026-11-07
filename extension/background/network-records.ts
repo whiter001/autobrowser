@@ -52,6 +52,10 @@ export function upsertNetworkRequest(
   const existing: NetworkRequestRecord = state.network.requestMap.get(key) || { id: key }
   // 保持单次请求对象身份，异步 body 只写回该对象，不按可复用的 CDP id 覆盖新请求。
   const merged = Object.assign(existing, record)
+  if (!merged.ref) {
+    state.network.nextRequestRef = (state.network.nextRequestRef ?? 0) + 1
+    merged.ref = `r${state.network.nextRequestRef}`
+  }
   state.network.requestMap.set(key, merged)
 
   const index = state.network.requestIndex.get(key)
@@ -104,9 +108,13 @@ export function getNetworkRequestById(
   if (exact && (typeof tabId !== 'number' || exact.tabId === tabId)) {
     return exact
   }
+  const byRef = state.network.requests.find(
+    (item) => item?.ref === requestId && (typeof tabId !== 'number' || item.tabId === tabId),
+  )
+  if (byRef) return byRef
   const matches = state.network.requests.filter(
     (item) =>
-      (item?.requestId === requestId || item?.id === requestId) &&
+      (item?.ref === requestId || item?.requestId === requestId || item?.id === requestId) &&
       (typeof tabId !== 'number' || item.tabId === tabId),
   )
   if (new Set(matches.map((item) => item.tabId)).size > 1) {
@@ -129,6 +137,7 @@ export function summarizeNetworkRequest(
   includeDetails = false,
 ): Record<string, unknown> {
   const summary: Record<string, unknown> = {
+    ref: record.ref,
     id: record.id,
     requestId: record.requestId,
     tabId: record.tabId,

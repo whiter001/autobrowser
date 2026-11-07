@@ -1,4 +1,5 @@
 import type { CommandResponse } from './client.js'
+import type { ResponseFormat } from './response-format.js'
 
 export function writeResult(
   payload:
@@ -12,10 +13,12 @@ export function writeResult(
     | undefined,
   options: {
     json: boolean
+    responseFormat?: ResponseFormat
   },
 ): void {
   if (options.json) {
-    process.stdout.write(`${JSON.stringify(payload, null, 2)}\n`)
+    const spacing = options.responseFormat === 'concise' ? undefined : 2
+    process.stdout.write(`${JSON.stringify(payload, null, spacing)}\n`)
     return
   }
 

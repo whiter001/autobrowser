@@ -455,7 +455,9 @@ async function handleSearch(rest: string[], context: CommandContext): Promise<nu
     return 0
   }
 
-  const searchArgs = parseOrThrow(() => parseSearchArgs(rest))
+  const searchArgs = parseOrThrow(() =>
+    parseSearchArgs(rest, context.flags.responseFormat === 'concise' ? 10 : 20),
+  )
 
   const payload = await context.requestCommand(context.flags.server, 'search', searchArgs)
   context.writeResult(payload)
@@ -715,6 +717,8 @@ const handleDownloads: CommandHandler = async (rest, context) => {
     action: 'list',
     ...(listArgs.pageIdx !== undefined ? { pageIdx: listArgs.pageIdx } : {}),
     ...(listArgs.pageSize !== undefined ? { pageSize: listArgs.pageSize } : {}),
+    ...(listArgs.limit !== undefined ? { limit: listArgs.limit } : {}),
+    ...(listArgs.cursor !== undefined ? { cursor: listArgs.cursor } : {}),
   })
   return 0
 }
@@ -744,6 +748,8 @@ const handleConsole: CommandHandler = async (rest, context) => {
     ...(consoleArgs.allEpochs ? { allEpochs: true } : {}),
     ...(consoleArgs.pageIdx !== undefined ? { pageIdx: consoleArgs.pageIdx } : {}),
     ...(consoleArgs.pageSize !== undefined ? { pageSize: consoleArgs.pageSize } : {}),
+    ...(consoleArgs.limit !== undefined ? { limit: consoleArgs.limit } : {}),
+    ...(consoleArgs.cursor !== undefined ? { cursor: consoleArgs.cursor } : {}),
   })
   context.writeResult(payload)
   return 0
@@ -762,6 +768,8 @@ const handleErrors: CommandHandler = async (rest, context) => {
     ...(errorsArgs.allEpochs ? { allEpochs: true } : {}),
     ...(errorsArgs.pageIdx !== undefined ? { pageIdx: errorsArgs.pageIdx } : {}),
     ...(errorsArgs.pageSize !== undefined ? { pageSize: errorsArgs.pageSize } : {}),
+    ...(errorsArgs.limit !== undefined ? { limit: errorsArgs.limit } : {}),
+    ...(errorsArgs.cursor !== undefined ? { cursor: errorsArgs.cursor } : {}),
   })
   return 0
 }

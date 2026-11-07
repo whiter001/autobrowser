@@ -24,6 +24,7 @@ export interface SnapshotTabOptions {
   roles?: string[]
   /** 增量模式：只返回相对上次快照新增/变化的元素，并带 unchangedCount 汇总 */
   changed?: boolean
+  responseFormat?: 'concise' | 'detailed'
 }
 
 /**
@@ -85,6 +86,8 @@ export function createSnapshotFeature({
     const pageEpoch = getPageEpoch(state, tab.id)
     const roles = options.roles ?? []
     const changedMode = Boolean(options.changed)
+    const maxElements = options.responseFormat === 'detailed' ? AGENT_SNAPSHOT_MAX_ELEMENTS : 50
+    const maxJsonBytes = options.responseFormat === 'detailed' ? SNAPSHOT_MAX_JSON_BYTES : 32_768
     // 增量模式：pageEpoch 未变时用上次缓存的签名做页内 diff，否则退化为全量
     const effectiveFrameSelector = resolveEffectiveFrameSelector(state, tab, frameSelector)
     const cacheKey = snapshotCacheKey(tab.id, roles, options.selector, effectiveFrameSelector)
@@ -276,7 +279,7 @@ ${PAGE_CONTEXT_SNAPSHOT_HELPERS_SOURCE}
           if (changedMode && previousSet.has(signature)) {
             unchangedCount++;
             if (retained.length < 1000) retained.push(signature);
-          } else if (append(result.elements, item, ${AGENT_SNAPSHOT_MAX_ELEMENTS})) signatures.push(signature);
+          } else if (append(result.elements, item, ${maxElements})) signatures.push(signature);
         }
         const parseFrameRefIndex = (value) => {
           const match = /^f(\\d+)$/.exec(String(value || '').trim());
@@ -293,7 +296,7 @@ ${PAGE_CONTEXT_SNAPSHOT_HELPERS_SOURCE}
             src: bounded(frame.src || frame.getAttribute('src')) || null,
             x: Math.round(rect.left + rect.width / 2), y: Math.round(rect.top + rect.height / 2),
             width: Math.round(rect.width), height: Math.round(rect.height),
-          }, ${AGENT_SNAPSHOT_MAX_ELEMENTS})) break;
+          }, ${maxElements})) break;
         }
         for (const node of deepQuerySelectorAll(scope, 'h1,h2,h3')) {
           if (!append(result.headings, toNodeSummary(node), 20)) break;
@@ -308,7 +311,7 @@ ${PAGE_CONTEXT_SNAPSHOT_HELPERS_SOURCE}
           truncated: true, totalElements, returnedElements: result.elements.length,
           suggestedAction: 'Narrow snapshot with selector/roles; use changed:true for undisclosed elements.',
         });
-        return truncateSnapshotToByteLimit(result);
+        return truncateSnapshotToByteLimit(result, ${maxJsonBytes});
       })()`,
       withFrameSelectorOptions(effectiveFrameSelector || 'top'),
     )
@@ -321,7 +324,7 @@ ${PAGE_CONTEXT_SNAPSHOT_HELPERS_SOURCE}
     // 增量缓存更新：只认本次收集集的签名；found 检查之后再写，失败不污染缓存
     if (value && typeof value === 'object') {
       const { signatures, documentId, ...result } = value as Record<string, unknown>
-      const delivered = truncateSnapshotToByteLimit(result, SNAPSHOT_MAX_JSON_BYTES)
+      const delivered = truncateSnapshotToByteLimit(result, maxJsonBytes)
       if (Array.isArray(signatures)) {
         const refs = new Set(
           (Array.isArray(delivered.elements) ? delivered.elements : []).map(

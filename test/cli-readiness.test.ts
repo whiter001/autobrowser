@@ -307,7 +307,7 @@ describe('CLI navigation and media readiness', () => {
 
   test('tab new without options retains the original response', async () => {
     const result = await runCli(['tab', 'new', 'https://example.com'], [created])
-    expect(result.stdout).toBe(`${JSON.stringify(created, null, 2)}\n`)
+    expect(result.stdout).toBe(`${JSON.stringify(created)}\n`)
     expect(result.requests).toHaveLength(1)
   })
 

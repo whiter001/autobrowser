@@ -13,6 +13,7 @@ import { getCommandOptionCandidates, printHelp } from './cli/help.js'
 import { resolveInvocation } from './cli/invocation.js'
 import { didYouMeanCommand, optionHintSuffix } from './cli/option-hints.js'
 import { writeResult as baseWriteResult } from './cli/output.js'
+import { presentCommandResponse } from './cli/response-presenters.js'
 import { extractScreenshotData, resolveScreenshotOutputPath } from './cli/screenshot.js'
 import { type CliDependencies, type CliFlags } from './cli/types.js'
 import { createWebDriverCommandHandler } from './cli/webdriver.js'
@@ -122,7 +123,11 @@ async function runMain(
   const { requestCommand, openConnectFlow, getCommandStatus, getCdpUrl, resolveCommandToken } = flow
   let lastResponseFailed = false
   const writeResult = (payload: CommandResultPayload): void => {
-    baseWriteResult(payload, { json: flags.json })
+    const presented = presentCommandResponse(command, payload, flags.responseFormat)
+    baseWriteResult(presented as CommandResultPayload, {
+      json: flags.json,
+      responseFormat: flags.responseFormat,
+    })
     // 只看已写出的顶层响应；后续成功可恢复早期失败，batch 内部步骤不影响聚合结果。
     if (isRecord(payload) && typeof payload.ok === 'boolean') {
       lastResponseFailed = payload.ok === false

@@ -424,6 +424,9 @@ export function createConnectionFlow(options: ConnectionFlowOptions): Connection
     args: object = {},
   ): Promise<CommandResponse> {
     const requestArgs: Record<string, unknown> = { ...args }
+    if (['snapshot', 'search', 'eval'].includes(command)) {
+      requestArgs.responseFormat = flags.responseFormat
+    }
     if (commandSupportsTabTarget(command) && requestArgs.tabId === undefined && flags.tab) {
       requestArgs.tabId = flags.tab
     }

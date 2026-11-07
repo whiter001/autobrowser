@@ -62,6 +62,13 @@ autobrowser 是一个面向 Chrome/Edge 的浏览器自动化 CLI，通过本地
 - `network route` / `network unroute` / `network requests` / `network request` / `network har start` / `network har stop` / `network har status` / `network har recover`
 - `script add [--stdin|--file <path>|--base64] <source>` / `script list` / `script remove <id|--all>`
 
+## 控制输出体积
+
+- 列表和查询默认是 `concise`，需要完整字段时才加 `--response-format detailed`；MCP 对应 `response_format`。不要为了一次拿全量而省略分页。
+- network/console/errors/actions/downloads/command 默认 20 条，`--limit` 最大 100；tab/route 默认 50 条。更多结果用响应中的 `pagination.nextCursor` 搭配 `--cursor`，过滤与排序条件必须保持不变。旧 `--page/--page-size` 仅作兼容。
+- network 列表优先使用稳定的 `rN` 短引用，再执行 `network request rN`；不要把长 CDP ID 当作首选。concise 详情已去掉重复 summary/HAR，body 超过 16KiB 会明确标记截断。
+- concise snapshot 默认 50 元素/32KiB，search 默认 10 窗口/100 行/32KiB，eval 默认结果上限 32KiB。结果截断时按 `nextCursor`、`nextStartLine`、`--target/--role` 或 `--changed` 续读/缩小范围，不要改用无界输出。
+
 ## 浏览器引擎与能力边界
 
 - 默认 `--engine chromium` 使用扩展 + CDP。Firefox/WebKit 使用标准 WebDriver，需先启动 geckodriver/safaridriver，再把 `--engine firefox|webkit` 放在命令名前；driver 地址可用 `--webdriver-url` 覆盖。

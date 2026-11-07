@@ -531,6 +531,18 @@ function validateCommandArgsShape(command: string, args: unknown): void {
   readTabInputField(normalizedArgs, 'tabId', command)
   readTabInputField(normalizedArgs, 'handle', command)
   readStringField(normalizedArgs, 'frame', command, { required: false })
+  const responseFormat = readStringField(normalizedArgs, 'responseFormat', command, {
+    required: false,
+  })
+  if (
+    responseFormat !== undefined &&
+    responseFormat !== 'concise' &&
+    responseFormat !== 'detailed'
+  ) {
+    throw createCommandArgsValidationError(command, 'responseFormat must be concise or detailed')
+  }
+  readOptionalNonNegativeIntegerField(normalizedArgs, 'limit', command)
+  readStringField(normalizedArgs, 'cursor', command, { required: false })
 
   switch (command) {
     case 'extension': {
@@ -975,6 +987,8 @@ function validateCommandArgsShape(command: string, args: unknown): void {
       readStringField(normalizedArgs, 'action', command, { required: false })
       readOptionalNonNegativeIntegerField(normalizedArgs, 'pageIdx', command)
       readOptionalNonNegativeIntegerField(normalizedArgs, 'pageSize', command)
+      readOptionalNonNegativeIntegerField(normalizedArgs, 'limit', command)
+      readStringField(normalizedArgs, 'cursor', command, { required: false })
       return
     case 'tracing': {
       const action = readStringField(normalizedArgs, 'action', command)

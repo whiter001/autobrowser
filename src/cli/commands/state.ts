@@ -4,6 +4,7 @@ import {
   parseNetworkRequestsArgs,
   parseNetworkRouteArgs,
   parseOptionalNumberArg,
+  parsePaginationArgs,
 } from '../parse.js'
 import { buildNetworkRequestsJsonl } from '../network-export.js'
 import { COMMAND_ACTIONS, isCommandAction, SET_RESETTABLE_VALUE_TYPES } from './actions.js'
@@ -387,9 +388,11 @@ async function handleNetwork(rest: string[], context: CommandContext): Promise<n
     }
 
     if (isCommandAction('network.route', rest[1])) {
+      const pagination = parseOrThrow(() => parsePaginationArgs(rest.slice(2)))
       await requestAndWrite(context, 'network', {
         action: 'route',
         subaction: 'list',
+        ...pagination,
       })
       return 0
     }

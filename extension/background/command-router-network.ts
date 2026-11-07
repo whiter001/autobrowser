@@ -24,7 +24,7 @@ export interface NetworkDomain {
     options: NetworkRouteCommandOptions,
   ) => Promise<unknown>
   unrouteRequest: (tabId: TabInput, url: string) => Promise<unknown>
-  listRoutes: () => unknown
+  listRoutes: (pageIdx?: number, pageSize?: number, limit?: number, cursor?: string) => unknown
   listRequests: (args: CommandArgs) => unknown
   getRequestDetail: (requestId: string, tabId?: number | null) => unknown
   startHar: (
@@ -49,10 +49,22 @@ interface NetworkCommandDependencies {
 /** 网络域命令：路由拦截、请求查询与 HAR 采集 */
 export function createNetworkCommandHandler({ state, network }: NetworkCommandDependencies) {
   async function handleNetworkCommand(scope: CommandRunScope): Promise<unknown> {
-    const { args, action, subaction, tabId, url, requestId, queryTargetTabId } = scope
+    const {
+      args,
+      action,
+      subaction,
+      tabId,
+      url,
+      requestId,
+      queryTargetTabId,
+      pageIdx,
+      pageSize,
+      limit,
+      cursor,
+    } = scope
     if (action === 'route') {
       if (subaction === 'list') {
-        return network.listRoutes()
+        return network.listRoutes(pageIdx, pageSize, limit, cursor)
       }
       const removeHeaders = readStringArrayArg(args, 'removeHeaders')
       return await network.routeRequest(tabId, url, {

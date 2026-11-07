@@ -742,8 +742,16 @@ export function createNetworkDomain({
     }
   }
 
-  function listRoutes(): { routes: NetworkRoute[] } {
-    return { routes: state.network.routes }
+  function listRoutes(pageIdx?: number, pageSize?: number, limit?: number, cursor?: string) {
+    const { items, pagination } = paginateList(state.network.routes, pageIdx, pageSize, {
+      limit,
+      cursor,
+      defaultLimit: 50,
+      maxLimit: 200,
+      queryKey: 'routes',
+      getKey: (route) => String(route.id),
+    })
+    return { routes: items, total: state.network.routes.length, pagination }
   }
 
   async function unrouteRequest(tabId: TabInput, url: string): Promise<{ routes: NetworkRoute[] }> {
@@ -774,10 +782,17 @@ export function createNetworkDomain({
       summarizeNetworkRequest(record, filters.includeDetails === true),
     )
     // 分页作用在过滤/摘要之后；越界 pageIdx 回退第一页并带 invalidPage 标记
+    const { pageIdx, pageSize, limit, cursor, ...queryKey } = filters
     const { items, pagination } = paginateList(
       summarized,
-      filters.pageIdx as number | undefined,
-      filters.pageSize as number | undefined,
+      pageIdx as number | undefined,
+      pageSize as number | undefined,
+      {
+        limit: limit as number | undefined,
+        cursor: cursor as string | undefined,
+        queryKey,
+        getKey: (item) => String(item.ref || item.id),
+      },
     )
     const result: Record<string, unknown> = {
       total: requests.length,
@@ -799,6 +814,12 @@ export function createNetworkDomain({
   ): Promise<Record<string, unknown>> {
     const record = getNetworkRequestById(state, String(requestId || ''), tabId)
     if (!record) {
+      if (/^r\d+$/i.test(requestId)) {
+        throw Object.assign(new Error(`network request ref is stale or unknown: ${requestId}`), {
+          code: 'STALE_REQUEST_REF',
+          suggestedAction: 'Run network requests again and use a ref from the current result.',
+        })
+      }
       throw new Error(`network request not found: ${requestId}`)
     }
     const capture = captureController.getCapture()

@@ -80,7 +80,12 @@ export function createDiagnosticsCommandHandler({
         const actions = state.session.actionLog.filter(
           (entry) => queryTargetTabId === null || entry.tabId === queryTargetTabId,
         )
-        const { items, pagination } = paginateList(actions, pageIdx, pageSize)
+        const { items, pagination } = paginateList(actions, pageIdx, pageSize, {
+          limit: readOptionalNumberArg(args, 'limit'),
+          cursor: readStringArg(args, 'cursor'),
+          queryKey: { command, queryTargetTabId },
+          getKey: (item) => String(item.id),
+        })
         return { actions: items, pagination }
       }
       case 'tracing':
@@ -140,7 +145,16 @@ export function createDiagnosticsCommandHandler({
           )
         })
         // level 必须在折叠和分页前过滤，total/pagination 才与返回结果一致
-        const { items, pagination } = paginateList(foldConsoleMessages(messages), pageIdx, pageSize)
+        const { items, pagination } = paginateList(
+          foldConsoleMessages(messages),
+          pageIdx,
+          pageSize,
+          {
+            limit: readOptionalNumberArg(args, 'limit'),
+            cursor: readStringArg(args, 'cursor'),
+            queryKey: { command, queryTargetTabId, since, level, allEpochs: args.allEpochs },
+          },
+        )
         return { messages: items, pagination }
       }
       case 'errors': {
@@ -166,7 +180,11 @@ export function createDiagnosticsCommandHandler({
               error.pageEpoch == null ||
               error.pageEpoch === currentEpoch),
         )
-        const { items, pagination } = paginateList(errors, pageIdx, pageSize)
+        const { items, pagination } = paginateList(errors, pageIdx, pageSize, {
+          limit: readOptionalNumberArg(args, 'limit'),
+          cursor: readStringArg(args, 'cursor'),
+          queryKey: { command, queryTargetTabId, since, allEpochs: args.allEpochs },
+        })
         return { errors: items, pagination }
       }
       default:

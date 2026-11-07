@@ -37,6 +37,7 @@ export const HELP_ROOT: HelpNode = helpNode(
   'autobrowser [command] [options]',
   [
     '--json',
+    '--response-format <concise|detailed>  response detail level (default concise)',
     '--server <url>',
     '--session <name>  select a named session (before the command)',
     '--engine <chromium|firefox|webkit>  use the extension or WebDriver (before the command)',
@@ -216,7 +217,7 @@ export const HELP_ROOT: HelpNode = helpNode(
       helpNode(
         'list',
         'List tabs.',
-        'autobrowser tab list [--active] [--current-window] [--filter <text>] [--page <n>] [--page-size <n>]',
+        'autobrowser tab list [--active] [--current-window] [--filter <text>] [--limit <n>] [--cursor <token>] [--page <n>] [--page-size <n>]',
       ),
       helpNode(
         'new',
@@ -252,7 +253,11 @@ export const HELP_ROOT: HelpNode = helpNode(
       'autobrowser command <list|status|cancel|reset>',
       undefined,
       [
-        helpNode('list', 'List queued and running commands.', 'autobrowser command list'),
+        helpNode(
+          'list',
+          'List queued and running commands.',
+          'autobrowser command list [--limit <n>] [--cursor <token>]',
+        ),
         helpNode(
           'status',
           'Show all commands or one command by id.',
@@ -532,13 +537,13 @@ export const HELP_ROOT: HelpNode = helpNode(
       'downloads',
       'List tracked downloads or clear the download buffer.',
       'autobrowser downloads <list|clear>',
-      ['--page-idx <n>', '--page-size <n>'],
+      ['--limit <n>', '--cursor <token>', '--page-idx <n>', '--page-size <n>'],
       [
         helpNode(
           'list',
           'List tracked downloads with pagination (default subaction).',
-          'autobrowser downloads list [--page-idx <n>] [--page-size <n>]',
-          ['--page-idx <n>', '--page-size <n>'],
+          'autobrowser downloads list [--limit <n>] [--cursor <token>] [--page-idx <n>] [--page-size <n>]',
+          ['--limit <n>', '--cursor <token>', '--page-idx <n>', '--page-size <n>'],
         ),
         helpNode('clear', 'Clear the tracked downloads buffer.', 'autobrowser downloads clear'),
       ],
@@ -653,13 +658,13 @@ export const HELP_ROOT: HelpNode = helpNode(
     helpNode(
       'actions',
       'Read or clear the bounded command timeline without storing command argument values.',
-      'autobrowser actions [list|clear] [--page <n>] [--page-size <n>]',
+      'autobrowser actions [list|clear] [--limit <n>] [--cursor <token>] [--page <n>] [--page-size <n>]',
       undefined,
       [
         helpNode(
           'list',
           'List the recorded commands, targets, durations and errors.',
-          'autobrowser actions list [--page <n>] [--page-size <n>]',
+          'autobrowser actions list [--limit <n>] [--cursor <token>] [--page <n>] [--page-size <n>]',
         ),
         helpNode('clear', 'Clear the recorded command timeline.', 'autobrowser actions clear'),
       ],
@@ -726,7 +731,7 @@ export const HELP_ROOT: HelpNode = helpNode(
     helpNode(
       'console',
       'Read console output.',
-      'autobrowser console [clear] [--level error|warning|info|debug] [--page <n>] [--page-size <n>] [--since <timestamp>] [--all-epochs]',
+      'autobrowser console [clear] [--level error|warning|info|debug] [--limit <n>] [--cursor <token>] [--page <n>] [--page-size <n>] [--since <timestamp>] [--all-epochs]',
       [
         '--level <error|warning|info|debug> each level includes more severe messages',
         '--page <n>',
@@ -738,7 +743,7 @@ export const HELP_ROOT: HelpNode = helpNode(
     helpNode(
       'errors',
       'Read page errors.',
-      'autobrowser errors [clear] [--page <n>] [--page-size <n>] [--since <timestamp>] [--all-epochs]',
+      'autobrowser errors [clear] [--limit <n>] [--cursor <token>] [--page <n>] [--page-size <n>] [--since <timestamp>] [--all-epochs]',
     ),
     helpNode(
       'set',
@@ -857,7 +862,13 @@ export const HELP_ROOT: HelpNode = helpNode(
             '--header "Name: Value"  add a response header to the mock (repeatable)',
             '--remove-headers <a,b>  strip request headers before continuing the request',
           ],
-          [helpNode('list', 'List active network routes.', 'autobrowser network route list')],
+          [
+            helpNode(
+              'list',
+              'List active network routes.',
+              'autobrowser network route list [--limit <n>] [--cursor <token>]',
+            ),
+          ],
         ),
         helpNode(
           'unroute',
@@ -867,18 +878,20 @@ export const HELP_ROOT: HelpNode = helpNode(
         helpNode(
           'requests',
           'List captured requests.',
-          'autobrowser network requests [--filter <text>] [--type <xhr,fetch>] [--method <POST>] [--status <2xx>] [--sort oldest|newest] [--all-tabs] [--all-epochs] [--include-details]',
+          'autobrowser network requests [--filter <text>] [--type <xhr,fetch>] [--method <POST>] [--status <2xx>] [--sort oldest|newest] [--limit <n>] [--cursor <token>] [--all-tabs] [--all-epochs] [--include-details]',
           [
             '--filter <text>',
             '--type <xhr,fetch>',
             '--method <POST>',
             '--status <2xx>',
             '--sort oldest|newest  newest lists the most recent requests first (default: oldest)',
-            '--page <n>',
-            '--page-size <n>',
+            '--limit <n>  records per response (default 20, max 100)',
+            '--cursor <token>  nextCursor from the previous response with unchanged filters',
+            '--page <n>  legacy offset pagination',
+            '--page-size <n>  legacy alias; prefer --limit',
             '--all-tabs',
             '--all-epochs',
-            '--include-details',
+            '--include-details  detailed mode avoids concise field projection',
           ],
         ),
         helpNode(
@@ -890,10 +903,11 @@ export const HELP_ROOT: HelpNode = helpNode(
         helpNode(
           'request',
           'Inspect a single request; without HAR only metadata is monitored automatically.',
-          'autobrowser network request <requestId> [--timeout-ms <ms>]',
+          'autobrowser network request <rN|requestId> [--timeout-ms <ms>]',
           [
             '--timeout-ms <ms>',
-            'Body is fetched on demand via CDP; historical/expired requests may report body retrieval failure.',
+            'Prefer the stable short ref (rN) returned by network requests; legacy CDP ids remain accepted.',
+            'Body is fetched on demand via CDP; concise mode bounds each returned body to 16KiB and marks truncation.',
           ],
         ),
         helpNode(
@@ -967,7 +981,7 @@ export const HELP_ROOT: HelpNode = helpNode(
         '--role <button,link,...>  only return elements with matching roles; @eN refs stay stable across snapshots',
         '--changed  return added/changed elements including checked/disabled state and removedRefs; first run or navigation returns full:true',
         'Refs are not reused within a document; removed nodes are invalid and navigation makes refs stale. Refresh before acting.',
-        'Output has a 200000 UTF-8 byte budget. If truncated, narrow --target/--role or use --changed; only delivered elements enter the baseline.',
+        'Concise output is capped at 50 elements and 32768 UTF-8 bytes; detailed retains 200 elements and 200000 bytes. If truncated, narrow --target/--role or use --changed; only delivered elements enter the baseline.',
       ],
       [
         helpNode(
@@ -988,9 +1002,9 @@ export const HELP_ROOT: HelpNode = helpNode(
       'autobrowser search <query|/regex/flags> [--context <n>] [--limit <n>] [--start-line <n>]',
       [
         '--context <n>  surrounding lines before and after each match (default 3, integer 0-50)',
-        '--limit <n>  maximum match windows (default 20, capped at 200; 0 returns no windows or cursor)',
+        '--limit <n>  maximum match windows (concise default 10, detailed default 20, capped at 200; 0 returns no windows or cursor)',
         '--start-line <n>  positive safe integer, 1-based starting line (default 1)',
-        'Output is bounded to 200 returned lines and 100000 UTF-8 bytes, even within one merged window.',
+        'Concise output is bounded to 100 lines and 32768 UTF-8 bytes; detailed retains 200 lines and 100000 UTF-8 bytes.',
         'If truncated and nextStartLine is present, repeat the same query with --start-line <nextStartLine>.',
         'Example: nextStartLine:201 -> autobrowser search "error" --context 3 --start-line 201',
       ],
@@ -1001,6 +1015,7 @@ export const HELP_ROOT: HelpNode = helpNode(
 const ROOT_HELP_FLAGS = [
   '--json        output JSON (default)',
   '--raw         output raw text',
+  '--response-format <concise|detailed>  response detail level (default concise)',
   '--server URL  target server base URL, default http://127.0.0.1:57979',
   '--relay-port <port> relay server port',
   '--ipc-port <port> control server port',

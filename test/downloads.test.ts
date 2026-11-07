@@ -483,7 +483,7 @@ describe('downloads buffer tracking', () => {
     }
     expect(page.downloads.map((item) => item.id)).toEqual([3, 4])
     expect(page.total).toBe(5)
-    expect(page.pagination).toEqual({
+    expect(page.pagination).toMatchObject({
       currentPage: 1,
       totalPages: 3,
       hasNextPage: true,
@@ -492,6 +492,7 @@ describe('downloads buffer tracking', () => {
       endIndex: 4,
       invalidPage: false,
     })
+    expect(page.pagination.nextCursor).toBeString()
 
     // 越界 pageIdx 回退第一页并标记 invalidPage
     const invalid = downloads.listDownloads(9, 2) as unknown as {

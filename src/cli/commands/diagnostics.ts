@@ -2,7 +2,7 @@ import { mkdtemp, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { isRecord } from '../client.js'
-import { parseOptionalNumberArg } from '../parse.js'
+import { parseOptionalNumberArg, parsePaginationArgs } from '../parse.js'
 import { createActionCommand, parseOrThrow, requestAndWrite, throwCommandError } from './shared.js'
 import { COMMAND_ACTIONS } from './actions.js'
 import type { CommandContext, CommandRegistry } from './types.js'
@@ -159,9 +159,13 @@ const handleActions = createActionCommand({
   helpPath: ['actions'],
   allowed: COMMAND_ACTIONS.actions.actions,
   handle: async (rest, context, action) => {
-    if (rest.length)
-      return throwCommandError(`unexpected argument for actions ${action}: ${rest[0]}`)
-    await requestAndWrite(context, 'actions', { action })
+    if (action === 'clear') {
+      if (rest.length) return throwCommandError(`unexpected argument for actions clear: ${rest[0]}`)
+      await requestAndWrite(context, 'actions', { action })
+      return 0
+    }
+    const pagination = parseOrThrow(() => parsePaginationArgs(rest))
+    await requestAndWrite(context, 'actions', { action, ...pagination })
     return 0
   },
 })

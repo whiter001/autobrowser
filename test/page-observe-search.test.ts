@@ -161,6 +161,9 @@ describe('page observe search', () => {
     expect(expressions[0]).toContain('computeSearchPageTextMatches')
     expect(expressions[0]).toContain('"ALPHA"')
     expect(expressions[0]).toContain('const lineMax = 240;')
+    expect(expressions[0]).toContain('const limit = 10;')
+    expect(expressions[0]).toContain('32768,')
+    expect(expressions[0]).toContain('100);')
     expect(result).toEqual(
       expect.objectContaining({
         pageEpoch: 1,

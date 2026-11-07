@@ -161,7 +161,7 @@ export const MCP_TOOLS: McpToolDefinition[] = [
   {
     name: 'snapshot',
     description:
-      'Capture interactive/visible elements with @eN refs, roles, names and positions, plus @fN frame refs. Refs are not reused within a document, but removed nodes are invalid and navigation makes refs stale: refresh snapshot before acting. Output is bounded to 200000 UTF-8 bytes; when truncated, narrow target/roles or use changed to read changes. Start here to discover targets.',
+      'Capture interactive/visible elements with @eN refs, roles, names and positions, plus @fN frame refs. Refs are not reused within a document, but removed nodes are invalid and navigation makes refs stale: refresh snapshot before acting. Concise output is bounded to 50 elements and 32768 UTF-8 bytes (detailed: 200 elements and 200000 bytes); when truncated, narrow target/roles or use changed to read changes. Start here to discover targets.',
     command: 'snapshot',
     inputSchema: {
       type: 'object',
@@ -215,7 +215,7 @@ export const MCP_TOOLS: McpToolDefinition[] = [
           minimum: 0,
           maximum: Number.MAX_SAFE_INTEGER,
           description:
-            'Maximum match windows (default 20, capped at 200; 0 returns no windows or cursor); output also has a 200-line / 100000 UTF-8 byte budget.',
+            'Maximum match windows (concise default 10, detailed default 20, capped at 200; 0 returns no windows or cursor); concise output has a 100-line / 32768 UTF-8 byte budget.',
         },
         startLine: {
           type: 'integer',
@@ -632,13 +632,17 @@ export const MCP_TOOLS: McpToolDefinition[] = [
   {
     name: 'console',
     description:
-      'Return console messages recorded for the target tab (folded consecutive duplicates with repeatCount). Messages are paginated; an out-of-range pageIdx falls back to the first page with pagination.invalidPage: true. Use pageSize to control how many messages come back (default 50, max 200).',
+      'Return console messages recorded for the target tab (folded consecutive duplicates with repeatCount). Messages are paginated; an out-of-range pageIdx falls back to the first page with pagination.invalidPage: true. Use pageSize to control how many messages come back (legacy compatibility; prefer limit/cursor, default 20 and limit max 100).',
     command: 'console',
     inputSchema: {
       type: 'object',
       properties: {
         pageIdx: { type: 'number', description: 'Zero-based page index (default 0).' },
-        pageSize: { type: 'number', description: 'Messages per page (default 50, max 200).' },
+        pageSize: {
+          type: 'number',
+          description:
+            'Messages per page (legacy compatibility; prefer limit/cursor, default 20 and limit max 100).',
+        },
         action: { type: 'string', enum: ['list', 'clear'] },
         since: {
           type: 'number',
@@ -658,7 +662,11 @@ export const MCP_TOOLS: McpToolDefinition[] = [
       type: 'object',
       properties: {
         pageIdx: { type: 'number', description: 'Zero-based page index (default 0).' },
-        pageSize: { type: 'number', description: 'Errors per page (default 50, max 200).' },
+        pageSize: {
+          type: 'number',
+          description:
+            'Errors per page (legacy compatibility; prefer limit/cursor, default 20 and limit max 100).',
+        },
         action: { type: 'string', enum: ['list', 'clear'] },
         since: {
           type: 'number',
@@ -678,7 +686,11 @@ export const MCP_TOOLS: McpToolDefinition[] = [
       type: 'object',
       properties: {
         pageIdx: { type: 'number', description: 'Zero-based page index (default 0).' },
-        pageSize: { type: 'number', description: 'Requests per page (default 50, max 200).' },
+        pageSize: {
+          type: 'number',
+          description:
+            'Requests per page (legacy compatibility; prefer limit/cursor, default 20 and limit max 100).',
+        },
         allTabs: { type: 'boolean', description: 'Include all tabs instead of the target tab.' },
         allEpochs: { type: 'boolean', description: 'Include prior page epochs.' },
         includeDetails: {

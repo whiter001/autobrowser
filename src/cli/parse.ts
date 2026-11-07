@@ -5,7 +5,9 @@ import { optionHintSuffix } from './option-hints.js'
 const NETWORK_REQUEST_OPTIONS = [
   '--all-tabs',
   '--all-epochs',
+  '--cursor',
   '--include-details',
+  '--limit',
   '--page',
   '--page-idx',
   '--page-size',
@@ -13,6 +15,8 @@ const NETWORK_REQUEST_OPTIONS = [
 ] as const
 const CONSOLE_OPTIONS = [
   '--level',
+  '--cursor',
+  '--limit',
   '--page',
   '--page-idx',
   '--page-size',
@@ -213,13 +217,21 @@ export function parseNetworkRequestsArgs(rest: string[]): Record<string, unknown
       continue
     }
 
-    // --limit 是分页场景的高频误写，直接按 page-size 接受，省掉一轮试错
     if (value === '--page-size' || value === '--limit') {
-      result.pageSize = parseNumberArg(rest[index + 1], 'page size', {
+      const size = parseNumberArg(rest[index + 1], value === '--limit' ? 'limit' : 'page size', {
         min: 1,
-        max: 200,
+        max: value === '--limit' ? 100 : 200,
         integer: true,
       })
+      if (value === '--limit') result.limit = size
+      else result.pageSize = size
+      index += 1
+      continue
+    }
+
+    if (value === '--cursor') {
+      result.cursor = rest[index + 1]
+      if (!result.cursor) throw new Error('missing cursor value')
       index += 1
       continue
     }
@@ -424,6 +436,8 @@ export function parseConsoleArgs(rest: string[]): {
   level: ConsoleLevel | null
   pageIdx?: number
   pageSize?: number
+  limit?: number
+  cursor?: string
   action?: 'list' | 'clear'
   since?: number
   allEpochs?: boolean
@@ -431,6 +445,8 @@ export function parseConsoleArgs(rest: string[]): {
   let level: ConsoleLevel | null = null
   let pageIdx: number | undefined
   let pageSize: number | undefined
+  let limit: number | undefined
+  let cursor: string | undefined
   let action: 'list' | 'clear' | undefined
   let since: number | undefined
   let allEpochs = false
@@ -478,11 +494,20 @@ export function parseConsoleArgs(rest: string[]): {
     }
 
     if (value === '--page-size' || value === '--limit') {
-      pageSize = parseNumberArg(rest[index + 1], 'page size', {
+      const size = parseNumberArg(rest[index + 1], value === '--limit' ? 'limit' : 'page size', {
         min: 1,
-        max: 200,
+        max: value === '--limit' ? 100 : 200,
         integer: true,
       })
+      if (value === '--limit') limit = size
+      else pageSize = size
+      index += 1
+      continue
+    }
+
+    if (value === '--cursor') {
+      cursor = rest[index + 1]
+      if (!cursor) throw new Error('missing cursor value')
       index += 1
       continue
     }
@@ -503,7 +528,42 @@ export function parseConsoleArgs(rest: string[]): {
     ...(allEpochs ? { allEpochs: true } : {}),
     ...(pageIdx !== undefined ? { pageIdx } : {}),
     ...(pageSize !== undefined ? { pageSize } : {}),
+    ...(limit !== undefined ? { limit } : {}),
+    ...(cursor !== undefined ? { cursor } : {}),
   }
+}
+
+export function parsePaginationArgs(rest: string[]): {
+  pageIdx?: number
+  pageSize?: number
+  limit?: number
+  cursor?: string
+} {
+  const result: ReturnType<typeof parsePaginationArgs> = {}
+  for (let index = 0; index < rest.length; index += 1) {
+    const value = rest[index]
+    if (value === '--page' || value === '--page-idx') {
+      result.pageIdx = parseNumberArg(rest[++index], 'page idx', { min: 0, integer: true })
+      continue
+    }
+    if (value === '--page-size' || value === '--limit') {
+      const size = parseNumberArg(rest[++index], value === '--limit' ? 'limit' : 'page size', {
+        min: 1,
+        max: value === '--limit' ? 100 : 200,
+        integer: true,
+      })
+      if (value === '--limit') result.limit = size
+      else result.pageSize = size
+      continue
+    }
+    if (value === '--cursor') {
+      result.cursor = rest[++index]
+      if (!result.cursor) throw new Error('missing cursor value')
+      continue
+    }
+    throw new Error(`unsupported list option: ${value}${optionHintSuffix(value, CONSOLE_OPTIONS)}`)
+  }
+  return result
 }
 
 export function parseWaitArgs(rest: string[]): WaitArgs {
@@ -978,10 +1038,10 @@ export function parseSnapshotArgs(rest: string[]): SnapshotArgs {
   return { target, roles, changed }
 }
 
-export function parseSearchArgs(rest: string[]): SearchArgs {
+export function parseSearchArgs(rest: string[], defaultLimit = 20): SearchArgs {
   let query = ''
   let context = 3
-  let limit = 20
+  let limit = defaultLimit
   let startLine: number | undefined
 
   for (let index = 0; index < rest.length; index += 1) {
