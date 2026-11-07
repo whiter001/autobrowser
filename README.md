@@ -62,7 +62,10 @@ npm rebuild -g @whiter001/autobrowser
 
 ```bash
 autobrowser help
+autobrowser doctor
 ```
+
+`doctor` 会逐项检查 Bun 运行时、扩展连接、CLI/扩展版本和当前浏览器目标，并为失败项给出修复命令；显式传 `--json` 可获取结构化检查结果。
 
 ### 加载浏览器扩展
 
@@ -168,9 +171,10 @@ autobrowser wait --url "**/dash"
 autobrowser wait --load networkidle
 autobrowser wait --fn "window.ready === true"
 autobrowser wait "#spinner" --state hidden
+autobrowser wait "#spinner" --state hidden --timeout-ms 10000
 ```
 
-`--gone` 与 `--text` 搭配，等待文本从页面消失。
+`--gone` 与 `--text` 搭配，等待文本从页面消失。等待预算统一使用 `--timeout-ms <ms>`；旧写法 `--timeout` 仍作为兼容别名保留。
 
 ## 扩展
 
@@ -528,7 +532,8 @@ autobrowser dialog auto --on
 
 - 参数类错误（缺参、多参、取值非法、未知选项）用 `CLI_INVALID_ARGUMENT`，未知命令用 `CLI_UNKNOWN_COMMAND`，其余 CLI 层失败用 `CLI_ERROR`；运行期错误仍用扩展/relay 自己的错误码。
 - `suggestedAction` 是每个错误码的默认下一步（见 `src/core/error-actions.ts`），扩展给出的更具体建议优先。
-- 命令名写错时不会打印整页帮助，而是直接报出未知命令，并在 `details.candidates` 里给出最接近的命令名（例如 `autobrowser snap` → `snapshot`）。
+- 命令名写错时不会打印整页帮助，而是直接报出未知命令，并在 `details.candidates` 里给出最接近的命令名（例如 `autobrowser snap` → `snapshot`）；未知选项也会按当前命令的 help 给出最近邻建议。
+- 裸 CSS 选择器未匹配返回 `ELEMENT_NOT_FOUND`，`@eN` 快照引用无法解析返回 `STALE_REFERENCE`，两者的修复建议不再混用。
 - `--raw` / `--brief` 会退回纯文本：错误写在 stderr，并附一行 `[AI SUGGESTION]` 建议。
 
 ## MCP 服务器（Model Context Protocol）

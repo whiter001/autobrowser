@@ -523,9 +523,9 @@ export function parseWaitArgs(rest: string[]): WaitArgs {
   for (let index = 0; index < rest.length; index += 1) {
     const value = rest[index]
 
-    if (value === '--timeout') {
+    if (value === '--timeout-ms' || value === '--timeout') {
       const rawTimeout = rest[index + 1]
-      waitArgs.timeout = parseNumberArg(rawTimeout, 'timeout', { min: 1, integer: true })
+      waitArgs.timeout = parseNumberArg(rawTimeout, 'timeout ms', { min: 1, integer: true })
       index += 1
       continue
     }

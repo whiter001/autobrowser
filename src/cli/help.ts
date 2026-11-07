@@ -132,6 +132,15 @@ export const HELP_ROOT: HelpNode = helpNode(
       'autobrowser status [--json|--brief]',
     ),
     helpNode(
+      'doctor',
+      'Check the runtime, extension connection, CLI/extension versions and browser target, with a repair command for each problem.',
+      'autobrowser doctor [--json]',
+      [
+        'Starts the local relay when needed, like status; never opens a browser or reconnects the extension automatically.',
+        'Default output is a readable checklist; pass --json for structured checks. Connection/target failures exit 1; warnings do not.',
+      ],
+    ),
+    helpNode(
       'version',
       "Show this CLI's build (version/commit/buildTime) and, when the relay is already running, the loaded extension's manifest version. `--version` is shorthand for this command.",
       'autobrowser version [--json]  |  autobrowser --version',
@@ -585,10 +594,10 @@ export const HELP_ROOT: HelpNode = helpNode(
     helpNode(
       'wait',
       'Wait for a selector state, text, URL, load state, function, or a fixed duration in milliseconds.',
-      'autobrowser wait [selector|time <ms>|ms <ms>|--text <text> [--gone]|--url <pattern>|--load [networkidle]|--fn <expression>] [--state visible|hidden|stable|new] [--timeout <ms>]',
+      'autobrowser wait [selector|time <ms>|ms <ms>|--text <text> [--gone]|--url <pattern>|--load [networkidle]|--fn <expression>] [--state visible|hidden|stable|new] [--timeout-ms <ms>]',
       [
         '--state <visible|hidden|stable|new>',
-        '--timeout <ms> total timeout in milliseconds',
+        '--timeout-ms <ms> total timeout in milliseconds (--timeout is a legacy alias)',
         '--text <text>',
         '--gone  wait for --text to disappear instead of appear',
         '--url <pattern>',
@@ -1042,6 +1051,18 @@ function resolveHelpNode(
     node: current,
     remainder: pathParts.slice(index),
   }
+}
+
+/** 从命令实际展示的 usage/options 提取候选，避免纠错表与帮助文本各自漂移。 */
+export function getCommandOptionCandidates(pathParts: string[]): string[] {
+  const { node } = resolveHelpNode(HELP_ROOT, pathParts)
+  const sources = [
+    ...ROOT_HELP_FLAGS,
+    ...(HELP_ROOT.options ?? []),
+    node.usage,
+    ...(node.options ?? []),
+  ]
+  return [...new Set(sources.flatMap((source) => source.match(/--[a-z0-9-]+/gi) ?? []))]
 }
 
 function renderHelp(node: HelpNode, isRoot = false): string {

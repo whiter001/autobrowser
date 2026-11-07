@@ -101,8 +101,14 @@ describe('cli helpers', () => {
     })
   })
 
+  test('uses --timeout-ms as the wait timeout name and retains --timeout as an alias', () => {
+    expect(parseWaitArgs(['#ready', '--timeout-ms', '5000'])).toMatchObject({ timeout: 5000 })
+    expect(parseWaitArgs(['#ready', '--timeout', '5000'])).toMatchObject({ timeout: 5000 })
+  })
+
   test('rejects invalid wait durations', () => {
-    expect(() => parseWaitArgs(['--timeout', 'soon'])).toThrow('invalid timeout')
+    expect(() => parseWaitArgs(['--timeout-ms', 'soon'])).toThrow('invalid timeout ms')
+    expect(() => parseWaitArgs(['--timeout', 'soon'])).toThrow('invalid timeout ms')
     expect(() => parseWaitArgs(['--ms', ''])).toThrow('invalid ms')
     expect(() => parseWaitArgs(['time'])).toThrow('missing wait time value')
   })
@@ -175,6 +181,8 @@ describe('cli helpers', () => {
     expect(result.stdout).toContain('time <ms>')
     expect(result.stdout).toContain('fixed duration in milliseconds')
     expect(result.stdout).toContain('--ms <ms> wait a fixed duration in milliseconds')
+    expect(result.stdout).toContain('--timeout-ms <ms> total timeout in milliseconds')
+    expect(result.stdout).toContain('--timeout is a legacy alias')
   })
 
   test('documents root server ports in help output', async () => {

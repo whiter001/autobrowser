@@ -73,6 +73,11 @@ export const ERROR_ACTIONS: Record<string, ErrorAction> = {
     action:
       "Pass '--timeout-ms' only for a script known to be long-running; otherwise simplify the script.",
   },
+  ELEMENT_NOT_FOUND: {
+    retryable: true,
+    action:
+      "Check the selector and selected frame, or use 'wait <selector> --timeout-ms <ms>' if the element has not rendered yet.",
+  },
   EVAL_RESULT_TOO_LARGE: {
     retryable: false,
     action: "Set '--max-result-bytes', or narrow the script so it returns less data.",

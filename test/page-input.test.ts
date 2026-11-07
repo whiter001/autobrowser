@@ -302,10 +302,11 @@ function createPageInput(evaluateValue: unknown) {
 }
 
 function expectElementNotFound(promise: Promise<unknown>, selector: string) {
+  const isRef = selector.startsWith('@e')
   return expect(promise).rejects.toMatchObject({
     message: `element not found: ${selector}`,
-    code: 'STALE_REFERENCE',
-    suggestedAction: expect.stringContaining('snapshot'),
+    code: isRef ? 'STALE_REFERENCE' : 'ELEMENT_NOT_FOUND',
+    suggestedAction: expect.stringContaining(isRef ? 'snapshot' : 'selected frame'),
   })
 }
 
@@ -844,15 +845,15 @@ describe('page input click CDP-first priority', () => {
     expect(debuggerCalls.some((call) => call.method === 'Input.dispatchMouseEvent')).toBe(false)
   })
 
-  test('throws STALE_REFERENCE when both the box and the JS click fail', async () => {
+  test('throws ELEMENT_NOT_FOUND when both the box and the JS click fail', async () => {
     const { pageInput } = createClickHarness({
       evaluateValues: [null, { found: false }],
     })
 
     await expect(pageInput.clickSelector(1, '#missing', null, 1000)).rejects.toMatchObject({
       message: 'element not found: #missing',
-      code: 'STALE_REFERENCE',
-      suggestedAction: expect.stringContaining('snapshot'),
+      code: 'ELEMENT_NOT_FOUND',
+      suggestedAction: expect.stringContaining('selected frame'),
     })
   })
 
@@ -1434,7 +1435,7 @@ describe('coordinate mouse and data drop', () => {
     expect(result).toMatchObject({ dropped: true, textItems: 1, fileCount: 1 })
   })
 
-  test('keeps stale element guidance for a missing drop target', async () => {
+  test('keeps element-not-found guidance for a missing drop target', async () => {
     const pageInput = createPageInput({ found: false })
     await expectElementNotFound(
       pageInput.dropData(1, '#missing', { 'text/plain': 'x' }, [], null),

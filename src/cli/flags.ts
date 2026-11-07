@@ -1,4 +1,5 @@
 import { DEFAULT_IPC_PORT, DEFAULT_RELAY_PORT, isValidPort } from '../core/protocol.js'
+import { optionHintSuffix } from './option-hints.js'
 import { type CliFlags, type ParsedCli } from './types.js'
 
 const SUPPORTED_GLOBAL_FLAGS = [
@@ -211,7 +212,7 @@ export function parseCli(argv: string[]): ParsedCli {
     // 拼错时直接报错，避免被静默当成命令名/位置参数发给扩展
     if (args.length === 0 && value.startsWith('--') && value !== '--help') {
       throw new Error(
-        `unsupported global option: ${value} (supported: ${SUPPORTED_GLOBAL_FLAGS.join(', ')})`,
+        `unsupported global option: ${value}${optionHintSuffix(value, SUPPORTED_GLOBAL_FLAGS)} (supported: ${SUPPORTED_GLOBAL_FLAGS.join(', ')})`,
       )
     }
 

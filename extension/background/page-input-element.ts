@@ -213,7 +213,7 @@ export function createElementCommands(pageContext: PageInputContext) {
     const resolvedSelector = selectorContext?.resolvedSelector || resolveAgentSelector(selector)
     const resolvedTabId = selectorContext?.tab.id ?? tabId
 
-    // 依赖目标元素的读取统一走这里：节点不存在时抛 STALE_REFERENCE，
+    // 依赖目标元素的读取统一走这里：节点不存在时抛带分类的错误，
     // 避免把"元素不存在"静默伪装成 found:true + value:null
     async function readElementValue<TValue>(valueExpression: string): Promise<TValue> {
       const { value } = await evaluateInTabContext<{ found: boolean; value: TValue }>(

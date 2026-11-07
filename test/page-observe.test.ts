@@ -160,8 +160,8 @@ describe('page observe element screenshot', () => {
       pageObserve.captureScreenshot(1, { element: '#missing' }, null),
     ).rejects.toMatchObject({
       message: 'element not found: #missing',
-      code: 'STALE_REFERENCE',
-      suggestedAction: expect.stringContaining('snapshot'),
+      code: 'ELEMENT_NOT_FOUND',
+      suggestedAction: expect.stringContaining('selected frame'),
     })
   })
 })
@@ -222,7 +222,7 @@ describe('page observe snapshot subtree', () => {
 
     await expect(pageObserve.snapshotTab(1, null, { selector: '#missing' })).rejects.toMatchObject({
       message: 'element not found: #missing',
-      code: 'STALE_REFERENCE',
+      code: 'ELEMENT_NOT_FOUND',
     })
   })
 })

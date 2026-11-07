@@ -9,9 +9,9 @@ import { COMMAND_REGISTRY } from './cli/commands/index.js'
 import { type CommandContext, type CommandResultPayload } from './cli/commands/types.js'
 import { createConnectionFlow } from './cli/connection-flow.js'
 import { collectHarFromNetwork, writeHarFile } from './cli/har.js'
-import { printHelp } from './cli/help.js'
+import { getCommandOptionCandidates, printHelp } from './cli/help.js'
 import { resolveInvocation } from './cli/invocation.js'
-import { didYouMeanCommand } from './cli/option-hints.js'
+import { didYouMeanCommand, optionHintSuffix } from './cli/option-hints.js'
 import { writeResult as baseWriteResult } from './cli/output.js'
 import { extractScreenshotData, resolveScreenshotOutputPath } from './cli/screenshot.js'
 import { type CliDependencies, type CliFlags } from './cli/types.js'
@@ -49,6 +49,15 @@ function createUnknownCommandError(command: string): CliUsageError {
         ? `Run 'autobrowser help' to list every command, then retry with one of: ${candidates.join(', ')}.`
         : "Run 'autobrowser help' to list every available command, then retry with an exact command name.",
   })
+}
+
+function addCommandOptionHint(error: unknown, command: string, rest: string[]): unknown {
+  if (!(error instanceof Error) || error.message.includes('did you mean')) return error
+  const match = /^(?:unsupported .*option|unexpected .*argument).*:\s*(--\S+)/.exec(error.message)
+  if (!match) return error
+  const suffix = optionHintSuffix(match[1], getCommandOptionCandidates([command, ...rest]))
+  if (suffix) error.message += suffix
+  return error
 }
 
 function writeHelp(pathParts: string[] = []): 0 {
@@ -159,7 +168,10 @@ async function runMain(
       process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`)
       return 1
     }
-    return writeCliError(error, { json: flags.json, command })
+    return writeCliError(addCommandOptionHint(error, command, rest), {
+      json: flags.json,
+      command,
+    })
   }
 }
 

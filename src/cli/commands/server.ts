@@ -419,6 +419,199 @@ async function attachVersionSkew(
   return versionSkew.consistent === null ? status : { ...status, versionSkew }
 }
 
+type DoctorCheckStatus = 'ok' | 'warn' | 'fail' | 'skip'
+interface DoctorCheck {
+  name: 'runtime' | 'extension' | 'connection' | 'version' | 'target'
+  status: DoctorCheckStatus
+  message: string
+  suggestedAction?: string
+}
+
+function formatDoctorSummary(checks: DoctorCheck[]): string {
+  return checks
+    .map((check) => {
+      const line = `${check.name.padEnd(10)} ${check.status.padEnd(5)} ${check.message}`
+      return check.suggestedAction ? `${line}\n  next: ${check.suggestedAction}` : line
+    })
+    .join('\n')
+    .concat('\n')
+}
+
+function unavailableDoctorChecks(message: string): DoctorCheck[] {
+  const action =
+    "Run 'autobrowser status'; if the server does not start, run 'autobrowser server --serve' in a foreground terminal to inspect the error."
+  return [
+    {
+      name: 'extension',
+      status: 'fail',
+      message: 'cannot inspect the extension while the local server is unavailable',
+      suggestedAction: action,
+    },
+    { name: 'connection', status: 'fail', message, suggestedAction: action },
+    { name: 'version', status: 'skip', message: 'extension version is unavailable' },
+    { name: 'target', status: 'skip', message: 'browser target is unavailable' },
+  ]
+}
+
+function connectedDoctorChecks(status: Record<string, unknown>): DoctorCheck[] {
+  const snapshot = isRecord(status.snapshot) ? status.snapshot : null
+  const extension = snapshot && isRecord(snapshot.extension) ? snapshot.extension : null
+  const extensionId =
+    extension && typeof extension.extensionId === 'string' ? extension.extensionId : null
+  const relayPort = typeof status.relayPort === 'number' ? status.relayPort : null
+  const checks: DoctorCheck[] = [
+    {
+      name: 'extension',
+      status: 'ok',
+      message: `connected${extensionId ? `, id=${extensionId}` : ''}`,
+    },
+    {
+      name: 'connection',
+      status: 'ok',
+      message: `connected${relayPort ? ` (relay 127.0.0.1:${relayPort})` : ''}`,
+    },
+  ]
+
+  const versionSkew = isRecord(status.versionSkew) ? status.versionSkew : null
+  if (versionSkew?.consistent === false) {
+    checks.push({
+      name: 'version',
+      status: 'warn',
+      message: `CLI ${String(versionSkew.cli)} != extension ${String(versionSkew.extension)}`,
+      ...(typeof versionSkew.hint === 'string' ? { suggestedAction: versionSkew.hint } : {}),
+    })
+  } else if (versionSkew?.consistent === true) {
+    checks.push({
+      name: 'version',
+      status: 'ok',
+      message: `CLI and extension ${String(versionSkew.cli)}`,
+    })
+  } else {
+    checks.push({
+      name: 'version',
+      status: 'skip',
+      message: 'CLI or extension build metadata is unavailable',
+    })
+  }
+
+  const tabs = Array.isArray(snapshot?.tabs) ? snapshot.tabs.filter(isRecord) : []
+  const targetTabId =
+    snapshot && typeof snapshot.targetTabId === 'number'
+      ? snapshot.targetTabId
+      : snapshot && typeof snapshot.activeTabId === 'number'
+        ? snapshot.activeTabId
+        : null
+  const target = tabs.find((tab) => tab.id === targetTabId)
+  if (target) {
+    const handle = typeof target.handle === 'string' ? target.handle : `tab ${targetTabId}`
+    const title = typeof target.title === 'string' && target.title ? ` - ${target.title}` : ''
+    checks.push({ name: 'target', status: 'ok', message: `${handle}${title}` })
+  } else {
+    checks.push({
+      name: 'target',
+      status: 'fail',
+      message:
+        targetTabId === null ? 'no active browser target' : `target tab ${targetTabId} is missing`,
+      suggestedAction:
+        "Run 'autobrowser tab list', then select a tab or run 'autobrowser open <url>'.",
+    })
+  }
+  return checks
+}
+
+function disconnectedDoctorChecks(status: Record<string, unknown>): DoctorCheck[] {
+  const action = "Run 'autobrowser connect' and reload or enable the extension in your browser."
+  const relayPort = typeof status.relayPort === 'number' ? status.relayPort : null
+  return [
+    { name: 'extension', status: 'fail', message: 'not connected', suggestedAction: action },
+    {
+      name: 'connection',
+      status: 'fail',
+      message: `extension disconnected${relayPort ? ` (relay 127.0.0.1:${relayPort})` : ''}`,
+      suggestedAction: action,
+    },
+    { name: 'version', status: 'skip', message: 'extension version is unavailable' },
+    {
+      name: 'target',
+      status: 'fail',
+      message: 'no usable target while the extension is disconnected',
+      suggestedAction: `${action} Then run 'autobrowser tab list'.`,
+    },
+  ]
+}
+
+async function handleDoctor(rest: string[], context: CommandContext): Promise<number | void> {
+  if (isHelpToken(rest[0])) return context.writeHelp(['doctor'])
+  if (rest.length > 0) return throwCommandError(`unexpected argument for doctor: ${rest[0]}`)
+
+  const runtimeName = process.versions.bun ? 'bun' : 'node'
+  const runtimeVersion = process.versions.bun ?? process.version
+  const runtimeCheck: DoctorCheck = {
+    name: 'runtime',
+    status: 'ok',
+    message: `${runtimeName} ${runtimeVersion}`,
+  }
+
+  if (context.flags.engine !== 'chromium') {
+    const payload = await context.requestCommand(context.flags.server, 'status', {})
+    const connected = payload.ok && isRecord(payload.result) && payload.result.connected === true
+    const checks: DoctorCheck[] = [
+      runtimeCheck,
+      {
+        name: 'extension',
+        status: 'skip',
+        message: `${context.flags.engine} uses WebDriver instead of the Chromium extension`,
+      },
+      {
+        name: 'connection',
+        status: connected ? 'ok' : 'fail',
+        message: connected
+          ? `WebDriver session ${String((payload.result as Record<string, unknown>).sessionId)}`
+          : payload.error?.message || 'WebDriver session is unavailable',
+        ...(connected
+          ? {}
+          : { suggestedAction: `Check the ${context.flags.engine} WebDriver URL and retry.` }),
+      },
+      { name: 'version', status: 'skip', message: 'extension version does not apply to WebDriver' },
+      {
+        name: 'target',
+        status: connected ? 'ok' : 'fail',
+        message: connected ? 'WebDriver session is ready' : 'no usable WebDriver session',
+      },
+    ]
+    const ok = connected
+    if (context.flags.json && context.flags.jsonExplicitlySet) {
+      context.writeResult({ ok, result: { checks } })
+    } else {
+      process.stdout.write(formatDoctorSummary(checks))
+    }
+    return ok ? 0 : 1
+  }
+
+  let status: Record<string, unknown> | null = null
+  let statusError: string | null = null
+  try {
+    status = await attachVersionSkew(await context.getCommandStatus(context.flags.server))
+  } catch (error) {
+    statusError = error instanceof Error ? error.message : String(error)
+  }
+  const checks = [
+    runtimeCheck,
+    ...(statusError !== null
+      ? unavailableDoctorChecks(statusError)
+      : status?.extensionConnected === true
+        ? connectedDoctorChecks(status)
+        : disconnectedDoctorChecks(status ?? {})),
+  ]
+  const ok = checks.every((check) => check.status !== 'fail')
+  if (context.flags.json && context.flags.jsonExplicitlySet) {
+    context.writeResult({ ok, result: { checks } })
+  } else {
+    process.stdout.write(formatDoctorSummary(checks))
+  }
+  return ok ? 0 : 1
+}
+
 async function handleStatus(rest: string[], context: CommandContext): Promise<number | void> {
   if (isHelpToken(rest[0])) {
     return context.writeHelp(['status'])
@@ -682,6 +875,7 @@ export const serverCommandRegistry: CommandRegistry = {
   server: handleServer,
   connect: handleConnect,
   status: handleStatus,
+  doctor: handleDoctor,
   replay: handleReplay,
   config: handleConfig,
   session: handleSession,

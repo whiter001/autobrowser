@@ -266,8 +266,8 @@ describe('command router batch handling', () => {
       ok: false,
       error: {
         message: 'element not found: #missing',
-        code: 'STALE_REFERENCE',
-        suggestedAction: "run 'snapshot' to get fresh element references",
+        code: 'ELEMENT_NOT_FOUND',
+        suggestedAction: 'check the selector and selected frame',
         ref: '#missing',
       },
     })

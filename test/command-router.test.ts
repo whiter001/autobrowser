@@ -178,8 +178,8 @@ export function createMinimalRouter(overrides?: {
             suggestedAction?: string
             ref?: string
           }
-          error.code = 'STALE_REFERENCE'
-          error.suggestedAction = "run 'snapshot' to get fresh element references"
+          error.code = 'ELEMENT_NOT_FOUND'
+          error.suggestedAction = 'check the selector and selected frame'
           error.ref = String(selector)
           throw error
         }

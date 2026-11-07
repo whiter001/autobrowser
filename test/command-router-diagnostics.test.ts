@@ -7,7 +7,7 @@ describe('diagnostics and automatic snapshots', () => {
     await router.handleCommand({ command: 'click', args: { selector: '#safe' }, id: 'command-1' })
     await expect(
       router.handleCommand({ command: 'click', args: { selector: '#missing' }, id: 'command-2' }),
-    ).rejects.toMatchObject({ code: 'STALE_REFERENCE' })
+    ).rejects.toMatchObject({ code: 'ELEMENT_NOT_FOUND' })
     const timeline = await router.handleCommand({ command: 'actions', args: { action: 'list' } })
     expect(timeline).toMatchObject({
       actions: [

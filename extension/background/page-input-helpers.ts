@@ -1,16 +1,14 @@
+import { isAgentElementRef } from '../../src/core/agent-selectors.js'
 import type { ErrorWithCode } from './types.js'
 
-// 元素找不到时统一抛带 STALE_REFERENCE code 和 suggestedAction 的错误，
-// 让调用方（AI Agent）能区分"选择器失效"和其它失败，并知道下一步该重新 snapshot
-
-/**
- * 构造带 code 与 suggestedAction 的“元素不存在”错误，
- * 直接提示 agent 重新 snapshot 取新引用，而不是让它反复重试旧选择器。
- */
+/** 裸选择器未匹配与快照引用失效是不同故障，修复动作必须分别给出。 */
 export function createElementNotFoundError(selector: string): Error {
+  const isRef = isAgentElementRef(selector)
   return Object.assign(new Error(`element not found: ${selector}`), {
-    code: `STALE_REFERENCE`,
-    suggestedAction: `The target element was not found. If this was from a previous snapshot reference like @eX, the page may have updated. Ensure you run 'snapshot' to get fresh element references.`,
+    code: isRef ? 'STALE_REFERENCE' : 'ELEMENT_NOT_FOUND',
+    suggestedAction: isRef
+      ? `The snapshot reference ${selector} no longer resolves. Run 'snapshot' to get fresh element references.`
+      : `No element matched selector ${selector}. Check the selector, confirm the element is in the selected frame, or use 'wait ${selector} --timeout-ms <ms>' if it has not rendered yet.`,
   })
 }
 

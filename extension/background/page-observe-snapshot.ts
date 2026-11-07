@@ -313,7 +313,7 @@ ${PAGE_CONTEXT_SNAPSHOT_HELPERS_SOURCE}
       withFrameSelectorOptions(effectiveFrameSelector || 'top'),
     )
 
-    // 子树目标不存在时与其它命令保持一致：抛带引导的 STALE_REFERENCE
+    // 子树目标不存在时与其它命令保持一致：按裸选择器或 @eN 引用给出对应错误
     if (value && (value as { found?: boolean }).found === false) {
       throw createElementNotFoundError(targetSelector?.trim() || '')
     }
