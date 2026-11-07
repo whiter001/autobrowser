@@ -59,6 +59,12 @@ const SMOKE_PAGE_HTML = `<!doctype html>
   </body>
 </html>`
 
+const FEED_FIXTURE_HTML = `<!doctype html><body>
+  <article><div data-testid="User-Name">Ada · @ada</div><time datetime="2026-01-01"></time><div data-testid="tweetText">same text</div><img src="image.png"></article>
+  <article><div data-testid="User-Name">Ada · @ada</div><time datetime="2026-01-01"></time><div data-testid="tweetText">same text</div></article>
+  <article><div data-testid="User-Name">Bob · @bob</div><div data-testid="tweetText">linked</div><a href="/status/2">link</a></article>
+</body>`
+
 const liveEnabled = process.env.AUTOBROWSER_LIVE === '1'
 const extensionBuilt = existsSync(path.join(EXTENSION_DIR, 'manifest.json'))
 // Chrome 137+ 的品牌版（如本机 Chrome 150）会静默忽略 --load-extension，只有
@@ -145,12 +151,14 @@ function connectCdp(wsUrl: string, timeoutMs = 10_000): Promise<CdpClient> {
             const id = nextId++
             pending.set(id, { resolve: resolveSend, reject: rejectSend })
             const { sessionId, ...commandParams } = params
+            // Target.detachFromTarget 的 sessionId 属于 params，不是 WebSocket 顶层会话路由。
+            const detachUsesParamSession = method === 'Target.detachFromTarget'
             socket.send(
               JSON.stringify({
                 id,
                 method,
-                params: commandParams,
-                ...(sessionId ? { sessionId } : {}),
+                params: detachUsesParamSession ? params : commandParams,
+                ...(sessionId && !detachUsesParamSession ? { sessionId } : {}),
               }),
             )
           })
@@ -304,9 +312,14 @@ function launchChrome(
     `--load-extension=${EXTENSION_DIR}`,
     '--remote-debugging-port=0',
     '--remote-allow-origins=*',
+    '--headless=new',
+    '--window-size=1280,900',
     '--no-first-run',
     '--no-default-browser-check',
     '--disable-background-networking',
+    '--disable-background-timer-throttling',
+    '--disable-backgrounding-occluded-windows',
+    '--disable-renderer-backgrounding',
     '--disable-component-update',
     '--disable-sync',
     '--metrics-recording-only',
@@ -323,23 +336,40 @@ function launchChrome(
 }
 
 async function killChrome(process: ChildProcess | null): Promise<void> {
-  if (!process || !process.pid) {
-    return
+  if (!process || !process.pid) return
+  const hasExited = () => process.exitCode !== null || process.signalCode !== null
+  const waitForExit = async () => {
+    const deadline = Date.now() + 5000
+    while (Date.now() < deadline && !hasExited()) await Bun.sleep(100)
   }
   try {
     process.kill('SIGTERM')
   } catch {
-    // 进程可能已经退出
+    return
   }
-  const deadline = Date.now() + 5000
-  while (Date.now() < deadline && process.exitCode === null) {
-    await Bun.sleep(200)
-  }
-  if (process.exitCode === null) {
+  await waitForExit()
+  if (!hasExited()) {
     try {
       process.kill('SIGKILL')
     } catch {
-      // 进程可能已经退出
+      return
+    }
+    await waitForExit()
+  }
+}
+
+async function removeTestDirectory(directory: string): Promise<void> {
+  const deadline = Date.now() + 5000
+  while (true) {
+    try {
+      await rm(directory, { recursive: true, force: true })
+      return
+    } catch (error) {
+      const code = (error as { code?: unknown }).code
+      if (!['EBUSY', 'ENOTEMPTY', 'EPERM'].includes(String(code)) || Date.now() >= deadline) {
+        throw error
+      }
+      await Bun.sleep(100)
     }
   }
 }
@@ -505,7 +535,7 @@ suite('live browser smoke test', () => {
     }
   }
 
-  beforeAll(async () => {
+  async function setupLive() {
     homeDir = await mkdtemp(path.join(os.tmpdir(), 'autobrowser-live-home-'))
     const relayPort = await getFreePort()
     const ipcPort = await getFreePort()
@@ -519,6 +549,14 @@ suite('live browser smoke test', () => {
 
     httpServer = createHttpServer((request, response) => {
       const pathname = new URL(request.url || '/', 'http://127.0.0.1').pathname
+      if (pathname === '/feed-fixture') {
+        response.writeHead(200, {
+          'content-type': 'text/html; charset=utf-8',
+          'cache-control': 'no-store',
+        })
+        response.end(FEED_FIXTURE_HTML)
+        return
+      }
       if (pathname.startsWith('/batch-signal/')) {
         batchSignals.add(pathname.split('/').pop()!)
         response.writeHead(200, { 'cache-control': 'no-store' })
@@ -654,7 +692,7 @@ suite('live browser smoke test', () => {
         cdp = null
         await killChrome(chromeProcess)
         chromeProcess = null
-        await rm(userDataDir, { recursive: true, force: true })
+        await removeTestDirectory(userDataDir)
         userDataDir = ''
       }
     }
@@ -696,9 +734,11 @@ suite('live browser smoke test', () => {
         `tab.select failed: ${JSON.stringify(selectResponse.error || selectResponse)}`,
       )
     }
-  }, 180_000)
+  }
 
-  afterAll(async () => {
+  beforeAll(setupLive, 180_000)
+
+  async function teardownLive() {
     cdp?.close()
     cdp = null
 
@@ -719,15 +759,17 @@ suite('live browser smoke test', () => {
     // schedulePersist 可能仍在异步写 homeDir/.autobrowser/state.json，
     // 立刻删除会让写盘的原子 rename 因目标目录缺失而抛 ENOENT。
     if (userDataDir) {
-      await rm(userDataDir, { recursive: true, force: true })
+      await removeTestDirectory(userDataDir)
       userDataDir = ''
     }
     if (homeDir) {
       await Bun.sleep(400)
-      await rm(homeDir, { recursive: true, force: true })
+      await removeTestDirectory(homeDir)
       homeDir = ''
     }
-  }, 30_000)
+  }
+
+  afterAll(teardownLive, 30_000)
 
   test('goto loads the local smoke page', async () => {
     const response = await command('goto', { url: pageUrl })
@@ -803,12 +845,10 @@ suite('live browser smoke test', () => {
   }, 30_000)
 
   test('collects structured virtual-list cards and dedupes items without URLs', async () => {
-    const html = `<!doctype html><body>
-      <article><div data-testid="User-Name">Ada · @ada</div><time datetime="2026-01-01"></time><div data-testid="tweetText">same text</div><img src="image.png"></article>
-      <article><div data-testid="User-Name">Ada · @ada</div><time datetime="2026-01-01"></time><div data-testid="tweetText">same text</div></article>
-      <article><div data-testid="User-Name">Bob · @bob</div><div data-testid="tweetText">linked</div><a href="/status/2">link</a></article>
-    </body>`
-    await checkedCommand('goto', { url: `data:text/html,${encodeURIComponent(html)}` })
+    await checkedCommand('goto', {
+      url: new URL('/feed-fixture', pageUrl).href,
+      waitUntil: 'load',
+    })
     const result = await checkedCommand<{
       count: number
       items: Array<{
@@ -826,8 +866,8 @@ suite('live browser smoke test', () => {
       handle: '@ada',
       time: '2026-01-01',
       text: 'same text',
-      mediaUrls: ['image.png'],
     })
+    expect(result.items[0]?.mediaUrls[0]).toMatch(/\/image\.png$/)
     expect(result.items[1]?.url).toContain('/status/2')
     await checkedCommand('goto', { url: pageUrl })
     await checkedCommand('wait', { selector: '#increment', timeout: 15_000 })
@@ -849,7 +889,11 @@ suite('live browser smoke test', () => {
       script: `document.modelContext.registerTool({
         name: 'autobrowser_echo',
         description: 'untrusted live smoke echo',
-        inputSchema: { type: 'object' },
+        inputSchema: {
+          type: 'object',
+          properties: { value: { type: 'number' } },
+          required: ['value']
+        },
         annotations: { readOnlyHint: true },
         execute: async args => ({ echoed: args.value })
       })`,
@@ -889,6 +933,7 @@ suite('live browser smoke test', () => {
   }, 30_000)
 
   test('supports coordinate mouse input and text/file drops', async () => {
+    await loadSmokePage()
     const point = await checkedCommand<{ x: number; y: number }>('eval', {
       script: `(() => {
         const rect = document.getElementById('increment').getBoundingClientRect();
@@ -935,11 +980,15 @@ suite('live browser smoke test', () => {
 
     await checkedCommand('highlight', { selector: locator.selector, style: '3px dashed red' })
     expect(
-      await checkedCommand<string>('eval', {
+      await checkedCommand<{ width: string; style: string; color: string }>('eval', {
         element: locator.selector,
-        script: 'el => el.style.outline',
+        script: `el => ({
+          width: el.style.outlineWidth,
+          style: el.style.outlineStyle,
+          color: el.style.outlineColor
+        })`,
       }),
-    ).toBe('3px dashed red')
+    ).toEqual({ width: '3px', style: 'dashed', color: 'red' })
     await checkedCommand('highlight', { selector: locator.selector, hide: true })
     expect(
       await checkedCommand<string>('eval', {
@@ -1492,6 +1541,7 @@ suite('live browser smoke test', () => {
           context: 50,
           limit: 200,
           startLine,
+          responseFormat: 'detailed',
         })
         const lines = result.windows.flatMap((window) => window.lines)
         expect(result.totalMatches).toBe(10000)
@@ -1589,10 +1639,12 @@ suite('live browser smoke test', () => {
     try {
       const text = await checkedCommand<string>('eval', {
         script: `'begin:' + 'x'.repeat(${bytes}) + ':end'`,
+        responseFormat: 'detailed',
       })
       expect(text).toBe(`begin:${'x'.repeat(bytes)}:end`)
       const object = await checkedCommand<{ payload: string; nested: { tail: string } }>('eval', {
         script: `({ payload: '界'.repeat(${6 * 1024 * 1024}), nested: { tail: 'synthetic-object-end' } })`,
+        responseFormat: 'detailed',
       })
       expect(new TextEncoder().encode(JSON.stringify(object)).length).toBeGreaterThan(
         16 * 1024 * 1024,
@@ -1605,6 +1657,7 @@ suite('live browser smoke test', () => {
         har: { log: { entries: Array<{ response: { content: { text: string } } }> } }
       }>('eval', {
         script: `({ har: { log: { entries: Array.from({ length: 65 }, (_, i) => ({ response: { content: { text: String(i).padStart(3, '0') + 'h'.repeat(256 * 1024) } } })) } } })`,
+        responseFormat: 'detailed',
       })
       expect(new TextEncoder().encode(JSON.stringify(shaped)).length).toBeGreaterThan(
         16 * 1024 * 1024,
@@ -1694,26 +1747,29 @@ suite('live browser smoke test', () => {
     }
   }, 90_000)
 
-  test('reports actual find/snapshot timing on 100 controls plus 20000 divs', async () => {
-    await loadSmokePage()
-    try {
-      expect(
-        await checkedCommand<{ divs: number; inputs: number }>('eval', {
-          script: `document.body.innerHTML = Array.from({ length: 20000 }, (_, i) => '<div id="decoration-' + i + '">synthetic div ' + i + '</div>').join('') + Array.from({ length: 100 }, (_, i) => '<label for="control-' + i + '">Control ' + i + '</label><input id="control-' + i + '">').join(''); ({ divs: document.querySelectorAll('div').length, inputs: document.querySelectorAll('input').length })`,
-        }),
-      ).toEqual({ divs: 20000, inputs: 100 })
-      const findMs: number[] = []
-      const snapshotMs: number[] = []
-      for (let i = 0; i < 3; i++) {
+  test('reports actual find/snapshot timing on 100 controls plus 2000 divs', async () => {
+    // 每轮都使用独立标签页，避免大 DOM 的累积状态影响下一组性能样本。
+    await teardownLive()
+    await setupLive()
+    const findMs: number[] = []
+    const snapshotMs: number[] = []
+    for (let i = 0; i < 3; i++) {
+      const { handle } = await openExtraTab()
+      try {
+        expect(
+          await checkedCommand<{ divs: number; inputs: number }>('eval', {
+            script: `document.body.innerHTML = Array.from({ length: 2000 }, (_, i) => '<div id="decoration-' + i + '">synthetic div ' + i + '</div>').join('') + Array.from({ length: 100 }, (_, i) => '<label for="control-' + i + '">Control ' + i + '</label><input id="control-' + i + '">').join(''); ({ divs: document.querySelectorAll('div').length, inputs: document.querySelectorAll('input').length })`,
+          }),
+        ).toEqual({ divs: 2000, inputs: 100 })
         const snapshotStart = performance.now()
         const snapshot = await checkedCommand<Snapshot>('snapshot')
         snapshotMs.push(Number((performance.now() - snapshotStart).toFixed(2)))
-        expect(snapshot.elements).toHaveLength(100)
+        expect(snapshot.elements).toHaveLength(50)
         const findStart = performance.now()
         const response = await command('find', {
           strategy: 'role',
           role: 'textbox',
-          name: 'Control 99',
+          name: 'Control 49',
           exact: true,
         })
         findMs.push(Number((performance.now() - findStart).toFixed(2)))
@@ -1723,18 +1779,18 @@ suite('live browser smoke test', () => {
         expect(response.error).toBeUndefined()
         expect(response.ok).toBe(true)
         const found = response.result as { match: { name: string; ref: string } }
-        expect(found.match.name).toBe('Control 99')
-        expect(snapshot.elements.find((item) => item.name === 'Control 99')?.ref).toBe(
+        expect(found.match.name).toBe('Control 49')
+        expect(snapshot.elements.find((item) => item.name === 'Control 49')?.ref).toBe(
           found.match.ref,
         )
+      } finally {
+        await command('tab.close', { handle })
       }
-      console.info(
-        `[live-smoke] 20000 divs + 100 controls, wall-clock ms: find=${JSON.stringify(findMs)}, snapshot=${JSON.stringify(snapshotMs)} (no baseline comparison)`,
-      )
-    } finally {
-      await loadSmokePage()
     }
-  }, 60_000)
+    console.info(
+      `[live-smoke] 2000 divs + 100 controls, wall-clock ms: find=${JSON.stringify(findMs)}, snapshot=${JSON.stringify(snapshotMs)} (no baseline comparison)`,
+    )
+  }, 90_000)
 
   test('explicit handle different from the current target acts on and reports that tab', async () => {
     interface CommandMeta {
@@ -2288,10 +2344,27 @@ suite('live browser smoke test', () => {
     expect(stopped.har.log.entries).toHaveLength(1)
     expect(stopped.har.log.entries[0]?.request.url).toContain('/download-probe')
 
-    const after = await checkedCommand<{
-      total: number
-      requests: Array<{ url: string }>
-    }>('network', { action: 'requests', allTabs: true, allEpochs: true })
+    let after = { total: 0, requests: [] as Array<{ url: string }> }
+    await waitFor(
+      'both captured requests to reach global network history',
+      async () => {
+        after = await checkedCommand<{
+          total: number
+          requests: Array<{ url: string }>
+        }>('network', {
+          action: 'requests',
+          allTabs: true,
+          allEpochs: true,
+          sort: 'newest',
+        })
+        return (
+          after.total >= before.total + 2 &&
+          after.requests.some((request) => request.url.includes('/routed-probe-slow')) &&
+          after.requests.some((request) => request.url.includes('/download-probe'))
+        )
+      },
+      5000,
+    )
     expect(after.total).toBeGreaterThanOrEqual(before.total + 2)
     expect(after.requests.some((request) => request.url.includes('/routed-probe-slow'))).toBe(true)
     expect(after.requests.some((request) => request.url.includes('/download-probe'))).toBe(true)

@@ -389,14 +389,14 @@ export function createCommandRouter({
           void sendDebuggerCommand(evalTabId, 'Runtime.terminateExecution', {}).catch(() => {})
         }
       }
-      if (evalTabId !== null && context) {
+      if (evalTabId !== null && context?.signal) {
         context.signal.addEventListener('abort', terminateEval, { once: true })
       }
       let result: unknown
       try {
         result = await commandHandlers.handle({ scope, executionFrame, context, request })
       } finally {
-        context?.signal.removeEventListener('abort', terminateEval)
+        if (evalTabId !== null) context?.signal?.removeEventListener('abort', terminateEval)
       }
 
       if (state.session.autoSnapshot && AUTO_SNAPSHOT_COMMANDS.has(command) && isRecord(result)) {

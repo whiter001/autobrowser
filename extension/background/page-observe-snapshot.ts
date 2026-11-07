@@ -98,7 +98,7 @@ export function createSnapshotFeature({
     const frameRefPrefix = AGENT_FRAME_REF_PREFIX
     const { value } = await evaluateInTabContext(
       tab.id,
-      `(() => {
+      `(async () => {
         const refAttribute = ${JSON.stringify(refAttribute)};
         const frameAttribute = ${JSON.stringify(frameAttribute)};
         const frameRefPrefix = ${JSON.stringify(frameRefPrefix)};
@@ -110,6 +110,7 @@ export function createSnapshotFeature({
 
 ${PAGE_CONTEXT_SNAPSHOT_HELPERS_SOURCE}
 
+        const yieldToBrowser = () => new Promise(resolve => setTimeout(resolve, 0));
         const scope = targetRootSelector ? deepQuerySelector(document, targetRootSelector) : document;
         if (!scope) {
           return { found: false, pageEpoch };
@@ -120,8 +121,10 @@ ${PAGE_CONTEXT_SNAPSHOT_HELPERS_SOURCE}
         const sameDocument = documentId === ${JSON.stringify(cached?.documentId || null)};
         const previousSet = new Set(sameDocument ? previousSignatures : []);
         const deepElements = deepCollectElements(scope);
+        await yieldToBrowser();
         // 传入遍历根：scope 为 document 时名称索引覆盖整棵树，未命中即确定负结果。
         const nameIndex = createPageNameIndex(deepElements, scope);
+        await yieldToBrowser();
         let fieldsTruncated = false;
         const bounded = (value, limit = 1024) => {
           const text = String(value ?? '');
@@ -255,6 +258,7 @@ ${PAGE_CONTEXT_SNAPSHOT_HELPERS_SOURCE}
               style.visibility === 'hidden' || Number(style.opacity || '1') === 0) continue;
           selectedFrames.push({ frame, rect });
         }
+        await yieldToBrowser();
         // 第二趟批量分配 ref，再用已读 rect 构造条目。
         const elementIndexes = computeStableRefIndexes(deepQuerySelectorAll(document, '[' + refAttribute + ']'),
           selectedElements.map(({ element }) => element), refAttribute, 'e', parsePageContextElementRefIndex, observation.highWater);
@@ -280,6 +284,7 @@ ${PAGE_CONTEXT_SNAPSHOT_HELPERS_SOURCE}
             unchangedCount++;
             if (retained.length < 1000) retained.push(signature);
           } else if (append(result.elements, item, ${maxElements})) signatures.push(signature);
+          if (totalElements % 25 === 0) await yieldToBrowser();
         }
         const parseFrameRefIndex = (value) => {
           const match = /^f(\\d+)$/.exec(String(value || '').trim());
@@ -311,6 +316,8 @@ ${PAGE_CONTEXT_SNAPSHOT_HELPERS_SOURCE}
           truncated: true, totalElements, returnedElements: result.elements.length,
           suggestedAction: 'Narrow snapshot with selector/roles; use changed:true for undisclosed elements.',
         });
+        // 大 DOM 的多趟遍历之间主动让出事件循环，避免渲染与 CDP 回执被连续计算饿死。
+        await yieldToBrowser();
         return truncateSnapshotToByteLimit(result, ${maxJsonBytes});
       })()`,
       withFrameSelectorOptions(effectiveFrameSelector || 'top'),

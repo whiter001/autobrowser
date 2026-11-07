@@ -89,7 +89,7 @@ export function createSemanticFindFeature({
 
     const { value } = await evaluateInTabContext<SemanticTargetResult>(
       tab.id,
-      `(() => {
+      `(async () => {
         const refAttribute = ${JSON.stringify(AGENT_ELEMENT_REF_ATTRIBUTE)};
         const pageEpoch = ${pageEpoch};
         const strategy = ${JSON.stringify(strategy)};
@@ -105,6 +105,7 @@ ${PAGE_CONTEXT_FIND_HELPERS_SOURCE}
 
         const deepElements = deepCollectElements(document);
         const nameIndex = createPageNameIndex(deepElements, document);
+        await new Promise(resolve => setTimeout(resolve, 0));
         const observation = getPageObservationState(document, pageEpoch);
         computeStableRefIndexes(deepElements, [], refAttribute, 'e', parsePageContextElementRefIndex, observation.highWater);
         const requireUnique = ${options.requireUnique === true && !options.position};
@@ -433,6 +434,8 @@ ${PAGE_CONTEXT_FIND_HELPERS_SOURCE}
           };
         }
 
+        // 大 DOM 的名称索引与匹配完成后，让渲染和 CDP 回执先于下一次命令得到调度。
+        await new Promise(resolve => setTimeout(resolve, 0));
         return {
           found: true,
           pageEpoch,

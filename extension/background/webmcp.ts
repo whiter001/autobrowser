@@ -122,8 +122,12 @@ function callExpression(name: string, args: Record<string, unknown>): string {
     }
     const matches = (await context.getTools()).filter(tool => tool.name === ${JSON.stringify(name)});
     if (matches.length !== 1) return { supported: true, matchCount: matches.length };
+    // 旧 Chrome 的 executeTool 仍要求 JSON 文本；新规范传对象。用 schema 的实际形态识别旧实现。
+    const input = typeof matches[0].inputSchema === 'string'
+      ? ${JSON.stringify(JSON.stringify(args))}
+      : ${JSON.stringify(args)};
     try {
-      const result = await context.executeTool(matches[0], ${JSON.stringify(args)});
+      const result = await context.executeTool(matches[0], input);
       return { supported: true, matchCount: 1, result };
     } catch (error) {
       return {

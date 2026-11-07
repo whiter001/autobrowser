@@ -128,6 +128,19 @@ describe('WebMCP domain', () => {
     expect(evaluation?.params?.expression).toContain('{"id":42}')
   })
 
+  test('uses JSON text input for legacy tools with serialized schemas', async () => {
+    const { domain, calls } = createHarness({
+      tools: { top: [{ name: 'legacy', inputSchema: '{"type":"object"}' }] },
+      supported: ['top'],
+    })
+    await domain.call(7, 'top', 'legacy', { id: 42 })
+
+    const evaluation = calls.filter((call) => call.method === 'Runtime.evaluate').at(-1)
+    expect(String(evaluation?.params?.expression)).toContain(
+      JSON.stringify(JSON.stringify({ id: 42 })),
+    )
+  })
+
   test('resolves CSS frame selectors and reports missing tools', async () => {
     const { domain } = createHarness({
       tools: { top: [], child: [{ name: 'child_tool' }] },

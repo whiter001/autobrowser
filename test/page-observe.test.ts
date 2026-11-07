@@ -1109,7 +1109,7 @@ function expressionHarness(document: ObserveDocument) {
     ) => {
       const frame = options?.frameSelector || state.targeting.selectedFrames.get(1) || 'top'
       const doc = documents.get(frame)!
-      const value = new Function(
+      const value = await new Function(
         'document',
         'location',
         'window',
