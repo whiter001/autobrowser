@@ -307,6 +307,7 @@ export const HELP_ROOT: HelpNode = helpNode(
         '--base64',
         '--timeout-ms <ms>  page evaluation timeout in milliseconds',
         '--max-result-bytes <n>  fail with EVAL_RESULT_TOO_LARGE when the JSON result exceeds n UTF-8 bytes (no limit by default; results are not truncated)',
+        'Top-level return and await are supported; use return to yield a script result.',
         'For complex interactions, split work into smaller browser commands or script steps.',
       ],
     ),

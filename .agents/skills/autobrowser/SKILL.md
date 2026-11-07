@@ -193,8 +193,8 @@ autobrowser 是一个面向 Chrome/Edge 的浏览器自动化 CLI，通过本地
 
 - `eval` 适合执行小段页面上下文 JS，用于只读提取、状态检查或轻量验证。
 - 单行源码可用 `eval --expr '<script>'` 显式传值，也继续支持位置参数。
-- 复杂或多行源码优先通过 `eval --file <path>` 或 `eval --stdin` 传入，避免命令行转义干扰判断；脚本可直接包含顶层 `return`，无需手工包装 IIFE。
-- 页面执行启用 `awaitPromise`，可直接返回 async IIFE / Promise 结果，不需要为异步采集手工拆成同步片段；长任务仍需设置合理 `--timeout-ms`。
+- 复杂或多行源码优先通过 `eval --file <path>` 或 `eval --stdin` 传入，避免命令行转义干扰判断；脚本可直接包含顶层 `return` 和 `await`，无需手工包装 async IIFE，多语句脚本用 `return` 返回结果。
+- 页面执行启用 `awaitPromise`，可直接使用顶层 `await` 或返回 async IIFE / Promise 结果，不需要为异步采集手工拆成同步片段；长任务仍需设置合理 `--timeout-ms`。
 - `--timeout-ms <ms>` 只在确认脚本本身是长任务时使用；不要把它作为复杂流程失败后的默认处理。需要限制返回值时用 `eval --max-result-bytes <n>`，超限会得到 `EVAL_RESULT_TOO_LARGE` 和实际字节数，不会静默截断；未设置时结果超过 256 KiB 会走 upload，并与命令共享 deadline。
 - 复杂交互优先拆成更小的 autobrowser 命令或脚本步骤，保留原任务目标逐步推进。
 - 针对单个元素执行函数脚本时用 `eval --element <selector|@eN> 'el => el.textContent'`，保留 stale/frame 检查。`locator <selector>` 会生成并验证唯一 locator；`highlight <selector> [--style <outline>]` 做不改布局的高亮，单元素恢复用 `highlight <selector> --hide`，全部恢复用 `highlight --hide`。

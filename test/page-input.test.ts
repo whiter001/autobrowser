@@ -194,8 +194,8 @@ describe('production evaluate and debugger dispatch cancellation gates', () => {
   }
 })
 
-describe('evaluateScript top-level return compatibility', () => {
-  test('retries an illegal top-level return as an IIFE', async () => {
+describe('evaluateScript top-level function body compatibility', () => {
+  test('retries an illegal top-level return as an async IIFE', async () => {
     const expressions: string[] = []
     const pageInput = createPageInputDomain({
       evaluateInTabContext: async (_tabId: unknown, expression: string) => {
@@ -212,7 +212,28 @@ describe('evaluateScript top-level return compatibility', () => {
     })
     expect(expressions).toHaveLength(2)
     expect(expressions[0]?.endsWith('return { ok: true }')).toBe(true)
-    expect(expressions[1]?.endsWith('(() => {\nreturn { ok: true }\n})()')).toBe(true)
+    expect(expressions[1]?.endsWith('(async () => {\nreturn { ok: true }\n})()')).toBe(true)
+  })
+
+  test('retries top-level await as an async IIFE', async () => {
+    const expressions: string[] = []
+    const script = 'const result = await Promise.resolve(42);\nreturn result'
+    const pageInput = createPageInputDomain({
+      evaluateInTabContext: async (_tabId: unknown, expression: string) => {
+        expressions.push(expression)
+        if (expressions.length === 1) {
+          throw new Error(
+            'page evaluation failed: SyntaxError: await is only valid in async functions and the top level bodies of modules',
+          )
+        }
+        return { value: 42 }
+      },
+    } as never)
+
+    await expect(pageInput.evaluateScript(1, script, null)).resolves.toBe(42)
+    expect(expressions).toHaveLength(2)
+    expect(expressions[0]?.endsWith(script)).toBe(true)
+    expect(expressions[1]?.endsWith(`(async () => {\n${script}\n})()`)).toBe(true)
   })
 
   test('does not retry scripts after other evaluation errors', async () => {

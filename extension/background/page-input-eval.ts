@@ -46,14 +46,18 @@ export function createEvalCommands(pageContext: PageInputContext) {
       return value
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
-      if (!/SyntaxError:\s*Illegal return statement/i.test(message)) {
+      if (
+        !/SyntaxError:\s*(?:Illegal return statement|await is only valid in async functions)/i.test(
+          message,
+        )
+      ) {
         throw error
       }
-      // 表达式必须保留直接求值语义；仅编译期确认存在顶层 return 时才按函数体重试，
+      // 表达式必须保留直接求值语义；仅编译期确认存在顶层 return/await 时才按 async 函数体重试，
       // 避免普通脚本被包装后不再返回表达式值，也避免其他错误导致脚本重复执行。
       const { value } = await evaluateInTabContext(
         tabId,
-        `(() => {\n${effectiveScript}\n})()`,
+        `(async () => {\n${effectiveScript}\n})()`,
         options,
       )
       assertEvalResultWithinLimit(value, maxResultBytes)

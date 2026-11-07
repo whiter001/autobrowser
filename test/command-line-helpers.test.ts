@@ -249,6 +249,7 @@ describe('cli helpers', () => {
     expect(result.stdout).toContain('--timeout-ms <ms>')
     expect(result.stdout).toContain('--file <path>  read complex or multiline script source')
     expect(result.stdout).toContain('--stdin  read complex or multiline script source')
+    expect(result.stdout).toContain('Top-level return and await are supported')
     expect(result.stdout).toContain('split work into smaller browser commands or script steps')
   })
 
