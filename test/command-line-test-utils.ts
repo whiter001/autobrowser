@@ -153,12 +153,13 @@ export async function runCli(
     const openUrlImpl = options.openUrl
     const spawnImpl = options.spawnDetachedProcess
 
-    if (openUrlImpl) {
-      const openUrl = openUrlImpl
-      dependencies.openUrl = async (url, browserConfig) => {
-        openCalls.push(url)
-        browserCalls.push(browserConfig)
-        await openUrl(url, browserConfig)
+    // 默认就注入 openUrl 替身：CLI 测试绝不能真的拉起浏览器，否则 connect 页会开在
+    // 开发者机器的真实浏览器里，标签页越跑越多。需要断言时用 options.openUrl 覆盖。
+    dependencies.openUrl = async (url, browserConfig) => {
+      openCalls.push(url)
+      browserCalls.push(browserConfig)
+      if (openUrlImpl) {
+        await openUrlImpl(url, browserConfig)
       }
     }
 

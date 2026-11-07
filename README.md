@@ -566,6 +566,8 @@ bun run test:live
 
 等价于先 `bun run build:chrome` 再 `AUTOBROWSER_LIVE=1 bun test test/live-smoke.test.ts`。二进制按 `CHROME_BIN` 环境变量 → Playwright 缓存里的 Chrome for Testing → 系统 Chrome 的顺序尝试；前置条件不满足时自动跳过，不会让默认 `bun test` 失败。
 
+`bun test` 不会真的拉起浏览器：`NODE_ENV=test` 时 `openUrl` 直接返回，`connect` / `session attach` 之类要开页面的命令只记录 URL，不会把标签页开在开发者机器的真实浏览器里（子进程型 CLI 测试没法注入替身，这道闸门是唯一保证）。确实需要真实浏览器时用 `AUTOBROWSER_DISABLE_BROWSER=0` 显式放开。
+
 ## 从源码运行
 
 上面的示例都以 npm 全局安装后的 `autobrowser` 命令为准。如果你是在这个仓库里开发，用 Bun 直接跑：

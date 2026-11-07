@@ -40,24 +40,27 @@ describe('cli batch command', () => {
         skipRemainingOnFailure: true,
       }
       try {
-        const exitCode = await main([
-          '--json',
-          '--server',
-          'http://127.0.0.1:3000',
-          '--tab',
-          't2',
-          '--frame',
-          '@f1',
-          'batch',
-          JSON.stringify([
-            {
-              command: 'batch',
-              args: {
-                steps: ['snapshot', { command: ' snapshot ', args, ...metadata }],
+        const exitCode = await main(
+          [
+            '--json',
+            '--server',
+            'http://127.0.0.1:3000',
+            '--tab',
+            't2',
+            '--frame',
+            '@f1',
+            'batch',
+            JSON.stringify([
+              {
+                command: 'batch',
+                args: {
+                  steps: ['snapshot', { command: ' snapshot ', args, ...metadata }],
+                },
               },
-            },
-          ]),
-        ])
+            ]),
+          ],
+          { openUrl: async () => {} },
+        )
 
         if (args === null || Array.isArray(args)) {
           expect(exitCode).toBe(1)

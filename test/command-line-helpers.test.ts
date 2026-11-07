@@ -43,6 +43,33 @@ describe('cli helpers', () => {
     )
   })
 
+  test('never launches a real browser from a test process', async () => {
+    // 用一个不存在的可执行文件：闸门生效时直接返回，闸门失效时会抛 ENOENT。
+    // 子进程型 CLI 测试没法注入 openUrl 替身，这道闸门是它们不污染开发者浏览器的唯一保证。
+    await expect(
+      openUrl('http://127.0.0.1:57978/connect?token=test', {
+        command: 'autobrowser-no-such-browser-binary',
+        args: [],
+      }),
+    ).resolves.toBeUndefined()
+  })
+
+  test('AUTOBROWSER_DISABLE_BROWSER=0 can re-enable browser launches explicitly', async () => {
+    const previous = process.env.AUTOBROWSER_DISABLE_BROWSER
+    process.env.AUTOBROWSER_DISABLE_BROWSER = '0'
+    try {
+      await expect(
+        openUrl('http://127.0.0.1:57978/connect?token=test', {
+          command: 'autobrowser-no-such-browser-binary',
+          args: [],
+        }),
+      ).rejects.toThrow()
+    } finally {
+      if (previous === undefined) delete process.env.AUTOBROWSER_DISABLE_BROWSER
+      else process.env.AUTOBROWSER_DISABLE_BROWSER = previous
+    }
+  })
+
   test('detects browser profile lock signatures in stderr', () => {
     expect(detectBrowserProfileLock('Opening in existing browser session.\n')).toBe(true)
     expect(detectBrowserProfileLock('ERROR: profile is already in use')).toBe(true)

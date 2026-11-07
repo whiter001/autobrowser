@@ -39,7 +39,7 @@ async function runCli(argv: string[], payload: unknown = success, handler?: Comm
   if (handler) COMMAND_REGISTRY['test-exit-code'] = handler
 
   try {
-    const exitCode = await main(argv)
+    const exitCode = await main(argv, { openUrl: async () => {} })
     return { exitCode, stdout: stdout.join(''), stderr: stderr.join(''), requestCount }
   } finally {
     delete COMMAND_REGISTRY['test-exit-code']

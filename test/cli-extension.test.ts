@@ -43,17 +43,20 @@ async function runExtension(args: string[]) {
   })
   process.env.AUTOBROWSER_HOME = homeDir
   try {
-    const code = await main([
-      '--json',
-      '--server',
-      'http://127.0.0.1:3000',
-      '--tab',
-      't99',
-      '--frame',
-      '@f99',
-      'extension',
-      ...args,
-    ])
+    const code = await main(
+      [
+        '--json',
+        '--server',
+        'http://127.0.0.1:3000',
+        '--tab',
+        't99',
+        '--frame',
+        '@f99',
+        'extension',
+        ...args,
+      ],
+      { openUrl: async () => {} },
+    )
     return { code, requests, stdout: stdout.join(''), stderr: stderr.join('') }
   } finally {
     fetchSpy.mockRestore()

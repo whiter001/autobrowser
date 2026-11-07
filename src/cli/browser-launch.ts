@@ -51,10 +51,42 @@ export class BrowserProfileLockError extends Error {
   }
 }
 
+/**
+ * 是否禁止真的拉起浏览器。
+ *
+ * CLI 测试经常以子进程方式运行（那时没法注入 openUrl 替身），一旦漏掉就会把 connect 页
+ * 开在开发者机器的真实浏览器里，标签页越跑越多。NODE_ENV=test 是测试进程的标准约定，
+ * 这里直接不启动浏览器；需要真实浏览器的显式场景用 AUTOBROWSER_DISABLE_BROWSER=0 覆盖。
+ */
+function isBrowserLaunchDisabled(): boolean {
+  const override = process.env.AUTOBROWSER_DISABLE_BROWSER
+  if (override !== undefined) {
+    return override !== '0'
+  }
+  return process.env.NODE_ENV === 'test'
+}
+
 export async function openUrl(
   url: string,
   browserConfig: BrowserLaunchConfig | null,
 ): Promise<void> {
+  // chrome-extension:// 没有任何系统级协议关联：交给 rundll32/open/xdg-open 只会弹出
+  // "没有可打开此链接的应用"（Windows 还会诱导去 Microsoft Store）。
+  // 这里直接失败并给出可执行建议，把错误留在 CLI 里而不是系统弹窗里。
+  // 校验放在启动闸门之前，测试环境也要保留同一个结论。
+  if (!browserConfig?.command && /^chrome-extension:\/\//i.test(url)) {
+    throw new Error(
+      'cannot open a chrome-extension:// URL without an explicit browser: ' +
+        'no OS associates this scheme.\n' +
+        'Pass one explicitly (the value is remembered in ~/.autobrowser/config.json):\n' +
+        '  autobrowser connect --browser-command "<path to msedge.exe or chrome.exe>"',
+    )
+  }
+
+  if (isBrowserLaunchDisabled()) {
+    return
+  }
+
   if (browserConfig?.command) {
     let stderr = ''
     try {
@@ -74,18 +106,6 @@ export async function openUrl(
       throw new BrowserProfileLockError()
     }
     return
-  }
-
-  // chrome-extension:// 没有任何系统级协议关联：交给 rundll32/open/xdg-open 只会弹出
-  // "没有可打开此链接的应用"（Windows 还会诱导去 Microsoft Store）。
-  // 这里直接失败并给出可执行建议，把错误留在 CLI 里而不是系统弹窗里。
-  if (/^chrome-extension:\/\//i.test(url)) {
-    throw new Error(
-      'cannot open a chrome-extension:// URL without an explicit browser: ' +
-        'no OS associates this scheme.\n' +
-        'Pass one explicitly (the value is remembered in ~/.autobrowser/config.json):\n' +
-        '  autobrowser connect --browser-command "<path to msedge.exe or chrome.exe>"',
-    )
   }
 
   const systemOpenCommand = buildSystemOpenCommand(process.platform, url)

@@ -119,6 +119,10 @@ describe('cli command routing', () => {
     expect(attached.spawnCalls[0].args.slice(-2)).toEqual(['server', '--serve'])
     expect(attached.spawnCalls[0].args).toContain(String(record.relayPort))
     expect(attached.spawnCalls[0].args).toContain(String(record.ipcPort))
+    // 优先打开扩展的 connect 页；测试里只记录 URL，不会真的打开浏览器
+    expect(attached.openCalls).toHaveLength(1)
+    expect(attached.openCalls[0]).toContain('connect')
+    expect(attached.openCalls[0]).toContain('token=alpha-token')
   })
 
   test('Firefox status uses the configured WebDriver instead of the Chromium relay', async () => {
