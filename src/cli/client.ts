@@ -4,6 +4,7 @@ export interface CommandResponse {
   error?: {
     message: string
     code?: string
+    retryable?: boolean
     details?: unknown
     suggestion?: string
     suggestedAction?: string

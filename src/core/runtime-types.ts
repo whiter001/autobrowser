@@ -77,6 +77,7 @@ export interface PendingRequest {
 
 export interface ErrorWithCode extends Error {
   code?: string
+  retryable?: boolean
   details?: unknown
   suggestedAction?: string
 }

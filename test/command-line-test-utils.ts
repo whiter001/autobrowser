@@ -78,6 +78,7 @@ export interface CliErrorPayload {
   error: {
     message: string
     code: string
+    retryable: boolean
     details?: unknown
     suggestedAction: string
   }

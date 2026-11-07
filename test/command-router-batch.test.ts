@@ -156,6 +156,7 @@ describe('command router batch handling', () => {
               error: {
                 message: 'cannot access chrome:// and edge:// urls',
                 code: 'EXTENSION_COMMAND_ERROR',
+                retryable: false,
               },
             },
           },
@@ -168,6 +169,7 @@ describe('command router batch handling', () => {
             error: {
               message: 'cannot access chrome:// and edge:// urls',
               code: 'EXTENSION_COMMAND_ERROR',
+              retryable: false,
             },
           },
         },
@@ -212,6 +214,7 @@ describe('command router batch handling', () => {
             error: {
               message: 'cannot access chrome:// and edge:// urls',
               code: 'EXTENSION_COMMAND_ERROR',
+              retryable: false,
             },
           },
         },
@@ -267,6 +270,7 @@ describe('command router batch handling', () => {
       error: {
         message: 'element not found: #missing',
         code: 'ELEMENT_NOT_FOUND',
+        retryable: true,
         suggestedAction: 'check the selector and selected frame',
         ref: '#missing',
       },

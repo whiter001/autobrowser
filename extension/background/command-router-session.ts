@@ -1,3 +1,4 @@
+import { createToolError } from '../../src/core/tool-error.js'
 import {
   readBooleanArg,
   readHeadersArg,
@@ -126,7 +127,9 @@ export function createSessionCommandHandler({ state, session }: SessionCommandDe
         }
         if (action === 'delete') {
           if (!name || name === 'default') {
-            throw new Error('cookies delete requires a cookie name')
+            throw createToolError('INVALID_COMMAND_ARGS', 'cookies delete requires a cookie name', {
+              details: { field: 'name', expected: 'non-empty cookie name', received: name },
+            })
           }
           return await session.cookiesDelete(tabId, name)
         }
@@ -150,7 +153,9 @@ export function createSessionCommandHandler({ state, session }: SessionCommandDe
         }
         if (action === 'delete') {
           if (!storageKey) {
-            throw new Error('storage delete requires a key')
+            throw createToolError('INVALID_COMMAND_ARGS', 'storage delete requires a key', {
+              details: { field: 'key', expected: 'non-empty storage key', received: storageKey },
+            })
           }
           return await session.storageDelete(tabId, storageKey, frameSelector, sessionOnly)
         }

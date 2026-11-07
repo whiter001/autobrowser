@@ -3,6 +3,8 @@ import { getExtensionUrl } from './core/extension.js'
 import { createRuntime, type Runtime } from './core/runtime.js'
 import { ResponseUploadError } from './core/response-upload.js'
 import { FileUploadError } from './core/file-upload.js'
+import { errorRetryable } from './core/tool-error.js'
+import { describeErrorCode } from './core/error-actions.js'
 
 function escapeHtml(value: string): string {
   return String(value)
@@ -254,6 +256,7 @@ interface RelaySocketData {
 
 interface ErrorWithCode extends Error {
   code?: string
+  retryable?: boolean
   details?: unknown
   suggestedAction?: string
 }
@@ -495,8 +498,11 @@ export async function startServers(options: ServerOptions = {}): Promise<StartSe
                     error: {
                       message: err.message,
                       code: err.code || 'COMMAND_FAILED',
+                      retryable: err.retryable ?? errorRetryable(err.code || 'COMMAND_FAILED'),
                       details: err.details,
-                      suggestedAction: err.suggestedAction,
+                      suggestedAction:
+                        err.suggestedAction ||
+                        describeErrorCode(err.code || 'COMMAND_FAILED')?.action,
                     },
                   },
                   { status: 500 },

@@ -1,4 +1,5 @@
 import { describeErrorCode } from '../core/error-actions.js'
+import { errorRetryable } from '../core/tool-error.js'
 
 /**
  * CLI 解析期错误契约。
@@ -80,6 +81,7 @@ export interface CliErrorPayload {
   error: {
     message: string
     code: string
+    retryable: boolean
     details?: unknown
     suggestedAction: string
   }
@@ -139,6 +141,7 @@ export function buildCliErrorPayload(
     error: {
       message: normalized.message,
       code: normalized.code,
+      retryable: errorRetryable(normalized.code),
       ...(details === undefined ? {} : { details }),
       suggestedAction: resolveSuggestedAction(normalized, normalized.code, details),
     },

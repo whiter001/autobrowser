@@ -797,6 +797,10 @@ export function createNetworkDomain({
     const result: Record<string, unknown> = {
       total: requests.length,
       requests: items,
+      empty: items.length === 0,
+      ...(items.length === 0
+        ? { emptyReason: state.network.requests.length === 0 ? 'NO_DATA' : 'FILTERED_OUT' }
+        : {}),
       pagination,
     }
     if (requests.length === 0 && filters.allTabs !== true && filters.allEpochs !== true) {

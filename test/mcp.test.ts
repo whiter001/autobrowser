@@ -1090,7 +1090,9 @@ describe('search interfaces', () => {
         arguments: { strategy: 'role', role: 'button', name: 'Delete', action: 'click' },
       })
       expect(failure.isError).toBe(true)
-      expect(failure.structuredContent).toEqual({ error: ambiguous })
+      expect(failure.structuredContent).toEqual({
+        error: { ...ambiguous, retryable: false },
+      })
       await client.callTool({
         name: 'find',
         arguments: {
@@ -1121,8 +1123,13 @@ describe('search interfaces', () => {
         arguments: { selector: '#field', value: 'valid-error' },
       })
       expect(upstream.isError).toBe(true)
-      expect(upstream.structuredContent).toEqual({
-        error: { code: 'UPSTREAM_ERROR', message: 'ECONNREFUSED ENOTFOUND' },
+      expect(upstream.structuredContent).toMatchObject({
+        error: {
+          code: 'UPSTREAM_ERROR',
+          message: 'ECONNREFUSED ENOTFOUND',
+          retryable: false,
+          suggestedAction: expect.stringContaining('command list'),
+        },
       })
       expect(calls).toHaveLength(before + 1)
       expect(authorization.every((value) => value === `Bearer ${token}`)).toBe(true)

@@ -408,6 +408,7 @@ export const HELP_ROOT: HelpNode = helpNode(
         '--exact  require exact matching (exact-name strategy is always exact)',
         '--position <first|last|nth=N>  explicitly choose a match, including for write actions',
         '--candidates <n>  inspect ranked candidates with locate before choosing a target',
+        'locate no-match is ok:true with empty:true/emptyReason:NO_MATCH and exit 0; action no-match is ELEMENT_NOT_FOUND with exit 1.',
         'Read-only locate/text default to first; write actions with multiple matches return AMBIGUOUS_TARGET and candidates.',
         'Resolve ambiguity by narrowing the query/--exact, inspecting --candidates, or deliberately setting --position.',
       ],

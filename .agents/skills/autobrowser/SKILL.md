@@ -90,8 +90,9 @@ autobrowser 是一个面向 Chrome/Edge 的浏览器自动化 CLI，通过本地
 - 如果 `connect` 传入了有效 token 且扩展已经报告 `connected`，连接页可能会自动关闭；这通常表示连接成功。
 - `status` 是确认扩展是否已连接的最快方式。
 - `version`（或 `autobrowser --version`）报告 CLI 自身的 version/commit/buildTime；relay 已在运行时还会带上扩展的 manifest 版本并给出 `versionSkew`。`consistent:false` 表示扩展是旧的没重载，或 CLI 是旧的——先 `bun run build:chrome` + `extension reload`（或升级 CLI）再信任版本相关行为；扩展的 commit/buildTime 用 `extension info` 查。
-- 每个错误码都带默认 `suggestedAction`（来自 `src/core/error-actions.ts`），按它给出的下一步排查；扩展自带的更具体建议优先。看到不认识的错误码也先按建议查 `status`/页面状态，而不是换方案。
-- 解析期错误（缺参、多参、取值非法、未知选项、未知命令）和运行期错误走同一套 JSON 契约：stdout 上是 `{ok:false,error:{message,code,details,suggestedAction}}`，退出码 1。参数类错误码是 `CLI_INVALID_ARGUMENT`，未知命令是 `CLI_UNKNOWN_COMMAND`（`details.candidates` 给出最接近的命令名），其余 CLI 层失败是 `CLI_ERROR`。stdout 始终是 JSON，不要从 stderr 猜错误内容。
+- 每个错误码都带默认 `suggestedAction`（来自 `src/core/error-actions.ts`），按它给出的下一步排查；扩展自带的更具体建议优先。`retryable:true` 只表示检查状态后可以重试；`COMMAND_EXECUTION_UNKNOWN` 始终先查 `command status` 和页面，不能盲目重放。
+- 查询无匹配不是失败：`empty:true` 配合 `emptyReason:NO_DATA|NO_MATCH|FILTERED_OUT`，`ok:true`、退出码 0；按原因调整查询、过滤条件或先等待数据。`find ... locate` 无匹配也走这一契约，但 `find ... click/fill/type` 缺目标是 `ELEMENT_NOT_FOUND`、退出码 1。
+- 解析期错误（缺参、多参、取值非法、未知选项、未知命令）和运行期错误走同一套 JSON 契约：stdout 上是 `{ok:false,error:{message,code,retryable,details,suggestedAction}}`，退出码 1。参数类错误码是 `CLI_INVALID_ARGUMENT`，未知命令是 `CLI_UNKNOWN_COMMAND`（`details.candidates` 给出最接近的命令名），其余 CLI 层失败是 `CLI_ERROR`。stdout 始终是 JSON，不要从 stderr 猜错误内容。
 - 扩展已在线时，修改代码并 `bun run build:chrome` 后用 `extension reload` 重载磁盘代码；只需重建 relay 连接时用 `extension reconnect`，它不会加载新代码。两者与刷新页面的 `reload` 不同，均不绑定 tab、不进入页面队列，仅用于 Chromium 扩展。
 - `extension reload/reconnect` 先返回 `reloading:true` / `reconnecting:true` 和 `reconnectExpected:true`，约 50ms 后异步执行。回执不是恢复完成；稍等后用 `status` 确认重新连接，再用 `tab list`、`snapshot` 刷新目标与引用，不要盲目重放原页面动作。离线时先修复连接；首次升级到支持该命令的版本需手动在 chrome://extensions 重载。
 - 扩展注册了 30 秒周期的 keepalive alarm：service worker 被浏览器回收后会在一个周期内自行重连，无需再手动打开扩展页。若 `status` 持续显示 `waiting for extension` 超过 1 分钟，再按上面步骤重载扩展或检查 relay 是否在运行；该机制随扩展代码生效，首次升级仍需先手动重载一次。

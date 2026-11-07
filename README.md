@@ -540,6 +540,7 @@ autobrowser dialog auto --on
   "error": {
     "message": "missing value for click",
     "code": "CLI_INVALID_ARGUMENT",
+    "retryable": false,
     "details": { "path": "click", "command": "click" },
     "suggestedAction": "Run 'autobrowser help click' to see the accepted arguments, then run the command again with a corrected value."
   }
@@ -547,7 +548,8 @@ autobrowser dialog auto --on
 ```
 
 - 参数类错误（缺参、多参、取值非法、未知选项）用 `CLI_INVALID_ARGUMENT`，未知命令用 `CLI_UNKNOWN_COMMAND`，其余 CLI 层失败用 `CLI_ERROR`；运行期错误仍用扩展/relay 自己的错误码。
-- `suggestedAction` 是每个错误码的默认下一步（见 `src/core/error-actions.ts`），扩展给出的更具体建议优先。
+- `suggestedAction` 是每个错误码的默认下一步（见 `src/core/error-actions.ts`），扩展给出的更具体建议优先；`retryable` 表示检查当前状态后是否可以重试，结果未知时仍禁止盲目重放。
+- 查询无匹配仍是成功：`ok:true`、退出码 0，并带 `empty:true` 和 `emptyReason:NO_DATA|NO_MATCH|FILTERED_OUT`。`find ... locate` 无匹配也按此返回；动作命令无目标则返回 `ELEMENT_NOT_FOUND`、退出码 1。
 - 命令名写错时不会打印整页帮助，而是直接报出未知命令，并在 `details.candidates` 里给出最接近的命令名（例如 `autobrowser snap` → `snapshot`）；未知选项也会按当前命令的 help 给出最近邻建议。
 - 裸 CSS 选择器未匹配返回 `ELEMENT_NOT_FOUND`，`@eN` 快照引用无法解析返回 `STALE_REFERENCE`，两者的修复建议不再混用。
 - `--raw` / `--brief` 会退回纯文本：错误写在 stderr，并附一行 `[AI SUGGESTION]` 建议。

@@ -6,6 +6,8 @@ import { isRecord } from './client.js'
 import { extractScreenshotBase64 } from './screenshot.js'
 import { presentCommandResult } from './response-presenters.js'
 import type { ResponseFormat } from './response-format.js'
+import { errorRetryable } from '../core/tool-error.js'
+import { describeErrorCode } from '../core/error-actions.js'
 
 // 超过该体积的截图 base64 不再内联进 MCP 响应（会爆模型上下文），改为落盘后回文本路径
 const SCREENSHOT_MAX_INLINE_BYTES = 2 * 1024 * 1024
@@ -16,11 +18,13 @@ export function toErrorResult(
   error: {
     suggestion?: string
     suggestedAction?: string
+    retryable?: boolean
     details?: unknown
   } = {},
 ): CallToolResult {
-  const suggestion = error.suggestion || error.suggestedAction
-  const text = suggestion ? `${message}\n\n[AI SUGGESTION]: ${suggestion}` : message
+  const suggestedAction =
+    error.suggestedAction || error.suggestion || describeErrorCode(code)?.action
+  const text = suggestedAction ? `${message}\n\n[AI SUGGESTION]: ${suggestedAction}` : message
   return {
     isError: true,
     content: [{ type: 'text', text }],
@@ -28,8 +32,9 @@ export function toErrorResult(
       error: {
         ...(code ? { code } : {}),
         message,
+        retryable: error.retryable ?? errorRetryable(code),
         ...(error.suggestion ? { suggestion: error.suggestion } : {}),
-        ...(error.suggestedAction ? { suggestedAction: error.suggestedAction } : {}),
+        ...(suggestedAction ? { suggestedAction } : {}),
         ...(error.details !== undefined ? { details: error.details } : {}),
       },
     },

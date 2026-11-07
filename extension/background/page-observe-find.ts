@@ -1,4 +1,5 @@
 import { AGENT_ELEMENT_REF_ATTRIBUTE } from '../../src/core/agent-selectors.js'
+import { createToolError } from '../../src/core/tool-error.js'
 import type { PageObserveDependencies } from './page-observe-context.js'
 import { PAGE_CONTEXT_FIND_HELPERS_SOURCE } from './page-observe-helpers.js'
 import { getPageEpoch, withFrameSelectorOptions } from './targeting.js'
@@ -19,6 +20,8 @@ export interface SemanticTargetMatch extends Record<string, unknown> {
 export interface SemanticTargetResult extends Record<string, unknown> {
   found: boolean
   reason?: string
+  empty?: boolean
+  emptyReason?: 'NO_MATCH'
   pageEpoch?: number
   match?: SemanticTargetMatch
   candidates?: SemanticTargetMatch[]
@@ -36,6 +39,8 @@ export interface FindSemanticTargetOptions {
   candidates?: number
   /** 写操作要求唯一目标；显式 position 仍可选择多匹配中的一项。 */
   requireUnique?: boolean
+  /** locate 查询允许无匹配；动作命令仍应失败。 */
+  allowNoMatch?: boolean
 }
 
 /**
@@ -380,6 +385,8 @@ ${PAGE_CONTEXT_FIND_HELPERS_SOURCE}
           return {
             found: true,
             pageEpoch,
+            empty: sorted.length === 0,
+            ...(sorted.length === 0 ? { emptyReason: 'NO_MATCH' } : {}),
             candidates: sorted
               .slice(0, candidatesCount)
               .map((candidate) => toTargetDescriptor(candidate.node)),
@@ -397,6 +404,12 @@ ${PAGE_CONTEXT_FIND_HELPERS_SOURCE}
             if (!Number.isInteger(nthIndex) || nthIndex < 1 || nthIndex > matches.length) {
               return {
                 found: false,
+                code: 'INVALID_COMMAND_ARGS',
+                details: {
+                  field: 'position',
+                  received: position,
+                  expected: matches.length > 0 ? 'nth=1..nth=' + matches.length : 'first|last',
+                },
                 reason:
                   'nth position out of range: ' +
                   position +
@@ -430,16 +443,30 @@ ${PAGE_CONTEXT_FIND_HELPERS_SOURCE}
     )
 
     if (value?.code === 'AMBIGUOUS_TARGET') {
-      throw Object.assign(new Error(value.reason), {
-        code: 'AMBIGUOUS_TARGET',
-        candidates: value.candidates,
-        details: { candidates: value.candidates },
-        suggestedAction:
-          'Refine name with exact:true, inspect candidates, or explicitly set position (first/last/nth=N).',
-      })
+      const error = createToolError(
+        'AMBIGUOUS_TARGET',
+        value.reason || 'multiple targets matched',
+        {
+          details: { candidates: value.candidates },
+          suggestedAction:
+            'Refine name with exact:true, inspect candidates, or explicitly set position (first/last/nth=N).',
+        },
+      )
+      Object.assign(error, { candidates: value.candidates })
+      throw error
     }
     if (!value?.found || (!value?.match?.ref && !Array.isArray(value.candidates))) {
-      throw new Error(value?.reason || `failed to find ${strategy} target`)
+      if (options.allowNoMatch && value?.found === false && !value.code) {
+        return { ...value, found: false, empty: true, emptyReason: 'NO_MATCH' }
+      }
+      const code = value?.code === 'INVALID_COMMAND_ARGS' ? value.code : 'ELEMENT_NOT_FOUND'
+      throw createToolError(code, value?.reason || `failed to find ${strategy} target`, {
+        details: value?.details ?? { strategy, query: query || role },
+        suggestedAction:
+          code === 'INVALID_COMMAND_ARGS'
+            ? 'Use the position range in details.expected, then retry the query.'
+            : 'Change the query, check the selected frame, or wait for the element before retrying.',
+      })
     }
 
     return value

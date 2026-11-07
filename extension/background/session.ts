@@ -158,7 +158,14 @@ export function createSessionDomain({
 
       return true
     })
-    return { cookies }
+    return {
+      cookies,
+      total: cookies.length,
+      empty: cookies.length === 0,
+      ...(cookies.length === 0
+        ? { emptyReason: result.cookies?.length ? 'FILTERED_OUT' : 'NO_DATA' }
+        : {}),
+    }
   }
 
   async function cookiesDelete(tabId: TabInput, name: string) {
@@ -255,7 +262,14 @@ export function createSessionDomain({
     sessionOnly = false,
   ) {
     if (!key) {
-      return { storage: await readAllStorage(tabId, sessionOnly, frameSelector) }
+      const storage = await readAllStorage(tabId, sessionOnly, frameSelector)
+      const total = Object.keys(storage).length
+      return {
+        storage,
+        total,
+        empty: total === 0,
+        ...(total === 0 ? { emptyReason: 'NO_DATA' } : {}),
+      }
     }
 
     const store = sessionOnly ? 'sessionStorage' : 'localStorage'
@@ -264,7 +278,12 @@ export function createSessionDomain({
       `${store}.getItem(${JSON.stringify(key)})`,
       withFrameSelectorOptions(frameSelector),
     )
-    return { key, value }
+    return {
+      key,
+      value,
+      empty: value === null || value === undefined,
+      ...(value === null || value === undefined ? { emptyReason: 'NO_MATCH' } : {}),
+    }
   }
 
   async function storageSet(

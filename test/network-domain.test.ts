@@ -912,6 +912,7 @@ describe('network domain request list pagination', () => {
     }
 
     expect(result.total).toBe(0)
+    expect(result).toMatchObject({ empty: true, emptyReason: 'NO_DATA' })
     expect(result.meta?.suggestedAction).toContain('--all-tabs --all-epochs')
     expect(network.listRequests({ allTabs: true })).not.toHaveProperty('meta')
   })

@@ -14,6 +14,7 @@ import { createSessionCommandHandler } from './command-router-session.js'
 import { createTabsCommandHandler } from './command-router-tabs.js'
 import type { CommandRunScope } from './command-router-context.js'
 import { getCommandRequestBudgetMs } from '../../src/core/command-budget.js'
+import { createToolError } from '../../src/core/tool-error.js'
 import type { ExtensionControlDomain } from './extension-control.js'
 import { commandSupportsTabTarget, validateCommandArgs } from '../../src/core/command-spec.js'
 import type {
@@ -800,6 +801,7 @@ export function createCommandRouter({
       name: readStringArg(args, 'name').trim(),
       exact: args.exact === true,
       requireUnique: action !== 'locate' && action !== 'text' && !position,
+      allowNoMatch: action === 'locate',
       ...(position ? { position } : {}),
       ...(candidatesCount > 0 ? { candidates: candidatesCount } : {}),
     }
@@ -810,16 +812,16 @@ export function createCommandRouter({
     if (findOptions.candidates && Array.isArray(result.candidates)) {
       return result
     }
+    if (action === 'locate' && result.empty === true) return result
     const ref = result.match?.ref
     if (!ref) {
-      const err = new Error(result.reason || 'semantic target ref missing') as any
-      err.code = 'NOT_FOUND'
-      err.suggestedAction =
-        'Check if the target element exists in the current viewport. Re-run `snapshot` to analyze the page state.'
-      if (result.candidates && Array.isArray(result.candidates) && result.candidates.length > 0) {
-        err.suggestedAction += ` Additionally, found other potential candidates:\n${JSON.stringify(result.candidates, null, 2)}`
-      }
-      throw err
+      throw createToolError('ELEMENT_NOT_FOUND', result.reason || 'semantic target ref missing', {
+        ...(Array.isArray(result.candidates) && result.candidates.length > 0
+          ? { details: { candidates: result.candidates.slice(0, 10) } }
+          : {}),
+        suggestedAction:
+          'Change the query or inspect the limited candidates in details; use snapshot to refresh the current page state.',
+      })
     }
 
     if (action === 'locate') {

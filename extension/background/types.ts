@@ -17,6 +17,7 @@ export interface ScreenshotCaptureOptions {
 
 export interface ErrorWithCode extends Error {
   code?: string
+  retryable?: boolean
   details?: unknown
   suggestedAction?: string
   ref?: string

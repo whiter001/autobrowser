@@ -13,6 +13,7 @@ import {
 } from './protocol.js'
 import { validateCommandArgs } from './command-spec.js'
 import { describeErrorCode } from './error-actions.js'
+import { errorRetryable } from './tool-error.js'
 import { DEFAULT_REQUEST_TIMEOUT_MS, getCommandRequestBudgetMs } from './command-budget.js'
 import { ResponseAssembler, ResponseTransferError } from './response-transfer.js'
 import type { ResponseUploadProgress } from './response-upload.js'
@@ -382,7 +383,13 @@ export async function createRuntime(options: RuntimeOptions = {}): Promise<Runti
     pageEpochs?: Record<string, unknown>
     id?: string
     ok?: boolean
-    error?: { message?: string; code?: string; details?: unknown; suggestedAction?: string }
+    error?: {
+      message?: string
+      code?: string
+      retryable?: boolean
+      details?: unknown
+      suggestedAction?: string
+    }
     result?: unknown
     sentAt?: string
   }
@@ -462,6 +469,7 @@ export async function createRuntime(options: RuntimeOptions = {}): Promise<Runti
     if (message.ok === false) {
       const error = new Error(message.error?.message || 'extension command failed') as ErrorWithCode
       error.code = message.error?.code || 'EXTENSION_ERROR'
+      error.retryable = message.error?.retryable ?? errorRetryable(error.code)
       error.details = message.error?.details || null
       // 扩展侧没写建议时用错误码表兜底：漏设建议会让 agent 只看到一句报错
       error.suggestedAction =

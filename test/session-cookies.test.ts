@@ -129,6 +129,17 @@ describe('session cookiesGet filters', () => {
     const result = (await session.cookiesGet(7)) as { cookies: unknown[] }
     expect(result.cookies).toHaveLength(3)
   })
+
+  test('过滤后无 cookie 是成功的 FILTERED_OUT 空结果', async () => {
+    const { session } = createCookiesClearHarness('https://app.example.com/', cookies)
+
+    await expect(session.cookiesGet(7, { domain: 'missing.example' })).resolves.toMatchObject({
+      cookies: [],
+      total: 0,
+      empty: true,
+      emptyReason: 'FILTERED_OUT',
+    })
+  })
 })
 
 function createCookiesSetHarness(tabUrl: string, setCookieResult?: Record<string, unknown>) {
@@ -275,6 +286,23 @@ describe('session storage --session', () => {
 
     expect(evalCalls[0]?.expression).toContain('sessionStorage.length')
     expect(evalCalls[0]?.expression).not.toContain('localStorage')
+  })
+
+  test('缺失 key 和空 storage 分别返回 NO_MATCH 与 NO_DATA', async () => {
+    const { session } = createSessionEvalHarness()
+
+    await expect(session.storageGet(7, 'missing', null)).resolves.toMatchObject({
+      key: 'missing',
+      value: null,
+      empty: true,
+      emptyReason: 'NO_MATCH',
+    })
+    await expect(session.storageGet(7, null, null)).resolves.toMatchObject({
+      storage: {},
+      total: 0,
+      empty: true,
+      emptyReason: 'NO_DATA',
+    })
   })
 })
 

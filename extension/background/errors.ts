@@ -1,8 +1,10 @@
+import { errorRetryable } from '../../src/core/tool-error.js'
 import type { ErrorWithCode } from './types.js'
 
 export interface SerializedCommandError {
   message: string
   code?: string
+  retryable?: boolean
   details?: unknown
   suggestedAction?: string
   ref?: string
@@ -45,6 +47,7 @@ export function serializeCommandError(error: unknown): SerializedCommandError {
   return {
     message: err.message || 'extension command failed',
     code: err.code || 'EXTENSION_COMMAND_ERROR',
+    retryable: err.retryable ?? errorRetryable(err.code || 'EXTENSION_COMMAND_ERROR'),
     ...(typeof err.details !== 'undefined' ? { details: err.details } : {}),
     ...(err.suggestedAction ? { suggestedAction: err.suggestedAction } : {}),
     ...(err.ref ? { ref: err.ref } : {}),

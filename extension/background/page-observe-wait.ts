@@ -1,3 +1,4 @@
+import { createToolError } from '../../src/core/tool-error.js'
 import type { PageObserveDependencies } from './page-observe-context.js'
 import {
   PAGE_CONTEXT_DEEP_DOM_HELPERS_SOURCE,
@@ -22,7 +23,7 @@ async function pollUntil<TResult>(
     await new Promise((resolve) => setTimeout(resolve, 100))
   }
 
-  throw new Error(timeoutMessage)
+  throw createToolError('WAIT_NOT_CONFIRMED', timeoutMessage, { details: { timeoutMs: timeout } })
 }
 
 function waitForDebuggerEvent<TResult>(
@@ -49,7 +50,9 @@ function waitForDebuggerEvent<TResult>(
 
     const timeoutId = setTimeout(() => {
       cleanup()
-      reject(new Error(timeoutMessage))
+      reject(
+        createToolError('WAIT_NOT_CONFIRMED', timeoutMessage, { details: { timeoutMs: timeout } }),
+      )
     }, timeout)
 
     chrome.debugger.onEvent.addListener(listener)

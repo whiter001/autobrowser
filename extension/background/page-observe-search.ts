@@ -32,6 +32,8 @@ export interface SearchPageTextResult {
   limit: number
   readyState: string
   totalMatches: number
+  empty?: boolean
+  emptyReason?: 'NO_DATA' | 'NO_MATCH'
   returned: number
   /** 窗口、行数、字节或单行宽度发生截断 */
   truncated: boolean
@@ -102,6 +104,8 @@ export function computeSearchPageTextMatches(
     startLine,
     readyState: echo(readyState),
     totalMatches: matchedLines.size,
+    empty: matchedLines.size === 0,
+    ...(matchedLines.size === 0 ? { emptyReason: rawText.trim() ? 'NO_MATCH' : 'NO_DATA' } : {}),
     returned: 0,
     truncated: query.length > 1024 || pattern.length > 1024,
     windows,
@@ -234,6 +238,8 @@ ${SEARCH_TEXT_MATCH_HELPERS_SOURCE}
       ...(matches.nextStartLine !== undefined ? { nextStartLine: matches.nextStartLine } : {}),
       readyState: matches.readyState ?? 'complete',
       totalMatches: matches.totalMatches ?? 0,
+      ...(matches.empty !== undefined ? { empty: matches.empty } : {}),
+      ...(matches.emptyReason !== undefined ? { emptyReason: matches.emptyReason } : {}),
       returned: matches.returned ?? 0,
       truncated: matches.truncated ?? false,
       windows: matches.windows ?? [],
