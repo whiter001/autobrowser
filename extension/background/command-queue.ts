@@ -1,3 +1,11 @@
+import {
+  createCancellationError,
+  createOperationContext,
+  type OperationContext,
+} from './operation-context.js'
+
+export type CommandExecutionContext = OperationContext
+
 interface CommandQueueEntry {
   id: string
   key: string
@@ -16,12 +24,6 @@ interface CommandQueueEntry {
   error: string | null
 }
 
-export interface CommandExecutionContext {
-  readonly cancelled: boolean
-  readonly deadlineAt: string | null
-  throwIfCancelled: () => void
-}
-
 export interface CommandQueue {
   enqueue: <TResult>(
     key: string,
@@ -38,17 +40,12 @@ interface QueueItem<TResult = unknown> extends CommandQueueEntry {
   resolve: (value: TResult) => void
   reject: (reason: Error) => void
   settled: boolean
-}
-
-function createCancellationError(id: string, reason: string): Error & { code?: string } {
-  const error = new Error(`command ${id} cancelled: ${reason}`) as Error & { code?: string }
-  error.code = 'COMMAND_CANCELLED'
-  return error
+  operation?: ReturnType<typeof createOperationContext>
 }
 
 /**
  * 同一 tab 的页面命令保持 FIFO。任务有显式 id，relay 超时后可取消排队项；
- * 运行项无法中断底层 CDP，但会与队列脱钩，避免后续控制命令无限堆积。
+ * 运行项通过 AbortSignal 通知具体恢复动作，并与队列脱钩，避免后续控制命令无限堆积。
  */
 export function createCommandQueue(): CommandQueue {
   const queues = new Map<string, QueueItem[]>()
@@ -80,6 +77,7 @@ export function createCommandQueue(): CommandQueue {
     if (item.settled) return
     item.settled = true
     item.state = 'cancelled'
+    item.operation?.cancel(reason)
     itemsById.delete(item.id)
     recordHistory(item, 'cancelled', reason)
     item.reject(createCancellationError(item.id, reason))
@@ -100,17 +98,9 @@ export function createCommandQueue(): CommandQueue {
     }
     item.state = 'running'
     item.startedAt = new Date().toISOString()
-    const context: CommandExecutionContext = {
-      get cancelled() {
-        return (
-          item.state === 'cancelled' || (Number.isFinite(deadlineMs) && Date.now() >= deadlineMs)
-        )
-      },
-      deadlineAt: item.deadlineAt,
-      throwIfCancelled() {
-        if (this.cancelled) throw createCancellationError(item.id, 'cancelled or deadline elapsed')
-      },
-    }
+    const operation = createOperationContext(item.id, item.deadlineAt)
+    item.operation = operation
+    const context: OperationContext = operation.context
     // 同步异常也必须走队列清理路径；取消后即使底层任务迟到，后续步骤也能读到同一状态。
     const execute = async () => {
       context.throwIfCancelled()
@@ -144,6 +134,7 @@ export function createCommandQueue(): CommandQueue {
         },
       )
       .finally(() => {
+        operation.dispose()
         const current = queues.get(key)
         if (current?.[0] === item) current.shift()
         if (!current?.length) queues.delete(key)
@@ -208,7 +199,14 @@ export function createCommandQueue(): CommandQueue {
 
   function list(): CommandQueueEntry[] {
     const active = Array.from(itemsById.values()).map(
-      ({ task: _task, resolve: _resolve, reject: _reject, settled: _settled, ...entry }) => entry,
+      ({
+        task: _task,
+        resolve: _resolve,
+        reject: _reject,
+        settled: _settled,
+        operation: _operation,
+        ...entry
+      }) => entry,
     )
     return [...active, ...history]
   }

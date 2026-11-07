@@ -2,6 +2,7 @@ import { describe, expect, test } from 'bun:test'
 import { createConnectionRuntime } from '../extension/background/connection.js'
 import { createSessionDomain } from '../extension/background/session.js'
 import { createExtensionState } from '../extension/background/state.js'
+import { invalidatePageRefs } from '../extension/background/targeting.js'
 import type { DialogState, ExtensionState, TabWithId } from '../extension/background/types.js'
 
 class MockWebSocket {
@@ -290,6 +291,8 @@ function createConnectionHarness(): ConnectionHarness {
   const state = createExtensionState(57978)
   const runtime = createConnectionRuntime({
     state,
+    handleDebuggerDetach: (tabId) => state.targeting.attachedTabs.delete(tabId),
+    handlePageNavigation: (tabId) => invalidatePageRefs(state, tabId),
     network: {
       handleRequestPaused: async () => {},
       handleEvent: async () => {},

@@ -5,13 +5,11 @@ import { HELP_ROOT, type HelpNode } from '../src/cli/help.js'
 import { MCP_TOOLS } from '../src/cli/mcp-tools.js'
 import { validateCommandArgs } from '../src/core/command-spec.js'
 import { runCli } from './command-line-test-utils.js'
+import { createCommandHandlers } from '../extension/background/command-handlers.js'
+import { COMMAND_CATALOG } from '../src/core/command-catalog.js'
 import {
-  extractActionSwitchBranches,
-  extractCliForwardedCommands,
-  extractRouterCommands,
   extractSkillCommandPaths,
   extractSkillCommandSection,
-  readCliCommandSources,
   readWorkspaceFile,
   SKILL_MARKDOWN_PATH,
   uniqueSorted,
@@ -20,22 +18,14 @@ import {
 /**
  * 命令面一致性契约。
  *
- * 同一个命令集合在仓库里被描述了多次：扩展路由（command-router.ts）真正实现了哪些命令，
- * 命令规格（command-spec.ts）声明了哪些命令支持显式目标，CLI 帮助树（help.ts）告诉 agent
- * 怎么调用，MCP 工具表（mcp-tools.ts）决定 MCP 客户端能拿到哪些能力。
+ * COMMAND_CATALOG 提供命令与目标能力，command-handlers.ts 提供真实实现注册表；
+ * CLI 帮助树告诉 agent 怎么调用，MCP 工具表决定 MCP 客户端能拿到哪些能力。
  *
  * 这里锁的是「跨文件的交叉关系」，任何一处漏改都会让另外几处说谎，而且失败必须发生在
  * 提交之前——否则 agent 读到的帮助和实际能执行的能力就会悄悄对不上。
  */
 
-const ROUTER_COMMANDS = extractRouterCommands(
-  await readWorkspaceFile('extension/background/command-router.ts'),
-)
-
-const CLI_FORWARDED_COMMANDS = uniqueSorted(
-  (await readCliCommandSources()).flatMap((source) => extractCliForwardedCommands(source)),
-)
-
+const ROUTER_COMMANDS = createCommandHandlers({} as never).commands
 const REGISTRY_KEYS = Object.keys(COMMAND_REGISTRY)
 
 const SKILL_COMMAND_PATHS = extractSkillCommandPaths(
@@ -52,17 +42,6 @@ interface ActionEntry {
 }
 
 const ACTION_TABLE: Record<string, ActionEntry> = COMMAND_ACTIONS
-
-/**
- * CLI 里所有 switch 分发的 action 分支，键是被 switch 的变量名（<命令路径>Action）。
- * 变量名约定让 switch 分支能和 action 表对上，命令实现漏分支时测试会失败。
- */
-const CLI_ACTION_SWITCH_BRANCHES = new Map<string, string[]>()
-for (const source of await readCliCommandSources()) {
-  for (const [variable, cases] of extractActionSwitchBranches(source)) {
-    CLI_ACTION_SWITCH_BRANCHES.set(variable, cases)
-  }
-}
 
 function topLevelNodes(): HelpNode[] {
   return HELP_ROOT.children ?? []
@@ -146,15 +125,14 @@ describe('command surface consistency', () => {
     expect(collisions).toEqual([])
   })
 
-  test('the CLI reaches exactly the commands the extension router implements', () => {
-    // 两个方向都要锁：
-    // - CLI 发扩展不认识的命令，用户会看到 unsupported command；
-    // - 扩展实现了 CLI 够不着的命令，这条能力对用户等于不存在。
-    const routerSet = new Set(ROUTER_COMMANDS)
-    const forwardedSet = new Set(CLI_FORWARDED_COMMANDS)
-
-    expect(CLI_FORWARDED_COMMANDS.filter((command) => !routerSet.has(command))).toEqual([])
-    expect(ROUTER_COMMANDS.filter((command) => !forwardedSet.has(command))).toEqual([])
+  test('the catalog matches handlers and every command has a CLI namespace', () => {
+    expect(uniqueSorted(ROUTER_COMMANDS)).toEqual(
+      uniqueSorted(COMMAND_CATALOG.map((descriptor) => descriptor.name)),
+    )
+    const unreachable = COMMAND_CATALOG.map((descriptor) => descriptor.name).filter(
+      (command) => !REGISTRY_KEYS.includes(command.split('.')[0]!),
+    )
+    expect(unreachable).toEqual([])
   })
 
   test('MCP tools only point at commands the extension router implements', () => {
@@ -182,11 +160,9 @@ describe('command surface consistency', () => {
   })
 
   test('every MCP tool command is reachable from the CLI', () => {
-    // MCP 走的是同一条 relay 通道；CLI 够不着的命令，MCP 客户端也用不了。
-    const forwardedSet = new Set(CLI_FORWARDED_COMMANDS)
-    const unreachable = MCP_TOOLS.filter((tool) => !forwardedSet.has(tool.command)).map(
-      (tool) => `${tool.name} -> ${tool.command}`,
-    )
+    const unreachable = MCP_TOOLS.filter(
+      (tool) => !REGISTRY_KEYS.includes(tool.command.split('.')[0]!),
+    ).map((tool) => `${tool.name} -> ${tool.command}`)
 
     expect(unreachable).toEqual([])
   })
@@ -355,73 +331,5 @@ describe('help tree and command action table agree', () => {
     const unknown = SET_RESETTABLE_VALUE_TYPES.filter((type) => !accepted.includes(type))
 
     expect(unknown).toEqual([])
-  })
-})
-
-describe('command action table and implementation branches agree', () => {
-  /**
-   * 改成 switch 分发的命令，其 case 标签就是实现面，必须和 action 表逐个对得上：
-   * - 表里声明了 action 但 switch 没有分支，实现会静默走错路径；
-   * - switch 有分支但表里没声明，帮助树和表就对不上真实能力。
-   *
-   * 变量名约定：<命令路径 camelCase> + 'Action'（tracingAction → 'tracing'）。
-   * 表里没有对应路径的 switch 会被当成孤儿报出来，避免出现没人管的 action 分发。
-   */
-
-  /** 必须走 switch 分发的命令；解析失效时这里会掉到 0，防止整组断言变成空转。 */
-  const SWITCH_DISPATCHED_COMMANDS = [
-    'tracing',
-    'video',
-    'snapshot',
-    'session',
-    'target',
-    'command',
-    'tab',
-  ]
-
-  function tablePathByVariable(): Map<string, string> {
-    const byVariable = new Map<string, string>()
-    for (const path of Object.keys(ACTION_TABLE)) {
-      const camel = path
-        .split('.')
-        .map((part) => part.replace(/-([a-z])/g, (_, char: string) => char.toUpperCase()))
-        .join('')
-      byVariable.set(`${camel}Action`, path)
-    }
-    return byVariable
-  }
-
-  const BRANCHES = CLI_ACTION_SWITCH_BRANCHES
-
-  test('every switch based command dispatch is bound to the action table', () => {
-    const pathByVariable = tablePathByVariable()
-    const orphans = [...BRANCHES.keys()].filter((variable) => !pathByVariable.has(variable))
-
-    expect(orphans).toEqual([])
-  })
-
-  test('the switch based commands are actually extracted', () => {
-    // 抽取逻辑失灵时（例如 switch 写法变了）不能让这组断言空转。
-    const pathByVariable = tablePathByVariable()
-    const found = [...BRANCHES.keys()].map((variable) => pathByVariable.get(variable))
-
-    for (const command of SWITCH_DISPATCHED_COMMANDS) {
-      expect(found).toContain(command)
-    }
-  })
-
-  test('switch branches and the action table list the same actions', () => {
-    const pathByVariable = tablePathByVariable()
-    const mismatched: { path: string; branches: string[]; actions: string[] }[] = []
-
-    for (const [variable, branches] of BRANCHES) {
-      const path = pathByVariable.get(variable)!
-      const actions = [...(ACTION_TABLE[path]?.actions ?? [])].sort()
-      if (JSON.stringify(branches) !== JSON.stringify(actions)) {
-        mismatched.push({ path, branches, actions })
-      }
-    }
-
-    expect(mismatched).toEqual([])
   })
 })

@@ -46,8 +46,6 @@ interface FileTransferOptions {
   retryDelayMs?: number
 }
 
-const CANCEL_POLL_INTERVAL_MS = 200
-
 function toHex(buffer: ArrayBuffer): string {
   return [...new Uint8Array(buffer)].map((value) => value.toString(16).padStart(2, '0')).join('')
 }
@@ -95,14 +93,11 @@ export function createFileTransferDomain(options: FileTransferOptions): FileTran
           Math.max(0, deadlineMs - Date.now()),
         )
       : undefined
-    // 命令被取消时队列不会中断底层任务，这里轮询取消标记并主动中止 fetch/上传
-    const cancelTimer = args.context
-      ? setInterval(() => {
-          if (args.context?.cancelled) {
-            controller.abort(new Error('File transfer was cancelled'))
-          }
-        }, CANCEL_POLL_INTERVAL_MS)
-      : undefined
+    const onCommandCancel = () => {
+      controller.abort(args.context?.signal.reason || new Error('File transfer was cancelled'))
+    }
+    if (args.context?.signal.aborted) onCommandCancel()
+    args.context?.signal.addEventListener('abort', onCommandCancel, { once: true })
 
     const retries = args.retries ?? DEFAULT_DOWNLOAD_RETRIES
     const retryDelayMs = args.retryDelayMs ?? DEFAULT_DOWNLOAD_RETRY_DELAY_MS
@@ -246,7 +241,7 @@ export function createFileTransferDomain(options: FileTransferOptions): FileTran
       }
     } finally {
       if (deadlineTimer !== undefined) clearTimeout(deadlineTimer)
-      if (cancelTimer !== undefined) clearInterval(cancelTimer)
+      args.context?.signal.removeEventListener('abort', onCommandCancel)
     }
   }
 

@@ -36,14 +36,17 @@ function createState(socket: unknown, fileUploadSupported = true): ExtensionStat
 }
 
 function createCancelledContext(cancelledAfterMs: number): CommandExecutionContext {
-  const startedAt = Date.now()
+  const controller = new AbortController()
+  if (cancelledAfterMs <= 0) controller.abort(new Error('cancelled'))
+  else setTimeout(() => controller.abort(new Error('cancelled')), cancelledAfterMs)
   return {
     get cancelled() {
-      return Date.now() - startedAt >= cancelledAfterMs
+      return controller.signal.aborted
     },
+    signal: controller.signal,
     deadlineAt: null,
     throwIfCancelled() {
-      if (this.cancelled) throw new Error('cancelled')
+      if (this.cancelled) throw controller.signal.reason
     },
   }
 }

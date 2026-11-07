@@ -54,9 +54,11 @@ interface BatchCommandSummary {
 type BatchCommandExecutor = (
   command: string,
   args?: CommandArgs,
-  skipQueue?: boolean,
-  request?: { id?: string; deadlineAt?: string },
-  context?: CommandExecutionContext,
+  options?: {
+    skipQueue?: boolean
+    request?: { id?: string; deadlineAt?: string }
+    context?: CommandExecutionContext
+  },
 ) => Promise<unknown>
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -266,7 +268,7 @@ export function createBatchCommandHandler(executeCommand: BatchCommandExecutor) 
       context?.throwIfCancelled()
       try {
         // batch 已在自身队列槽内执行，嵌套步骤共享取消状态，不能重新创建上下文。
-        const result = await executeCommand(step.command, step.args, true, undefined, context)
+        const result = await executeCommand(step.command, step.args, { skipQueue: true, context })
         context?.throwIfCancelled()
         return {
           result: {

@@ -115,8 +115,14 @@ describe('command queue', () => {
       { id: 'context', deadlineAt: new Date(Date.now() + 20).toISOString() },
     )
     expect(context.cancelled).toBe(false)
+    let aborts = 0
+    context.signal.addEventListener('abort', () => {
+      aborts += 1
+    })
     await flush(30)
     expect(context.cancelled).toBe(true)
+    expect(context.signal.aborted).toBe(true)
+    expect(aborts).toBe(1)
     expect(() => context.throwIfCancelled()).toThrow('deadline elapsed')
     expect(queue.reset('tab:1')).toBe(1)
     await expect(pending).rejects.toMatchObject({ code: 'COMMAND_CANCELLED' })

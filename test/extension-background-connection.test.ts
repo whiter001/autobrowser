@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test'
 import { createConnectionRuntime } from '../extension/background/connection.js'
 import { createExtensionState } from '../extension/background/state.js'
+import { invalidatePageRefs } from '../extension/background/targeting.js'
 import {
   CONNECTION_DIAGNOSTICS_STORAGE_KEY,
   RELAY_PORT_STORAGE_KEY,
@@ -157,6 +158,8 @@ describe('extension background connection', () => {
 
     const runtime = createConnectionRuntime({
       state,
+      handleDebuggerDetach: (tabId) => state.targeting.attachedTabs.delete(tabId),
+      handlePageNavigation: (tabId) => invalidatePageRefs(state, tabId),
       network: {
         handleRequestPaused: async () => {},
         handleEvent: async () => {},
@@ -314,6 +317,8 @@ describe('extension background connection', () => {
 
     const runtime = createConnectionRuntime({
       state,
+      handleDebuggerDetach: (tabId) => state.targeting.attachedTabs.delete(tabId),
+      handlePageNavigation: (tabId) => invalidatePageRefs(state, tabId),
       network: {
         handleRequestPaused: async () => {},
         handleEvent: async () => {},
@@ -422,6 +427,8 @@ describe('extension background connection', () => {
     const state = createExtensionState(57978)
     const runtime = createConnectionRuntime({
       state,
+      handleDebuggerDetach: (tabId) => state.targeting.attachedTabs.delete(tabId),
+      handlePageNavigation: (tabId) => invalidatePageRefs(state, tabId),
       network: { handleRequestPaused: async () => {}, handleEvent: async () => {} },
       listTabs: async () => [],
       handleCommand: async () => ({ ok: true }),

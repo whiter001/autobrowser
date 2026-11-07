@@ -2,11 +2,13 @@ import { parseSearchQueryRegex } from './search.js'
 import { getCommandRequestBudgetMs } from './command-budget.js'
 import { MAX_DOWNLOAD_RETRIES, MAX_DOWNLOAD_RETRY_DELAY_MS } from './file-transfer.js'
 
-interface CommandSpec {
-  name: string
-  supportsTabTarget?: boolean
-  supportsFrameTarget?: boolean
-}
+import { COMMAND_CATALOG, getCommandDescriptor, type CommandDescriptor } from './command-catalog.js'
+
+export {
+  commandSupportsFrameTarget,
+  commandSupportsTabTarget,
+  type CommandDescriptor,
+} from './command-catalog.js'
 
 interface CommandArgsValidationError extends Error {
   code?: string
@@ -16,128 +18,14 @@ interface CommandArgsValidationError extends Error {
 export const DROP_MAX_FILE_BYTES = 32 * 1024 * 1024
 export const DROP_MAX_TOTAL_BYTES = 64 * 1024 * 1024
 
-const TAB_TARGET_COMMANDS = [
-  'actions',
-  'back',
-  'check',
-  'click',
-  'clipboard',
-  'close',
-  'cdp',
-  'console',
-  'cookies',
-  'dblclick',
-  'dialog',
-  'download',
-  'drag',
-  'drop',
-  'errors',
-  'eval',
-  'fill',
-  'fillform',
-  'feed',
-  'find',
-  'focus',
-  'forward',
-  'frame',
-  'get',
-  'goto',
-  'highlight',
-  'hover',
-  'is',
-  'keyboard',
-  'locator',
-  'media',
-  'mousemove',
-  'mousedown',
-  'mouseup',
-  'mousewheel',
-  'network',
-  'pdf',
-  'press',
-  'reload',
-  'screenshot',
-  'scroll',
-  'scrollintoview',
-  'search',
-  'select',
-  'set',
-  'snapshot',
-  'state',
-  'storage',
-  'tracing',
-  'type',
-  'uncheck',
-  'video',
-  'upload',
-  'wait',
-  'webmcp',
-  'window',
-] as const
+/** 兼容既有的目标规格调用方；完整控制面见 COMMAND_CATALOG。 */
+export const COMMAND_SPECS: CommandDescriptor[] = COMMAND_CATALOG.filter(
+  (spec) => spec.supportsTabTarget,
+)
 
-const FRAME_TARGET_COMMANDS = [
-  'check',
-  'click',
-  'dblclick',
-  'drag',
-  'drop',
-  'eval',
-  'fill',
-  'fillform',
-  'feed',
-  'find',
-  'focus',
-  'get',
-  'highlight',
-  'hover',
-  'is',
-  'locator',
-  'media',
-  'goto',
-  'reload',
-  'screenshot',
-  'scroll',
-  'scrollintoview',
-  'search',
-  'select',
-  'snapshot',
-  'storage',
-  'type',
-  'uncheck',
-  'upload',
-  'wait',
-  'webmcp',
-] as const
-
-const FRAME_TARGET_COMMAND_SET = new Set<string>(FRAME_TARGET_COMMANDS)
-
-export const COMMAND_SPECS: CommandSpec[] = TAB_TARGET_COMMANDS.map((name) => ({
-  name,
-  supportsTabTarget: true,
-  ...(FRAME_TARGET_COMMAND_SET.has(name) ? { supportsFrameTarget: true } : {}),
-}))
-
-const COMMAND_SPECS_BY_NAME = new Map(COMMAND_SPECS.map((spec) => [spec.name, spec]))
-
-/**
- * 按命令名查规格；未知命令返回 undefined，由调用方按“不支持显式目标”处理。
- */
-export function getCommandSpec(command: string): CommandSpec | undefined {
-  return COMMAND_SPECS_BY_NAME.get(command)
-}
-
-/**
- * 判断命令是否支持显式 tab 目标。未知命令一律返回 false——宁可少注入，也不要把 tabId 塞给不认识它的命令。
- */
-export function commandSupportsTabTarget(command: string): boolean {
-  return getCommandSpec(command)?.supportsTabTarget === true
-}
-
-/**
- * 判断命令是否支持显式 frame 目标，语义与 tab 判定一致。
- */
-export function commandSupportsFrameTarget(command: string): boolean {
-  return getCommandSpec(command)?.supportsFrameTarget === true
+export function getCommandSpec(command: string): CommandDescriptor | undefined {
+  const descriptor = getCommandDescriptor(command)
+  return descriptor?.supportsTabTarget ? descriptor : undefined
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

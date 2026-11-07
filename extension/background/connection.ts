@@ -49,6 +49,8 @@ interface ConnectionRuntimeDependencies {
   storageLocalSet: (items: Record<string, unknown>) => Promise<void>
   clearTabRuntimeState: (tabId: number) => void
   detachDebugger: (tabId: number) => Promise<void>
+  handleDebuggerDetach: (tabId: number) => void
+  handlePageNavigation: (tabId: number) => void
   getDialogStatus: () => Record<string, unknown>
 }
 
@@ -69,6 +71,8 @@ export function createConnectionRuntime({
   storageLocalSet,
   clearTabRuntimeState,
   detachDebugger,
+  handleDebuggerDetach,
+  handlePageNavigation,
   getDialogStatus,
 }: ConnectionRuntimeDependencies) {
   const HEARTBEAT_INTERVAL_MS = 30_000
@@ -277,11 +281,7 @@ export function createConnectionRuntime({
         ((method === 'Page.frameNavigated' && !navigationParams.frame?.parentId) ||
           method === 'Page.navigatedWithinDocument')
       ) {
-        state.targeting.pageEpochs.set(
-          source.tabId,
-          (state.targeting.pageEpochs.get(source.tabId) || 1) + 1,
-        )
-        state.targeting.selectedFrames.delete(source.tabId)
+        handlePageNavigation(source.tabId)
       }
 
       if (method === 'Runtime.consoleAPICalled') {
@@ -457,7 +457,7 @@ export function createConnectionRuntime({
 
       tracing?.handleDetach(source.tabId)
       video?.handleDetach(source.tabId)
-      state.targeting.attachedTabs.delete(source.tabId)
+      handleDebuggerDetach(source.tabId)
     })
   }
 

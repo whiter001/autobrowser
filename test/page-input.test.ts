@@ -1,20 +1,9 @@
 import { describe, expect, test } from 'bun:test'
 import { createPageInputDomain } from '../extension/background/page-input.js'
 import { createExtensionState } from '../extension/background/state.js'
-import type { CommandExecutionContext } from '../extension/background/command-queue.js'
-
-// 提取真实生产函数（不启动扩展 runtime），仅替换 CDP/Chrome 准备边界。
-const backgroundSource = new Bun.Transpiler({ loader: 'ts' }).transformSync(
-  await Bun.file(new URL('../extension/background-main.ts', import.meta.url)).text(),
-)
-function extractBackgroundFunction(name: string) {
-  const start = backgroundSource.search(new RegExp(`^(?:async )?function ${name}\\(`, 'm'))
-  if (start < 0) throw new Error(`missing production function: ${name}`)
-  const rest = backgroundSource.slice(start)
-  const end = rest.indexOf('\n}\n')
-  if (end < 0) throw new Error(`missing function end: ${name}`)
-  return rest.slice(0, end + 2)
-}
+import { createDebuggerCommandSender } from '../extension/background/debugger-command.js'
+import { createPageEvaluation } from '../extension/background/page-evaluation.js'
+import { createOperationContext } from '../extension/background/operation-context.js'
 
 function inputGate() {
   let release!: () => void
@@ -70,28 +59,21 @@ function createProductionDispatchInput(stage: string, cancel: () => void = () =>
       cancel()
     return { result: { value: { found: true, x: 10, y: 20, width: 10, height: 10 } } }
   }
-  const production = new Function(
-    'getFrameExecutionContext',
-    'ensureDebuggerAttached',
-    'sendRawDebuggerCommand',
-    `const DEFAULT_EVALUATE_TIMEOUT_MS = 25000;
-     const frameWorldContextCache = new Map();
-     ${[
-       'sendDebuggerCommand',
-       'evaluateInTabContext',
-       'isStaleWorldContextError',
-       'isEvaluationTimeoutError',
-       'createEvaluationTimeoutError',
-       'createPageEvaluationExceptionError',
-       'unwrapEvaluationResult',
-     ]
-       .map(extractBackgroundFunction)
-       .join('\n')}
-     return { evaluateInTabContext, sendDebuggerCommand };`,
-  )(getFrameExecutionContext, ensureDebuggerAttached, sendRawDebuggerCommand) as Pick<
+  const { sendDebuggerCommand } = createDebuggerCommandSender({
+    ensureDebuggerAttached,
+    sendRawDebuggerCommand: sendRawDebuggerCommand as never,
+  })
+  const production: Pick<
     Parameters<typeof createPageInputDomain>[0],
     'evaluateInTabContext' | 'sendDebuggerCommand'
-  >
+  > = {
+    sendDebuggerCommand,
+    ...createPageEvaluation({
+      getFrameExecutionContext: getFrameExecutionContext as never,
+      sendDebuggerCommand,
+      clearWorldContext: () => {},
+    }),
+  }
   const pageInput = createPageInputDomain({
     state: createExtensionState(1),
     getTargetTab: async () => ({ id: 1 }) as never,
@@ -284,24 +266,8 @@ describe('evaluateScript top-level function body compatibility', () => {
 // 可取消的命令执行上下文：命令队列运行期通过 cancelled 表达取消/超时，
 // page-input 在每个新 CDP 副作用之前读取它
 function createCancellableContext() {
-  let cancelled = false
-  const context: CommandExecutionContext = {
-    get cancelled() {
-      return cancelled
-    },
-    deadlineAt: null,
-    throwIfCancelled() {
-      if (cancelled) {
-        throw Object.assign(new Error('command cancelled'), { code: 'COMMAND_CANCELLED' })
-      }
-    },
-  }
-  return {
-    context,
-    cancel() {
-      cancelled = true
-    },
-  }
+  const operation = createOperationContext('page-input-test', null)
+  return { context: operation.context, cancel: () => operation.cancel('test cancellation') }
 }
 
 function createPageInput(evaluateValue: unknown) {

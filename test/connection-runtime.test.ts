@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test'
 import { createConnectionRuntime } from '../extension/background/connection.js'
 import { createExtensionState } from '../extension/background/state.js'
+import { invalidatePageRefs } from '../extension/background/targeting.js'
 import { DEFAULT_RELAY_PORT, RELAY_PORT_STORAGE_KEY, STORAGE_KEY } from '../extension/shared.js'
 import type { TabSummary } from '../extension/background/types.js'
 import { mkdtemp, rm } from 'node:fs/promises'
@@ -128,6 +129,8 @@ describe('connection runtime', () => {
       const result = { log: { entries: [{ response: { content: { text: body } } }] } }
       const connection = createConnectionRuntime({
         state,
+        handleDebuggerDetach: (tabId) => state.targeting.attachedTabs.delete(tabId),
+        handlePageNavigation: (tabId) => invalidatePageRefs(state, tabId),
         network: { handleRequestPaused: async () => {}, handleEvent: async () => {} },
         listTabs: async () => [],
         handleCommand: async (message) => {
@@ -276,6 +279,8 @@ describe('connection runtime', () => {
 
       const connection = createConnectionRuntime({
         state,
+        handleDebuggerDetach: (tabId) => state.targeting.attachedTabs.delete(tabId),
+        handlePageNavigation: (tabId) => invalidatePageRefs(state, tabId),
         network: {
           handleRequestPaused: async () => {},
           handleEvent: async () => {},
@@ -429,6 +434,8 @@ describe('connection runtime', () => {
 
       const connection = createConnectionRuntime({
         state,
+        handleDebuggerDetach: (tabId) => state.targeting.attachedTabs.delete(tabId),
+        handlePageNavigation: (tabId) => invalidatePageRefs(state, tabId),
         network: {
           handleRequestPaused: async () => {},
           handleEvent: async () => {},

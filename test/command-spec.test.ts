@@ -6,28 +6,8 @@ import {
   getCommandSpec,
   validateCommandArgs,
 } from '../src/core/command-spec.js'
-import {
-  extractCliForwardedCommands,
-  extractRouterCommands,
-  readCliCommandSources,
-  readWorkspaceFile,
-  uniqueSorted,
-} from './command-surface-utils.js'
-
-const NON_AMBIENT_ROUTER_COMMANDS = new Set([
-  'open',
-  'batch',
-  'script',
-  'status',
-  'tab.close',
-  'tab.list',
-  'tab.new',
-  'tab.select',
-  'downloads',
-  'target',
-  'command',
-  'extension',
-])
+import { createCommandHandlers } from '../extension/background/command-handlers.js'
+import { COMMAND_CATALOG } from '../src/core/command-catalog.js'
 
 describe('command specs', () => {
   test('validates media readiness as part of the media request', () => {
@@ -120,25 +100,20 @@ describe('command specs', () => {
     expect(new Set(names).size).toBe(names.length)
   })
 
-  test('keeps targetable command specs aligned with the extension router', async () => {
-    const routerSource = await readWorkspaceFile('extension/background/command-router.ts')
-    const routerCommands = extractRouterCommands(routerSource)
-    const targetableRouterCommands = routerCommands.filter(
-      (command) => !NON_AMBIENT_ROUTER_COMMANDS.has(command),
-    )
+  test('keeps targetable command specs aligned with the extension handlers', () => {
+    const routerCommands = createCommandHandlers({} as never).commands
+    const targetableRouterCommands = routerCommands
+      .filter((command) => commandSupportsTabTarget(command))
+      .sort()
 
     expect(COMMAND_SPECS.map((spec) => spec.name).sort()).toEqual(targetableRouterCommands)
   })
 
-  test('keeps CLI forwarded commands supported by the extension router', async () => {
-    const routerSource = await readWorkspaceFile('extension/background/command-router.ts')
-    const routerCommands = new Set(extractRouterCommands(routerSource))
-    const cliCommands = uniqueSorted(
-      (await readCliCommandSources()).flatMap((source) => extractCliForwardedCommands(source)),
-    )
-    const missingRouterCommands = cliCommands.filter((command) => !routerCommands.has(command))
+  test('keeps the command catalog complete for extension handlers', () => {
+    const routerCommands = createCommandHandlers({} as never).commands
+    const catalogCommands = COMMAND_CATALOG.map((descriptor) => descriptor.name).sort()
 
-    expect(missingRouterCommands).toEqual([])
+    expect([...routerCommands].sort()).toEqual(catalogCommands)
   })
 
   test('validates common command argument shapes', () => {

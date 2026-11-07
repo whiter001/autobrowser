@@ -1,5 +1,6 @@
 import { clearSelectedFrame, getPageEpoch, invalidatePageRefs } from './targeting.js'
 import type { CommandExecutionContext } from './command-queue.js'
+import { isDeadlineExceeded, withHardDeadline } from './operation-context.js'
 import type { TabInput } from './types.js'
 import type { PageInputContext } from './page-input-context.js'
 
@@ -14,34 +15,6 @@ const NAVIGATION_DISPATCH_TIMEOUT_MS = 5000
 const READY_STATE_PROBE_HARD_TIMEOUT_MS = 3000
 // 页内 MutationObserver 探测按剩余预算自兜底，这里只给 CDP 回执留一点额外余量
 const SETTLE_PROBE_ALLOWANCE_MS = 6000
-
-const CDP_DEADLINE_EXCEEDED = 'CDP_DEADLINE_EXCEEDED'
-
-/** 给任意 Promise 加硬上界：超时报可识别的 code，调用方据此区分"没回执"与真实错误。 */
-function withHardDeadline<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
-  const boundedMs = Math.max(1, Math.floor(ms))
-  let timer: ReturnType<typeof setTimeout> | null = null
-  const deadline = new Promise<never>((_resolve, reject) => {
-    timer = setTimeout(() => {
-      const error = new Error(`${label} got no CDP response within ${boundedMs}ms`) as Error & {
-        code?: string
-      }
-      error.code = CDP_DEADLINE_EXCEEDED
-      reject(error)
-    }, boundedMs)
-  })
-  return Promise.race([promise, deadline]).finally(() => {
-    if (timer) clearTimeout(timer)
-  }) as Promise<T>
-}
-
-function isDeadlineExceeded(error: unknown): boolean {
-  return (
-    typeof error === 'object' &&
-    error !== null &&
-    (error as { code?: string }).code === CDP_DEADLINE_EXCEEDED
-  )
-}
 
 interface WaitForPageSettledOptions {
   timeoutMs?: number
