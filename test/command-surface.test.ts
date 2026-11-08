@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { COMMAND_REGISTRY } from '../src/cli/commands/index.js'
+import { COMMAND_LOADERS } from '../src/cli/commands/index.js'
 import { COMMAND_ACTIONS, SET_RESETTABLE_VALUE_TYPES } from '../src/cli/commands/actions.js'
 import { HELP_ROOT, type HelpNode } from '../src/cli/help.js'
 import { MCP_TOOLS } from '../src/cli/mcp-tools.js'
@@ -26,7 +26,7 @@ import {
  */
 
 const ROUTER_COMMANDS = createCommandHandlers({} as never).commands
-const REGISTRY_KEYS = Object.keys(COMMAND_REGISTRY)
+const REGISTRY_KEYS = Object.keys(COMMAND_LOADERS)
 
 const SKILL_COMMAND_PATHS = extractSkillCommandPaths(
   extractSkillCommandSection(await readWorkspaceFile(SKILL_MARKDOWN_PATH)),

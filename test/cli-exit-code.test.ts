@@ -3,7 +3,7 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { main } from '../src/cli.js'
-import { COMMAND_REGISTRY } from '../src/cli/commands/index.js'
+import { COMMAND_LOADERS } from '../src/cli/commands/index.js'
 import type { CommandHandler } from '../src/cli/commands/types.js'
 
 const failure = {
@@ -36,13 +36,14 @@ async function runCli(argv: string[], payload: unknown = success, handler?: Comm
     return true
   })
   process.env.AUTOBROWSER_HOME = homeDir
-  if (handler) COMMAND_REGISTRY['test-exit-code'] = handler
+  // 注册表是懒加载的，注入测试命令时提供一个直接返回 handler 的加载器
+  if (handler) COMMAND_LOADERS['test-exit-code'] = async () => handler
 
   try {
     const exitCode = await main(argv, { openUrl: async () => {} })
     return { exitCode, stdout: stdout.join(''), stderr: stderr.join(''), requestCount }
   } finally {
-    delete COMMAND_REGISTRY['test-exit-code']
+    delete COMMAND_LOADERS['test-exit-code']
     fetchSpy.mockRestore()
     stdoutSpy.mockRestore()
     stderrSpy.mockRestore()

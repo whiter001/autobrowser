@@ -5,10 +5,9 @@
 import { readFile } from 'node:fs/promises'
 import { getStatus, isRecord } from './cli/client.js'
 import { CLI_ERROR_CODES, CliUsageError, writeCliError } from './cli/cli-error.js'
-import { COMMAND_REGISTRY } from './cli/commands/index.js'
+import { COMMAND_LOADERS } from './cli/commands/index.js'
 import { type CommandContext, type CommandResultPayload } from './cli/commands/types.js'
 import { createConnectionFlow } from './cli/connection-flow.js'
-import { collectHarFromNetwork, writeHarFile } from './cli/har.js'
 import { getCommandOptionCandidates, printHelp } from './cli/help.js'
 import { resolveInvocation } from './cli/invocation.js'
 import { didYouMeanCommand, optionHintSuffix } from './cli/option-hints.js'
@@ -16,12 +15,9 @@ import { writeResult as baseWriteResult } from './cli/output.js'
 import { presentCommandResponse } from './cli/response-presenters.js'
 import { extractScreenshotData, resolveScreenshotOutputPath } from './cli/screenshot.js'
 import { type CliDependencies, type CliFlags } from './cli/types.js'
-import { createWebDriverCommandHandler } from './cli/webdriver.js'
 
 // 未知命令的纠错候选来自命令注册表：它是"哪些命令真的能跑"的唯一事实来源
-const COMMAND_NAME_CANDIDATES = Object.keys(COMMAND_REGISTRY).filter(
-  (name) => !name.startsWith('-'),
-)
+const COMMAND_NAME_CANDIDATES = Object.keys(COMMAND_LOADERS).filter((name) => !name.startsWith('-'))
 
 /**
  * flags 解析失败时也要知道该用 JSON 还是文本输出。
@@ -109,10 +105,12 @@ async function runMain(
 ): Promise<number | void> {
   const { flags, args, homeDir } = await resolveInvocation(argv)
   const [command, ...rest] = args
+  // WebDriver 引擎只有 Firefox / WebKit 会用到，chromium 走扩展通道。
+  // 这里按需加载，否则每条 chromium 命令都要白白解析一遍 WebDriver 实现。
   const webDriverCommand =
     flags.engine === 'chromium'
       ? null
-      : createWebDriverCommandHandler({
+      : (await import('./cli/webdriver.js')).createWebDriverCommandHandler({
           engine: flags.engine,
           driverUrl:
             flags.webdriverUrl ||
@@ -148,22 +146,30 @@ async function runMain(
     getCdpUrl,
     extractScreenshotData,
     resolveScreenshotOutputPath,
-    collectHarFromNetwork: async (baseUrl, startedAt) =>
-      await collectHarFromNetwork(baseUrl, startedAt, await resolveCommandToken()),
-    writeHarFile,
+    // HAR 相关实现按需加载：只有 network har 这类命令真正用到时才解析它。
+    collectHarFromNetwork: async (baseUrl, startedAt) => {
+      const { collectHarFromNetwork } = await import('./cli/har.js')
+      return await collectHarFromNetwork(baseUrl, startedAt, await resolveCommandToken())
+    },
+    writeHarFile: async (har, outputPath) => {
+      const { writeHarFile } = await import('./cli/har.js')
+      return await writeHarFile(har, outputPath)
+    },
   }
 
   if (!command) {
     return writeHelp()
   }
 
-  const handler = COMMAND_REGISTRY[command]
-  if (!handler) {
+  const loadHandler = COMMAND_LOADERS[command]
+  if (!loadHandler) {
     // 未知命令曾经直接打印整页根 help，用户和 agent 只能自己在上百行里找差异
     return writeCliError(createUnknownCommandError(command), { json: flags.json, command })
   }
 
   try {
+    // 实现按需加载：只有真正执行的那个命令才会加载自己的模块
+    const handler = await loadHandler()
     const code = await handler(rest, context)
     if (typeof code === 'number' && code !== 0) return code
     return lastResponseFailed ? 1 : code
