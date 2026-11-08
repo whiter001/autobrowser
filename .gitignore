@@ -16,3 +16,4 @@ node_modules/
 .autobrowser-edge-profile/
 .mini-agent/
 tmp/
+visual-diff-out/

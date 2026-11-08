@@ -47,6 +47,7 @@
     "build:cli": "bun scripts/build-cli.ts",
     "build:chrome": "bun scripts/build-chrome.ts",
     "build:launcher": "bun scripts/build-launcher-go.ts",
+    "visual-diff": "bun scripts/visual-diff.ts",
     "build": "bun run build:cli && bun run build:chrome && bun run build:launcher",
     "link:bun": "bun scripts/link-bun.ts",
     "postinstall": "node scripts/npm-postinstall.mjs",

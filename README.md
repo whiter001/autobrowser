@@ -310,6 +310,25 @@ autobrowser screenshot --screenshot-dir ./shots --screenshot-format jpeg --scree
 
 `--full` 会截取整页，`--element` 只截取某个元素（接受选择器或 `@eN` 引用，与 `--full` 互斥），`--annotate` 会给元素添加编号标签，而 `--screenshot-format` / `--screenshot-quality` 用于控制编码后的图片输出。
 
+## 视觉差异比对
+
+仓库开发期脚本 `scripts/visual-diff.ts` 会把 Figma 导出图与页面截图对齐后逐像素比较，输出差异报告。它面向「实现结果是否和设计稿一致」这类问题，不属于 CLI 的公开命令面。
+
+```bash
+# 一条命令跑完：对齐视口 → 截图 → 缩放设计稿 → 比对 → 出报告
+bun scripts/visual-diff.ts run --design ./figma/hero.png --tab t1 --out visual-diff-out
+
+# 已有截图时只做比对
+bun scripts/visual-diff.ts compare --design ./figma/hero.png --screenshot ./shot.png
+```
+
+产物在输出目录：`design-scaled.png`（缩放后的设计稿）、`screenshot.png`（页面截图）、`diff.png`（红色为超容差像素）、`report.md`（差异率与热区坐标）。
+
+两个容易踩的点：
+
+- **缩放系数不写死**。浏览器渲染出的物理像素受系统显示缩放影响（本机 Windows 125% 缩放下，1440 CSS 像素的视口只产出 1152 像素宽的截图），脚本按截图实际像素反推设计稿缩放系数，本机即 0.8。视口对齐也据此迭代收敛，必要时报告里会提示视口宽度与设计稿的偏差。
+- **容差要考虑重采样噪声**。设计稿缩放后与浏览器渲染不完全一致，文字边缘天然有差异，默认容差 8/255 偏紧，纯文字页面建议用 16~24。
+
 ## 初始化脚本
 
 `script` 命令管理在每次导航后、页面自身脚本执行前注入的初始化脚本（对应 CDP `Page.addScriptToEvaluateOnNewDocument`，与 Playwright 的 `--init-script` 对齐）：
