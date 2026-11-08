@@ -1,6 +1,7 @@
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { writeJsonFile } from '../../core/protocol.js'
+import { stripBom } from '../../core/text.js'
 import {
   collectItemKey,
   isCollectRecord,
@@ -49,7 +50,7 @@ async function request(
 }
 
 async function readJsonFile(filePath: string): Promise<unknown> {
-  return JSON.parse(await readFile(filePath, 'utf8')) as unknown
+  return JSON.parse(stripBom(await readFile(filePath, 'utf8'))) as unknown
 }
 
 function outputPathFor(checkpointPath: string, checkpoint: CollectCheckpoint): string {

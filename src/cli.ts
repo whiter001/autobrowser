@@ -15,6 +15,7 @@ import { writeResult as baseWriteResult } from './cli/output.js'
 import { presentCommandResponse } from './cli/response-presenters.js'
 import { extractScreenshotData, resolveScreenshotOutputPath } from './cli/screenshot.js'
 import { type CliDependencies, type CliFlags } from './cli/types.js'
+import { stripBom } from './core/text.js'
 
 // 未知命令的纠错候选来自命令注册表：它是"哪些命令真的能跑"的唯一事实来源
 const COMMAND_NAME_CANDIDATES = Object.keys(COMMAND_LOADERS).filter((name) => !name.startsWith('-'))
@@ -79,24 +80,26 @@ async function readStdin(): Promise<string> {
 }
 
 async function resolveEvalScript(flags: CliFlags, rest: string[]): Promise<string> {
+  // 统一剥掉 UTF-8 BOM：Windows PowerShell 写出的文件/管道都可能是带 BOM 的，
+  // 而 JSON.parse 不接受 U+FEFF，报错信息里的 BOM 字符又不可见。
   if (flags.file) {
-    return await readFile(flags.file, 'utf8')
+    return stripBom(await readFile(flags.file, 'utf8'))
   }
 
   if (flags.base64) {
     const raw = rest.join(' ').trim()
-    return Buffer.from(raw, 'base64').toString('utf8')
+    return stripBom(Buffer.from(raw, 'base64').toString('utf8'))
   }
 
   if (flags.stdin) {
-    return await readStdin()
+    return stripBom(await readStdin())
   }
 
   if (rest.length > 0) {
-    return rest.join(' ')
+    return stripBom(rest.join(' '))
   }
 
-  return await readStdin()
+  return stripBom(await readStdin())
 }
 
 async function runMain(

@@ -1,4 +1,5 @@
 import { parseSearchQueryRegex } from '../core/search.js'
+import { stripBom } from '../core/text.js'
 import { optionHintSuffix } from './option-hints.js'
 
 // 参数白名单只用于"报错时给最近邻"，不参与校验本身
@@ -152,7 +153,7 @@ export function parseOptionalNumberArg(
 
 function parseJsonValue(value: string): unknown {
   try {
-    return JSON.parse(value)
+    return JSON.parse(stripBom(value))
   } catch {
     throw new Error(`invalid JSON: ${value}`)
   }

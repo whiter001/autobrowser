@@ -2,6 +2,7 @@ import { chmod, mkdir, readFile, readdir, rename, rm, stat, writeFile } from 'no
 import { createConnection } from 'node:net'
 import os from 'node:os'
 import path from 'node:path'
+import { stripBom } from './text.js'
 
 export const DEFAULT_RELAY_PORT = 57978
 export const DEFAULT_IPC_PORT = 57979
@@ -144,7 +145,7 @@ export async function readJsonFile<T>(
 ): Promise<T | null> {
   try {
     const content = await readFile(filePath, 'utf8')
-    return JSON.parse(content) as T
+    return JSON.parse(stripBom(content)) as T
   } catch (error) {
     if (error && (error as NodeJS.ErrnoException).code === 'ENOENT') {
       return fallback
