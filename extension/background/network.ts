@@ -195,7 +195,27 @@ export function createNetworkDomain({
   },
 }: NetworkDomainDependencies) {
   const captureController = createHarCaptureController({ state, storageLocalGet, storageLocalSet })
-  const bodyFetcher = createBodyFetcher({ state, sendRawDebuggerCommand })
+  const captureWindowCache = new WeakMap<
+    object,
+    { requestCount: number; members: Set<NetworkRequestRecord> }
+  >()
+  const bodyFetcher = createBodyFetcher({
+    state,
+    sendRawDebuggerCommand,
+    shouldFetchBody: (record, capture) => {
+      if (!capture || capture.maxRequests === null) return true
+      const requestCount = state.network.requests.length
+      let cached = captureWindowCache.get(capture)
+      if (!cached || cached.requestCount !== requestCount) {
+        cached = {
+          requestCount,
+          members: new Set(captureController.captureRequests(capture)),
+        }
+        captureWindowCache.set(capture, cached)
+      }
+      return cached.members.has(record)
+    },
+  })
   /** 等待对应 Network 事件确认的拦截条目 */
   const pendingInterceptions = new Map<string, PendingInterception>()
   /** Fetch id 按 hop 唯一；绑在对象上，Network-first 新对象不会继承上一跳身份，淘汰后可回收 */
@@ -849,6 +869,7 @@ export function createNetworkDomain({
     } = {},
   ): Promise<Record<string, unknown>> {
     const tab = await getTargetTab(tabId)
+    bodyFetcher.resetBodyCapture()
     await sendDebuggerCommand(tab.id, 'Network.enable', {})
     state.network.harRecording = true
     state.network.harStartedAt = new Date().toISOString()
@@ -924,6 +945,7 @@ export function createNetworkDomain({
       startedAt,
       stoppedAt,
       requestCount: retained.length,
+      bodyCapture: bodyFetcher.getBodyCaptureStatus(),
       har: buildHar(retained),
       checkpoint: checkpointError ? { saved: false, error: checkpointError } : { saved: true },
       ...(checkpointError
@@ -947,6 +969,7 @@ export function createNetworkDomain({
       captureRequestCount: captureController.captureRequests(capture).length,
       startedAt: state.network.harStartedAt,
       requestCount: state.network.requests.length,
+      bodyCapture: bodyFetcher.getBodyCaptureStatus(),
       checkpoint: checkpoint
         ? {
             available: true,

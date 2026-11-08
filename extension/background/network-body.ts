@@ -8,36 +8,21 @@ const BODY_FETCH_CONCURRENCY = 4
 const BODY_FETCH_QUEUE_LIMIT = 1000
 const BODY_FETCH_TIMEOUT_MS = 10_000
 
-/**
- * 估算文本的 UTF-8 字节长度。
- */
+/** 估算文本的 UTF-8 字节长度。 */
 export function estimateTextByteLength(text: string): number {
   return new TextEncoder().encode(text).length
 }
 
 function truncateTextByBytes(text: string, maxBytes: number): string {
-  if (maxBytes <= 0 || !text) {
-    return ''
-  }
-
+  if (maxBytes <= 0 || !text) return ''
   const encoder = new TextEncoder()
   const bytes = encoder.encode(text)
-
-  if (bytes.length <= maxBytes) {
-    return text
-  }
-
+  if (bytes.length <= maxBytes) return text
   const decoder = new TextDecoder('utf-8', { fatal: false })
-  // Use maxBytes as array length to decode back to string safely
-  // The decoder deals with boundary multi-byte characters and might output a replacement character
-  // but it avoids O(N) single-character loops.
   return decoder.decode(bytes.subarray(0, maxBytes)).replace(/\uFFFD$/, '')
 }
 
-/**
- * 按上限截断已存响应体。base64 体用长度 * 0.75 估算解码后大小，
- * 避免为了判断大小先解码整段内容。
- */
+/** 按上限截断已存响应体。base64 体用长度 * 0.75 估算解码后大小。 */
 export function summarizeStoredBody(
   body: string,
   base64Encoded: boolean,
@@ -46,15 +31,10 @@ export function summarizeStoredBody(
   const byteLength = base64Encoded
     ? Math.max(0, Math.floor(body.length * 0.75))
     : estimateTextByteLength(body)
-
   if (maxBytes === null || byteLength <= maxBytes) {
     return { text: body, byteLength, truncated: false }
   }
-
-  if (base64Encoded) {
-    return { text: '', byteLength, truncated: true }
-  }
-
+  if (base64Encoded) return { text: '', byteLength, truncated: true }
   return {
     text: truncateTextByBytes(body, maxBytes),
     byteLength,
@@ -62,18 +42,13 @@ export function summarizeStoredBody(
   }
 }
 
-/**
- * 把响应体转成可存储文本；已是字符串时不再 JSON.stringify，避免出现双重引号。
- */
+/** 把响应体转成可存储文本；已是字符串时不再 JSON.stringify。 */
 export function stringifyNetworkBody(body: unknown): { text: string; base64Encoded: boolean } {
-  // 若 body 已经是字符串则直接使用，避免 JSON.stringify 产生双重引号。
   const text = typeof body === 'string' ? body : `${JSON.stringify(body, null, 2)}\n`
   return { text, base64Encoded: false }
 }
 
-/**
- * 分块编码再 btoa，避免超大字节数组一次性展开导致调用栈溢出。
- */
+/** 分块编码再 btoa，避免超大字节数组一次性展开导致调用栈溢出。 */
 export function encodeBase64(value: string): string {
   const bytes = new TextEncoder().encode(value)
   const chunk = 8192
@@ -88,25 +63,36 @@ interface BodyFetchTask {
   record: NetworkRequestRecord
   capture: HarCapture | null
   maxBodyBytes: number | null
+  generation: number
   done: Promise<void>
   finish: (error?: string) => void
   settled: boolean
 }
 
-interface BodyFetcher {
-  /** 抓取响应体；同一记录只抓一次，已抓过或不可用时立即返回 */
-  fetchRequestBody(record: NetworkRequestRecord, session: HarCapture | null): Promise<void>
-  /** 清掉已失效的排队任务并补满并发槽位 */
-  pumpBodyQueue(): void
+interface BodyCaptureStatus {
+  degraded: boolean
+  reason: string | null
+  droppedQueued: number
+  active: number
+  queued: number
 }
 
-/**
- * 响应体抓取调度器：最多 BODY_FETCH_CONCURRENCY 个真实 CDP 请求在飞，
- * 排队与超时都只作用于逻辑等待，不释放卡住的 CDP 槽。
- */
+interface BodyFetcher {
+  fetchRequestBody(record: NetworkRequestRecord, session: HarCapture | null): Promise<void>
+  pumpBodyQueue(): void
+  getBodyCaptureStatus(): BodyCaptureStatus
+  resetBodyCapture(): void
+}
+
+function isBodyQuotaError(message: string): boolean {
+  return /Resource::kQuotaBytes|quota exceeded/i.test(message)
+}
+
+/** 响应体抓取调度器：配额错误熔断排队工作，逻辑超时仍不伪装成已取消底层 CDP。 */
 export function createBodyFetcher({
   state,
   sendRawDebuggerCommand,
+  shouldFetchBody = () => true,
 }: {
   state: ExtensionState
   sendRawDebuggerCommand: <TResult = unknown>(
@@ -114,14 +100,27 @@ export function createBodyFetcher({
     method: string,
     params?: Record<string, unknown>,
   ) => Promise<TResult>
+  shouldFetchBody?: (record: NetworkRequestRecord, capture: HarCapture | null) => boolean
 }): BodyFetcher {
   const bodyTasks = new WeakMap<NetworkRequestRecord, BodyFetchTask>()
   const bodyQueue: BodyFetchTask[] = []
   let activeBodyFetches = 0
+  let circuitReason: string | null = null
+  let droppedQueued = 0
+  let generation = 0
 
-  function bodyUnavailable(record: NetworkRequestRecord): string | null {
+  function circuitError(): string {
+    return `body capture unavailable after ${circuitReason || 'quota exhaustion'}`
+  }
+
+  function bodyUnavailable(
+    record: NetworkRequestRecord,
+    capture: HarCapture | null,
+  ): string | null {
     if (evictedRequests.has(record)) return 'request was evicted before body retrieval'
     if (record.redirectArchived) return 'redirect hop body is no longer available from CDP'
+    if (!shouldFetchBody(record, capture))
+      return 'request is outside the HAR capture request window'
     if (typeof record.tabId !== 'number' || !record.requestId) return 'no live CDP request identity'
     if (
       state.network.requestMap.get(createNetworkRequestKey(record.tabId, record.requestId)) !==
@@ -136,10 +135,22 @@ export function createBodyFetcher({
     return null
   }
 
+  function tripCircuit(reason: string): void {
+    if (circuitReason) return
+    circuitReason = reason
+    const dropped = bodyQueue.splice(0)
+    droppedQueued += dropped.length
+    for (const task of dropped) task.finish(circuitError())
+  }
+
   function pumpBodyQueue(): void {
+    if (circuitReason) {
+      tripCircuit(circuitReason)
+      return
+    }
     for (let index = bodyQueue.length - 1; index >= 0; index -= 1) {
       const task = bodyQueue[index]!
-      const reason = bodyUnavailable(task.record)
+      const reason = bodyUnavailable(task.record, task.capture)
       if (task.settled || reason) {
         bodyQueue.splice(index, 1)
         task.finish(reason || undefined)
@@ -161,7 +172,6 @@ export function createBodyFetcher({
         { requestId: record.requestId },
       )
       // CDP 不支持流式截断；maxBodyBytes 只限制收到完整响应后的存储量。
-      // stop 后仍可写自己的旧对象，但淘汰、重定向及逻辑超时后的结果丢弃。
       if (!task.settled && !evictedRequests.has(record) && !record.redirectArchived) {
         const summary = summarizeStoredBody(
           String(result?.body || ''),
@@ -179,9 +189,11 @@ export function createBodyFetcher({
       }
       task.finish()
     } catch (error) {
-      task.finish(error instanceof Error ? error.message : String(error))
+      const message = error instanceof Error ? error.message : String(error)
+      // 旧 capture 的迟到错误不能熔断已经开始的新 capture。
+      if (task.generation === generation && isBodyQuotaError(message)) tripCircuit(message)
+      task.finish(message)
     } finally {
-      // 超时不能释放真实 CDP 槽，否则卡死连接会持续累积底层请求。
       activeBodyFetches -= 1
       pumpBodyQueue()
     }
@@ -194,7 +206,11 @@ export function createBodyFetcher({
     const existing = bodyTasks.get(record)
     if (existing) return existing.done
     if (typeof record.responseBody === 'string') return Promise.resolve()
-    const reason = bodyUnavailable(record)
+    if (circuitReason) {
+      record.responseBodyError = circuitError()
+      return Promise.resolve()
+    }
+    const reason = bodyUnavailable(record, session)
     if (reason) {
       record.responseBodyError = reason
       return Promise.resolve()
@@ -213,6 +229,7 @@ export function createBodyFetcher({
       record,
       capture: session,
       maxBodyBytes: session ? session.maxBodyBytes : DEFAULT_HAR_MAX_BODY_BYTES,
+      generation,
       done,
       settled: false,
       finish: (error) => {
@@ -238,8 +255,26 @@ export function createBodyFetcher({
     return done
   }
 
+  function getBodyCaptureStatus(): BodyCaptureStatus {
+    return {
+      degraded: circuitReason !== null,
+      reason: circuitReason,
+      droppedQueued,
+      active: activeBodyFetches,
+      queued: bodyQueue.length,
+    }
+  }
+
+  function resetBodyCapture(): void {
+    generation += 1
+    circuitReason = null
+    droppedQueued = 0
+  }
+
   return {
     fetchRequestBody,
     pumpBodyQueue,
+    getBodyCaptureStatus,
+    resetBodyCapture,
   }
 }

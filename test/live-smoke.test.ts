@@ -1015,6 +1015,7 @@ suite('live browser smoke test', () => {
   }, 30_000)
 
   test('network records page requests', async () => {
+    await loadSmokePage()
     const response = await command('network', { action: 'requests' })
     expect(response.ok).toBe(true)
     const result = response.result as { total?: number; requests?: Array<{ url?: string }> }

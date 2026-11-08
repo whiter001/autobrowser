@@ -409,6 +409,7 @@ describe('network domain HAR export', () => {
     })
     expect(result.suggestedAction).toContain('HAR export succeeded')
     expect(await network.getHarStatus()).toMatchObject({
+      bodyCapture: { degraded: false, reason: null },
       checkpoint: {
         available: false,
         recoverable: false,

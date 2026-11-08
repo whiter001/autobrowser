@@ -97,6 +97,84 @@ describe('network body scheduler', () => {
     expect(state.network.requestMap.get('2:t2-old-1')).toMatchObject({ id: '2:t2-old-1' })
   })
 
+  test('quota exhaustion opens the body circuit, drains queued work and resets on a new capture', async () => {
+    const { state, network, calls, request, flush } = harness()
+    await network.startHar(1)
+    for (let index = 0; index < 8; index += 1) await request(`quota-${index}`)
+    expect(calls).toHaveLength(4)
+
+    calls[0]!.reject(new Error('Resource::kQuotaBytes quota exceeded'))
+    await flush()
+    expect(calls).toHaveLength(4)
+    expect(await network.getHarStatus()).toMatchObject({
+      bodyCapture: {
+        degraded: true,
+        reason: 'Resource::kQuotaBytes quota exceeded',
+        droppedQueued: 4,
+        active: 3,
+        queued: 0,
+      },
+    })
+
+    for (const call of calls.slice(1)) call.resolve({ body: 'remaining' })
+    await flush()
+    expect(state.network.pendingBodyFetches.size).toBe(0)
+    const stopped = await network.stopHar()
+    expect(stopped).toMatchObject({ bodyCapture: { degraded: true, droppedQueued: 4 } })
+
+    await network.startHar(1)
+    expect(await network.getHarStatus()).toMatchObject({
+      bodyCapture: { degraded: false, reason: null, droppedQueued: 0 },
+    })
+  })
+
+  test('a late quota error from an old capture does not poison its replacement', async () => {
+    const { network, calls, request, flush } = harness()
+    await network.startHar(1)
+    await request('old-capture')
+    await network.startHar(1)
+    calls[0]!.reject(new Error('Resource::kQuotaBytes quota exceeded'))
+    await flush()
+
+    expect(await network.getHarStatus()).toMatchObject({
+      bodyCapture: { degraded: false, reason: null },
+    })
+  })
+
+  test('ordinary body failures do not open the circuit', async () => {
+    const { network, calls, request, flush } = harness()
+    await network.startHar(1)
+    await request('ordinary-error')
+    calls[0]!.reject(new Error('ordinary CDP failure'))
+    await flush()
+
+    expect(await network.getHarStatus()).toMatchObject({
+      bodyCapture: { degraded: false, reason: null },
+    })
+  })
+
+  test('capture limits evict queued body work before it consumes another CDP slot', async () => {
+    const { state, network, calls, request, flush } = harness()
+    await network.startHar(1, { maxRequests: 1 })
+    for (let index = 0; index < 4; index += 1) await request(`active-${index}`)
+    await request('outside-window')
+    await request('latest')
+
+    expect(calls).toHaveLength(4)
+    expect(state.network.requestMap.get('1:outside-window')).toMatchObject({
+      responseBodyError: expect.stringContaining('outside the HAR capture request window'),
+    })
+    for (const call of calls.slice()) call.resolve({ body: 'active' })
+    await flush()
+    expect(calls.map((call) => call.requestId)).toEqual([
+      'active-0',
+      'active-1',
+      'active-2',
+      'active-3',
+      'latest',
+    ])
+  })
+
   test('metadata remains automatic without HAR; detail lazily fetches and deduplicates body', async () => {
     const { state, network, calls, request } = harness()
     await request('lazy')
@@ -245,30 +323,34 @@ describe('network body scheduler', () => {
     for (const call of calls.slice()) call.resolve({ body: 'body' })
     await flush()
     await flush()
-    // 窗口外的排队抓取不再因“淘汰”被跳过
+    // 滑出窗口的排队任务直接结束，不再消耗后续 CDP 槽位。
     expect(calls.map((call) => call.requestId)).toEqual([
       'r0',
       'r1',
       'r2',
       'r3',
-      'r4',
       'r5',
       'r6',
       'r7',
+      'r8',
     ])
     for (const call of calls.slice(4)) call.resolve({ body: 'body' })
     await flush()
     await flush()
-    expect(calls).toHaveLength(10)
+    expect(calls).toHaveLength(9)
     for (const call of calls.slice(8)) call.resolve({ body: 'body' })
     await flush()
     const result = (await network.stopHar()) as {
       requestCount: number
       har: { log: { entries: unknown[] } }
     }
-    // 全局保留 10 条（body 都已写回），HAR 只导出窗口内最新 5 条
+    // 全局保留 10 条元数据；窗口外 body 只记录缺失原因，不再实际抓取。
     expect(state.network.requests).toHaveLength(10)
-    expect(state.network.requests.every((record) => record.responseBody === 'body')).toBe(true)
+    expect(
+      state.network.requests.every(
+        (record) => record.responseBody === 'body' || typeof record.responseBodyError === 'string',
+      ),
+    ).toBe(true)
     expect(result.requestCount).toBe(5)
     expect(result.har.log.entries).toHaveLength(5)
   })
