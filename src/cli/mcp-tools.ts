@@ -336,7 +336,7 @@ export const MCP_TOOLS: McpToolDefinition[] = [
   {
     name: 'type',
     description:
-      'Type text into a field, optionally pressing Enter (submit) afterward. Accepts a CSS selector or an @eN element ref.',
+      'Type text into a field, optionally pressing Enter (submit) afterward. Accepts a CSS selector or an @eN element ref. With submit, the result reports submitted (Enter was sent) and navigationDetected (the page actually navigated) — Enter alone does not guarantee the form was submitted.',
     command: 'type',
     inputSchema: {
       type: 'object',
@@ -348,7 +348,8 @@ export const MCP_TOOLS: McpToolDefinition[] = [
         value: { type: 'string', description: 'The text to type.' },
         submit: {
           type: 'boolean',
-          description: 'Press Enter after typing to submit the form.',
+          description:
+            'Press Enter after typing. The reply tells you whether a navigation was observed.',
         },
       },
       required: ['selector', 'value'],

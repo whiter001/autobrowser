@@ -418,7 +418,10 @@ export const HELP_ROOT: HelpNode = helpNode(
       'type',
       'Type text into a selector.',
       'autobrowser type <selector> <value> [--submit]',
-      ['--submit  press Enter after typing to submit the form'],
+      [
+        '--submit  press Enter after typing; the reply reports submitted (Enter was sent) and navigationDetected (the page actually left)',
+        'Enter does not guarantee a submit: components often ignore it, so confirm the outcome with wait --text/--url or click the submit button.',
+      ],
     ),
     helpNode('press', 'Press a keyboard key.', 'autobrowser press <key>'),
     helpNode(

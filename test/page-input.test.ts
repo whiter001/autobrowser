@@ -355,7 +355,16 @@ describe('page input type with submit', () => {
       method: string
       params?: Record<string, unknown>
     }>,
+    locations: string[] = [],
   ) {
+    let locationIndex = 0
+    // location.href 用于提交后的导航观察；给定序列用尽后保持最后一个值
+    const nextLocation = (): string => {
+      const value =
+        locations[Math.min(locationIndex, locations.length - 1)] ?? 'https://example.test/'
+      locationIndex += 1
+      return value
+    }
     return createPageInputDomain({
       state: createExtensionState(1),
       getTargetTab: async () => ({ id: 1 }) as never,
@@ -363,11 +372,13 @@ describe('page input type with submit', () => {
         ({ tab: { id: 1 }, resolvedSelector: selector }) as never,
       resolveFrameTarget: async () => ({}) as never,
       getFrameExecutionContext: async () => ({}) as never,
-      evaluateInTabContext: async () =>
+      evaluateInTabContext: async (_tabId: unknown, expression: string) =>
         ({
           tab: { id: 1 },
           response: { result: undefined },
-          value: { found: true, focused: true },
+          value: expression.includes('location.href')
+            ? nextLocation()
+            : { found: true, focused: true },
         }) as never,
       sendDebuggerCommand: async (
         _tabId: unknown,
@@ -382,7 +393,10 @@ describe('page input type with submit', () => {
 
   test('presses Enter after typing when submit is set', async () => {
     const debuggerCalls: Array<{ method: string; params?: Record<string, unknown> }> = []
-    const pageInput = createTypePageInput(debuggerCalls)
+    const pageInput = createTypePageInput(debuggerCalls, [
+      'https://example.test/',
+      'https://example.test/next',
+    ])
 
     const result = await pageInput.typeIntoSelector(1, '#q', 'hi', null, true)
 
@@ -399,6 +413,31 @@ describe('page input type with submit', () => {
       ['keyDown', 'Enter'],
       ['keyUp', 'Enter'],
     ])
+  })
+
+  test('reports navigationDetected when the page navigates after Enter', async () => {
+    const debuggerCalls: Array<{ method: string; params?: Record<string, unknown> }> = []
+    const pageInput = createTypePageInput(debuggerCalls, [
+      'https://example.test/',
+      'https://example.test/next',
+    ])
+
+    const result = await pageInput.typeIntoSelector(1, '#q', 'hi', null, true)
+
+    expect(result).toMatchObject({ submitted: true, navigationDetected: true })
+    expect(result).not.toHaveProperty('suggestedAction')
+  })
+
+  test('reports navigationDetected false and advises when the page stays put', async () => {
+    // 组件化表单常常不响应 Enter：这里如实回报"没有观察到导航"，
+    // 而不是让 submitted:true 把调用方引向错误结论。
+    const debuggerCalls: Array<{ method: string; params?: Record<string, unknown> }> = []
+    const pageInput = createTypePageInput(debuggerCalls, ['https://example.test/'])
+
+    const result = await pageInput.typeIntoSelector(1, '#q', 'hi', null, true)
+
+    expect(result).toMatchObject({ submitted: true, navigationDetected: false })
+    expect(String((result as { suggestedAction?: string }).suggestedAction)).toContain('提交按钮')
   })
 
   test('does not press Enter without submit', async () => {
