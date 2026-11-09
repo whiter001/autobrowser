@@ -336,8 +336,6 @@ export function createNavigationCommands(pageContext: PageInputContext) {
 
   async function navigateBack(tabId: TabInput) {
     const tab = await getTargetTab(tabId)
-    invalidatePageRefs(state, tab.id)
-    const baselineEpoch = getPageEpoch(state, tab.id)
     await enablePageEvents(tab.id)
     const history = await sendDebuggerCommand<{
       entries?: Array<{ id: number }>
@@ -350,6 +348,8 @@ export function createNavigationCommands(pageContext: PageInputContext) {
       const targetIndex = currentIndex - 1
       const targetEntry = entries[targetIndex]
       if (targetEntry) {
+        invalidatePageRefs(state, tab.id)
+        const baselineEpoch = getPageEpoch(state, tab.id)
         const dispatchTimedOut = await dispatchNavigation(tab.id, 'Page.navigateToHistoryEntry', {
           entryId: targetEntry.id,
         })
@@ -386,8 +386,6 @@ export function createNavigationCommands(pageContext: PageInputContext) {
 
   async function navigateForward(tabId: TabInput) {
     const tab = await getTargetTab(tabId)
-    invalidatePageRefs(state, tab.id)
-    const baselineEpoch = getPageEpoch(state, tab.id)
     await enablePageEvents(tab.id)
     const history = await sendDebuggerCommand<{
       entries?: Array<{ id: number }>
@@ -400,6 +398,8 @@ export function createNavigationCommands(pageContext: PageInputContext) {
       const targetIndex = currentIndex + 1
       const targetEntry = entries[targetIndex]
       if (targetEntry) {
+        invalidatePageRefs(state, tab.id)
+        const baselineEpoch = getPageEpoch(state, tab.id)
         const dispatchTimedOut = await dispatchNavigation(tab.id, 'Page.navigateToHistoryEntry', {
           entryId: targetEntry.id,
         })

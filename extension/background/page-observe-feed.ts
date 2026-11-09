@@ -59,6 +59,72 @@ export function feedItemDedupeKey(
   return [item.author || '', item.handle || '', item.text].join('|').trim()
 }
 
+export function parseFeedAuthorHandle(value: string): {
+  author: string | null
+  handle: string | null
+} {
+  const raw = (value || '').replace(/\s+/g, ' ').trim()
+  if (!raw) return { author: null, handle: null }
+
+  const handleMatch = raw.match(/@[A-Za-z0-9_]+/)
+  if (!handleMatch) return { author: raw, handle: null }
+
+  const author = raw
+    .slice(0, handleMatch.index)
+    .replace(/[\s·•|-–—]+$/, '')
+    .trim()
+  return { author: author || null, handle: handleMatch[0] }
+}
+
+export function readFeedItemUrl(node: any): string | null {
+  const preferred =
+    node.querySelector("a[href*='/status/']") ||
+    node.querySelector('h1 a[href], h2 a[href], h3 a[href]')
+  const links = preferred ? [preferred] : Array.from(node.querySelectorAll('a[href]'))
+
+  for (const link of links) {
+    const href = typeof link.href === 'string' ? link.href : ''
+    if (!/^https?:\/\//.test(href)) continue
+    const text = (link.innerText || link.textContent || '').replace(/\s+/g, ' ').trim()
+    // 通用回退跳过头像等空链接，避免把作者主页误当成正文链接。
+    if (!preferred && !text) continue
+    return href
+  }
+  return null
+}
+
+export function readFeedItemAuthor(node: any): string {
+  const explicit = node.querySelector(
+    "[data-testid='User-Name'], [itemprop='author'], [rel='author'], [class*='author' i]",
+  )
+  const explicitText = (explicit?.innerText || explicit?.textContent || '').trim()
+  if (explicitText) return explicitText
+
+  // 部分搜索卡片没有作者链接，只用“粗体作者名 + 冒号”分隔正文。
+  const boldAuthor = (Array.from(node.querySelectorAll('b')) as any[]).find((candidate) => {
+    const name = (candidate.innerText || candidate.textContent || '').trim()
+    return name && name.length <= 80 && /^[：:]/.test(candidate.nextSibling?.textContent || '')
+  })
+  return (boldAuthor?.innerText || boldAuthor?.textContent || '').trim()
+}
+
+export function readFeedItemTime(node: any): string | null {
+  const normalize = (value: string) => (value || '').replace(/\s+/g, ' ').trim()
+  const timeNode = node.querySelector(
+    "time, [itemprop='datePublished'], [datetime], [class*='date' i], [class*='time' i]",
+  )
+  const explicit = normalize(
+    timeNode?.dateTime || timeNode?.getAttribute('datetime') || timeNode?.innerText || '',
+  )
+  if (explicit) return explicit
+
+  const text = normalize(node.innerText || node.textContent || '')
+  const matches = text.match(
+    /\d{4}-\d{1,2}-\d{1,2}(?:\s+\d{1,2}:\d{2}(?::\d{2})?)?|(?<!\d)\d{1,2}-\d{1,2}(?!\d)/g,
+  )
+  return matches?.[matches.length - 1] || null
+}
+
 /**
  * 创建 feed 采集域：滚动收集条目、按策略去重并维护翻页状态。
  */
@@ -114,33 +180,10 @@ ${PAGE_CONTEXT_DEEP_DOM_HELPERS_SOURCE}
 
         const readText = (node) => normalize(node.querySelector("[data-testid='tweetText']")?.innerText || node.innerText || node.textContent || '');
 
-        const parseAuthorHandle = (value) => {
-          const raw = normalize(value);
-          if (!raw) {
-            return { author: null, handle: null };
-          }
-
-          const handleMatch = raw.match(/@[A-Za-z0-9_]+/);
-          if (!handleMatch) {
-            return { author: raw, handle: null };
-          }
-
-          const author = normalize(raw.slice(0, handleMatch.index).replace(/[\\s·•|-–—]+$/, ''));
-          return {
-            author: author || null,
-            handle: handleMatch[0],
-          };
-        };
-
-        const readTime = (node) => {
-          const timeNode = node.querySelector('time');
-          return normalize(timeNode?.dateTime || timeNode?.getAttribute('datetime') || '') || null;
-        };
-
-        const readUrl = (node) => {
-          const link = node.querySelector("a[href*='/status/']");
-          return link && typeof link.href === 'string' ? link.href : null;
-        };
+        const parseAuthorHandle = ${parseFeedAuthorHandle.toString()};
+        const readTime = ${readFeedItemTime.toString()};
+        const readUrl = ${readFeedItemUrl.toString()};
+        const readAuthor = ${readFeedItemAuthor.toString()};
 
         const readMediaUrls = (node) => {
           const sources = [
@@ -172,7 +215,7 @@ ${PAGE_CONTEXT_DEEP_DOM_HELPERS_SOURCE}
 
             const text = readText(node);
             const url = readUrl(node);
-            const authorInfo = parseAuthorHandle(node.querySelector("[data-testid='User-Name']")?.innerText || '');
+            const authorInfo = parseAuthorHandle(readAuthor(node));
             const mediaUrls = readMediaUrls(node);
             const dedupeKey = normalize(feedItemDedupeKey(dedupe, {
               url,

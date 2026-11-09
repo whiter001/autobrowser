@@ -1,5 +1,10 @@
 import { describe, expect, test } from 'bun:test'
-import { feedItemDedupeKey } from '../extension/background/page-observe-feed.js'
+import {
+  feedItemDedupeKey,
+  readFeedItemAuthor,
+  readFeedItemTime,
+  readFeedItemUrl,
+} from '../extension/background/page-observe-feed.js'
 import {
   createPageObserveDomain,
   type FeedCollectionResult,
@@ -18,6 +23,54 @@ describe('feed dedupe keys', () => {
       'Ada|@ada|hello',
     )
     expect(feedItemDedupeKey('none', item)).toBeNull()
+  })
+})
+
+describe('feed generic field extraction', () => {
+  test('prefers the heading link used by article cards', () => {
+    const title = { href: 'https://www.cnblogs.com/alice/p/123', innerText: 'Article title' }
+    const node = {
+      querySelector: (selector: string) => (selector.includes('h1 a[href]') ? title : null),
+      querySelectorAll: () => [],
+    }
+
+    expect(readFeedItemUrl(node)).toBe('https://www.cnblogs.com/alice/p/123')
+  })
+
+  test('falls back to the first non-empty HTTP link instead of an avatar', () => {
+    const links = [
+      { href: 'https://example.com/alice', innerText: '' },
+      { href: 'javascript:void(0)', innerText: 'Recommend' },
+      { href: 'https://example.com/articles/123', innerText: 'Article title' },
+    ]
+    const node = {
+      querySelector: () => null,
+      querySelectorAll: (selector: string) => (selector === 'a[href]' ? links : []),
+    }
+
+    expect(readFeedItemUrl(node)).toBe('https://example.com/articles/123')
+  })
+
+  test('reads semantic author names and bold author prefixes', () => {
+    const semantic = {
+      querySelector: () => ({ innerText: 'codigger' }),
+      querySelectorAll: () => [],
+    }
+    const bold = {
+      querySelector: () => null,
+      querySelectorAll: () => [{ innerText: 'Next蔡蔡', nextSibling: { textContent: '：正文' } }],
+    }
+
+    expect(readFeedItemAuthor(semantic)).toBe('codigger')
+    expect(readFeedItemAuthor(bold)).toBe('Next蔡蔡')
+  })
+
+  test('reads full and short dates from card text when no time element exists', () => {
+    const node = { querySelector: () => null, innerText: 'Title\ncodigger\n2026-11-09 09:06\n0 0' }
+    expect(readFeedItemTime(node)).toBe('2026-11-09 09:06')
+
+    node.innerText = 'Title\nNext蔡蔡：正文\n添加评论\n02-10'
+    expect(readFeedItemTime(node)).toBe('02-10')
   })
 })
 

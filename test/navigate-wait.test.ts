@@ -8,6 +8,7 @@ function createNavigateHarness(
     commitDelayMs?: number
     hangDispatch?: boolean
     hangEvaluate?: boolean
+    history?: { entries: Array<{ id: number }>; currentIndex: number }
   } = {},
 ) {
   const state = createExtensionState(9222)
@@ -42,11 +43,17 @@ function createNavigateHarness(
     },
     sendDebuggerCommand: async (_tabId: number, method: string) => {
       debuggerCalls.push(method)
+      if (method === 'Page.getNavigationHistory') {
+        return (options.history || { entries: [{ id: 1 }], currentIndex: 0 }) as never
+      }
       // 指令已发出但没有回执：导航销毁 renderer 后 CDP 回调可能永远不来
       if (options.hangDispatch && (method === 'Page.navigate' || method === 'Page.reload')) {
         return await new Promise<never>(() => {})
       }
-      if ((method === 'Page.navigate' || method === 'Page.reload') && options.commit !== false) {
+      if (
+        ['Page.navigate', 'Page.reload', 'Page.navigateToHistoryEntry'].includes(method) &&
+        options.commit !== false
+      ) {
         // 模拟导航 commit：connection.ts 的 frameNavigated 会递增 epoch；
         // commitDelayMs 模拟慢服务器/慢 commit 窗口
         const applyCommit = () => {
@@ -173,5 +180,50 @@ describe('navigation wait for commit', () => {
       settled: false,
     })
     expect(Date.now() - startedAt).toBeLessThan(5000)
+  })
+})
+
+describe('history navigation invalidation', () => {
+  test('back without history preserves page epoch and selected frame', async () => {
+    const { pageInput, state, debuggerCalls } = createNavigateHarness()
+    state.targeting.pageEpochs.set(1, 4)
+    state.targeting.selectedFrames.set(1, '#child')
+
+    await expect(pageInput.navigateBack(1)).resolves.toEqual({
+      navigated: false,
+      reason: 'no back history',
+    })
+    expect(state.targeting.pageEpochs.get(1)).toBe(4)
+    expect(state.targeting.selectedFrames.get(1)).toBe('#child')
+    expect(debuggerCalls).toEqual(['Page.enable', 'Page.getNavigationHistory'])
+  })
+
+  test('forward without history preserves page epoch and selected frame', async () => {
+    const { pageInput, state } = createNavigateHarness()
+    state.targeting.pageEpochs.set(1, 4)
+    state.targeting.selectedFrames.set(1, '#child')
+
+    await expect(pageInput.navigateForward(1)).resolves.toEqual({
+      navigated: false,
+      reason: 'no forward history',
+    })
+    expect(state.targeting.pageEpochs.get(1)).toBe(4)
+    expect(state.targeting.selectedFrames.get(1)).toBe('#child')
+  })
+
+  test('back with a target entry invalidates refs and waits for commit', async () => {
+    const { pageInput, state } = createNavigateHarness({
+      history: { entries: [{ id: 1 }, { id: 2 }], currentIndex: 1 },
+    })
+    state.targeting.pageEpochs.set(1, 4)
+    state.targeting.selectedFrames.set(1, '#child')
+
+    await expect(pageInput.navigateBack(1)).resolves.toMatchObject({
+      navigated: true,
+      back: true,
+      settled: true,
+    })
+    expect(state.targeting.pageEpochs.get(1)).toBe(6)
+    expect(state.targeting.selectedFrames.has(1)).toBe(false)
   })
 })

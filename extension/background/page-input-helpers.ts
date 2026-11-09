@@ -63,6 +63,21 @@ export function applyFillValue(
 ): { found: boolean; reason?: string; checked?: boolean } {
   const tagName = typeof node?.tagName === 'string' ? node.tagName.toUpperCase() : ''
   const inputType = typeof node?.type === 'string' ? node.type.toLowerCase() : ''
+  const setValue = (nextValue: string) => {
+    // React 会在元素自身包装 value setter 并追踪旧值；直接赋值会让随后的 input 事件被当成无变化。
+    const view = node.ownerDocument?.defaultView
+    const constructor =
+      tagName === 'TEXTAREA'
+        ? view?.HTMLTextAreaElement
+        : tagName === 'SELECT'
+          ? view?.HTMLSelectElement
+          : view?.HTMLInputElement
+    const setter = constructor?.prototype
+      ? Object.getOwnPropertyDescriptor(constructor.prototype, 'value')?.set
+      : undefined
+    if (setter) setter.call(node, nextValue)
+    else node.value = nextValue
+  }
 
   if (tagName === 'SELECT') {
     const options = Array.from((node.options as Array<{ text: string; value: string }>) || [])
@@ -81,7 +96,7 @@ export function applyFillValue(
       }
     }
     node.focus()
-    node.value = matched.value
+    setValue(matched.value)
     node.dispatchEvent(new Event('input', { bubbles: true }))
     node.dispatchEvent(new Event('change', { bubbles: true }))
     return { found: true }
@@ -115,7 +130,7 @@ export function applyFillValue(
   }
 
   node.focus()
-  node.value = value
+  setValue(value)
   node.dispatchEvent(new Event('input', { bubbles: true }))
   node.dispatchEvent(new Event('change', { bubbles: true }))
   return { found: true }

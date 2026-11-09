@@ -513,6 +513,7 @@ describe('page input fill by element type', () => {
     value?: string
     checked?: boolean
     options?: Array<{ text: string; value: string }>
+    ownerDocument?: { defaultView: unknown }
     focus: () => void
     dispatchEvent: (event: { type: string }) => boolean
   }
@@ -689,6 +690,42 @@ describe('page input fill by element type', () => {
     expect(result).toEqual({ found: true })
     expect(node.value).toBe('new value')
     expect(events).toEqual(['input', 'change'])
+  })
+
+  test('fill uses the native value setter so a controlled input observes the change', async () => {
+    let domValue = 'old'
+    let trackedValue = 'old'
+    let controlledValue = 'old'
+    const prototype = {}
+    Object.defineProperty(prototype, 'value', {
+      configurable: true,
+      get: () => domValue,
+      set: (next: string) => {
+        domValue = next
+      },
+    })
+    const { node } = createFakeFillElement()
+    Object.defineProperty(node, 'value', {
+      configurable: true,
+      get: () => domValue,
+      set: (next: string) => {
+        domValue = next
+        trackedValue = next
+      },
+    })
+    node.ownerDocument = { defaultView: { HTMLInputElement: { prototype } } }
+    node.dispatchEvent = (event) => {
+      if (event.type === 'input' && trackedValue !== domValue) {
+        trackedValue = domValue
+        controlledValue = domValue
+      }
+      return true
+    }
+
+    const result = await evaluateFillForElement(node, 'new value')
+
+    expect(result).toEqual({ found: true })
+    expect(controlledValue).toBe('new value')
   })
 
   test('fill still rejects elements without a value property', async () => {

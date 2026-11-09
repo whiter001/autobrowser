@@ -269,6 +269,7 @@ async function enableDebuggerDomains(tabId: number): Promise<void> {
     sendRawDebuggerCommand(tabId, 'Runtime.enable', {}),
     sendRawDebuggerCommand(tabId, 'Console.enable', {}),
     sendRawDebuggerCommand(tabId, 'Network.enable', {}),
+    sendRawDebuggerCommand(tabId, 'Page.enable', {}),
   ])
 }
 
