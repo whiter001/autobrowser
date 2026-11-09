@@ -197,6 +197,6 @@ bun run link:bun
 
 - `build:cli` 会生成 `dist/autobrowser.js`。
 - `build:chrome` 会在 `chrome/` 下生成未打包扩展，并注入扩展 key。
-- `link:bun` 会用 Go 构建原生启动器并写到 `bun` 或 `bun.exe` 的旁边：Windows 为 `autobrowser.exe`，其他平台为 `autobrowser`。本机需要安装 Go，Go 缺失时链接直接失败。启动器嵌入当前 Bun 与仓库 `dist/autobrowser.js` 的绝对路径，链接后无需额外环境变量。
+- `link:bun` 默认用当前 Bun 的 `--compile --aot` 构建原生启动器并写到 `bun` 或 `bun.exe` 的旁边：Windows 为 `autobrowser.exe`，其他平台为 `autobrowser`，本机不需要 Go。启动器嵌入当前 Bun 与仓库 `dist/autobrowser.js` 的绝对路径，链接后无需额外环境变量；备选 Go 实现通过 `bun run link:bun -- --go` 启用。
 
 之后，就可以在同一个能访问 `bun` 或 `bun.exe` 的环境里直接运行 `autobrowser` 了。仓库内还可以用 `bun run src/cli.ts <子命令>` 直接运行源码，无需构建。

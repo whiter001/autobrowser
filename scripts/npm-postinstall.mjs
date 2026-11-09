@@ -1,5 +1,5 @@
-// 全局安装优先用 Go 原生启动器替换 npm shim，避免 shell 再次解析参数。
-// 仅缺少预编译产物等不适用情况回退到旧 Windows 修正；复制失败必须明确报错。
+// 全局安装优先用 Bun AOT 原生启动器替换 npm shim，避免 shell 再次解析参数。
+// Go 仅是发布构建的备选实现；缺少预编译产物等情况回退到旧 Windows 修正。
 // 使用纯 Node，不要求 npm 安装期间已经有 Bun。
 import { chmod, copyFile, readFile, rename, rm, stat, writeFile } from 'node:fs/promises'
 import path from 'node:path'
@@ -167,7 +167,7 @@ export async function installNativeLauncher({
     const obsolete = ['autobrowser.cmd', 'autobrowser.bat', 'autobrowser.ps1', 'autobrowser.sh']
     if (platform === 'win32') obsolete.push('autobrowser')
     for (const shim of obsolete) await rm(path.join(binDir, shim), { force: true })
-    logger.log?.(`[autobrowser] 已安装 Go 原生启动器：${target}（运行时仍需 Bun）`)
+    logger.log?.(`[autobrowser] 已安装原生启动器：${target}（运行时仍需 Bun）`)
     return { applied: true, reason: 'native-launcher-installed' }
   } catch (error) {
     logger.error?.(

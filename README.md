@@ -29,7 +29,7 @@
 
 ### 前置条件：Bun 运行时
 
-先安装 [Bun](https://bun.sh)（>= 1.4.4）。npm 全局入口是小型 Go 原生启动器，但业务仍由 Bun 执行 `dist/autobrowser.js`，不是 Go 重写或独立打包的 CLI。启动器从 `PATH` 找 `bun` / `bun.exe`，也可用 `AUTOBROWSER_BUN_PATH` 指定 Bun；需要自定义 JS 入口时设置 `AUTOBROWSER_DIST_ENTRY`。缺少运行时或入口会给出明确错误。
+先安装 [Bun](https://bun.sh)（>= 1.4.4）。npm 全局入口默认是 Bun `--compile --aot` 生成的原生启动器，业务仍由 Bun 执行包内 `dist/autobrowser.js`，不是把业务改写到其他语言。启动器从 `PATH` 找 `bun` / `bun.exe`，也可用 `AUTOBROWSER_BUN_PATH` 指定 Bun；需要自定义 JS 入口时设置 `AUTOBROWSER_DIST_ENTRY`。缺少运行时或入口会给出明确错误。Go 启动器仅保留为备选构建。
 
 ### 全局安装
 
@@ -41,7 +41,7 @@ npm i -g @whiter001/autobrowser
 
 #### 原生全局入口（Windows / macOS / Linux）
 
-包的 `postinstall` 会把对应平台的 Go 启动器复制到 npm 全局入口：Windows 为 `<prefix>/autobrowser.exe`，POSIX 为 `<prefix>/bin/autobrowser`。支持 macOS、Linux、Windows 的 x64 / arm64。它用参数数组启动 Bun + 包内 `dist/autobrowser.js`，保留 cwd、环境和标准输入输出，不经过 cmd.exe、`.bat`、`.ps1` 或 sh shim。安装成功会移除旧 shim；写死 `autobrowser.cmd` 的调用方应改用 `autobrowser`（Windows 也可显式调用 `autobrowser.exe`）。
+包的 `postinstall` 会把对应平台的 Bun AOT 启动器复制到 npm 全局入口：Windows 为 `<prefix>/autobrowser.exe`，POSIX 为 `<prefix>/bin/autobrowser`。支持 macOS、Linux、Windows 的 x64 / arm64。它用参数数组启动 Bun + 包内 `dist/autobrowser.js`，保留 cwd、环境和标准输入输出，不经过 cmd.exe、`.bat`、`.ps1` 或 sh shim。安装成功会移除旧 shim；写死 `autobrowser.cmd` 的调用方应改用 `autobrowser`（Windows 也可显式调用 `autobrowser.exe`）。
 
 `bin` 仍指向 JS，npm 先生成 shim，再由 postinstall 替换。禁用安装脚本（例如 `--ignore-scripts` 或 npm 的 `allow-scripts` 未放行）时，**仍然只有旧 npm shim，不会凭空出现 exe**。按当前 npm 版本放行脚本后重建，例如：
 
@@ -56,7 +56,7 @@ npm rebuild -g @whiter001/autobrowser
 
 **卸载注意**：npm 不登记 Windows postinstall 额外生成的 `.exe`，回退产生的 `.bat` 也不登记。`npm uninstall -g @whiter001/autobrowser` 后，请手动清理 `<prefix>/autobrowser.exe` 和可能存在的 `<prefix>/autobrowser.bat`（`npm prefix -g` 可查 prefix）。POSIX 替换了 npm 原有 symlink，卸载时也请检查并清理残留的 `<prefix>/bin/autobrowser`。
 
-源码开发的 `bun run link:bun` 同样用 Go 构建原生启动器（Windows 为 `autobrowser.exe`，其他平台为 `autobrowser`）并安装到 Bun 旁边，启动器嵌入当前 Bun 与仓库 `dist/autobrowser.js` 的绝对路径，链接后无需额外环境变量；它不再生成 sh 包装器，开发机需要安装 Go。它和 npm Go 启动器是两条独立路径，见 [`docs/bun-link.md`](docs/bun-link.md)。发布构建 `bun run build` 会自动构建六种原生文件；只构建本机可用 `bun run build:launcher -- --current`，构建机需要 Go，安装用户不需要 Go。
+源码开发的 `bun run link:bun` 默认用 Bun AOT 构建原生启动器（Windows 为 `autobrowser.exe`，其他平台为 `autobrowser`）并安装到 Bun 旁边，启动器嵌入当前 Bun 与仓库 `dist/autobrowser.js` 的绝对路径，链接后无需额外环境变量；默认不需要 Go，也不生成 sh 包装器。它和 npm 启动器是两条独立路径，见 [`docs/bun-link.md`](docs/bun-link.md)。Bun AOT 当前不能交叉编译，因此发布构建 `bun run build` 对本机目标使用 Bun AOT，其余五个目标自动使用 Go 备选；只构建本机可用 `bun run build:launcher -- --current`，不需要 Go。强制全部使用备选 Go 构建可运行 `bun run build:launcher:go`，源码链接的 Go 备选则加 `-- --go`。
 
 ### 验证
 
@@ -643,4 +643,4 @@ bun run build:chrome
 bun run link:bun
 ```
 
-`link:bun` 会用 Go 构建原生启动器并安装到 Bun 旁边，把本地 CLI 链接成全局的 `autobrowser` 命令；本机需要安装 Go，Go 缺失时链接直接失败。不链接也可以用 `bun run src/cli.ts <子命令>` 直接运行源码，效果与 `autobrowser <子命令>` 等价；此时按「扩展」一节加载仓库里的 `chrome/`。
+`link:bun` 默认用 Bun AOT 构建原生启动器并安装到 Bun 旁边，把本地 CLI 链接成全局的 `autobrowser` 命令；本机只需 Bun。需要备选 Go 实现时运行 `bun run link:bun -- --go`。不链接也可以用 `bun run src/cli.ts <子命令>` 直接运行源码，效果与 `autobrowser <子命令>` 等价；此时按「扩展」一节加载仓库里的 `chrome/`。

@@ -4,6 +4,7 @@ import { promisify } from 'node:util'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import os from 'node:os'
+import { bunLauncherBuildArgs } from './build-launcher-bun'
 import { currentBuildEnv, launcherLdflags } from './build-launcher-go'
 
 const execFileAsync = promisify(execFile)
@@ -11,6 +12,12 @@ const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
 const rootDir = path.resolve(__dirname, '..')
 const distEntry = path.join(rootDir, 'dist', 'autobrowser.js')
+const args = process.argv.slice(2).filter((arg) => arg !== '--')
+if (args.some((arg) => arg !== '--go')) {
+  console.error('Usage: bun run link:bun [-- --go]')
+  process.exit(1)
+}
+const useGo = args.includes('--go')
 
 const bunPath = Bun.which('bun')
 if (!bunPath) {
@@ -26,13 +33,6 @@ try {
   process.exit(1)
 }
 
-try {
-  await execFileAsync('go', ['version'])
-} catch {
-  console.error('Go is required to build the native launcher. Install Go and add go to PATH.')
-  process.exit(1)
-}
-
 const bunDir = path.dirname(bunPath)
 const isWindows = os.platform() === 'win32'
 const targetPath = path.join(bunDir, isWindows ? 'autobrowser.exe' : 'autobrowser')
@@ -40,25 +40,45 @@ const targetPath = path.join(bunDir, isWindows ? 'autobrowser.exe' : 'autobrowse
 const tempPath = path.join(bunDir, `.autobrowser-link-${process.pid}${isWindows ? '.exe' : ''}`)
 
 try {
-  await execFileAsync(
-    'go',
-    [
-      'build',
-      '-trimpath',
-      '-ldflags',
-      launcherLdflags({ bunPath, distEntry }),
-      '-o',
-      tempPath,
-      '.',
-    ],
-    {
-      cwd: path.join(rootDir, 'scripts', 'launcher-go'),
-      // 显式指定宿主目标，避免外部 GOOS/GOARCH 交叉编译设置产出非本机二进制。
-      env: { ...process.env, ...currentBuildEnv() },
-    },
-  )
+  if (useGo) {
+    await execFileAsync(
+      'go',
+      [
+        'build',
+        '-trimpath',
+        '-ldflags',
+        launcherLdflags({ bunPath, distEntry }),
+        '-o',
+        tempPath,
+        '.',
+      ],
+      {
+        cwd: path.join(rootDir, 'scripts', 'launcher-go'),
+        // 显式指定宿主目标，避免外部 GOOS/GOARCH 交叉编译设置产出非本机二进制。
+        env: { ...process.env, ...currentBuildEnv() },
+      },
+    )
+  } else {
+    await execFileAsync(
+      process.execPath,
+      bunLauncherBuildArgs({
+        entrypoint: path.join(rootDir, 'scripts', 'launcher-bun.ts'),
+        outfile: tempPath,
+        bunPath,
+        distEntry,
+      }),
+      { cwd: rootDir },
+    )
+  }
   await chmod(tempPath, 0o755)
   await rename(tempPath, targetPath)
+} catch (error) {
+  if (useGo) {
+    console.error(
+      'Go fallback build failed. Install Go and add go to PATH, or use the default Bun AOT build.',
+    )
+  }
+  throw error
 } finally {
   await rm(tempPath, { force: true })
 }
@@ -69,4 +89,4 @@ if (isWindows) {
   await rm(path.join(bunDir, 'autobrowser.cmd'), { force: true })
 }
 
-console.log(`Linked autobrowser ->\n  ${targetPath}`)
+console.log(`Linked autobrowser (${useGo ? 'Go fallback' : 'Bun AOT'}) ->\n  ${targetPath}`)

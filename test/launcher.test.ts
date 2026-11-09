@@ -4,9 +4,9 @@ import { existsSync } from 'node:fs'
 import { copyFile, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
-import { launcherTargets } from '../scripts/build-launcher-go'
+import { bunLauncherTargets } from '../scripts/build-launcher-bun'
 
-const target = launcherTargets(['--current'])[0]!
+const target = bunLauncherTargets(['--current'])[0]!
 const launcher = path.resolve(import.meta.dir, '../launchers', target.name)
 
 test.skipIf(!existsSync(launcher))(

@@ -39,7 +39,7 @@ export function launcherTargets(
 ): LauncherTarget[] {
   const flags = args.filter((arg) => arg !== '--')
   if (flags.some((arg) => arg !== '--current')) {
-    throw new Error('Usage: bun run build:launcher [-- --current]')
+    throw new Error('Usage: bun run build:launcher:go [-- --current]')
   }
   const platforms: Record<string, string> = { darwin: 'darwin', linux: 'linux', win32: 'windows' }
   const architectures: Record<string, string> = { x64: 'amd64', arm64: 'arm64' }
