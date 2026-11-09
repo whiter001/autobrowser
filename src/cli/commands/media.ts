@@ -20,6 +20,7 @@ interface DownloadOptions {
   timeoutMs?: number
   concurrency: number
   overwrite: boolean
+  dedupeByContent: boolean
   resolveOutputPath?: (result: BrowserDownloadResult) => string
 }
 
@@ -156,14 +157,20 @@ async function handleDownload(rest: string[], context: CommandContext): Promise<
   let timeoutMs: number | undefined
   let overwrite = true
   let overwriteSeen = false
+  let dedupeByContent = false
 
   try {
     for (let index = 0; index < rest.length; index += 1) {
       const value = rest[index]
       if (
-        ['--media', '--selector', '--include-background', '--media-epoch', '--timeout-ms'].includes(
-          value!,
-        )
+        [
+          '--media',
+          '--selector',
+          '--include-background',
+          '--media-epoch',
+          '--timeout-ms',
+          '--dedupe-by-content',
+        ].includes(value!)
       ) {
         if (retryOptionsSeen.has(value!)) throw new Error(`duplicate option: ${value}`)
         retryOptionsSeen.add(value!)
@@ -213,6 +220,8 @@ async function handleDownload(rest: string[], context: CommandContext): Promise<
       } else if (value === '--timeout-ms') {
         timeoutMs = parseNumberArg(rest[index + 1], 'timeout ms', { min: 1, integer: true })
         index += 1
+      } else if (value === '--dedupe-by-content') {
+        dedupeByContent = true
       } else if (value === '--overwrite' || value === '--no-clobber') {
         if (overwriteSeen) throw new Error('--overwrite and --no-clobber are mutually exclusive')
         overwriteSeen = true
@@ -252,6 +261,7 @@ async function handleDownload(rest: string[], context: CommandContext): Promise<
       quality,
       concurrency,
       overwrite,
+      dedupeByContent,
       ...(outputDir !== null
         ? {
             resolveOutputPath: (result: BrowserDownloadResult) =>

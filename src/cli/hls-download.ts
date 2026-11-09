@@ -11,6 +11,7 @@ import {
   CHECKPOINT_VERSION,
   commitFile,
   fileExists,
+  findDuplicateBookBySha256,
   loadCheckpoint,
   readHead,
   removeTempFiles,
@@ -47,6 +48,9 @@ interface HlsDownloadResult extends BrowserDownloadResult {
   width?: number
   height?: number
   segments?: number
+  duplicate?: boolean
+  duplicateOf?: string
+  skipped?: boolean
 }
 
 interface HlsDownloadOptions {
@@ -60,6 +64,8 @@ interface HlsDownloadOptions {
   concurrency?: number
   /** 目标已存在时是否原子替换，默认 true */
   overwrite?: boolean
+  /** 下载后按 SHA-256 检查目录内已有 EPUB/MOBI，重复时丢弃 staging */
+  dedupeByContent?: boolean
   /** 单任务总字节上限，默认 MAX_HLS_TOTAL_BYTES */
   maxTotalBytes?: number
   /** 单任务最大分片数，默认 MAX_HLS_SEGMENTS */
@@ -240,6 +246,24 @@ export async function downloadMediaWithHls(
     }
     if (options.resolveOutputPath) {
       outputPath = path.resolve(options.resolveOutputPath(source.result))
+    }
+    if (options.dedupeByContent) {
+      const duplicateOf = await findDuplicateBookBySha256(outputDir, source.result.sha256)
+      if (duplicateOf) {
+        await rm(source.localPath, { force: true })
+        return {
+          sourceUrl: source.result.sourceUrl,
+          finalUrl: source.result.finalUrl,
+          contentType: source.result.contentType,
+          bytes: source.result.bytes,
+          sha256: source.result.sha256,
+          path: duplicateOf,
+          hls: false,
+          duplicate: true,
+          duplicateOf,
+          skipped: true,
+        }
+      }
     }
     // 非 HLS：把 staging 原子提交到目标文件，并保留原始结果字段
     await commitFile(source.localPath, outputPath, overwrite).catch(async (error) => {

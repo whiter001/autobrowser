@@ -556,13 +556,14 @@ export const HELP_ROOT: HelpNode = helpNode(
     helpNode(
       'download',
       'Download a binary file or HLS video through the browser and save it locally.',
-      'autobrowser download <url|--media <index>> [output-path] [--selector <css>] [--include-background] [--media-epoch <n>] [--output-dir <dir>] [--quality best|worst|720p] [--concurrency <1..16>] [--timeout-ms <ms>] [--retries <0..5>] [--retry-delay-ms <0..60000>] [--overwrite|--no-clobber]',
+      'autobrowser download <url|--media <index>> [output-path] [--selector <css>] [--include-background] [--media-epoch <n>] [--output-dir <dir>] [--quality best|worst|720p] [--concurrency <1..16>] [--timeout-ms <ms>] [--retries <0..5>] [--retry-delay-ms <0..60000>] [--overwrite|--no-clobber] [--dedupe-by-content]',
       [
         '--media <index>  re-list and download only trusted DOM sources; never observedSources',
         '--selector <css> / --include-background  re-use the exact media list scope (requires --media)',
         '--media-epoch <n>  require re-collected pageEpoch to match exactly (requires --media)',
         'Index is valid only within the same tab/frame/scope/epoch; confirm the index again after DOM changes.',
-        '--output-dir <dir>  derive a safe filename from the source URL',
+        '--output-dir <dir>  derive a safe filename from response headers, URL filename, path or MIME type',
+        '--dedupe-by-content  after a non-HLS download, skip saving when an existing EPUB/MOBI in the output directory has the same SHA-256',
         '--quality <best|worst|height>  HLS variant selection; best is the default',
         '--concurrency <1..16>  HLS segment concurrency; default 4',
         '--timeout-ms <ms>  total budget for the whole download task',

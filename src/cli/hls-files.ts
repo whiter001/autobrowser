@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import { createReadStream } from 'node:fs'
+import { createReadStream, type Dirent } from 'node:fs'
 import {
   constants,
   copyFile,
@@ -55,6 +55,29 @@ export async function sha256File(filePath: string): Promise<string> {
     hash.update(chunk as Buffer)
   }
   return hash.digest('hex')
+}
+
+export async function findDuplicateBookBySha256(
+  outputDir: string,
+  sha256: string,
+): Promise<string | null> {
+  let entries: Dirent[]
+  try {
+    entries = await readdir(outputDir, { withFileTypes: true })
+  } catch {
+    return null
+  }
+
+  const books = entries
+    .filter((entry) => entry.isFile() && /\.(epub|mobi)$/i.test(entry.name))
+    .map((entry) => entry.name)
+    .sort()
+    .slice(0, 1000)
+  for (const name of books) {
+    const candidate = path.join(outputDir, name)
+    if ((await sha256File(candidate)) === sha256) return candidate
+  }
+  return null
 }
 
 export async function readHead(filePath: string, size: number): Promise<string> {

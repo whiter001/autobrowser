@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, test } from 'bun:test'
+import { createHash } from 'node:crypto'
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
@@ -19,6 +20,7 @@ async function createContext(
     failUrl?: string
     failError?: Record<string, unknown>
     suggestedFilename?: string
+    sha256?: string
   } = {},
 ) {
   const directory = await mkdtemp(path.join(os.tmpdir(), 'autobrowser-cli-download-'))
@@ -79,7 +81,7 @@ async function createContext(
           finalUrl: sourceUrl,
           contentType: 'application/octet-stream',
           bytes: 4,
-          sha256: 'a'.repeat(64),
+          sha256: options.sha256 || 'a'.repeat(64),
           path: outputPath,
           ...(options.suggestedFilename ? { suggestedFilename: options.suggestedFilename } : {}),
         },
@@ -465,6 +467,47 @@ describe('cli download command', () => {
     expect(conflict.code).toBe(1)
     expect(conflict.message).toContain('cannot be combined')
     expect(requestCalls).toHaveLength(0)
+  })
+
+  test('dedupe-by-content skips a duplicate EPUB without creating a renamed copy', async () => {
+    const bytes = new Uint8Array([0, 255, 128, 1])
+    const sha256 = createHash('sha256').update(bytes).digest('hex')
+    const { context, directory, written } = await createContext({ sha256 })
+    const existing = path.join(directory, 'existing.epub')
+    const renamed = path.join(directory, 'renamed.epub')
+    await writeFile(existing, bytes)
+
+    await mediaCommandRegistry.download!(
+      ['https://example.com/book.epub', renamed, '--dedupe-by-content'],
+      context,
+    )
+
+    expect(written[0]).toMatchObject({
+      ok: true,
+      result: {
+        path: existing,
+        duplicate: true,
+        duplicateOf: existing,
+        skipped: true,
+      },
+    })
+    await expect(readFile(renamed)).rejects.toThrow()
+    expect(new Uint8Array(await readFile(existing))).toEqual(bytes)
+  })
+
+  test('dedupe-by-content still saves a file with different content', async () => {
+    const bytes = new Uint8Array([0, 255, 128, 1])
+    const sha256 = createHash('sha256').update(bytes).digest('hex')
+    const { context, directory } = await createContext({ sha256 })
+    await writeFile(path.join(directory, 'existing.epub'), 'different')
+    const outputPath = path.join(directory, 'new.epub')
+
+    await mediaCommandRegistry.download!(
+      ['https://example.com/book.epub', outputPath, '--dedupe-by-content'],
+      context,
+    )
+
+    expect(new Uint8Array(await readFile(outputPath))).toEqual(bytes)
   })
 
   test('no-clobber preserves an existing file without downloading', async () => {

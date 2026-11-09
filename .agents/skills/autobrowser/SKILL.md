@@ -138,7 +138,7 @@ autobrowser 是一个面向 Chrome/Edge 的浏览器自动化 CLI，通过本地
 
 ## 文件与媒体下载
 
-- 普通文件：`download <url> [output-path]`，或用 `--output-dir <dir>` 自动命名。默认原子覆盖，`--no-clobber` 拒绝覆盖。`downloads list|clear` 只是 Chrome 下载历史，与真正落盘的 `download` 不同。
+- 普通文件：`download <url> [output-path]`，或用 `--output-dir <dir>` 根据响应头、URL filename、路径和 MIME 自动命名。默认原子覆盖，`--no-clobber` 拒绝覆盖。非 HLS 下载可用 `--dedupe-by-content` 按 SHA-256 跳过目录内已有的同内容 EPUB/MOBI，返回 `duplicate:true/duplicateOf`。`downloads list|clear` 只是 Chrome 下载历史，与真正落盘的 `download` 不同。
 - 源站初始 fetch 对网络错误、429、5xx 默认额外重试 2 次；`--retries <0..5>` 调整，`--retries 0` 禁用，`--retry-delay-ms <ms>` 设置指数退避基础间隔（默认 250）。普通下载和 HLS 各请求都适用，重试共享原 timeout/deadline；上传开始后不重放整个文件。
 - 页面媒体：先 `autobrowser --tab t1 --frame top media list --selector 'article' --include-background --resolve`。确认有可信 HTTP(S) `sources/url` 后，假设返回 `pageEpoch=7`，使用 `autobrowser --tab t1 --frame top download --media 0 --selector 'article' --include-background --media-epoch 7 ./out.mp4`。index 仅在相同 tab/frame/scope/epoch 内有效，重新采集必须沿用 selector 和 include-background；epoch 不一致会失败，DOM 重排后应重新确认 index。
 - 媒体作用域：`--selector <css>` 把 DOM 采集和播放探测限定到匹配容器，未命中时连背景图也返回空，不回退整页。`--include-background` 额外采集作用域内 CSS 背景图。`media list --wait-for <css> --timeout-ms <ms>` 在扩展内对同一已解析 tab/frame 先等待再采集，失败不继续。旧扩展缺少 scope、背景支持或 wait 回显时 CLI 拒绝 scoped 成功。

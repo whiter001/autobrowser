@@ -287,7 +287,7 @@ autobrowser --tab t1 --frame top download --media 0 --selector 'article[data-rol
 
 下载行为：
 
-- 输出使用显式路径或 `--output-dir` 自动命名，父目录自动创建。默认原子替换已有文件；`--no-clobber` 会在下载前拒绝覆盖，`--overwrite` 可显式选择默认行为。
+- 输出使用显式路径或 `--output-dir` 自动命名（响应头、URL `filename`、路径和 MIME 扩展名），父目录自动创建。默认原子替换已有文件；`--no-clobber` 会在下载前拒绝覆盖，`--overwrite` 可显式选择默认行为。非 HLS 下载可加 `--dedupe-by-content`，按 SHA-256 检查输出目录内已有 EPUB/MOBI；重复时删除临时文件并返回 `duplicate:true`、`duplicateOf`，不新增或覆盖文件。
 - 普通文件只接受 HTTP/HTTPS，扩展携带当前浏览器登录态获取，二进制经本地鉴权 `/files/:transferId` 通道直传 relay，不经过 Base64 或 WebSocket。
 - 每个浏览器下载请求（包括 HLS 播放列表、初始化文件和分片）的初始 fetch 对网络错误、HTTP 429 和 5xx 默认额外重试 2 次；其他 4xx 立即失败。`--retries <0..5>` 调整次数，`--retries 0` 禁用源站重试；`--retry-delay-ms <0..60000>` 设置指数退避基础间隔（默认 250ms）。重试及等待共用原始 `--timeout-ms` 总预算，并服从取消；响应体读取失败不会重新下载，上传开始后也不会重放整个文件，原有上传断点恢复不变。
 - 已知 Content-Length 且超过 8MiB 的文件使用流式传输，每次只保留一个 8MiB 块；小文件和未知长度响应使用原来的缓冲路径。relay 校验分块及整文件 SHA-256 后原子落盘。
