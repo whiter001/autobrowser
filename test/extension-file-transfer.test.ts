@@ -434,6 +434,48 @@ describe('extension file transfer', () => {
     ).rejects.toThrow(/no pending download/)
   })
 
+  test('reports the read stage and received bytes on a body timeout', async () => {
+    const fixture = createRetryTransfer(async (init) => {
+      const stream = new ReadableStream<Uint8Array>({
+        start(streamController) {
+          streamController.enqueue(new Uint8Array([1, 2, 3]))
+          init?.signal?.addEventListener('abort', () => {
+            streamController.error(new Error('aborted'))
+          })
+        },
+      })
+      return new Response(stream, { headers: { 'content-length': '10' } })
+    })
+
+    await expect(
+      fixture.transfer.download({
+        ...retryDownloadArgs,
+        deadlineAt: new Date(Date.now() + 50).toISOString(),
+      }),
+    ).rejects.toMatchObject({
+      code: 'DOWNLOAD_TIMEOUT',
+      details: {
+        sourceUrl: retryDownloadArgs.url,
+        stage: 'read',
+        receivedBytes: 3,
+        uploadedBytes: 0,
+        totalBytes: 10,
+      },
+      suggestedAction: expect.stringContaining('original /dl/ URL'),
+    })
+  })
+
+  test('HTTP 410 explains how to refresh a signed download URL', async () => {
+    const fixture = createRetryTransfer(async () => new Response('gone', { status: 410 }))
+
+    await expect(fixture.transfer.download(retryDownloadArgs)).rejects.toMatchObject({
+      code: 'DOWNLOAD_HTTP_ERROR',
+      details: { status: 410, sourceUrl: retryDownloadArgs.url },
+      suggestedAction: expect.stringContaining('fresh link'),
+    })
+    expect(fixture.sourceCalls()).toBe(1)
+  })
+
   test('aborts the fetch when the deadline elapses', async () => {
     const sent: SentMessage[] = []
     const socket = createSocket(sent)

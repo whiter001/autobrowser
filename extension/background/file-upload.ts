@@ -42,6 +42,7 @@ interface FileUploadOptions {
   fetchImpl?: typeof fetch
   retryDelayMs?: number
   maxRetries?: number
+  onProgress?: (receivedBytes: number) => void
 }
 
 interface FileUploadResult {
@@ -68,6 +69,8 @@ interface FileStreamUploadOptions {
   retryDelayMs?: number
   maxRetries?: number
   chunkBytes?: number
+  onReadProgress?: (receivedBytes: number) => void
+  onProgress?: (confirmedBytes: number) => void
 }
 
 interface FileStreamUploadResult {
@@ -325,6 +328,7 @@ export async function uploadFileBytes(options: FileUploadOptions): Promise<FileU
       if (receivedBytes === offset && receivedBytes < totalBytes)
         throw new FileUploadClientError('File upload did not advance the confirmed offset', true)
       offset = receivedBytes
+      options.onProgress?.(offset)
       retries = 0
     } catch (error) {
       if (error instanceof FileUploadClientError && !error.retryable) throw error
@@ -446,6 +450,7 @@ export async function uploadFileStream(
       chunk.set(part.subarray(0, take), chunkLength)
       chunkLength += take
       readBytes += take
+      options.onReadProgress?.(readBytes)
       if (take < part.byteLength) carry = part.subarray(take)
     }
   }
@@ -482,6 +487,7 @@ export async function uploadFileStream(
         }
         const result = await readUploadResult(response)
         confirmed = result.receivedBytes
+        options.onProgress?.(confirmed)
         if (result.sha256) finalSha256 = result.sha256
         if (confirmed < chunkStart)
           throw new FileUploadClientError(
@@ -519,6 +525,7 @@ export async function uploadFileStream(
           if (progress.receivedBytes > chunkStart + chunkLength)
             throw new FileUploadClientError('File upload confirmed an offset beyond the sent chunk')
           confirmed = progress.receivedBytes
+          options.onProgress?.(confirmed)
           if (progress.sha256) finalSha256 = progress.sha256
           from = progress.receivedBytes
           if (confirmed === chunkStart + chunkLength) return finalSha256

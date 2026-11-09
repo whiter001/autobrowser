@@ -22,8 +22,13 @@ interface DownloadOptions {
 }
 
 function commandError(payload: CommandResponse, fallback: string): Error {
-  const detail = payload.error?.suggestedAction || payload.error?.suggestion
-  return new Error(`${payload.error?.message || fallback}${detail ? `\n${detail}` : ''}`)
+  const source = payload.error
+  return Object.assign(new Error(source?.message || fallback), {
+    code: source?.code,
+    details: source?.details,
+    retryable: source?.retryable,
+    suggestedAction: source?.suggestedAction || source?.suggestion,
+  })
 }
 
 function readBrowserDownloadResult(payload: CommandResponse): BrowserDownloadResult {

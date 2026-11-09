@@ -785,6 +785,38 @@ describe('runtime snapshot', () => {
     expect(budgets).toHaveLength(3)
   })
 
+  test('gives downloads an earlier extension deadline for structured diagnostics', async () => {
+    const homeDir = await mkdtemp(path.join(os.tmpdir(), 'autobrowser-runtime-test-'))
+    tempDirs.push(homeDir)
+    const runtime = await createTestRuntime({ homeDir, requestTimeoutMs: 100 })
+    const budgets: number[] = []
+    const socket = {
+      readyState: WebSocket.OPEN,
+      send(payload: string) {
+        const message = JSON.parse(payload)
+        budgets.push(Date.parse(message.deadlineAt) - Date.parse(message.requestedAt))
+        queueMicrotask(() =>
+          runtime.handleExtensionMessage({
+            type: 'response',
+            id: message.id,
+            ok: true,
+            result: {},
+          }),
+        )
+        return 1
+      },
+    } as unknown as Bun.ServerWebSocket<{}>
+    runtime.attachExtension(socket)
+
+    await runtime.dispatchCommand('download', {
+      url: 'https://example.com/file',
+      outputPath: path.join(homeDir, 'file'),
+      timeoutMs: 10_000,
+    })
+
+    expect(budgets).toEqual([14_000])
+  })
+
   test('reports the timeout budget and troubleshooting hints on command timeout', async () => {
     const homeDir = await mkdtemp(path.join(os.tmpdir(), 'autobrowser-runtime-test-'))
     tempDirs.push(homeDir)

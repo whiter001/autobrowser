@@ -46,6 +46,17 @@ interface FileTransferOptions {
   retryDelayMs?: number
 }
 
+type DownloadStage = 'fetch' | 'read' | 'upload'
+
+function transferError(
+  message: string,
+  code: string,
+  details: Record<string, unknown>,
+  suggestedAction: string,
+): Error {
+  return Object.assign(new Error(message), { code, details, suggestedAction, retryable: false })
+}
+
 function toHex(buffer: ArrayBuffer): string {
   return [...new Uint8Array(buffer)].map((value) => value.toString(16).padStart(2, '0')).join('')
 }
@@ -85,6 +96,10 @@ export function createFileTransferDomain(options: FileTransferOptions): FileTran
       throw new Error('file transfer requires a command id')
     }
 
+    let stage: DownloadStage = 'fetch'
+    let totalBytes: number | null = null
+    let receivedBytes = 0
+    let uploadedBytes = 0
     const controller = new AbortController()
     const deadlineMs = args.deadlineAt ? Date.parse(args.deadlineAt) : Number.NaN
     const deadlineTimer = Number.isFinite(deadlineMs)
@@ -129,6 +144,30 @@ export function createFileTransferDomain(options: FileTransferOptions): FileTran
       })
       checkActive()
     }
+    const readSourceBytes = async (response: Response): Promise<Uint8Array<ArrayBuffer>> => {
+      if (!response.body) {
+        const buffer = await response.arrayBuffer()
+        receivedBytes = buffer.byteLength
+        return new Uint8Array(buffer)
+      }
+
+      const reader = response.body.getReader()
+      const chunks: Uint8Array[] = []
+      while (true) {
+        const next = await reader.read()
+        if (next.done) break
+        const chunk = next.value || new Uint8Array(0)
+        receivedBytes += chunk.byteLength
+        chunks.push(chunk)
+      }
+      const bytes = new Uint8Array(receivedBytes)
+      let offset = 0
+      for (const chunk of chunks) {
+        bytes.set(chunk, offset)
+        offset += chunk.byteLength
+      }
+      return bytes
+    }
     const fetchSource = async (): Promise<Response> => {
       for (let attempt = 0; ; attempt += 1) {
         checkActive()
@@ -150,8 +189,13 @@ export function createFileTransferDomain(options: FileTransferOptions): FileTran
         if (response.ok) return response
         // 丢弃失败响应，避免重试时留下未消费的连接/响应体。
         void response.body?.cancel().catch(() => undefined)
-        const error = new Error(
+        const error = transferError(
           `Download failed with HTTP ${response.status} ${response.statusText}`.trim(),
+          'DOWNLOAD_HTTP_ERROR',
+          { status: response.status, sourceUrl: args.url },
+          response.status === 410
+            ? 'The signed download URL has expired or was already consumed. Return to the original /dl/ URL or book detail page to obtain a fresh link; do not keep retrying the final CDN URL.'
+            : 'Check the source URL and page access, then retry the original download URL when appropriate.',
         )
         const retryable =
           response.status === 429 || (response.status >= 500 && response.status <= 599)
@@ -173,18 +217,19 @@ export function createFileTransferDomain(options: FileTransferOptions): FileTran
       }
       // 仅重试获取响应头；响应体读取及上传均在重试循环之外，不能重放整个文件。
       const response = await fetchSource()
-      const contentLength = readContentLength(response.headers.get('content-length'))
+      totalBytes = readContentLength(response.headers.get('content-length'))
       // 长度已知时先看预算：超限的文件没必要读完再报错
-      if (contentLength !== null && contentLength > MAX_FILE_UPLOAD_BYTES) {
+      if (totalBytes !== null && totalBytes > MAX_FILE_UPLOAD_BYTES) {
         throw new Error('Downloaded file exceeds the 512MiB upload budget')
       }
       const transferId = crypto.randomUUID()
       const streamable =
-        contentLength !== null &&
-        contentLength > FILE_UPLOAD_STREAM_THRESHOLD_BYTES &&
+        totalBytes !== null &&
+        totalBytes > FILE_UPLOAD_STREAM_THRESHOLD_BYTES &&
         Boolean(response.body)
 
       if (streamable) {
+        stage = 'read'
         // 大文件走流式：扩展按块读取并直传，内存里不保留完整文件
         const streamed = await uploadFileStream({
           socket,
@@ -193,11 +238,18 @@ export function createFileTransferDomain(options: FileTransferOptions): FileTran
           token: () => options.state.connection.token,
           requestId: args.requestId!,
           transferId,
-          totalBytes: contentLength,
+          totalBytes: totalBytes!,
           source: response.body!,
           deadlineAt: Number.isFinite(deadlineMs) ? deadlineMs : null,
           signal: controller.signal,
           fetchImpl,
+          onReadProgress: (bytes) => {
+            receivedBytes = bytes
+          },
+          onProgress: (bytes) => {
+            uploadedBytes = bytes
+            stage = 'upload'
+          },
           ...(options.retryDelayMs !== undefined ? { retryDelayMs: options.retryDelayMs } : {}),
         })
         return {
@@ -209,13 +261,15 @@ export function createFileTransferDomain(options: FileTransferOptions): FileTran
         }
       }
 
-      const buffer = await response.arrayBuffer()
-      if (buffer.byteLength > MAX_FILE_UPLOAD_BYTES) {
+      stage = 'read'
+      const bytes = await readSourceBytes(response)
+      totalBytes ??= bytes.byteLength
+      if (bytes.byteLength > MAX_FILE_UPLOAD_BYTES) {
         throw new Error('Downloaded file exceeds the 512MiB upload budget')
       }
-      const bytes = new Uint8Array(buffer)
-      const sha256 = toHex(await crypto.subtle.digest('SHA-256', buffer))
+      const sha256 = toHex(await crypto.subtle.digest('SHA-256', bytes.buffer as ArrayBuffer))
 
+      stage = 'upload'
       await uploadFileBytes({
         socket,
         registry,
@@ -229,6 +283,9 @@ export function createFileTransferDomain(options: FileTransferOptions): FileTran
         deadlineAt: Number.isFinite(deadlineMs) ? deadlineMs : null,
         signal: controller.signal,
         fetchImpl,
+        onProgress: (confirmed) => {
+          uploadedBytes = confirmed
+        },
         ...(options.retryDelayMs !== undefined ? { retryDelayMs: options.retryDelayMs } : {}),
       })
 
@@ -239,6 +296,23 @@ export function createFileTransferDomain(options: FileTransferOptions): FileTran
         bytes: bytes.byteLength,
         sha256,
       }
+    } catch (error) {
+      if (Number.isFinite(deadlineMs) && Date.now() >= deadlineMs) {
+        throw transferError(
+          `Download deadline exceeded during ${stage}`,
+          'DOWNLOAD_TIMEOUT',
+          {
+            sourceUrl: args.url,
+            stage,
+            receivedBytes,
+            uploadedBytes,
+            totalBytes,
+            deadlineAt: args.deadlineAt,
+          },
+          'Retry the original download URL with a larger --timeout-ms. If this was a signed CDN URL, return to the original /dl/ URL or detail page for a fresh link instead of reusing the expired final URL.',
+        )
+      }
+      throw error
     } finally {
       if (deadlineTimer !== undefined) clearTimeout(deadlineTimer)
       args.context?.signal.removeEventListener('abort', onCommandCancel)

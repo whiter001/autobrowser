@@ -517,7 +517,9 @@ export async function createRuntime(options: RuntimeOptions = {}): Promise<Runti
     const socket = await connection.waitForConnection(connectionTimeoutMs)
 
     const id = createId('cmd')
-    const deadlineAt = new Date(Date.now() + budgetMs).toISOString()
+    // 下载在扩展内部提前 1 秒到达预算，优先返回阶段/字节数诊断；无响应时 relay 仍按原预算兜底。
+    const extensionBudgetMs = command === 'download' && budgetMs > 2000 ? budgetMs - 1000 : budgetMs
+    const deadlineAt = new Date(Date.now() + extensionBudgetMs).toISOString()
     const payload: CommandPayload = {
       type: 'command',
       id,

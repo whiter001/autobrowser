@@ -17,6 +17,7 @@ async function createContext(
     mediaResult?: Record<string, unknown>
     files?: Record<string, string>
     failUrl?: string
+    failError?: Record<string, unknown>
   } = {},
 ) {
   const directory = await mkdtemp(path.join(os.tmpdir(), 'autobrowser-cli-download-'))
@@ -64,7 +65,10 @@ async function createContext(
       const outputPath = String(args.outputPath)
       const sourceUrl = String(args.url)
       if (sourceUrl === options.failUrl) {
-        return { ok: false, error: { message: 'simulated segment failure' } }
+        return {
+          ok: false,
+          error: options.failError || { message: 'simulated segment failure' },
+        }
       }
       await writeFile(outputPath, options.files?.[sourceUrl] ?? new Uint8Array([0, 255, 128, 1]))
       return {
@@ -107,6 +111,27 @@ async function captureFailure(run: () => Promise<number | void>) {
 }
 
 describe('cli download command', () => {
+  test('preserves structured download errors and recovery guidance', async () => {
+    const sourceUrl = 'https://example.com/slow.epub'
+    const { context, directory } = await createContext({
+      failUrl: sourceUrl,
+      failError: {
+        message: 'Download deadline exceeded during read',
+        code: 'DOWNLOAD_TIMEOUT',
+        details: { stage: 'read', receivedBytes: 3 },
+        suggestedAction: 'Retry the original /dl/ URL with a larger --timeout-ms.',
+      },
+    })
+
+    await expect(
+      mediaCommandRegistry.download!([sourceUrl, path.join(directory, 'book.epub')], context),
+    ).rejects.toMatchObject({
+      code: 'DOWNLOAD_TIMEOUT',
+      details: { stage: 'read', receivedBytes: 3 },
+      suggestedAction: 'Retry the original /dl/ URL with a larger --timeout-ms.',
+    })
+  })
+
   test.each([
     [0, 0],
     [5, 60_000],
