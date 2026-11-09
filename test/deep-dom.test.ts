@@ -137,6 +137,23 @@ describe('deep dom traversal helpers', () => {
     expect(deepQuerySelectorAll(root, 'label[for]')).toEqual([saveLabel, deleteLabel])
   })
 
+  test('enters the shadow root when the query root itself is the host', () => {
+    const shadowButton: MockNode = { tagName: 'BUTTON', id: 'shadow-button' }
+    const host = Object.assign(
+      {
+        tagName: 'Z-BOOKCARD',
+        shadowRoot: new MockRoot([shadowButton]),
+      },
+      { querySelectorAll: (_selector: string): MockNode[] => [] },
+    )
+
+    expect(deepCollectElements(host)).toEqual([shadowButton])
+    expect(deepQuerySelectorAll(host, 'button')).toEqual([shadowButton])
+    expect(deepQuerySelector(host, 'button')).toBe(shadowButton)
+    expect(deepGetElementById(host, 'shadow-button')).toBe(shadowButton)
+    expect(deepQuerySelectorAll(host, 'button', 0)).toEqual([])
+  })
+
   test('respects the maximum shadow traversal depth', () => {
     const nestedShadowButton: MockNode = { tagName: 'BUTTON', id: 'nested-shadow-button' }
     const nestedHost: MockNode = {

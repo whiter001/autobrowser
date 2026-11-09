@@ -6,6 +6,7 @@ interface DeepDomNodeLike {
 
 interface DeepDomRootLike {
   activeElement?: DeepDomNodeLike | null
+  shadowRoot?: DeepDomRootLike | null
   querySelectorAll: (selector: string) => ArrayLike<DeepDomNodeLike> | Iterable<DeepDomNodeLike>
 }
 
@@ -78,6 +79,8 @@ export function deepCollectElements(
   }
 
   visitRoot(root, 0)
+  // querySelectorAll 不包含根自身；scope 是宿主时必须显式进入它自己的 shadow root。
+  if (root?.shadowRoot && depthLimit > 0) visitRoot(root.shadowRoot, 1)
   return results
 }
 
@@ -134,6 +137,8 @@ export function deepQuerySelectorAll(
   }
 
   visitRoot(root, 0)
+  // querySelectorAll 不包含根自身；scope 是宿主时必须显式进入它自己的 shadow root。
+  if (root?.shadowRoot && depthLimit > 0) visitRoot(root.shadowRoot, 1)
   return results
 }
 
@@ -179,7 +184,9 @@ export function deepGetElementById(
     }
     return null
   }
-  return visit(root, 0)
+  const found = visit(root, 0)
+  if (found || !root?.shadowRoot || depthLimit <= 0) return found
+  return visit(root.shadowRoot, 1)
 }
 
 /**

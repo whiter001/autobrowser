@@ -1632,6 +1632,22 @@ describe('executed observation expressions', () => {
     expect(found.match!.ref).toBe(snapshot.elements[1]!.ref as string)
   })
 
+  test('subtree snapshots enter the scope host shadow root', async () => {
+    const link = new ObserveAnchor()
+    link.innerText = 'Book title'
+    link.href = '/book/1'
+    const host = new ObserveNode('Z-BOOKCARD')
+    host.id = 'card'
+    host.shadowRoot = new ObserveDocument([link])
+    const doc = new ObserveDocument([host])
+    const h = expressionHarness(doc)
+
+    const scoped = (await h.domain.snapshotTab(1, null, { selector: '#card' })) as ObservedSnapshot
+
+    expect(scoped.elements).toHaveLength(1)
+    expect(scoped.elements[0]).toMatchObject({ role: 'link', text: 'Book title', href: '/book/1' })
+  })
+
   test('subtree snapshots resolve same-document references outside the subtree', async () => {
     const label = new ObserveNode('LABEL')
     label.id = 'panel-title'
