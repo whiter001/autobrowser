@@ -18,6 +18,7 @@ async function createContext(
     files?: Record<string, string>
     failUrl?: string
     failError?: Record<string, unknown>
+    suggestedFilename?: string
   } = {},
 ) {
   const directory = await mkdtemp(path.join(os.tmpdir(), 'autobrowser-cli-download-'))
@@ -80,6 +81,7 @@ async function createContext(
           bytes: 4,
           sha256: 'a'.repeat(64),
           path: outputPath,
+          ...(options.suggestedFilename ? { suggestedFilename: options.suggestedFilename } : {}),
         },
       }
     },
@@ -262,6 +264,21 @@ describe('cli download command', () => {
     expect(result).toBe(0)
     // mock 返回普通二进制，因此只验证命名和提交，不触发真实 HLS 合并。
     expect((await readFile(path.join(directory, 'master.mp4'))).byteLength).toBe(4)
+  })
+
+  test('uses the response-suggested filename for automatic output naming', async () => {
+    const { context, directory, written } = await createContext({ suggestedFilename: '书.epub' })
+    const result = await mediaCommandRegistry.download!(
+      ['https://example.com/redirection?filename=book.epub', '--output-dir', directory],
+      context,
+    )
+
+    expect(result).toBe(0)
+    expect((await readFile(path.join(directory, '书.epub'))).byteLength).toBe(4)
+    expect(written[0]).toMatchObject({
+      ok: true,
+      result: { path: path.join(directory, '书.epub'), hls: false },
+    })
   })
 
   test('resolves --media through media list with playback probing', async () => {

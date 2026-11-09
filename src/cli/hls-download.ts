@@ -38,6 +38,7 @@ export interface BrowserDownloadResult {
   bytes: number
   sha256: string
   path: string
+  suggestedFilename?: string
 }
 
 interface HlsDownloadResult extends BrowserDownloadResult {
@@ -69,6 +70,8 @@ interface HlsDownloadOptions {
     outputPath: string,
     timeoutMs?: number,
   ) => Promise<BrowserDownloadResult>
+  /** 非 HLS 且自动命名时，在收到响应元数据后决定最终文件名 */
+  resolveOutputPath?: (result: BrowserDownloadResult) => string
   /** 便于测试注入的 ffmpeg/ffprobe 执行器 */
   tools?: HlsToolRunner
 }
@@ -158,7 +161,7 @@ function buildTasks(tracks: TrackPlan[], outputDir: string, filePrefix: string):
 export async function downloadMediaWithHls(
   options: HlsDownloadOptions,
 ): Promise<HlsDownloadResult> {
-  const outputPath = path.resolve(options.outputPath)
+  let outputPath = path.resolve(options.outputPath)
   const outputDir = path.dirname(outputPath)
   const baseName = path.basename(outputPath)
   const quality = (options.quality ?? 'best').trim() || 'best'
@@ -234,6 +237,9 @@ export async function downloadMediaWithHls(
     if (isDash) {
       await rm(source.localPath, { force: true })
       throw new HlsDownloadError('DASH 目前只能发现，暂不支持合并下载；请改用 MP4 或 HLS 源')
+    }
+    if (options.resolveOutputPath) {
+      outputPath = path.resolve(options.resolveOutputPath(source.result))
     }
     // 非 HLS：把 staging 原子提交到目标文件，并保留原始结果字段
     await commitFile(source.localPath, outputPath, overwrite).catch(async (error) => {

@@ -1,3 +1,4 @@
+import { suggestedDownloadFilename } from '../../src/core/download-filename.js'
 import type { CommandExecutionContext } from './command-queue.js'
 import type { ExtensionState } from './types.js'
 import {
@@ -23,6 +24,7 @@ interface FileTransferResult {
   contentType: string | null
   bytes: number
   sha256: string
+  suggestedFilename: string
 }
 
 export interface FileTransferDomain {
@@ -258,6 +260,11 @@ export function createFileTransferDomain(options: FileTransferOptions): FileTran
           contentType: response.headers.get('content-type'),
           bytes: streamed.receivedBytes,
           sha256: streamed.sha256,
+          suggestedFilename: suggestedDownloadFilename(
+            response.url || args.url,
+            response.headers.get('content-type'),
+            response.headers.get('content-disposition'),
+          ),
         }
       }
 
@@ -295,6 +302,11 @@ export function createFileTransferDomain(options: FileTransferOptions): FileTran
         contentType: response.headers.get('content-type'),
         bytes: bytes.byteLength,
         sha256,
+        suggestedFilename: suggestedDownloadFilename(
+          response.url || args.url,
+          response.headers.get('content-type'),
+          response.headers.get('content-disposition'),
+        ),
       }
     } catch (error) {
       if (Number.isFinite(deadlineMs) && Date.now() >= deadlineMs) {

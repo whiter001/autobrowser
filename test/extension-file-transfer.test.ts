@@ -103,6 +103,7 @@ describe('extension download network retries', () => {
       contentType: null,
       bytes: 3,
       sha256: sha256(new TextEncoder().encode('abc')),
+      suggestedFilename: 'file',
     })
     expect(fixture.sourceCalls()).toBe(2)
     expect(fixture.uploadCalls()).toBe(1)
@@ -313,6 +314,7 @@ describe('extension file transfer', () => {
       contentType: 'image/png',
       bytes: bytes.byteLength,
       sha256: sha256(bytes),
+      suggestedFilename: 'final.png',
     })
 
     const originRequest = requests[0]!

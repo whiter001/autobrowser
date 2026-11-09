@@ -1,4 +1,5 @@
 import path from 'node:path'
+import { suggestedDownloadFilename } from '../../core/download-filename.js'
 import { isRecord, type CommandResponse } from '../client.js'
 import { downloadMediaWithHls, type BrowserDownloadResult } from '../hls-download.js'
 import { parseNumberArg } from '../parse.js'
@@ -19,6 +20,7 @@ interface DownloadOptions {
   timeoutMs?: number
   concurrency: number
   overwrite: boolean
+  resolveOutputPath?: (result: BrowserDownloadResult) => string
 }
 
 function commandError(payload: CommandResponse, fallback: string): Error {
@@ -51,21 +53,15 @@ function readBrowserDownloadResult(payload: CommandResponse): BrowserDownloadRes
     bytes: result.bytes,
     sha256: result.sha256,
     path: result.path,
+    ...(typeof result.suggestedFilename === 'string'
+      ? { suggestedFilename: result.suggestedFilename }
+      : {}),
   }
 }
 
 function outputFilename(sourceUrl: string): string {
-  let basename = ''
-  try {
-    basename = decodeURIComponent(
-      new URL(sourceUrl).pathname.split('/').filter(Boolean).at(-1) || '',
-    )
-  } catch {
-    // URL 已在参数校验和 media source 选择时检查；这里只负责保守命名。
-  }
-  basename = basename.replace(/[^A-Za-z0-9._-]/g, '_').replace(/^\.+/, '')
-  if (!basename) basename = 'download.bin'
-  if (/\.(m3u8|mpd)$/i.test(basename)) basename = basename.replace(/\.(m3u8|mpd)$/i, '.mp4')
+  const basename = suggestedDownloadFilename(sourceUrl, null, null)
+  if (/\.(m3u8|mpd)$/i.test(basename)) return basename.replace(/\.(m3u8|mpd)$/i, '.mp4')
   return basename
 }
 
@@ -256,6 +252,16 @@ async function handleDownload(rest: string[], context: CommandContext): Promise<
       quality,
       concurrency,
       overwrite,
+      ...(outputDir !== null
+        ? {
+            resolveOutputPath: (result: BrowserDownloadResult) =>
+              path.join(
+                outputDir!,
+                result.suggestedFilename ||
+                  suggestedDownloadFilename(result.finalUrl, result.contentType, null),
+              ),
+          }
+        : {}),
       ...(timeoutMs !== undefined ? { timeoutMs } : {}),
     }
     const result = await downloadMediaWithHls({
