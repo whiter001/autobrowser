@@ -6,13 +6,59 @@ import {
   withFrameSelectorOptions,
 } from './targeting.js'
 import type { CommandExecutionContext } from './command-queue.js'
-import type { FrameSelector, TabInput } from './types.js'
+import type { ExtensionState, FrameSelector, TabInput } from './types.js'
 import type { ElementActionResult, ElementBox, PageInputContext } from './page-input-context.js'
 import { createElementNotFoundError } from './page-input-helpers.js'
 import type { createNavigationCommands } from './page-input-navigation.js'
 
 // 鼠标相关命令：坐标测量、点击/双击/悬停、拖拽、坐标移动与拖放数据投递。
 // 坐标测量与导航等待都来自共享的 navigation 模块，避免重复实现
+
+function clickDownloadEvidence(
+  state: ExtensionState,
+  tabId: number,
+  previousDownloads: Set<number>,
+  previousRequests: Set<unknown>,
+): Record<string, unknown> | null {
+  const browserDownload = state.session.downloads
+    .slice()
+    .reverse()
+    .find((item) => !previousDownloads.has(item.id))
+  const fileResponse = state.network.requests
+    .slice()
+    .reverse()
+    .find((request) => {
+      if (previousRequests.has(request) || request.tabId !== tabId) return false
+      const headers = Object.entries(request.responseHeaders || {}).map(([key, value]) => [
+        key.toLowerCase(),
+        String(value),
+      ])
+      const disposition = headers.find(([key]) => key === 'content-disposition')?.[1] || ''
+      const mime = String(request.responseMimeType || '').toLowerCase()
+      const attachment = /attachment/i.test(disposition)
+      const downloadedDocument =
+        request.resourceType === 'Document' &&
+        Boolean(mime) &&
+        !mime.includes('text/html') &&
+        !mime.includes('application/xhtml') &&
+        (request.errorText === 'net::ERR_ABORTED' || request.status === 200)
+      return attachment || downloadedDocument
+    })
+  if (!browserDownload && !fileResponse) return null
+
+  return {
+    downloadDetected: true,
+    downloadState: browserDownload?.state || 'unknown',
+    ...(browserDownload?.id !== undefined ? { browserDownloadId: browserDownload.id } : {}),
+    ...(browserDownload?.filename ? { downloadPath: browserDownload.filename } : {}),
+    ...(fileResponse?.url || browserDownload?.url
+      ? { downloadUrl: fileResponse?.url || browserDownload?.url }
+      : {}),
+    suggestedAction: browserDownload
+      ? "Run 'downloads list' for the browser download state; only state=complete with a filename proves a saved file."
+      : "A file response was detected, but no browser download record was observed. Use 'download <url> <output-path>' to save explicitly, or check 'downloads list'; this click does not prove the file was saved.",
+  }
+}
 
 /**
  * 创建指针类命令：鼠标移动、按下抬起、滚轮与拖拽。
@@ -72,7 +118,9 @@ export function createPointerCommands(
           x: rect.x + rect.width / 2,
           y: rect.y + rect.height / 2,
           width: rect.width,
-          height: rect.height
+          height: rect.height,
+          downloadHint: node.hasAttribute('download') || (typeof node.href === 'string' && /\\/dl(?:\\/|$)|\\.(epub|mobi|pdf|zip|rar|7z|mp3|mp4)(?:$|[?#])/i.test(node.href)),
+          downloadUrl: typeof node.href === 'string' ? node.href : undefined
         };
       })()`,
       withFrameSelectorOptions(effectiveFrame || 'top', { commandContext: context }),
@@ -133,10 +181,14 @@ export function createPointerCommands(
     const { tab, resolvedSelector } = await resolveElementSelectorForTab(tabId, selector)
     const beforeEpoch = getPageEpoch(state, tab.id)
     const beforeUrl = tab.url
+    const previousDownloads = new Set(state.session.downloads.map((item) => item.id))
+    const previousRequests = new Set<unknown>(state.network.requests)
 
     // CDP 优先：先 scrollIntoView 并取元素中心坐标，走 trusted 的 Input.dispatchMouseEvent；
     // 依赖 isTrusted 的页面（表单校验/统计埋点等）必须由真实输入事件触发
     const boxResult = await getElementBox(tab.id, selector, frameSelector, true, context)
+    let downloadHint = boxResult?.downloadHint === true
+    let downloadUrl = boxResult?.downloadUrl
 
     if (boxResult) {
       await dispatchMouseClick(tab.id, boxResult, 1, context)
@@ -148,8 +200,10 @@ export function createPointerCommands(
         `(() => {
           const node = deepQuerySelector(document, ${JSON.stringify(resolvedSelector)});
           if (!node) return { found: false };
+          const downloadHint = node.hasAttribute('download') || (typeof node.href === 'string' && /\\/dl(?:\\/|$)|\\.(epub|mobi|pdf|zip|rar|7z|mp3|mp4)(?:$|[?#])/i.test(node.href));
+          const downloadUrl = typeof node.href === 'string' ? node.href : undefined;
           node.click();
-          return { found: true, selector: ${JSON.stringify(selector)} };
+          return { found: true, downloadHint, downloadUrl, selector: ${JSON.stringify(selector)} };
         })()`,
         withFrameSelectorOptions(frameSelector, { commandContext: context }),
       )
@@ -157,11 +211,38 @@ export function createPointerCommands(
       if (!jsResult?.found) {
         throw createElementNotFoundError(selector)
       }
+      downloadHint ||= jsResult.downloadHint === true
+      downloadUrl ||= typeof jsResult.downloadUrl === 'string' ? jsResult.downloadUrl : undefined
     }
 
     // 点击可能触发导航（链接/表单提交），两条路径统一在这里检测并等待页面稳定
     context?.throwIfCancelled()
     const navigated = await navigation.detectNavigationAfterClick(tab.id, beforeEpoch, beforeUrl)
+    let downloadEvidence = clickDownloadEvidence(state, tab.id, previousDownloads, previousRequests)
+    const hasNewDocumentRequest = state.network.requests.some(
+      (request) =>
+        !previousRequests.has(request) &&
+        request.tabId === tab.id &&
+        request.resourceType === 'Document',
+    )
+    // 下载重定向可能晚于 500ms 导航窗口；只在已有下载提示或 Document 请求时延长观察。
+    if (!navigated && !downloadEvidence && (downloadHint || hasNewDocumentRequest)) {
+      const deadline = Date.now() + 2500
+      while (!downloadEvidence && Date.now() < deadline) {
+        context?.throwIfCancelled()
+        await new Promise((resolve) => setTimeout(resolve, 100))
+        downloadEvidence = clickDownloadEvidence(state, tab.id, previousDownloads, previousRequests)
+      }
+    }
+    if (!downloadEvidence && downloadHint) {
+      downloadEvidence = {
+        downloadExpected: true,
+        downloadState: 'unknown',
+        ...(downloadUrl ? { downloadUrl } : {}),
+        suggestedAction:
+          "The clicked link is expected to start a download, but its browser state is unknown. Use 'downloads list' or save it explicitly with 'download <url> <output-path>'; this click does not prove the file was saved.",
+      }
+    }
     if (navigated) {
       const settle = await navigation.waitForPageSettled(tab.id, {
         timeoutMs,
@@ -180,9 +261,10 @@ export function createPointerCommands(
         navigatedToUrl: currentUrl,
         settled: settle.settled,
         ...(settle.settled ? {} : { settleReason: settle.settleReason || 'page did not settle' }),
+        ...downloadEvidence,
       }
     }
-    return { found: true, selector }
+    return { found: true, selector, ...downloadEvidence }
   }
 
   async function doubleClickSelector(

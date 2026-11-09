@@ -16,6 +16,8 @@ export interface ElementBox {
   y: number
   width: number
   height: number
+  downloadHint?: boolean
+  downloadUrl?: string
 }
 
 export interface ElementActionResult extends Record<string, unknown> {

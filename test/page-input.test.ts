@@ -822,6 +822,9 @@ describe('page input click CDP-first priority', () => {
     navigates?: boolean
     /** getTargetTab 返回的当前 URL（导航后回显用），缺省与 tab 初始 URL 相同 */
     currentTabUrl?: string
+    fileResponse?: boolean
+    delayedFileResponse?: boolean
+    browserDownload?: boolean
   }
 
   function createClickHarness(options: ClickHarnessOptions) {
@@ -858,6 +861,45 @@ describe('page input click CDP-first priority', () => {
         params?: Record<string, unknown>,
       ) => {
         debuggerCalls.push({ method, params })
+        if (options.fileResponse && method === 'Input.dispatchMouseEvent') {
+          state.network.requests.push({
+            tabId: 1,
+            resourceType: 'Document',
+            responseMimeType: 'application/epub+zip',
+            status: 200,
+            errorText: 'net::ERR_ABORTED',
+            url: 'https://example.com/book.epub',
+          })
+        }
+        if (options.delayedFileResponse && method === 'Input.dispatchMouseEvent') {
+          state.network.requests.push({
+            tabId: 1,
+            resourceType: 'Document',
+            url: 'https://example.com/dl/book',
+          })
+          setTimeout(() => {
+            state.network.requests.push({
+              tabId: 1,
+              resourceType: 'Document',
+              responseMimeType: 'application/epub+zip',
+              status: 200,
+              errorText: 'net::ERR_ABORTED',
+              url: 'https://example.com/book.epub',
+            })
+          }, 100)
+        }
+        if (options.browserDownload && method === 'Input.dispatchMouseEvent') {
+          state.session.downloads.push({
+            id: 9,
+            url: 'https://example.com/book.epub',
+            filename: '/tmp/book.epub',
+            state: 'complete',
+            bytesReceived: 100,
+            totalBytes: 100,
+            danger: '',
+            startTime: new Date().toISOString(),
+          })
+        }
         // CDP 坐标点击后触发导航时同样递增 epoch，验证 CDP 路径的导航等待不缺失
         if (options.navigates && method === 'Input.dispatchMouseEvent') {
           state.targeting.pageEpochs.set(1, (state.targeting.pageEpochs.get(1) || 0) + 1)
@@ -880,6 +922,7 @@ describe('page input click CDP-first priority', () => {
     // 只做了一次坐标查询，没有走到 node.click() 回退
     expect(evaluateCalls).toHaveLength(1)
     expect(evaluateCalls[0]).not.toContain('node.click()')
+    expect(() => new Function(evaluateCalls[0]!)).not.toThrow()
     const mouseEvents = debuggerCalls.filter((call) => call.method === 'Input.dispatchMouseEvent')
     // evaluate 返回的 box 已含中心点坐标，CDP 直接在中心按下/释放
     expect(mouseEvents).toEqual([
@@ -917,6 +960,70 @@ describe('page input click CDP-first priority', () => {
       message: 'element not found: #missing',
       code: 'ELEMENT_NOT_FOUND',
       suggestedAction: expect.stringContaining('selected frame'),
+    })
+  })
+
+  test('reports an expected download link even without a browser download event', async () => {
+    const { pageInput } = createClickHarness({
+      evaluateValues: [
+        {
+          x: 10,
+          y: 20,
+          width: 100,
+          height: 50,
+          downloadHint: true,
+          downloadUrl: 'https://example.com/dl/book',
+        },
+      ],
+    })
+
+    await expect(pageInput.clickSelector(1, '#btn', null, 1000)).resolves.toMatchObject({
+      downloadExpected: true,
+      downloadState: 'unknown',
+      downloadUrl: 'https://example.com/dl/book',
+      suggestedAction: expect.stringContaining('does not prove'),
+    })
+  })
+
+  test('reports a detected file response without claiming it was saved', async () => {
+    const { pageInput } = createClickHarness({
+      evaluateValues: [{ x: 10, y: 20, width: 100, height: 50 }],
+      fileResponse: true,
+    })
+
+    await expect(pageInput.clickSelector(1, '#btn', null, 1000)).resolves.toMatchObject({
+      found: true,
+      downloadDetected: true,
+      downloadState: 'unknown',
+      downloadUrl: 'https://example.com/book.epub',
+      suggestedAction: expect.stringContaining('does not prove'),
+    })
+  })
+
+  test('waits for a file response after a delayed download redirect', async () => {
+    const { pageInput } = createClickHarness({
+      evaluateValues: [{ x: 10, y: 20, width: 100, height: 50 }],
+      delayedFileResponse: true,
+    })
+
+    await expect(pageInput.clickSelector(1, '#btn', null, 1000)).resolves.toMatchObject({
+      downloadDetected: true,
+      downloadState: 'unknown',
+      downloadUrl: 'https://example.com/book.epub',
+    })
+  })
+
+  test('returns a real browser download state when Chrome records one', async () => {
+    const { pageInput } = createClickHarness({
+      evaluateValues: [{ x: 10, y: 20, width: 100, height: 50 }],
+      browserDownload: true,
+    })
+
+    await expect(pageInput.clickSelector(1, '#btn', null, 1000)).resolves.toMatchObject({
+      downloadDetected: true,
+      downloadState: 'complete',
+      browserDownloadId: 9,
+      downloadPath: '/tmp/book.epub',
     })
   })
 
@@ -1011,6 +1118,7 @@ function createExpressionInputHarness() {
   const childRect = { x: 300, y: 400, left: 300, top: 400, width: 40, height: 20 }
   const child = {
     matches: (selector: string) => selector === '#btn',
+    hasAttribute: () => false,
     ownerDocument: { defaultView: {} },
     scrollIntoView() {
       trace.push('child-scroll')
