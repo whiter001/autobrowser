@@ -291,9 +291,15 @@ export function createNetworkDomain({
     }
   }
 
-  async function refreshInterceptors(): Promise<void> {
+  async function refreshInterceptors(onlyTabId?: number): Promise<void> {
+    const tabIds =
+      onlyTabId === undefined
+        ? Array.from(state.targeting.attachedTabs)
+        : state.targeting.attachedTabs.has(onlyTabId)
+          ? [onlyTabId]
+          : []
     await Promise.allSettled(
-      Array.from(state.targeting.attachedTabs).map(async (tabId) => {
+      tabIds.map(async (tabId) => {
         if (state.network.routes.length === 0) {
           await sendRawDebuggerCommand(tabId, 'Fetch.disable', {})
           return

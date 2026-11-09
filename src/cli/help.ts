@@ -33,7 +33,7 @@ function helpNode(
 
 export const HELP_ROOT: HelpNode = helpNode(
   'autobrowser',
-  'Browser automation CLI for Chrome/Edge via extension and Firefox/WebKit via WebDriver. Request budget defaults to 30s; explicit eval/navigation/click timeoutMs or wait timeout/ms adds 5s transport allowance (at least 30s). Batch combines step/retry/delay budgets; maximum 30 minutes including allowance. Feed uses scroll count (capped at 40) * pauseMs + 60s execution allowance + 5s transport allowance, at least the default budget; budgets over 30 minutes are rejected. Sent commands with unknown outcomes are not automatically replayed: inspect status, command list and page state before retrying.',
+  'Browser automation CLI for Chrome/Edge via extension and Firefox/WebKit via WebDriver. Request budget defaults to 30s; explicit eval/run/navigation/click timeoutMs or wait timeout/ms adds 5s transport allowance (at least 30s). Batch combines step/retry/delay budgets; maximum 30 minutes including allowance. Feed uses scroll count (capped at 40) * pauseMs + 60s execution allowance + 5s transport allowance, at least the default budget; budgets over 30 minutes are rejected. Sent commands with unknown outcomes are not automatically replayed: inspect status, command list and page state before retrying.',
   'autobrowser [command] [options]',
   [
     '--json',
@@ -309,6 +309,18 @@ export const HELP_ROOT: HelpNode = helpNode(
         '--max-result-bytes <n>  fail with EVAL_RESULT_TOO_LARGE when the JSON result exceeds n UTF-8 bytes (no limit by default; results are not truncated)',
         'Top-level return and await are supported; use return to yield a script result.',
         'For complex interactions, split work into smaller browser commands or script steps.',
+      ],
+    ),
+    helpNode(
+      'run',
+      'Run an async (page) => { ... } script with a real Playwright Page while holding exclusive access to the selected tab.',
+      'autobrowser run <file.js> [--timeout-ms <ms>]',
+      [
+        'The file must evaluate to a function such as async (page) => { return await page.title(); }.',
+        'Also accepts --file/--stdin/--base64 source input. The return value is available as result.value.',
+        'Commands targeting the same tab fail with PAGE_SCRIPT_ACTIVE while a script is running or waiting for exclusive access.',
+        'The bridge exposes only the selected existing tab. Use page.frames()/frameLocator() for frames; root --frame is not applicable.',
+        'Scripts are unsafe local code with Node.js/Bun access. Timeout closes the bridge but cannot roll back completed browser side effects.',
       ],
     ),
     helpNode(

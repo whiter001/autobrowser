@@ -44,6 +44,7 @@ autobrowser 是一个面向 Chrome/Edge 的浏览器自动化 CLI，通过本地
 - `snapshot`
 - `screenshot`
 - `eval`
+- `run <file.js>`
 - `cdp`
 - `cookies`
 - `storage`
@@ -177,7 +178,7 @@ autobrowser 是一个面向 Chrome/Edge 的浏览器自动化 CLI，通过本地
 
 ## 总预算与重试
 
-- 请求预算默认 30 秒；显式 eval/navigation/click `timeoutMs`、wait `timeout`/`ms` 加 5 秒传输余量，且不低于默认预算。feed 将 `maxScrolls` 限制为最多 40，按滚动次数 × `pauseMs` + 60 秒执行余量 + 5 秒传输余量计算，不低于默认预算，超过 30 分钟则拒绝。batch 合成逐步预算、重试、延迟和嵌套预算；总上限 30 分钟，**包含余量**，超大或非有限值会被拒绝。
+- 请求预算默认 30 秒；显式 eval/run/navigation/click `timeoutMs`、wait `timeout`/`ms` 加 5 秒传输余量，且不低于默认预算。feed 将 `maxScrolls` 限制为最多 40，按滚动次数 × `pauseMs` + 60 秒执行余量 + 5 秒传输余量计算，不低于默认预算，超过 30 分钟则拒绝。batch 合成逐步预算、重试、延迟和嵌套预算；总上限 30 分钟，**包含余量**，超大或非有限值会被拒绝。
 - 已发送命令断连时结果可能未知，不会自动重放。先检查 `status`、`command list` 与页面实际状态，确认副作用后再决定是否重试；取消/超时阻止后续 batch 步骤，但不能撤销已发生的操作或所有在途 CDP 调用。
 - batch 显式 `retries` 可能重复失败步骤已发生的副作用，不是幂等保证。提交、付款、删除等动作不要仅因报错就重放。
 
@@ -188,6 +189,13 @@ autobrowser 是一个面向 Chrome/Edge 的浏览器自动化 CLI，通过本地
 - 最终标准命令响应为 `ok:false` 时进程退出码为 1，JSON `error` 仍保留；脚本可同时检查 return code 和 JSON。goto fallback 的最终成功结果、batch 的最终聚合响应决定退出状态，内部已恢复步骤不会误报。
 - 需要输入与选项同名的字面量时，在 `--` 后传值，例如 `type '#field' -- '--submit'`。
 - `replay` 会拒绝包含 `[redacted]` 的历史命令，防止把脱敏占位符当成真实参数执行；需要重放敏感操作时重新检查页面并显式构造命令。
+
+## Playwright Page 脚本
+
+- `run <file.js>` 执行文件中的 `async (page) => { ... }`，获得真实 Playwright Page；可用 `--tab <tN>` 选 tab、`--timeout-ms <ms>` 控制总预算，也可用共享的 `--file/--stdin/--base64` 输入。返回值在 `result.value`。
+- run 会等待目标 tab 已在执行的旧命令，然后独占该 tab；等待或运行期间普通同 tab 命令返回 `PAGE_SCRIPT_ACTIVE`，应等待结束或显式操作其他 tab，不要并发打架。其他 tab 可并行。
+- 脚本只获得一个已有 tab；用 `page.frames()` / `page.frameLocator()` 处理 frame，不传根级 `--frame`。不支持 `context.newPage()`，也不能嵌进 batch，目前不支持 WebDriver/MCP。
+- 脚本是有本地 Node.js/Bun 权限的可信代码。结束、失败、超时和断连都会释放锁，但不会撤销已发生的页面副作用；重试前先检查页面。`page.route()` 随桥接停止而失效，autobrowser 会按 tab 恢复自己的路由。
 
 ## eval 使用边界
 

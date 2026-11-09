@@ -74,6 +74,7 @@ const COMMAND_GROUPS: Record<string, string[]> = {
   media: ['download', 'media'],
   page: [
     'eval',
+    'run',
     'cdp',
     'script',
     'snapshot',

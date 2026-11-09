@@ -11,8 +11,11 @@ import {
   readJsonFile,
   writeJsonFile,
 } from './protocol.js'
-import { validateCommandArgs } from './command-spec.js'
+import { commandSupportsTabTarget, validateCommandArgs } from './command-spec.js'
 import { describeErrorCode } from './error-actions.js'
+import { runPlaywrightScript } from './playwright-runner.js'
+import { createPlaywrightTransportHub } from './playwright-transport.js'
+import { TabRunLock } from './tab-run-lock.js'
 import { errorRetryable } from './tool-error.js'
 import { DEFAULT_REQUEST_TIMEOUT_MS, getCommandRequestBudgetMs } from './command-budget.js'
 import { ResponseAssembler, ResponseTransferError } from './response-transfer.js'
@@ -111,6 +114,9 @@ function redactCommandArgs(command: string, args: unknown): unknown {
   // lastCommand 会持久化到 state.json，这里只保留排障所需的结构信息。
   if (command === 'eval') {
     redact('script')
+  }
+  if (command === 'run') {
+    redact('source')
   }
   if (command === 'fill' || command === 'type') {
     redact('value')
@@ -280,7 +286,10 @@ export async function createRuntime(options: RuntimeOptions = {}): Promise<Runti
     startedAt: new Date().toISOString(),
     extensionSocket: null,
     extensionId: null,
+    extensionCapabilities: {},
   }
+  const tabRunLock = new TabRunLock()
+  const playwrightTransports = createPlaywrightTransportHub(() => runtime.extensionSocket)
 
   // Only restore stable state, avoid stale tab lists
   if (persistedState?.snapshot && typeof persistedState.snapshot === 'object') {
@@ -342,6 +351,9 @@ export async function createRuntime(options: RuntimeOptions = {}): Promise<Runti
     onConnectionLost: (reason) => {
       responseAssembler.clear()
       transfer.clear()
+      playwrightTransports.rejectAll(
+        reason === 'replaced' ? 'extension connection replaced' : 'extension disconnected',
+      )
       rejectPendingRequests(
         pendingRequests,
         reason === 'replaced' ? 'extension connection replaced' : 'extension disconnected',
@@ -404,6 +416,14 @@ export async function createRuntime(options: RuntimeOptions = {}): Promise<Runti
       return
     }
 
+    if (message?.type === 'extension.hello') {
+      const capabilities = (message as any).capabilities
+      runtime.extensionCapabilities = {
+        playwrightRun: isRecord(capabilities) && capabilities.playwrightRun === 1 ? 1 : undefined,
+      }
+      return
+    }
+
     if (message?.type === 'state') {
       if (Array.isArray(message.tabs)) {
         setTabs(message.tabs)
@@ -436,6 +456,8 @@ export async function createRuntime(options: RuntimeOptions = {}): Promise<Runti
       transfer.handleFileUploadRegistration(message as Record<string, unknown>)
       return
     }
+
+    if (playwrightTransports.handleMessage(message as any)) return
 
     if (typeof message?.id !== 'string') return
     const pending = pendingRequests.get(message.id)
@@ -504,7 +526,7 @@ export async function createRuntime(options: RuntimeOptions = {}): Promise<Runti
     return path.resolve(outputPath)
   }
 
-  async function dispatchCommand(
+  async function dispatchExtensionCommand(
     command: string,
     args: Record<string, unknown> = {},
   ): Promise<unknown> {
@@ -592,6 +614,87 @@ export async function createRuntime(options: RuntimeOptions = {}): Promise<Runti
     return result
   }
 
+  function resolveCommandTabId(args: Record<string, unknown>): number | null {
+    const requested = args.tabId ?? args.handle
+    if (typeof requested === 'number' && Number.isInteger(requested)) return requested
+    if (typeof requested === 'string' && requested.trim()) {
+      const byHandle = snapshot.tabs.find((tab) => tab.handle === requested)
+      if (byHandle) return byHandle.id
+      const numeric = Number(requested)
+      if (Number.isInteger(numeric) && numeric > 0) return numeric
+      return null
+    }
+    return (
+      snapshot.targetTabId ??
+      snapshot.activeTabId ??
+      snapshot.tabs.find((tab) => Number.isInteger(tab.id))?.id ??
+      null
+    )
+  }
+
+  async function dispatchPlaywrightRun(args: Record<string, unknown>): Promise<unknown> {
+    validateCommandArgs('run', args)
+    const budgetMs = getCommandRequestBudgetMs('run', args, requestTimeoutMs)
+    setLastCommand('run', args)
+    await connection.waitForConnection(Math.min(requestTimeoutMs, 10_000))
+    if (runtime.extensionCapabilities.playwrightRun !== 1) {
+      const error = new Error(
+        'the connected extension does not support Playwright Page scripts',
+      ) as ErrorWithCode
+      error.code = 'BROWSER_CAPABILITY_UNSUPPORTED'
+      error.suggestedAction =
+        "Build and reload the current extension, confirm recovery with 'status', then retry 'run'."
+      throw error
+    }
+    const tabId = resolveCommandTabId(args)
+    if (tabId === null) {
+      const error = new Error('no target tab available for Playwright run') as ErrorWithCode
+      error.code = 'STALE_TAB_HANDLE'
+      error.suggestedAction = "Run 'tab list', then select a live tab or pass --tab <tN>."
+      throw error
+    }
+    const tab = snapshot.tabs.find((candidate) => candidate.id === tabId) ?? {
+      id: tabId,
+      title: '',
+      url: '',
+      active: snapshot.activeTabId === tabId,
+      pinned: false,
+      status: 'unknown',
+      windowId: 0,
+    }
+    const runId = createId('run')
+    const deadline = Date.now() + budgetMs
+    const release = await tabRunLock.acquireRun(tabId, runId, budgetMs)
+    try {
+      const result = await runPlaywrightScript({
+        source: args.source as string,
+        tab,
+        timeoutMs: Math.max(1, deadline - Date.now()),
+        runId,
+        transport: playwrightTransports.create(runId),
+      })
+      snapshot.lastSuccessAt = new Date().toISOString()
+      schedulePersist()
+      return result
+    } finally {
+      release()
+    }
+  }
+
+  async function dispatchCommand(
+    command: string,
+    args: Record<string, unknown> = {},
+  ): Promise<unknown> {
+    if (command === 'run') return await dispatchPlaywrightRun(args)
+    const tracksTab = commandSupportsTabTarget(command) || command === 'tab.close'
+    const release = tabRunLock.beginCommand(tracksTab ? resolveCommandTabId(args) : null)
+    try {
+      return await dispatchExtensionCommand(command, args)
+    } finally {
+      release()
+    }
+  }
+
   async function exportSnapshot(): Promise<unknown> {
     const state = {
       token: runtime.token,
@@ -611,7 +714,10 @@ export async function createRuntime(options: RuntimeOptions = {}): Promise<Runti
     setError,
     setLastCommand,
     setTabs,
-    attachExtension: connection.attach,
+    attachExtension: (socket, meta) => {
+      runtime.extensionCapabilities = {}
+      connection.attach(socket, meta)
+    },
     detachExtension: connection.detach,
     handleExtensionMessage,
     responseUploadOffset: transfer.responseUploadOffset,

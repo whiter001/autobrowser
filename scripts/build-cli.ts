@@ -26,6 +26,8 @@ try {
       path.join(rootDir, 'src/cli.ts'),
       `--outfile=${outFile}`,
       '--target=bun',
+      // 运行时依赖保持外置，避免打包 Playwright 其它浏览器后端的可选模块。
+      '--external=playwright-core',
       '--banner=#!/usr/bin/env bun',
     ],
     { cwd: rootDir },

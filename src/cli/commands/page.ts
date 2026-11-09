@@ -1,7 +1,8 @@
-import { mkdtemp, writeFile } from 'node:fs/promises'
+import { mkdtemp, readFile, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { isRecord } from '../client.js'
+import { stripBom } from '../../core/text.js'
 import {
   parseConsoleArgs,
   parseNumberArg,
@@ -274,6 +275,42 @@ async function handleEval(rest: string[], context: CommandContext): Promise<numb
   if (maxResultBytes !== undefined) args.maxResultBytes = maxResultBytes
   const payload = await context.requestCommand(context.flags.server, 'eval', args)
   context.writeResult(payload)
+  return 0
+}
+
+async function handleRun(rest: string[], context: CommandContext): Promise<number | void> {
+  if (helpRequested(rest[0], context, ['run'])) return 0
+  if (context.flags.frame) {
+    return throwCommandError(
+      'run does not accept --frame; use page.frames() or page.frameLocator() in the script',
+    )
+  }
+
+  let filePath: string | null = null
+  let timeoutMs: number | undefined
+  for (let index = 0; index < rest.length; index += 1) {
+    const value = rest[index]
+    if (value === '--timeout-ms') {
+      timeoutMs = parseNumberArg(rest[++index], 'timeout ms', { min: 1, integer: true })
+      continue
+    }
+    if (value.startsWith('--')) return throwCommandError(`unsupported run option: ${value}`)
+    if (filePath) return throwCommandError(`unexpected extra argument for run: ${value}`)
+    filePath = value
+  }
+  if (filePath && (context.flags.file || context.flags.stdin || context.flags.base64)) {
+    return throwCommandError(
+      'run accepts either a positional file or --file/--stdin/--base64, not both',
+    )
+  }
+  const source = filePath
+    ? stripBom(await readFile(filePath, 'utf8'))
+    : await context.resolveEvalScript([])
+  if (!source.trim()) return throwCommandError('missing Playwright script source')
+  await requestAndWrite(context, 'run', {
+    source,
+    ...(timeoutMs !== undefined ? { timeoutMs } : {}),
+  })
   return 0
 }
 
@@ -778,6 +815,7 @@ const handlePdf = createNoArgRequestCommand({ helpPath: ['pdf'], command: 'pdf' 
 
 export const pageCommandRegistry: CommandRegistry = {
   eval: handleEval,
+  run: handleRun,
   cdp: handleCdp,
   script: handleScript,
   snapshot: handleSnapshot,

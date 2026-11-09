@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
 import { spawn, type ChildProcess } from 'node:child_process'
 import { existsSync, readdirSync } from 'node:fs'
-import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { createServer as createHttpServer, type Server as HttpServer } from 'node:http'
 import { createServer as createNetServer } from 'node:net'
 import os from 'node:os'
@@ -828,6 +828,164 @@ suite('live browser smoke test', () => {
     })
     expect(evalResponse.ok).toBe(true)
     expect(evalResponse.result).toBe('1')
+  }, 30_000)
+
+  test('run exposes a real Playwright Page and releases exclusive tab access', async () => {
+    await loadSmokePage()
+    const running = command('run', {
+      source: `async (page) => {
+        await page.locator('#name-input').fill('from-playwright');
+        await page.getByRole('button', { name: 'Increment', exact: true }).click();
+        await new Promise(resolve => setTimeout(resolve, 300));
+        return {
+          title: await page.title(),
+          value: await page.locator('#name-input').inputValue(),
+          counter: await page.locator('#counter').textContent(),
+        };
+      }`,
+      timeoutMs: 20000,
+    })
+    await Bun.sleep(50)
+    const locked = await command('eval', { script: 'document.title' })
+    expect(locked.ok).toBe(false)
+    expect(locked.error).toMatchObject({ code: 'PAGE_SCRIPT_ACTIVE' })
+
+    const response = await running
+    expect(response.ok).toBe(true)
+    expect(response.result).toMatchObject({
+      value: {
+        title: 'autobrowser live smoke',
+        value: 'from-playwright',
+        counter: '1',
+      },
+    })
+    const after = await command('eval', {
+      script: 'document.getElementById("name-input").value',
+    })
+    expect(after.ok).toBe(true)
+    expect(after.result).toBe('from-playwright')
+  }, 30_000)
+
+  test('run CLI executes a script file against the live browser', async () => {
+    await loadSmokePage()
+    const scriptPath = path.join(homeDir, 'live-run.js')
+    await writeFile(
+      scriptPath,
+      "async (page) => { await page.locator('#name-input').fill('from-cli'); return await page.locator('#name-input').inputValue(); }",
+    )
+    const result = await new Promise<{ code: number | null; stdout: string; stderr: string }>(
+      (resolve, reject) => {
+        const child = spawn(
+          process.execPath,
+          [
+            path.resolve(import.meta.dir, '..', 'src/cli.ts'),
+            '--server',
+            baseUrl,
+            'run',
+            scriptPath,
+          ],
+          {
+            cwd: path.resolve(import.meta.dir, '..'),
+            env: { ...process.env, AUTOBROWSER_HOME: homeDir },
+            stdio: ['ignore', 'pipe', 'pipe'],
+          },
+        )
+        let stdout = ''
+        let stderr = ''
+        child.stdout.on('data', (chunk) => (stdout += String(chunk)))
+        child.stderr.on('data', (chunk) => (stderr += String(chunk)))
+        const timer = setTimeout(() => {
+          child.kill()
+          reject(new Error('run CLI timed out'))
+        }, 20000)
+        child.once('error', reject)
+        child.once('exit', (code) => {
+          clearTimeout(timer)
+          resolve({ code, stdout, stderr })
+        })
+      },
+    )
+    expect(result.stderr).toBe('')
+    expect(result.code).toBe(0)
+    expect(JSON.parse(result.stdout)).toMatchObject({
+      ok: true,
+      result: { value: 'from-cli' },
+    })
+  }, 30_000)
+
+  test('run evaluates JavaScript through Playwright', async () => {
+    await loadSmokePage()
+    const result = await checkedCommand<{ value: number }>('run', {
+      source: 'async (page) => await page.evaluate(() => 6 * 7)',
+      timeoutMs: 10000,
+    })
+    expect(result.value).toBe(42)
+  }, 20_000)
+
+  test('run locks only its target tab', async () => {
+    await loadSmokePage()
+    const home = await smokeTabHandle()
+    const extra = await openExtraTab()
+    try {
+      const running = command('run', {
+        tabId: home,
+        source: `async (page) => {
+          await new Promise(resolve => setTimeout(resolve, 300));
+          return await page.title();
+        }`,
+        timeoutMs: 10000,
+      })
+      await Bun.sleep(50)
+      const other = await command('eval', { tabId: extra.handle, script: '6 * 7' })
+      expect(other.ok).toBe(true)
+      expect(other.result).toBe(42)
+      const response = await running
+      expect(response.ok).toBe(true)
+    } finally {
+      await closeExtraTab(extra, home)
+    }
+  }, 20_000)
+
+  test('run reports an unknown result and recovers after extension reconnect', async () => {
+    await loadSmokePage()
+    const running = command('run', {
+      source: `async (page) => {
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        return await page.title();
+      }`,
+      timeoutMs: 10000,
+    })
+    await Bun.sleep(100)
+    await checkedCommand('extension', { action: 'reconnect' })
+    const response = await running
+    expect(response.ok).toBe(false)
+    expect(response.error).toMatchObject({ code: 'COMMAND_EXECUTION_UNKNOWN' })
+    await waitFor(
+      'the extension to reconnect after Playwright run disconnect',
+      async () => (await getStatus(baseUrl)).extensionConnected === true,
+      10000,
+    )
+    const after = await command('snapshot')
+    expect(after.ok).toBe(true)
+  }, 20_000)
+
+  test('run cleans up Playwright routes without affecting later page requests', async () => {
+    await loadSmokePage()
+    const probeUrl = new URL('/routed-probe-a', pageUrl).href
+    const routed = await checkedCommand<{ value: string }>('run', {
+      source: `async (page) => {
+        await page.route('**/routed-probe-a', route => route.fulfill({
+          status: 200, contentType: 'text/plain', body: 'playwright-route'
+        }));
+        return await page.evaluate(async url => await (await fetch(url)).text(), ${JSON.stringify(probeUrl)});
+      }`,
+      timeoutMs: 20000,
+    })
+    expect(routed.value).toBe('playwright-route')
+    const after = await checkedCommand<string>('eval', {
+      script: `fetch(${JSON.stringify(probeUrl)}).then(response => response.text())`,
+    })
+    expect(after).toBe('real-probe-body:a')
   }, 30_000)
 
   test('executes raw tab-scoped CDP methods', async () => {

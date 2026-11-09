@@ -2,13 +2,19 @@ import { parseSearchQueryRegex } from './search.js'
 import { getCommandRequestBudgetMs } from './command-budget.js'
 import { MAX_DOWNLOAD_RETRIES, MAX_DOWNLOAD_RETRY_DELAY_MS } from './file-transfer.js'
 
-import { COMMAND_CATALOG, getCommandDescriptor, type CommandDescriptor } from './command-catalog.js'
-
-export {
-  commandSupportsFrameTarget,
-  commandSupportsTabTarget,
+import {
+  COMMAND_CATALOG,
+  commandSupportsTabTarget as catalogCommandSupportsTabTarget,
+  getCommandDescriptor,
   type CommandDescriptor,
 } from './command-catalog.js'
+
+export { commandSupportsFrameTarget, type CommandDescriptor } from './command-catalog.js'
+
+/** run 在 relay 本地执行，但与其他页面命令一样接受根级 --tab。 */
+export function commandSupportsTabTarget(command: string): boolean {
+  return command === 'run' || catalogCommandSupportsTabTarget(command)
+}
 
 interface CommandArgsValidationError extends Error {
   code?: string
@@ -363,8 +369,8 @@ function validateBatchStep(value: unknown, index: number): void {
     }
 
     // 文件直传要占用 relay 的 pending 请求来登记落盘路径，batch 步骤没有独立请求
-    if (command === 'download') {
-      throw new Error('download cannot run as a batch step; run it as a separate command')
+    if (command === 'download' || command === 'run') {
+      throw new Error(`${command} cannot run as a batch step; run it as a separate command`)
     }
 
     if (value.args !== undefined && !isRecord(value.args)) {
@@ -654,6 +660,10 @@ function validateCommandArgsShape(command: string, args: unknown): void {
           )
         }
       }
+      return
+    case 'run':
+      readStringField(normalizedArgs, 'source', command)
+      readOptionalNonNegativeNumberField(normalizedArgs, 'timeoutMs', command)
       return
     case 'cdp': {
       const method = readStringField(normalizedArgs, 'method', command)

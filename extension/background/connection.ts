@@ -16,6 +16,7 @@ import type {
 import { serializeCommandFailure } from './errors.js'
 import { getPageEpoch } from './targeting.js'
 import { createUploadResponseSender } from './response-upload.js'
+import type { createPlaywrightCdpBridge } from './playwright-cdp.js'
 
 interface NetworkDomain {
   handleRequestPaused: (tabId: number, params: unknown) => Promise<void>
@@ -35,6 +36,7 @@ interface ConnectionRuntimeDependencies {
     handleDetach: (tabId: number) => void
   }
   video?: { handleDetach: (tabId: number) => void }
+  playwrightCdp?: ReturnType<typeof createPlaywrightCdpBridge>
   listTabs: () => Promise<TabSummary[]>
   handleCommand: (message: CommandMessage) => Promise<unknown>
   cancelCommand?: (id: string) => boolean
@@ -63,6 +65,7 @@ export function createConnectionRuntime({
   fileUploads,
   tracing,
   video,
+  playwrightCdp,
   listTabs,
   handleCommand,
   cancelCommand = () => false,
@@ -431,7 +434,7 @@ export function createConnectionRuntime({
 
       if (method === 'Fetch.requestPaused') {
         const tabId = typeof source?.tabId === 'number' ? source.tabId : null
-        if (tabId !== null) {
+        if (tabId !== null && !playwrightCdp?.ownsTab(tabId)) {
           void network.handleRequestPaused(tabId, params).catch((error) => {
             console.error('failed to handle paused network request', error)
           })
@@ -448,6 +451,8 @@ export function createConnectionRuntime({
           console.error('failed to record network event', error)
         })
       }
+
+      playwrightCdp?.handleDebuggerEvent(source, method, params)
     })
 
     chrome.debugger.onDetach?.addListener((source) => {
@@ -457,6 +462,7 @@ export function createConnectionRuntime({
 
       tracing?.handleDetach(source.tabId)
       video?.handleDetach(source.tabId)
+      playwrightCdp?.handleDebuggerDetach(source)
       handleDebuggerDetach(source.tabId)
     })
   }
@@ -547,6 +553,7 @@ export function createConnectionRuntime({
             type: 'extension.hello',
             extensionId: chrome.runtime.id,
             version: chrome.runtime.getManifest().version,
+            capabilities: { playwrightRun: 1 },
           }),
         )
 
@@ -612,6 +619,11 @@ export function createConnectionRuntime({
           return
         }
 
+        if (message?.type === 'cdp.control' || message?.type === 'cdp.command') {
+          await playwrightCdp?.handleMessage(socket, message)
+          return
+        }
+
         if (message?.type === 'cancel' && typeof message.id === 'string') {
           cancelCommand(message.id)
           const transfer = activeCommands.get(message.id)
@@ -673,6 +685,7 @@ export function createConnectionRuntime({
         responseSender.dispose()
         // 断线后未完成的文件上传登记必须失效，否则扩展会一直等 relay 的回执
         fileUploads?.dispose()
+        playwrightCdp?.clear()
         for (const transfer of activeCommands.values()) transfer.cancelled = true
         activeCommands.clear()
         clearHeartbeatTimers()
@@ -781,6 +794,7 @@ export function createConnectionRuntime({
     })
 
     chrome.tabs.onRemoved.addListener((tabId) => {
+      playwrightCdp?.handleTabRemoved(tabId)
       clearTabRuntimeState(tabId)
       detachDebugger(tabId).catch(() => {})
     })

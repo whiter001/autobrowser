@@ -343,6 +343,28 @@ autobrowser script remove --all
 
 脚本对所有标签页全局生效：新打开或新 attach 的标签页会自动补注册，无需重复 add。源码输入方式与 `eval` 一致，支持位置参数、`--file`、`--stdin` 和 `--base64`。
 
+## Playwright Page 脚本
+
+`run` 在当前 Chromium 扩展通道上启动真实 Playwright `Page`，文件内容必须是 `async (page) => { ... }` 函数：
+
+```bash
+autobrowser run ./script.js --timeout-ms 60000
+autobrowser --tab t2 run ./script.js
+```
+
+```js
+async (page) => {
+  await page.getByRole('button', { name: '订阅' }).click()
+  return await page.locator('article').allTextContents()
+}
+```
+
+也支持全局 `--file`、`--stdin`、`--base64` 输入。返回值位于 `result.value`，并带 `tabId`、`handle` 和 `durationMs`。脚本是在持有浏览器连接的 relay 进程中执行的本地不安全代码，可访问 Node.js/Bun 能力，不要运行不可信来源。
+
+`run` 对目标 tab 使用独占锁：先等待已在执行的同 tab 命令，随后同 tab 普通命令返回 `PAGE_SCRIPT_ACTIVE`；其他 tab 仍可执行。脚本结束、失败、超时或扩展断开后释放锁。超时和断连不能撤销已经发生的浏览器副作用，重试前先检查页面。
+
+桥接只暴露选中的已有 tab，不支持通过 `context.newPage()` 创建新 target；frame 直接使用 `page.frames()` / `page.frameLocator()`，不使用根级 `--frame`。`run` 不能作为 batch 子步骤，目前也不支持 WebDriver/MCP。`page.route()` 在脚本结束后失效，扩展会仅对当前 tab 恢复 autobrowser 自己的网络路由，避免留下无人处理的暂停请求。
+
 ## 面向 Agent 的引用
 
 扩展命令返回对象结果时，会在 `result.meta` 中回显该命令实际操作的标签页上下文：`tabHandle`（Tab Handle）、`tabId`、`frame`（Frame 引用，若为 `top`/`main`/`default` 则归一化为 `null`）、`pageEpoch`、`url` 与 `title`。取不到的字段为 `null`；无页面上下文的对象命令（如 `tab.list`、`script`、`batch`）的 `result.meta` 所有字段均为 `null`。

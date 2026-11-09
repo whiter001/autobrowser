@@ -48,6 +48,11 @@ export const ERROR_ACTIONS: Record<string, ErrorAction> = {
     action:
       "Run 'autobrowser help' to list the available commands, then retry with an exact command name.",
   },
+  CDP_COMMAND_FAILED: {
+    retryable: false,
+    action:
+      'Inspect the Playwright script and current page state; fix the failing browser operation before retrying.',
+  },
   COLLECT_TASK_FAILED: {
     retryable: true,
     action:
@@ -119,6 +124,11 @@ export const ERROR_ACTIONS: Record<string, ErrorAction> = {
   NOT_FOUND: {
     retryable: false,
     action: "Refresh 'snapshot' or 'tab list' to confirm what currently exists.",
+  },
+  PAGE_SCRIPT_ACTIVE: {
+    retryable: true,
+    action:
+      'Wait for the Playwright script to finish, or target a different tab with --tab before retrying.',
   },
   PAGE_EVALUATION_EXCEPTION: {
     retryable: false,

@@ -14,6 +14,7 @@ export interface ExtensionMetadata {
 
 export interface TabInfo {
   id: number
+  handle?: string | null
   title: string
   url: string
   active: boolean
@@ -64,6 +65,7 @@ export interface RuntimeState {
   startedAt: string
   extensionSocket: Bun.ServerWebSocket<ExtensionMetadata> | null
   extensionId: string | null
+  extensionCapabilities: { playwrightRun?: number }
 }
 
 export interface PendingRequest {

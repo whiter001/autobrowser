@@ -23,6 +23,7 @@ import { createInitScriptDomain } from './background/init-scripts.js'
 import { createPageEvaluation } from './background/page-evaluation.js'
 import { createPageInputDomain } from './background/page-input.js'
 import { createPageObserveDomain } from './background/page-observe.js'
+import { createPlaywrightCdpBridge } from './background/playwright-cdp.js'
 import { createSessionDomain } from './background/session.js'
 import { createTracingDomain } from './background/tracing.js'
 import { createVideoDomain } from './background/video.js'
@@ -50,7 +51,7 @@ const tabSessions = createTabSessionRegistry({
   clearFrameContext: (tabId) => frameContext.clearTab(tabId),
   onAttached: async (tabId) => {
     await enableDebuggerDomains(tabId)
-    await network.refreshInterceptors()
+    await network.refreshInterceptors(tabId)
     await initScripts.replayForTab(tabId)
   },
 })
@@ -148,6 +149,13 @@ const webmcp = createWebMcpDomain({
 
 const fileTransfer = createFileTransferDomain({ state })
 const media = createMediaDomain({ state, evaluateInTabContext })
+const playwrightCdp = createPlaywrightCdpBridge({
+  getSocket: () => state.connection.socket,
+  ensureDebuggerAttached: tabSessions.ensureAttached,
+  sendDebuggerSessionCommand: async (target, method, params) =>
+    await debuggerSendCommand(target, method, params),
+  refreshInterceptors: network.refreshInterceptors,
+})
 
 const extensionControl = createExtensionControl({
   info: async () => {
@@ -196,6 +204,7 @@ const connection = createConnectionRuntime({
   },
   tracing,
   video,
+  playwrightCdp,
   listTabs,
   handleCommand: commandRouter.handleCommand,
   cancelCommand: commandRouter.cancelCommand,

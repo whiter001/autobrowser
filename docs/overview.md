@@ -58,6 +58,12 @@ MCP `navigate` 当前不暴露 `waitFor`，所以仍不提供 `frame` 参数；C
 
 需要并行隔离多个浏览器任务时，用 `session create <name>` 创建命名会话，再用 `session attach <name>` 连接；后续命令写成 `autobrowser --session <name> <command>`。命名会话的 home、profile、端口、token 和 tab target 都相互独立。`session detach` 只断开 relay，`session close-all` 关闭标签页，`kill-all` 停止登记的 relay，`session delete-data <name>` 幂等删除指定命名会话的数据；默认会话不会被删除。
 
+## Playwright Page 脚本
+
+需要完整 Playwright 页面编程接口时，用 `run <file.js>` 执行 `async (page) => { ... }`。它通过现有扩展的 CDP 桥接提供真实 Page，支持根级 `--tab` 和 `--timeout-ms`，返回 `result.value`。同一 tab 在脚本等待或运行期间由 run 独占，普通命令返回 `PAGE_SCRIPT_ACTIVE`；脚本结束或断连后释放。
+
+该入口是本地不安全代码，仅用于可信脚本。桥接只暴露一个已有 tab，不支持 `context.newPage()`；frame 用 Page 自己的 API。run 不支持 WebDriver、MCP 或 batch 嵌套。`page.route()` 随本次桥接结束而失效，网络域会按 tab 恢复 autobrowser 原有路由。
+
 ## 面向 Agent 的工作流
 
 在复杂页面上动手之前，先运行 `snapshot`。snapshot 现在会包含一个 `elements` 数组，里面有诸如 `@e1`、`@e2` 这样的引用，以及每个可见可交互元素的 tag、role、text 和几何信息。它还会包含一个 `frames` 数组，里面有诸如 `@f1` 这样的可见 iframe 引用。

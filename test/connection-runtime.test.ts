@@ -318,6 +318,7 @@ describe('connection runtime', () => {
         pageEpochs?: Record<string, number>
         extensionId?: string
         version?: string
+        capabilities?: { playwrightRun?: number }
       }>
 
       expect(messages).toHaveLength(2)
@@ -325,6 +326,7 @@ describe('connection runtime', () => {
         type: 'extension.hello',
         extensionId: 'test-extension-id',
         version: '1.2.3',
+        capabilities: { playwrightRun: 1 },
       })
       expect(messages[1]).toEqual({
         type: 'state',
