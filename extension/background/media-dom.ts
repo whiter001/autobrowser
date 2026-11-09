@@ -21,6 +21,15 @@ export interface MediaScope {
   matchedCount: number
 }
 
+export interface MediaScopeRoot {
+  /** 在当前 scope.roots 中的位置，从 0 开始 */
+  index: number
+  tagName: string
+  id: string | null
+  dataTestId: string | null
+  permalink: string | null
+}
+
 function mediaToAbsolute(value: unknown, baseURI: string): string {
   if (!value) return ''
   try {
@@ -210,18 +219,53 @@ function mediaNearestArticle(node: Element): Element | null {
   return null
 }
 
-/**
- * 条目的来源链接：最近 article 内首个指向 /status/ 的绝对链接。
- * 没有 article 或没有这类链接时返回 null。
- */
-function mediaReadPermalink(node: Element, baseURI: string): string | null {
-  const article = mediaNearestArticle(node)
-  if (!article) return null
-  for (const link of Array.from(article.querySelectorAll('a[href]'))) {
+/** 容器内首个指向 /status/ 的绝对链接，用于识别社交媒体条目。 */
+function mediaReadContainerPermalink(container: Element, baseURI: string): string | null {
+  for (const link of Array.from(container.querySelectorAll('a[href]'))) {
     const absolute = mediaToAbsolute(link.getAttribute('href'), baseURI)
     if (absolute && absolute.includes('/status/')) return absolute
   }
   return null
+}
+
+/** 条目的来源链接：最近 article 内首个指向 /status/ 的绝对链接。 */
+function mediaReadPermalink(node: Element, baseURI: string): string | null {
+  const article = mediaNearestArticle(node)
+  return article ? mediaReadContainerPermalink(article, baseURI) : null
+}
+
+/** 记录媒体实际所属的作用域容器；整页回退采集没有可对应的容器。 */
+function mediaReadScopeRoot(
+  node: Element,
+  roots: Element[],
+  baseURI: string,
+): MediaScopeRoot | null {
+  const index = roots.findIndex((root) => root === node || root.contains(node))
+  if (index < 0) return null
+  const root = roots[index]!
+  return {
+    index,
+    tagName: root.tagName.toLowerCase(),
+    id: root.getAttribute('id'),
+    dataTestId: root.getAttribute('data-testid'),
+    permalink: mediaReadContainerPermalink(root, baseURI),
+  }
+}
+
+/** X 的 currentSrc 常是缩略图；仅从已知 URL 模式派生 large 候选，不猜测其他站点参数。 */
+function mediaHighResolutionCandidate(value: string, baseURI: string): string | null {
+  const absolute = mediaToAbsolute(value, baseURI)
+  if (!absolute) return null
+  try {
+    const url = new URL(absolute)
+    if (url.hostname !== 'pbs.twimg.com' || !url.pathname.startsWith('/media/')) return null
+    const name = url.searchParams.get('name')
+    if (!name || /^(large|orig)$/i.test(name)) return null
+    url.searchParams.set('name', 'large')
+    return url.href
+  } catch {
+    return null
+  }
 }
 
 /**
@@ -334,6 +378,7 @@ ${buildMediaDomHelpersSource()}
   const baseURI = document.baseURI;
   const items = nodes.map((node, index) => {
     const permalink = mediaReadPermalink(node, baseURI);
+    const scopeRoot = mediaReadScopeRoot(node, roots, baseURI);
     if (node.tagName === 'IMG') {
       const candidates = [];
       const push = (value) => {
@@ -343,16 +388,21 @@ ${buildMediaDomHelpersSource()}
       push(node.currentSrc);
       push(node.getAttribute('src'));
       for (const candidate of mediaParseSrcset(node.getAttribute('srcset'))) push(candidate);
+      const highResolutionCandidates = candidates
+        .map((candidate) => mediaHighResolutionCandidate(candidate, baseURI))
+        .filter((candidate, position, all) => candidate && all.indexOf(candidate) === position);
       return {
         index: index,
         type: 'image',
         url: candidates.length > 0 ? candidates[0] : null,
         currentSrc: node.currentSrc ? mediaToAbsolute(node.currentSrc, baseURI) : null,
         candidates: candidates,
+        highResolutionCandidates: highResolutionCandidates,
         poster: null,
         duration: null,
         sources: [],
         permalink: permalink,
+        scopeRoot: scopeRoot,
         background: false,
         probeIndex: null
       };
@@ -372,10 +422,12 @@ ${buildMediaDomHelpersSource()}
       url: currentSrc || (sources.length > 0 ? sources[0].url : null),
       currentSrc: currentSrc,
       candidates: currentSrc ? [currentSrc] : [],
+      highResolutionCandidates: [],
       poster: posterAttribute ? mediaToAbsolute(posterAttribute, baseURI) : null,
       duration: duration,
       sources: sources,
       permalink: permalink,
+      scopeRoot: scopeRoot,
       background: false,
       probeIndex: probeIndex.has(node) ? probeIndex.get(node) : null,
       probeKey: mediaVideoIdentity(node)
@@ -388,16 +440,19 @@ ${buildMediaDomHelpersSource()}
       const url = mediaReadBackgroundUrl(element, window, baseURI);
       if (!url || seen.has(url)) continue;
       seen.add(url);
+      const highResolutionCandidate = mediaHighResolutionCandidate(url, baseURI);
       items.push({
         index: items.length,
         type: 'image',
         url: url,
         currentSrc: null,
         candidates: [url],
+        highResolutionCandidates: highResolutionCandidate ? [highResolutionCandidate] : [],
         poster: null,
         duration: null,
         sources: [],
         permalink: mediaReadPermalink(element, baseURI),
+        scopeRoot: mediaReadScopeRoot(element, roots, baseURI),
         background: true,
         probeIndex: null
       });
@@ -424,7 +479,10 @@ function buildMediaDomHelpersSource(): string {
     mediaCollectBackgroundElements,
     mediaReadBackgroundUrl,
     mediaNearestArticle,
+    mediaReadContainerPermalink,
     mediaReadPermalink,
+    mediaReadScopeRoot,
+    mediaHighResolutionCandidate,
   ]
     .map((helper) => helper.toString())
     .join('\n\n')

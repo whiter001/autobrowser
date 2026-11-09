@@ -397,6 +397,70 @@ describe('media page script', () => {
     expect(result.items[0]?.permalink).toBe('https://example.com/ada/status/123456')
   })
 
+  test('reports the owning scope root for media from multiple articles', () => {
+    const root = new FakeElement({ tag: 'body' })
+    for (const [index, testId] of ['target', 'reply'].entries()) {
+      const article = new FakeElement({
+        tag: 'article',
+        attrs: { id: `article-${index}`, 'data-testid': testId },
+      })
+      article.append(new FakeElement({ tag: 'a', attrs: { href: `/ada/status/${index + 1}` } }))
+      article.append(
+        new FakeElement({
+          tag: 'img',
+          attrs: { src: `https://cdn.example.com/${testId}.jpg` },
+          currentSrc: `https://cdn.example.com/${testId}.jpg`,
+        }),
+      )
+      root.append(article)
+    }
+    const document = new FakeDocument(root)
+
+    const result = runCollectScript({ selector: 'article', includeBackground: false, document })
+    expect(result.items.map((item) => item.scopeRoot)).toEqual([
+      {
+        index: 0,
+        tagName: 'article',
+        id: 'article-0',
+        dataTestId: 'target',
+        permalink: 'https://example.com/ada/status/1',
+      },
+      {
+        index: 1,
+        tagName: 'article',
+        id: 'article-1',
+        dataTestId: 'reply',
+        permalink: 'https://example.com/ada/status/2',
+      },
+    ])
+  })
+
+  test('derives large candidates from X thumbnails without changing currentSrc', () => {
+    const article = new FakeElement({ tag: 'article' })
+    article.append(
+      new FakeElement({
+        tag: 'img',
+        attrs: { src: 'https://pbs.twimg.com/media/a?format=jpg&name=small' },
+        currentSrc: 'https://pbs.twimg.com/media/a?format=jpg&name=small',
+      }),
+    )
+    article.append(
+      new FakeElement({
+        tag: 'img',
+        attrs: { src: 'https://cdn.example.com/a.jpg?name=small' },
+        currentSrc: 'https://cdn.example.com/a.jpg?name=small',
+      }),
+    )
+    const document = new FakeDocument(new FakeElement({ tag: 'body', children: [article] }))
+
+    const result = runCollectScript({ selector: 'article', includeBackground: false, document })
+    expect(result.items[0]?.currentSrc).toBe('https://pbs.twimg.com/media/a?format=jpg&name=small')
+    expect(result.items[0]?.highResolutionCandidates).toEqual([
+      'https://pbs.twimg.com/media/a?format=jpg&name=large',
+    ])
+    expect(result.items[1]?.highResolutionCandidates).toEqual([])
+  })
+
   test('reports a null permalink when the article has no status link', () => {
     const article = new FakeElement({ tag: 'article' })
     article.append(new FakeElement({ tag: 'a', attrs: { href: '/ada/profile' } }))

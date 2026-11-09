@@ -142,8 +142,8 @@ autobrowser 是一个面向 Chrome/Edge 的浏览器自动化 CLI，通过本地
 - 普通文件：`download <url> [output-path]`，或用 `--output-dir <dir>` 根据响应头、URL filename、路径和 MIME 自动命名。默认原子覆盖，`--no-clobber` 拒绝覆盖。非 HLS 下载可用 `--dedupe-by-content` 按 SHA-256 跳过目录内已有的同内容 EPUB/MOBI，返回 `duplicate:true/duplicateOf`。`downloads list|clear` 只是 Chrome 下载历史，与真正落盘的 `download` 不同。
 - 源站初始 fetch 对网络错误、429、5xx 默认额外重试 2 次；`--retries <0..5>` 调整，`--retries 0` 禁用，`--retry-delay-ms <ms>` 设置指数退避基础间隔（默认 250）。普通下载和 HLS 各请求都适用，重试共享原 timeout/deadline；上传开始后不重放整个文件。
 - 页面媒体：先 `autobrowser --tab t1 --frame top media list --selector 'article' --include-background --resolve`。确认有可信 HTTP(S) `sources/url` 后，假设返回 `pageEpoch=7`，使用 `autobrowser --tab t1 --frame top download --media 0 --selector 'article' --include-background --media-epoch 7 ./out.mp4`。index 仅在相同 tab/frame/scope/epoch 内有效，重新采集必须沿用 selector 和 include-background；epoch 不一致会失败，DOM 重排后应重新确认 index。
-- 媒体作用域：`--selector <css>` 把 DOM 采集和播放探测限定到匹配容器，未命中时连背景图也返回空，不回退整页。`--include-background` 额外采集作用域内 CSS 背景图。`media list --wait-for <css> --timeout-ms <ms>` 在扩展内对同一已解析 tab/frame 先等待再采集，失败不继续。旧扩展缺少 scope、背景支持或 wait 回显时 CLI 拒绝 scoped 成功。
-- 媒体溯源：返回 `observedAt/pageEpoch/pageUrl/scope/includeBackground` 及条目 `permalink/primarySource`（dom/none）。仅 DOM currentSrc/source 和图片/CSS 是可信源；历史 tab-wide 网络候选从不认领。`--resolve` 用 document 内稳定 token 验证原元素 connected 且仍属 scope 后静音短播；只有实际 played 才可记录播放期间新增候选到 `observedSources`（`unverified:true`）。并发流量不能证明归属，observedSources 不进入 sources/url，也不可用于下载；只有诊断候选时仍 complete=false 并有 warning。失败或身份不符诊断为空。采集/探测中 epoch 改变报 `STALE_MEDIA_STATE`，重新采集，不拼接旧结果。
+- 媒体作用域：`--selector <css>` 把 DOM 采集和播放探测限定到匹配容器，未命中时连背景图也返回空，不回退整页。每条媒体的 `scopeRoot` 标明所属容器的下标、标签、id、data-testid 和 permalink，多容器命中时据此筛选，不必猜测媒体归属。`--include-background` 额外采集作用域内 CSS 背景图。`media list --wait-for <css> --timeout-ms <ms>` 在扩展内对同一已解析 tab/frame 先等待再采集，失败不继续。旧扩展缺少 scope、背景支持或 wait 回显时 CLI 拒绝 scoped 成功。
+- 媒体溯源：返回 `observedAt/pageEpoch/pageUrl/scope/includeBackground` 及条目 `permalink/scopeRoot/primarySource`（dom/none）。仅 DOM currentSrc/source 和图片/CSS 及其已知高分辨率变体是可信源；X 图片缩略图会派生 `name=large` 到 `highResolutionCandidates`，`url/sources` 优先使用高分辨率地址，`currentSrc` 保留原值并由 `resolutionHint` 提示。历史 tab-wide 网络候选从不认领。`--resolve` 用 document 内稳定 token 验证原元素 connected 且仍属 scope 后静音短播；只有实际 played 才可记录播放期间新增候选到 `observedSources`（`unverified:true`）。并发流量不能证明归属，observedSources 不进入 sources/url，也不可用于下载；只有诊断候选时仍 complete=false 并有 warning。失败或身份不符诊断为空。采集/探测中 epoch 改变报 `STALE_MEDIA_STATE`，重新采集，不拼接旧结果。
 - HLS：`download <master.m3u8> <output.mp4> --quality best|worst|720|720p --concurrency 4`。自动下载最佳音视频轨并本地合并，FFmpeg/FFprobe 只读本地文件，不直接访问 CDN；本机需安装这两个工具。
 - HLS 是一个任务：统一 `--timeout-ms`，分片有界并发，失败保留 checkpoint/已校验分片，相同命令下次续传，成功清理。上限 2048 分片、2GiB、4 层 playlist；不支持加密和 `EXT-X-BYTERANGE`。DASH 目前只能发现，不能合并下载。
 - 所有媒体字节都经浏览器和本地鉴权 `/files/:transferId` 通道，不走 Base64/WebSocket。已知 Content-Length 且 >8MiB 时每次只缓冲一个 8MiB 块，relay 校验块/整文件 SHA-256；其他响应沿用缓冲传输。
@@ -201,7 +201,7 @@ autobrowser 是一个面向 Chrome/Edge 的浏览器自动化 CLI，通过本地
 
 - `eval` 适合执行小段页面上下文 JS，用于只读提取、状态检查或轻量验证。
 - 单行源码可用 `eval --expr '<script>'` 显式传值，也继续支持位置参数。
-- 复杂或多行源码优先通过 `eval --file <path>` 或 `eval --stdin` 传入，避免命令行转义干扰判断；脚本可直接包含顶层 `return` 和 `await`，无需手工包装 async IIFE，多语句脚本用 `return` 返回结果。
+- 复杂或多行源码优先通过 `eval --file <path>` 或 `eval --stdin` 传入，避免命令行转义干扰判断；脚本可直接包含顶层 `return` 和 `await`，无需手工包装 async IIFE，多语句脚本用 `return` 返回结果。CSS 属性选择器的值仍需按 CSS 语法加引号，例如 `a[href*="/status/"]`；`not a valid selector` 表示脚本已解析并运行、页面拒绝了 CSS，错误的 `suggestedAction` 会明确区分这种情况与 JavaScript 语法错误。
 - 页面执行启用 `awaitPromise`，可直接使用顶层 `await` 或返回 async IIFE / Promise 结果，不需要为异步采集手工拆成同步片段；长任务仍需设置合理 `--timeout-ms`。
 - `--timeout-ms <ms>` 只在确认脚本本身是长任务时使用；不要把它作为复杂流程失败后的默认处理。需要限制返回值时用 `eval --max-result-bytes <n>`，超限会得到 `EVAL_RESULT_TOO_LARGE` 和实际字节数，不会静默截断；未设置时结果超过 256 KiB 会走 upload，并与命令共享 deadline。
 - 复杂交互优先拆成更小的 autobrowser 命令或脚本步骤，保留原任务目标逐步推进。
@@ -226,7 +226,7 @@ autobrowser 是一个面向 Chrome/Edge 的浏览器自动化 CLI，通过本地
 - 在旧扩展上，`network har stop` 可能只返回元数据；CLI 会自动兜底重建 HAR。
 - 如果页面看起来空白或不对，先确认是不是登录页、验证码页，或者虚拟滚动列表。
 - 如果命令报 `command not found` 或退出码 127，这是链接产物或 PATH 的问题，**不是 autobrowser 不可用**：先确认 `bun` 目录在当前 shell 的 PATH 里；Windows 使用 `autobrowser.exe <子命令>`（Windows 没有无扩展名入口），其他平台使用 `autobrowser <子命令>`。这是 shell 解析问题，修好之后继续用 autobrowser，不要因此换方案。
-- npm 全局安装在 postinstall 中用 Go 原生入口替换 npm shim：Windows `<prefix>/autobrowser.exe`，POSIX `<prefix>/bin/autobrowser`，支持 macOS/Linux/Windows x64/arm64。Go 只用参数数组启动 Bun + `dist/autobrowser.js`，不重写业务、不经过 shell；仍需 PATH 中的 Bun >= 1.4.4 或 `AUTOBROWSER_BUN_PATH`，JS 路径可用 `AUTOBROWSER_DIST_ENTRY` 覆盖。源码 `link:bun` 同样用 Go 构建原生启动器并嵌入当前 Bun 与仓库 dist 路径，开发机需要 Go。
+- npm 全局安装在 postinstall 中用原生入口替换 npm shim：Windows `<prefix>/autobrowser.exe`，POSIX `<prefix>/bin/autobrowser`，支持 macOS/Linux/Windows x64/arm64。启动器只用参数数组启动 Bun + `dist/autobrowser.js`，不重写业务、不经过 shell；仍需 PATH 中的 Bun >= 1.4.4 或 `AUTOBROWSER_BUN_PATH`，JS 路径可用 `AUTOBROWSER_DIST_ENTRY` 覆盖。源码 `link:bun` 默认用当前 Bun 的 `--compile --aot` 构建并嵌入当前 Bun 与仓库 dist 路径，不需要 Go。AOT 当前不能交叉编译，完整六目标构建的非本机目标自动使用 Go；`build:launcher -- --current` 只构建本机 AOT，强制 Go 备选用 `link:bun -- --go` 或 `build:launcher:go`。
 - 禁用 npm 安装脚本时仍是旧 shim，**不保证存在 exe**；放行脚本后 `npm rebuild -g @whiter001/autobrowser`。缺少预编译文件/不支持平台/非全局才沿用旧修正；原生复制失败会明确报错，不静默回退。不要显式调用 `autobrowser.cmd`，PowerShell → cmd.exe 会破坏引号和 `& | ^` 参数。原生入口也不能还原调用方 shell 的展开，复杂 eval 仍用 `--file`、`--stdin` 或 `--base64`。
 - 卸载 npm 包后清理 npm 未登记的 Windows `<prefix>/autobrowser.exe`、回退 `.bat`，POSIX 检查 `<prefix>/bin/autobrowser` 是否残留；prefix 可用 `npm prefix -g` 查询。
 - 对于类似 x.com 的 SPA 列表页，优先从 `article` 等可见节点读取内容，不要直接相信 `get text body`。

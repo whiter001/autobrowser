@@ -155,6 +155,40 @@ describe('production evaluate and debugger dispatch cancellation gates', () => {
     ])
   })
 
+  test('distinguishes invalid CSS selectors from JavaScript syntax errors', async () => {
+    const evaluateWithException = async (description: string) => {
+      const { evaluateInTabContext } = createPageEvaluation({
+        getFrameExecutionContext: async () =>
+          ({
+            tab: { id: 1 },
+            executionContextId: 1,
+            worldFromCache: false,
+            worldCacheKey: null,
+          }) as never,
+        sendDebuggerCommand: async () =>
+          ({
+            result: {},
+            exceptionDetails: { exception: { description } },
+          }) as never,
+        clearWorldContext: () => {},
+      })
+      return evaluateInTabContext(1, 'document.querySelectorAll("invalid")')
+    }
+
+    await expect(
+      evaluateWithException(
+        "SyntaxError: Failed to execute 'querySelectorAll' on 'Document': 'a[href*=/status/]' is not a valid selector.",
+      ),
+    ).rejects.toMatchObject({
+      code: 'PAGE_EVALUATION_EXCEPTION',
+      suggestedAction: expect.stringContaining('the page rejected a CSS selector'),
+    })
+    await expect(evaluateWithException('SyntaxError: Unexpected token ;')).rejects.toMatchObject({
+      code: 'PAGE_EVALUATION_EXCEPTION',
+      suggestedAction: expect.stringContaining('Check the original script'),
+    })
+  })
+
   for (const stage of ['key-cleanup', 'mouse-cleanup']) {
     test(`${stage} still reaches production dispatch after cancellation`, async () => {
       const { context, cancel } = createCancellableContext()

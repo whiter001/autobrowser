@@ -48,8 +48,13 @@ function createEvaluationTimeoutError(timeoutMs: number): ErrorWithCode {
 function createPageEvaluationExceptionError(description: string): ErrorWithCode {
   const error = new Error(`page evaluation failed: ${description}`) as ErrorWithCode
   error.code = 'PAGE_EVALUATION_EXCEPTION'
-  error.suggestedAction =
-    'Check the original script, pass complex or multiline source with eval --file <path> or eval --stdin to avoid shell escaping issues, diagnose page state with snapshot, console, or status, then retry around the original task goal.'
+  const invalidCssSelector =
+    /failed to execute ['"](?:querySelector|querySelectorAll|matches|closest)['"]/i.test(
+      description,
+    ) && /not a valid selector/i.test(description)
+  error.suggestedAction = invalidCssSelector
+    ? 'The script was parsed and ran, but the page rejected a CSS selector. Quote CSS attribute values (for example, a[href*="/status/"]); use eval --file <path> or eval --stdin for complex source to keep shell, JavaScript, and CSS quoting separate.'
+    : 'Check the original script, pass complex or multiline source with eval --file <path> or eval --stdin to avoid shell escaping issues, diagnose page state with snapshot, console, or status, then retry around the original task goal.'
   return error
 }
 

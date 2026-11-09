@@ -21,11 +21,11 @@
 
 ### 安装入口与运行时边界
 
-npm 全局安装的 postinstall 优先把预编译 Go 启动器复制到 Windows `<prefix>/autobrowser.exe` 或 POSIX `<prefix>/bin/autobrowser`，替换并清理 npm shim。支持 darwin/linux/windows x64/arm64；Go 只负责以参数数组启动 Bun + `dist/autobrowser.js`、保留 cwd/env/stdio 和退出码，浏览器业务仍在 Bun 中，不经过 cmd.exe、批处理、PowerShell 或 sh。Bun 路径可用 `AUTOBROWSER_BUN_PATH` 覆盖，dist 可用 `AUTOBROWSER_DIST_ENTRY` 覆盖。
+npm 全局安装的 postinstall 优先把预编译原生启动器复制到 Windows `<prefix>/autobrowser.exe` 或 POSIX `<prefix>/bin/autobrowser`，替换并清理 npm shim。支持 darwin/linux/windows x64/arm64；启动器只负责以参数数组启动 Bun + `dist/autobrowser.js`、保留 cwd/env/stdio 和退出码，浏览器业务仍在 Bun 中，不经过 cmd.exe、批处理、PowerShell 或 sh。Bun 路径可用 `AUTOBROWSER_BUN_PATH` 覆盖，dist 可用 `AUTOBROWSER_DIST_ENTRY` 覆盖。发布机本机目标使用 Bun AOT，交叉目标使用 Go 备选。
 
-`bin` 仍指向 dist JS。禁用安装脚本时仍是旧 npm shim，需放行后 `npm rebuild -g @whiter001/autobrowser` 才有原生入口；缺少产物/不支持平台/非全局沿用旧修正，原生写入失败明确报错而不静默回退。源码 `link:bun` 同样用 Go 构建原生启动器（Windows `autobrowser.exe`，其他平台 `autobrowser`）并安装到 Bun 旁边，启动器嵌入当前 Bun 与仓库 dist 的绝对路径，因此源码开发链接也不需要额外环境变量；开发机需要 Go，Go 缺失时链接直接失败，不再生成 sh 包装器。调用方 shell 仍可能先展开参数，复杂 eval 推荐 `--file`、`--stdin` 或 `--base64`，不因原生入口而改变 CLI eval 语义。
+`bin` 仍指向 dist JS。禁用安装脚本时仍是旧 npm shim，需放行后 `npm rebuild -g @whiter001/autobrowser` 才有原生入口；缺少产物/不支持平台/非全局沿用旧修正，原生写入失败明确报错而不静默回退。源码 `link:bun` 默认用当前 Bun 的 `--compile --aot` 构建原生启动器（Windows `autobrowser.exe`，其他平台 `autobrowser`）并安装到 Bun 旁边，启动器嵌入当前 Bun 与仓库 dist 的绝对路径，因此源码开发链接也不需要额外环境变量；默认不需要 Go，显式运行 `bun run link:bun -- --go` 才使用备选 Go 构建。调用方 shell 仍可能先展开参数，复杂 eval 推荐 `--file`、`--stdin` 或 `--base64`，不因原生入口而改变 CLI eval 语义。
 
-npm 未登记额外的 Windows `.exe` 与回退 `.bat`，卸载后须清理；POSIX 也检查替换后的 `<prefix>/bin/autobrowser` 是否残留。构建需 Go（`bun run build:launcher`，本机可加 `-- --current`），安装用户只需 Bun。
+npm 未登记额外的 Windows `.exe` 与回退 `.bat`，卸载后须清理；POSIX 也检查替换后的 `<prefix>/bin/autobrowser` 是否残留。Bun AOT 当前不能交叉编译：`bun run build:launcher` 的本机目标只需 Bun，非本机目标自动使用 Go；`-- --current` 只构建本机。强制使用备选 Go 构建可运行 `bun run build:launcher:go`，安装用户只需 Bun。
 
 当前代码库已经支持以下面向 agent 的行为：
 
@@ -49,7 +49,7 @@ npm 未登记额外的 Windows `.exe` 与回退 `.bat`，卸载后须清理；PO
 - 当前引用/歧义规则：snapshot/find 在同一 document 内不复用 ref，但删除节点无效、导航后 stale。`snapshot --changed` 包含状态变化和 `removedRefs`，按 document/frame 隔离基线；200000 UTF-8字节预算截断时收窄 target/roles 或使用 changed。`find.name` 默认子串，`exact:true` 精确；locate/text 默认 first，写操作多匹配返回 `AMBIGUOUS_TARGET` 与候选，检查 candidates 后收窄或显式 position。
 - 当前执行预算：默认30秒，显式 eval/navigation/click timeoutMs、wait timeout/ms 加5秒余量且不低于默认；batch 合成步骤/重试/延迟/嵌套预算，总上限30分钟含余量。feed 按滚动次数（上限40）×pauseMs +60秒执行余量+5秒传输余量计算，不低于默认预算，超过30分钟则拒绝。已发送后断连的未知结果不自动重放；显式 batch retries 可能重复副作用，不提供幂等性。
 - 当前网络策略：未 HAR 仅自动监控元数据，request detail 按需 CDP 获取 body，历史请求可能失效；HAR body 使用4槽/10秒逻辑超时，不可中止的底层工作继续占槽。maxBodyBytes 只限存储，stop 只等待本次 capture。大响应优先通过 WebSocket 控制消息协商、本地鉴权 HTTP 按范围上传，relay 落盘并校验 SHA-256；网络中断按已确认偏移续传，15 秒无进度判定停滞，整体仍受命令预算约束。小响应和旧 relay 保留 WebSocket 内联/分片回退，CLI/MCP 响应格式不变，超限仍明确报错。
-- 当前下载策略：`media list [--resolve] [--selector <css>] [--include-background]` 从 DOM 与同 tab/page epoch 的网络元数据发现图片、MP4/HLS 源；`--selector` 把 DOM 采集和 `--resolve` 探测限定到匹配容器内，`--include-background` 额外采集 CSS `background-image`；结果带 `observedAt`/`pageEpoch`/`pageUrl`/`scope` 与逐条目的 `permalink`/`primarySource`。网络候选从不提升为可下载源（包括默认模式历史流量及播放期间并发流量）；稳定元素 token 验证原元素仍 connected 且属 scope 后才允许探测，只有实际 played 才记录 `observedSources`（`unverified:true`，仅诊断、不可下载）。无可信 DOM 源仍 complete=false，epoch 变化报 STALE_MEDIA_STATE。media wait 在同一次请求的已解析 tab/frame 上执行；CLI 要求 scope/background/wait 回显，download --media 用相同 scope 和 --media-epoch 严格校验重新采集 epoch。`download` 支持普通文件、`--media` 和 HLS 选轨。文件经独立鉴权 `/files` 通道上传，已知长度且超过8MiB时单块流式传输；HLS 在 CLI 侧统一并发、checkpoint 和续传，所有分片仍经浏览器获取，FFmpeg/FFprobe 只处理本地文件。
+- 当前下载策略：`media list [--resolve] [--selector <css>] [--include-background]` 从 DOM 与同 tab/page epoch 的网络元数据发现图片、MP4/HLS 源；`--selector` 把 DOM 采集和 `--resolve` 探测限定到匹配容器内，`--include-background` 额外采集 CSS `background-image`；结果带 `observedAt`/`pageEpoch`/`pageUrl`/`scope` 与逐条目的 `scopeRoot`/`permalink`/`primarySource`，`scopeRoot` 记录所属容器的下标、标签、id、data-testid 和 permalink。X (`pbs.twimg.com/media/`) 图片的缩略图 URL 会派生 `name=large` 到 `highResolutionCandidates`，`url/sources` 优先使用该变体，`currentSrc` 保持原值并由 `resolutionHint` 说明。网络候选从不提升为可下载源（包括默认模式历史流量及播放期间并发流量）；稳定元素 token 验证原元素仍 connected 且属 scope 后才允许探测，只有实际 played 才记录 `observedSources`（`unverified:true`，仅诊断、不可下载）。无可信 DOM 源仍 complete=false，epoch 变化报 STALE_MEDIA_STATE。media wait 在同一次请求的已解析 tab/frame 上执行；CLI 要求 scope/background/wait 回显，download --media 用相同 scope 和 --media-epoch 严格校验重新采集 epoch。`download` 支持普通文件、`--media` 和 HLS 选轨。文件经独立鉴权 `/files` 通道上传，已知长度且超过8MiB时单块流式传输；HLS 在 CLI 侧统一并发、checkpoint 和续传，所有分片仍经浏览器获取，FFmpeg/FFprobe 只处理本地文件。
 
 以下“缺口/建议”保留早期设计讨论，不应覆盖上述已实现行为；例如候选排序、位置选择、stale 检测和 batch 已有实现。
 

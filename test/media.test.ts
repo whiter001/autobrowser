@@ -266,6 +266,49 @@ describe('media domain', () => {
     expect(item.primarySource).toBe('dom')
   })
 
+  test('prefers derived high-resolution image candidates and preserves scope ownership', async () => {
+    const thumbnail = 'https://pbs.twimg.com/media/a?format=jpg&name=small'
+    const large = 'https://pbs.twimg.com/media/a?format=jpg&name=large'
+    const scopeRoot = {
+      index: 2,
+      tagName: 'article',
+      id: null,
+      dataTestId: 'tweet',
+      permalink: 'https://x.com/ada/status/123',
+    }
+    const { domain } = createHarness({
+      page: {
+        items: [
+          {
+            index: 0,
+            type: 'image',
+            url: thumbnail,
+            currentSrc: thumbnail,
+            candidates: [thumbnail],
+            highResolutionCandidates: [large],
+            poster: null,
+            duration: null,
+            sources: [],
+            permalink: null,
+            scopeRoot,
+            background: false,
+            probeIndex: null,
+          },
+        ],
+      },
+    })
+
+    const result = await domain.list(1, 'top', {})
+    expect(result.media[0]).toMatchObject({
+      url: large,
+      currentSrc: thumbnail,
+      highResolutionCandidates: [large],
+      scopeRoot,
+    })
+    expect(result.media[0]?.sources.map((source) => source.url)).toEqual([large, thumbnail])
+    expect(result.media[0]?.resolutionHint).toContain('currentSrc may be a thumbnail')
+  })
+
   test('keeps every direct DOM source downloadable without claiming network candidates', async () => {
     const { domain } = createHarness({
       page: {

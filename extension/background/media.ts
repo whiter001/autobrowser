@@ -1,5 +1,10 @@
 import type { CommandExecutionContext } from './command-queue.js'
-import { buildMediaCollectScript, buildMediaPlayProbeScript, type MediaScope } from './media-dom.js'
+import {
+  buildMediaCollectScript,
+  buildMediaPlayProbeScript,
+  type MediaScope,
+  type MediaScopeRoot,
+} from './media-dom.js'
 import { getPageEpoch } from './targeting.js'
 import type {
   EvaluateInTabContextOptions,
@@ -58,8 +63,12 @@ interface MediaItem {
   type: 'image' | 'video'
   /** 首选 DOM URL；blob: 仅作参考，没有源时为 null，网络诊断绝不进入此字段。 */
   url: string | null
-  /** 元素自身的 currentSrc（可能是 blob:），不可下载时仅作参考 */
+  /** 元素自身的 currentSrc（可能是 blob: 或缩略图），不可下载时仅作参考 */
   currentSrc: string | null
+  /** 从可信 DOM URL 派生的已知高分辨率变体；url/sources 会优先使用 */
+  highResolutionCandidates: string[]
+  /** currentSrc 为已知缩略图模式时的说明 */
+  resolutionHint: string | null
   sources: MediaSource[]
   /** 未验证的 tab-wide 网络诊断，不可作为下载输入。 */
   observedSources: Array<MediaSource & { unverified: true }>
@@ -73,6 +82,8 @@ interface MediaItem {
   suggestedAction: string | null
   /** 来源链接：最近 article 内首个 /status/ 链接；没有则为 null */
   permalink: string | null
+  /** 实际所属的作用域容器，整页回退采集时为 null */
+  scopeRoot: MediaScopeRoot | null
   /** 主来源：dom / none */
   primarySource: MediaPrimarySource
   /** 该条目是否来自 CSS background-image */
@@ -125,10 +136,12 @@ interface RawPageMedia {
   url: string | null
   currentSrc: string | null
   candidates: string[]
+  highResolutionCandidates: string[]
   poster: string | null
   duration: number | null
   sources: Array<{ url: string | null; contentType: string | null }>
   permalink: string | null
+  scopeRoot: MediaScopeRoot | null
   background: boolean
   /** 无源视频列表中的诊断序号；探测定位仅使用 probeKey token。 */
   probeIndex: number | null
@@ -407,6 +420,20 @@ function parseRawScope(value: unknown): MediaScope {
   return { selector, mode, matchedCount }
 }
 
+function parseRawScopeRoot(value: unknown): MediaScopeRoot | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null
+  const record = value as Record<string, unknown>
+  if (typeof record.index !== 'number' || !Number.isFinite(record.index)) return null
+  if (typeof record.tagName !== 'string') return null
+  return {
+    index: record.index,
+    tagName: record.tagName,
+    id: typeof record.id === 'string' ? record.id : null,
+    dataTestId: typeof record.dataTestId === 'string' ? record.dataTestId : null,
+    permalink: typeof record.permalink === 'string' ? record.permalink : null,
+  }
+}
+
 function parseRawMedia(value: unknown): RawPageMedia[] {
   if (!Array.isArray(value)) return []
   const items: RawPageMedia[] = []
@@ -417,6 +444,9 @@ function parseRawMedia(value: unknown): RawPageMedia[] {
     if (!type) continue
     const candidates = Array.isArray(record.candidates)
       ? record.candidates.filter((item): item is string => typeof item === 'string')
+      : []
+    const highResolutionCandidates = Array.isArray(record.highResolutionCandidates)
+      ? record.highResolutionCandidates.filter((item): item is string => typeof item === 'string')
       : []
     const sources = Array.isArray(record.sources)
       ? record.sources
@@ -434,6 +464,7 @@ function parseRawMedia(value: unknown): RawPageMedia[] {
       url: typeof record.url === 'string' ? record.url : null,
       currentSrc: typeof record.currentSrc === 'string' ? record.currentSrc : null,
       candidates,
+      highResolutionCandidates,
       poster: typeof record.poster === 'string' ? record.poster : null,
       duration:
         typeof record.duration === 'number' && Number.isFinite(record.duration)
@@ -441,6 +472,7 @@ function parseRawMedia(value: unknown): RawPageMedia[] {
           : null,
       sources,
       permalink: typeof record.permalink === 'string' ? record.permalink : null,
+      scopeRoot: parseRawScopeRoot(record.scopeRoot),
       background: record.background === true,
       probeIndex: typeof record.probeIndex === 'number' ? record.probeIndex : null,
       probeKey: typeof record.probeKey === 'string' ? record.probeKey : null,
@@ -514,8 +546,15 @@ function isVideoCandidate(candidate: NetworkCandidate): boolean {
 
 function buildImageItem(raw: RawPageMedia): MediaItem {
   const sources: InternalSource[] = []
+  const highResolutionCandidates = [
+    ...new Set(
+      raw.highResolutionCandidates
+        .map(normalizeMediaUrl)
+        .filter((url): url is string => typeof url === 'string'),
+    ),
+  ]
   let order = 0
-  for (const candidate of raw.candidates) {
+  for (const candidate of [...highResolutionCandidates, ...raw.candidates]) {
     const url = normalizeMediaUrl(candidate)
     if (!url) continue
     sources.push({
@@ -536,6 +575,11 @@ function buildImageItem(raw: RawPageMedia): MediaItem {
     type: 'image',
     url: deduped[0]?.url ?? null,
     currentSrc: normalizeMediaUrl(raw.currentSrc),
+    highResolutionCandidates,
+    resolutionHint:
+      highResolutionCandidates.length > 0
+        ? 'currentSrc may be a thumbnail; url/sources prefer a highResolutionCandidates URL derived from the DOM with Twitter name=large.'
+        : null,
     sources: deduped.map(toPublicSource),
     observedSources: [],
     poster: null,
@@ -543,6 +587,7 @@ function buildImageItem(raw: RawPageMedia): MediaItem {
     error: null,
     suggestedAction: null,
     permalink: raw.permalink,
+    scopeRoot: raw.scopeRoot,
     primarySource: deduped.length > 0 ? 'dom' : 'none',
     background: raw.background,
   }
@@ -594,6 +639,8 @@ function buildVideoItem(raw: RawPageMedia, networkCandidates: NetworkCandidate[]
     type: 'video',
     url: primary?.url ?? currentSrc ?? null,
     currentSrc,
+    highResolutionCandidates: [],
+    resolutionHint: null,
     sources: deduped.map(toPublicSource),
     observedSources,
     poster: normalizeMediaUrl(raw.poster),
@@ -601,6 +648,7 @@ function buildVideoItem(raw: RawPageMedia, networkCandidates: NetworkCandidate[]
     error: null,
     suggestedAction: null,
     permalink: raw.permalink,
+    scopeRoot: raw.scopeRoot,
     primarySource,
     background: false,
   }

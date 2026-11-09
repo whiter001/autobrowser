@@ -597,14 +597,15 @@ export const HELP_ROOT: HelpNode = helpNode(
         '--include-background  also collect CSS background-image URLs in scope',
         '--wait-for <css>  extension waits then collects on the same resolved tab/frame in one request',
         '--timeout-ms <ms>  wait-phase budget (default 30000 ms); requires --wait-for; collection has its own budget',
-        'Only DOM currentSrc/source and image/CSS sources enter sources/url. Historical traffic is never claimed.',
+        'Only DOM currentSrc/source, image/CSS sources and known high-resolution variants derived from them enter sources/url. Historical traffic is never claimed.',
         'observedSources (unverified:true) is diagnostic only, never downloadable; failed probes record none.',
         'Observed-only media remains complete=false with warnings. Epoch changes fail with STALE_MEDIA_STATE.',
         'Index is valid only in the same tab/frame/scope/epoch; reuse --selector/--include-background and --media-epoch when downloading.',
         'Example: --tab t1 --frame top download --media 0 --selector article --media-epoch 7 ./out.mp4',
         'CLI rejects old extension responses without matching scope, background support or wait proof.',
         'complete/warnings describe known discovery gaps only, not the absence of unrendered carousel media.',
-        'The result also carries observedAt/pageEpoch/pageUrl/scope/includeBackground plus per-item permalink and primarySource.',
+        'The result carries observedAt/pageEpoch/pageUrl/scope/includeBackground plus per-item scopeRoot, permalink and primarySource.',
+        'scopeRoot identifies the owning matched container. X image thumbnails retain currentSrc but prefer name=large in url/sources and highResolutionCandidates.',
       ],
       [
         helpNode(
