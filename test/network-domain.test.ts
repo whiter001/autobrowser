@@ -917,6 +917,44 @@ describe('network domain request list pagination', () => {
     expect(network.listRequests({ allTabs: true })).not.toHaveProperty('meta')
   })
 
+  test('suggests a wider scope when a nonempty list hides matching historical requests', () => {
+    const { network, state } = createListHarness()
+    state.network.requests = [
+      {
+        id: '1:current',
+        tabId: 1,
+        pageEpoch: 2,
+        url: 'https://example.com/api/current',
+        resourceType: 'xhr',
+      },
+      {
+        id: '1:historical',
+        tabId: 1,
+        pageEpoch: 1,
+        url: 'https://example.com/static/old.png',
+        resourceType: 'image',
+      },
+      {
+        id: '2:other-tab',
+        tabId: 2,
+        pageEpoch: 2,
+        url: 'https://example.com/static/other.css',
+        resourceType: 'stylesheet',
+      },
+    ]
+
+    const result = network.listRequests({ tabId: 1, pageEpoch: 2 }) as {
+      total: number
+      meta?: { suggestedAction?: string }
+    }
+    expect(result.total).toBe(1)
+    expect(result.meta?.suggestedAction).toContain('Additional requests')
+    expect(result.meta?.suggestedAction).toContain('--all-tabs --all-epochs')
+
+    const typeFiltered = network.listRequests({ tabId: 1, pageEpoch: 2, type: 'xhr' })
+    expect(typeFiltered).not.toHaveProperty('meta')
+  })
+
   test('filters request lists by target tab and keeps details opt-in', () => {
     const { network } = createListHarness()
     const filtered = network.listRequests({ tabId: 2 }) as {

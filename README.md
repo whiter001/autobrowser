@@ -283,7 +283,9 @@ autobrowser --tab t1 --frame top download --media 0 --selector 'article[data-rol
 
 网络归属采用严格保守契约：默认模式与 selector 模式都不认领历史 tab-wide 候选。即使播放期间新增请求，也可能来自 scope 外并发流量；只有实际 played 的探测才将新增候选放入 `observedSources`（每条 `unverified:true`），仅供诊断，绝不进入可下载的 `sources/url`，`download --media` 不使用它。失败或元素身份不符时诊断为空。只有 observedSources 而无可信 DOM 源仍为 `complete=false` 并给 warning，宁可 unresolved，不猜测下载。
 
-探测通过同一 document 内的稳定元素 token 找回原元素，并验证 connected 且仍属 scope；空 src、相同 src、删除、重排和替换不会让探测播放别的元素。采集开始记录 pageEpoch，采集/探测后或返回前 epoch 改变时报 `STALE_MEDIA_STATE`，必须重新采集。index 仅在相同 tab/frame/scope/epoch 内有效；`download --media` 重新 list 时须传相同 `--selector`/`--include-background`，并用 `--media-epoch <n>` 要求返回 epoch 完全一致，否则失败。epoch 不代表 DOM 不变，重排后应重新确认 index。CLI 对显式 scope、includeBackground 支持及 wait 完成要求响应明确回显，旧扩展缺少证明时拒绝成功。
+X 等站点的 MSE `blob:` 视频没有可信 DOM 源时，先执行 `network har start --include-pattern video.twimg.com`，刷新或重新播放目标视频后用 `network har stop --include-urls` 获取播放请求，再选择 master m3u8 执行 `download '<master.m3u8>' out.mp4 --quality best --concurrency 4`。HLS 合并需要本机安装 FFmpeg/FFprobe；`observedSources` 为空不代表 HAR 中也没有媒体请求。
+
+探测通过同一 document 内的稳定元素 token 找回原元素，并验证 connected 且仍属 scope；空 src、相同 src、删除、重排和替换不会让探测播放别的元素。采集开始记录 pageEpoch，采集/探测后或返回前 epoch 改变时报 `STALE_MEDIA_STATE`，必须重新采集。index 是本次整个 scope 内按 DOM 顺序生成的编号，不是单个 article 内的编号；多容器命中时先结合 `scopeRoot`/`permalink` 和 `primarySource` 确认目标。index 仅在相同 tab/frame/scope/epoch 内有效；`download --media` 重新 list 时须传相同 `--selector`/`--include-background`，并用 `--media-epoch <n>` 要求返回 epoch 完全一致，否则失败。epoch 不代表 DOM 不变，重排后应重新确认 index。CLI 对显式 scope、includeBackground 支持及 wait 完成要求响应明确回显，旧扩展缺少证明时拒绝成功。
 
 下载行为：
 

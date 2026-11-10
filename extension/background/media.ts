@@ -820,10 +820,13 @@ export function createMediaDomain({ state, evaluateInTabContext }: MediaDomainDe
         item.error = !outcome
           ? 'video was not probed (resolve limit or missing target identity)'
           : outcome.probe.played
-            ? 'no verified DOM source; observed network candidates are unverified and not downloadable'
+            ? item.observedSources.length > 0
+              ? 'no verified DOM source; observed network candidates are unverified and not downloadable'
+              : 'no verified DOM source; playback produced no new network candidates'
             : `unable to resolve the media stream: ${outcome.probe.error || 'playback was blocked'}`
-        item.suggestedAction =
-          'Narrow the scope with --selector, or expose a direct DOM source manually and collect again.'
+        item.suggestedAction = outcome?.probe.played
+          ? 'Capture a fresh HAR with network har start, reload or replay the video, then use network har stop --include-urls and download a verified HTTP(S) playlist or media URL directly.'
+          : 'Narrow the scope with --selector, or expose a direct DOM source manually and collect again.'
       } else if (ambiguous) {
         item.error = MEDIA_AMBIGUOUS_SOURCES_ERROR
         item.suggestedAction = MEDIA_AMBIGUOUS_SOURCES_SUGGESTED_ACTION

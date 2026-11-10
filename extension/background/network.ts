@@ -829,10 +829,27 @@ export function createNetworkDomain({
         : {}),
       pagination,
     }
-    if (requests.length === 0 && filters.allTabs !== true && filters.allEpochs !== true) {
+    const unscopedFilters = { ...filters }
+    delete unscopedFilters.tabId
+    delete unscopedFilters.pageEpoch
+    delete unscopedFilters.currentEpochs
+    // 保留文本、类型等过滤条件，只有确因 tab/epoch 范围而隐藏记录时才提示扩范围。
+    const hasRequestsOutsideScope = state.network.requests.some(
+      (record) =>
+        !matchesNetworkRequestFilters(record, filters) &&
+        matchesNetworkRequestFilters(record, unscopedFilters),
+    )
+    if (
+      (requests.length === 0 || hasRequestsOutsideScope) &&
+      filters.allTabs !== true &&
+      filters.allEpochs !== true
+    ) {
+      const scopeMessage =
+        requests.length === 0
+          ? 'No requests matched the current tab/current page epoch.'
+          : 'Additional requests matching the filters exist outside the current tab/current page epoch.'
       result.meta = {
-        suggestedAction:
-          'No requests matched the current tab/current page epoch. Run network requests --all-tabs --all-epochs to inspect historical or cross-tab requests.',
+        suggestedAction: `${scopeMessage} Run network requests --all-tabs --all-epochs to inspect historical or cross-tab requests.`,
       }
     }
     return result

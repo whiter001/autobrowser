@@ -40,10 +40,10 @@
     "test": "bun test",
     "test:live": "bun run build:chrome && AUTOBROWSER_LIVE=1 bun test test/live-smoke.test.ts",
     "fmt": "bun fmt --no-script src/ extension/ scripts/ test/",
-    "lint": "oxlint src/ extension/ scripts/ test/",
-    "fix": "bun fmt --no-script src/ extension/ scripts/ test/ && oxlint --fix src/ extension/ scripts/ test/",
+    "lint": "bun lint src/ extension/ scripts/ test/",
+    "fix": "bun fmt --no-script src/ extension/ scripts/ test/ && bun lint --fix src/ extension/ scripts/ test/",
     "typecheck": "tsc --noEmit && tsc -p extension/tsconfig.json && tsc -p tsconfig.tools.json",
-    "check": "bun run typecheck && oxlint src/ extension/ scripts/ test/ && bun fmt --check --no-script src/ extension/ scripts/ test/",
+    "check": "bun run typecheck && bun run lint && bun fmt --check --no-script src/ extension/ scripts/ test/",
     "build:cli": "bun scripts/build-cli.ts",
     "build:chrome": "bun scripts/build-chrome.ts",
     "build:launcher": "bun scripts/build-launcher-bun.ts",
@@ -61,7 +61,6 @@
     "@types/chrome": "^0.3.7",
     "@types/node": "^26.6.5",
     "husky": "^9.1.7",
-    "oxlint": "1.90.0",
     "typescript": "^7.0.2"
   },
   "engines": {

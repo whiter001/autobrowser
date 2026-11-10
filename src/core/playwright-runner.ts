@@ -56,7 +56,7 @@ function compilePageFunction(source: string): (page: any) => Promise<unknown> {
   try {
     // 与 pwcli run 对齐：文件内容是 async (page) => {}，并在持有真实 Page 的 relay 进程执行。
     // 间接 eval 是这里有意的不安全代码入口，同时避免源码捕获编译器的局部变量。
-    // oxlint-disable-next-line no-eval
+    // eslint-disable-next-line no-eval
     const compiled = (0, eval)(`(${source}\n)`)
     if (typeof compiled !== 'function') throw new Error('script did not evaluate to a function')
     return compiled

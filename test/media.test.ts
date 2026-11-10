@@ -191,6 +191,19 @@ describe('media domain completeness', () => {
     ])
   })
 
+  test('successful playback without new candidates explains the empty diagnostics', async () => {
+    const { domain } = createHarness({
+      page: { items: [BLOB_VIDEO] },
+      probe: { played: true },
+    })
+    const result = await domain.list(1, 'top', { resolve: true })
+    expect(result.media[0]?.observedSources).toEqual([])
+    expect(result.media[0]?.error).toContain('no new network candidates')
+    expect(result.media[0]?.error).not.toContain('observed network candidates are unverified')
+    expect(result.media[0]?.suggestedAction).toContain('network har start')
+    expect(result.media[0]?.suggestedAction).toContain('--include-urls')
+  })
+
   test('resolve count limit is reported and excess videos remain unresolved', async () => {
     const { domain, expressions } = createHarness({
       page: {
