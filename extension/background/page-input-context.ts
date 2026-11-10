@@ -57,6 +57,8 @@ export interface PageInputDependencies {
     params?: Record<string, unknown>,
     context?: CommandExecutionContext,
   ) => Promise<TResult>
+  updateTab?: (tabId: number, url: string) => Promise<unknown>
+  reloadTab?: (tabId: number) => Promise<void>
 }
 
 // 页面表达式前统一注入的深 DOM 遍历 helper 源码
@@ -100,6 +102,8 @@ export interface PageInputContext {
     params?: Record<string, unknown>,
     context?: CommandExecutionContext,
   ) => Promise<TResult>
+  updateTab?: (tabId: number, url: string) => Promise<unknown>
+  reloadTab?: (tabId: number) => Promise<void>
   sleep: (ms: number) => Promise<void>
 }
 
@@ -115,6 +119,8 @@ export function createPageInputContext({
   getFrameExecutionContext,
   evaluateInTabContext: evaluateInTabContextBase,
   sendDebuggerCommand,
+  updateTab,
+  reloadTab,
 }: PageInputDependencies): PageInputContext {
   // 页面表达式默认带上深 DOM 遍历 helper；只有 readyState 这类极短表达式走 base
   const evaluateInTabContext = <TValue = unknown>(
@@ -142,6 +148,8 @@ export function createPageInputContext({
     evaluateInTabContext,
     evaluateInTabContextBase,
     sendDebuggerCommand,
+    updateTab,
+    reloadTab,
     sleep,
   }
 }

@@ -95,6 +95,12 @@ export function tabsUpdate(
   })
 }
 
+export function tabsReload(tabId: number): Promise<void> {
+  return runChromeVoidCallback((callback) => {
+    chrome.tabs.reload(tabId, callback)
+  })
+}
+
 /**
  * chrome.tabs.create 的 Promise 封装。
  */

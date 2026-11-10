@@ -8,6 +8,8 @@ import {
   storageLocalSet,
   tabsGet,
   tabsQuery,
+  tabsReload,
+  tabsUpdate,
 } from './background/chrome.js'
 import { createCommandRouter } from './background/command-router.js'
 import { createConnectionRuntime } from './background/connection.js'
@@ -93,6 +95,8 @@ const pageInput = createPageInputDomain({
   getFrameExecutionContext,
   evaluateInTabContext,
   sendDebuggerCommand,
+  updateTab: async (tabId, url) => await tabsUpdate(tabId, { url }),
+  reloadTab: tabsReload,
 })
 
 const pageObserve = createPageObserveDomain({

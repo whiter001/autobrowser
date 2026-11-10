@@ -8,17 +8,25 @@ function createNavigateHarness(
     commitDelayMs?: number
     hangDispatch?: boolean
     hangEvaluate?: boolean
+    debuggerError?: string
     history?: { entries: Array<{ id: number }>; currentIndex: number }
   } = {},
 ) {
   const state = createExtensionState(9222)
   const debuggerCalls: string[] = []
+  const tabsApiCalls: string[] = []
   const evaluateCalls: Array<{ expression: string; afterCommit: boolean }> = []
   let committed = false
+  let currentTab = {
+    id: 1,
+    url: 'https://example.com',
+    title: 'old page',
+    status: 'complete',
+  }
 
   const pageInput = createPageInputDomain({
     state,
-    getTargetTab: async () => ({ id: 1, url: 'https://example.com' }) as never,
+    getTargetTab: async () => ({ ...currentTab }) as never,
     resolveElementSelectorForTab: async () => {
       throw new Error('unused in navigate tests')
     },
@@ -43,6 +51,12 @@ function createNavigateHarness(
     },
     sendDebuggerCommand: async (_tabId: number, method: string) => {
       debuggerCalls.push(method)
+      if (
+        options.debuggerError &&
+        ['Page.enable', 'Page.navigate', 'Page.reload'].includes(method)
+      ) {
+        throw new Error(options.debuggerError)
+      }
       if (method === 'Page.getNavigationHistory') {
         return (options.history || { entries: [{ id: 1 }], currentIndex: 0 }) as never
       }
@@ -68,9 +82,19 @@ function createNavigateHarness(
       }
       return undefined as never
     },
+    updateTab: async (_tabId, url) => {
+      tabsApiCalls.push(`update:${url}`)
+      currentTab = { ...currentTab, url, status: 'complete' }
+      committed = true
+    },
+    reloadTab: async () => {
+      tabsApiCalls.push('reload')
+      currentTab = { ...currentTab, status: 'complete' }
+      committed = true
+    },
   })
 
-  return { pageInput, state, debuggerCalls, evaluateCalls }
+  return { pageInput, state, debuggerCalls, tabsApiCalls, evaluateCalls }
 }
 
 describe('navigation wait for commit', () => {
@@ -126,6 +150,56 @@ describe('navigation wait for commit', () => {
     })
     expect(debuggerCalls).toEqual(['Page.enable', 'Page.navigate'])
     expect(evaluateCalls).toHaveLength(0)
+  })
+
+  test('navigateTo leaves a page with a foreign extension iframe through the tabs API', async () => {
+    const { pageInput, debuggerCalls, tabsApiCalls, evaluateCalls } = createNavigateHarness({
+      debuggerError: 'Cannot access a chrome-extension:// URL of different extension',
+    })
+
+    const result = await pageInput.navigateTo(1, 'https://new.example.com', {
+      waitUntil: 'domcontentloaded',
+    })
+
+    expect(result).toMatchObject({
+      outcome: 'completed',
+      phase: 'settle',
+      settled: true,
+      dispatchChannel: 'tabs',
+      observedUrl: 'https://new.example.com',
+    })
+    expect(debuggerCalls).toEqual(['Page.enable'])
+    expect(tabsApiCalls).toEqual(['update:https://new.example.com'])
+    expect(evaluateCalls.every((call) => call.afterCommit)).toBe(true)
+  })
+
+  test('reloadPage recovers through the tabs API when the debugger cannot attach', async () => {
+    const { pageInput, debuggerCalls, tabsApiCalls } = createNavigateHarness({
+      debuggerError: 'Cannot access a chrome-extension:// URL of different extension',
+    })
+
+    const result = await pageInput.reloadPage(1, { waitUntil: 'domcontentloaded' })
+
+    expect(result).toMatchObject({
+      reloaded: true,
+      outcome: 'completed',
+      committed: true,
+      settled: true,
+      dispatchChannel: 'tabs',
+    })
+    expect(debuggerCalls).toEqual(['Page.enable'])
+    expect(tabsApiCalls).toEqual(['reload'])
+  })
+
+  test('other debugger errors do not trigger a second navigation through the tabs API', async () => {
+    const { pageInput, tabsApiCalls } = createNavigateHarness({
+      debuggerError: 'No tab with given id',
+    })
+
+    await expect(pageInput.navigateTo(1, 'https://new.example.com')).rejects.toThrow(
+      'No tab with given id',
+    )
+    expect(tabsApiCalls).toEqual([])
   })
 
   test('reloadPage waits for the navigation commit before settling', async () => {

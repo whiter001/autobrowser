@@ -67,6 +67,8 @@ export function createNavigationCommands(pageContext: PageInputContext) {
     resolveFrameTarget,
     evaluateInTabContextBase,
     sendDebuggerCommand,
+    updateTab,
+    reloadTab,
     sleep,
   } = pageContext
 
@@ -238,6 +240,48 @@ export function createNavigationCommands(pageContext: PageInputContext) {
     }
   }
 
+  function isDifferentExtensionUrlError(error: unknown): boolean {
+    const message = error instanceof Error ? error.message : String(error)
+    return /cannot access a chrome-extension:\/\/ URL of different extension/i.test(message)
+  }
+
+  async function dispatchWithTabsApiFallback(
+    tabId: number,
+    method: string,
+    params: Record<string, unknown>,
+    budgetMs: number,
+    fallback?: () => Promise<void>,
+  ): Promise<{ dispatchTimedOut: boolean; usedTabsApi: boolean }> {
+    try {
+      await enablePageEvents(tabId)
+      const dispatchTimedOut = await dispatchNavigation(tabId, method, params, budgetMs)
+      return { dispatchTimedOut, usedTabsApi: false }
+    } catch (error) {
+      // Chromium 会因页面嵌入其他扩展的 iframe 而拒绝 debugger.attach；tabs 导航不受此限制，
+      // 先离开受限文档，后续稳定探测再重新 attach。只兜底这个明确错误，避免掩盖其它 CDP 故障。
+      if (!fallback || !isDifferentExtensionUrlError(error)) throw error
+      await fallback()
+      return { dispatchTimedOut: false, usedTabsApi: true }
+    }
+  }
+
+  async function waitForTabsApiCommit(
+    tabId: number,
+    budgetMs: number,
+    requestedUrl?: string,
+    previousUrl?: string,
+  ): Promise<boolean> {
+    const deadline = Date.now() + budgetMs
+    while (Date.now() < deadline) {
+      const observed = await getTargetTab(tabId).catch(() => null)
+      const urlReached =
+        !requestedUrl || observed?.url === requestedUrl || observed?.url !== previousUrl
+      if (observed && observed.status !== 'loading' && urlReached) return true
+      await sleep(100)
+    }
+    return false
+  }
+
   async function navigateTo(
     tabId: TabInput,
     url: string,
@@ -254,12 +298,24 @@ export function createNavigationCommands(pageContext: PageInputContext) {
     // 基线必须在 invalidatePageRefs（已让 epoch +1）之后取：
     // 导航 commit 时 connection.ts 再 +1，轮询 epoch !== 基线即代表导航真正发生
     const baselineEpoch = getPageEpoch(state, tab.id)
-    await enablePageEvents(tab.id)
     // 分发上界不能超过命令自身预算，否则短预算的调用会被分发阶段吃掉
     const timeoutMs = options.timeoutMs ?? DEFAULT_NAVIGATION_WAIT_TIMEOUT_MS
-    const dispatchTimedOut = await dispatchNavigation(tab.id, 'Page.navigate', { url }, timeoutMs)
+    const dispatch = await dispatchWithTabsApiFallback(
+      tab.id,
+      'Page.navigate',
+      { url },
+      timeoutMs,
+      updateTab
+        ? async () => {
+            await updateTab(tab.id, url)
+          }
+        : undefined,
+    )
     // 指令没回执时不改写 outcome，只在结果里留痕，避免把"可能已导航"伪装成"没发出去"
-    const dispatchNote = dispatchTimedOut ? { dispatchTimedOut } : {}
+    const dispatchNote = {
+      ...(dispatch.dispatchTimedOut ? { dispatchTimedOut: true } : {}),
+      ...(dispatch.usedTabsApi ? { dispatchChannel: 'tabs' } : {}),
+    }
     // --wait false 恢复旧的"发完即返回"行为
     const waitUntil = options.wait === false ? 'none' : options.waitUntil || 'domquiet'
     if (waitUntil === 'none') {
@@ -275,7 +331,9 @@ export function createNavigationCommands(pageContext: PageInputContext) {
 
     const startedAt = Date.now()
     // 先等导航 commit 再判稳定，避免旧 document 存活期间把旧页误判成新页面已加载
-    const commit = await waitForNavigationCommit(tab.id, baselineEpoch, timeoutMs)
+    const commit = dispatch.usedTabsApi
+      ? await waitForTabsApiCommit(tab.id, timeoutMs, url, tab.url)
+      : await waitForNavigationCommit(tab.id, baselineEpoch, timeoutMs)
     if (!commit) {
       const observed = await getTargetTab(tab.id).catch(() => null)
       return {
@@ -441,9 +499,18 @@ export function createNavigationCommands(pageContext: PageInputContext) {
     const tab = await getTargetTab(tabId)
     invalidatePageRefs(state, tab.id)
     const baselineEpoch = getPageEpoch(state, tab.id)
-    await enablePageEvents(tab.id)
     const timeoutMs = options.timeoutMs ?? DEFAULT_NAVIGATION_WAIT_TIMEOUT_MS
-    const dispatchTimedOut = await dispatchNavigation(tab.id, 'Page.reload', {}, timeoutMs)
+    const dispatch = await dispatchWithTabsApiFallback(
+      tab.id,
+      'Page.reload',
+      {},
+      timeoutMs,
+      reloadTab ? async () => await reloadTab(tab.id) : undefined,
+    )
+    const dispatchNote = {
+      ...(dispatch.dispatchTimedOut ? { dispatchTimedOut: true } : {}),
+      ...(dispatch.usedTabsApi ? { dispatchChannel: 'tabs' } : {}),
+    }
     const startedAt = Date.now()
     // 与 navigateTo 同理：先等导航 commit（epoch 变化）再判稳定，避免旧文档误判
     const waitUntil = options.waitUntil || 'domquiet'
@@ -452,10 +519,12 @@ export function createNavigationCommands(pageContext: PageInputContext) {
         reloaded: true,
         outcome: 'dispatched',
         phase: 'dispatch',
-        ...(dispatchTimedOut ? { dispatchTimedOut } : {}),
+        ...dispatchNote,
       }
     }
-    const commit = await waitForNavigationCommit(tab.id, baselineEpoch, timeoutMs)
+    const commit = dispatch.usedTabsApi
+      ? await waitForTabsApiCommit(tab.id, timeoutMs)
+      : await waitForNavigationCommit(tab.id, baselineEpoch, timeoutMs)
     // 所有分支都回显实际观测到的 URL / epoch：调用方才能回答"刷新到底发生了没有"，
     // 而不是在 partial 之后盲目重发 reload。committed 把"没提交"和"提交了但没稳定"分开。
     const observed = await getTargetTab(tab.id).catch(() => null)
@@ -465,7 +534,7 @@ export function createNavigationCommands(pageContext: PageInputContext) {
       observedEpoch: getPageEpoch(state, tab.id),
       observedUrl: observed?.url || null,
       observedTitle: observed?.title || null,
-      ...(dispatchTimedOut ? { dispatchTimedOut } : {}),
+      ...dispatchNote,
     }
     if (!commit) {
       return {
