@@ -110,7 +110,10 @@ export function createSnapshotFeature({
 
 ${PAGE_CONTEXT_SNAPSHOT_HELPERS_SOURCE}
 
-        const yieldToBrowser = () => new Promise(resolve => setTimeout(resolve, 0));
+        // 隐藏或冻结标签页可能不再执行宏任务，等待 timer 会让 CDP awaitPromise 永久挂起。
+        const yieldToBrowser = () => document.hidden
+          ? Promise.resolve()
+          : new Promise(resolve => setTimeout(resolve, 0));
         const scope = targetRootSelector ? deepQuerySelector(document, targetRootSelector) : document;
         if (!scope) {
           return { found: false, pageEpoch };

@@ -1380,6 +1380,23 @@ describe('executed observation expressions', () => {
     expect(events.slice(firstWrite).every((event) => event.startsWith('write:'))).toBe(true)
   })
 
+  test('hidden document snapshots do not wait for unschedulable timers', async () => {
+    const doc = Object.assign(new ObserveDocument([new ObserveNode()]), { hidden: true })
+    const originalSetTimeout = globalThis.setTimeout
+    let timerCalls = 0
+    globalThis.setTimeout = (() => {
+      timerCalls++
+      throw new Error('hidden document timer must not be scheduled')
+    }) as unknown as typeof setTimeout
+    try {
+      const result = (await expressionHarness(doc).domain.snapshotTab(1, null)) as ObservedSnapshot
+      expect(result.elements).toHaveLength(1)
+      expect(timerCalls).toBe(0)
+    } finally {
+      globalThis.setTimeout = originalSetTimeout
+    }
+  })
+
   test('snapshot/find share monotonic element and frame counters after maximum/all deletion', async () => {
     const doc = new ObserveDocument([new ObserveNode(), new ObserveNode(), new ObserveFrame()])
     const h = expressionHarness(doc)
