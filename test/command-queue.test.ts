@@ -143,4 +143,25 @@ describe('command queue', () => {
     ).rejects.toMatchObject({ code: 'COMMAND_CANCELLED' })
     expect(ran).toBe(false)
   })
+
+  test('keeps a late result available after the caller deadline', async () => {
+    const queue = createCommandQueue()
+    let finish!: (result: unknown) => void
+    const pending = queue.enqueue('tab:1', () => new Promise((resolve) => (finish = resolve)), {
+      id: 'late-result',
+    })
+
+    expect(queue.cancel('late-result')).toBe(true)
+    await expect(pending).rejects.toMatchObject({ code: 'COMMAND_CANCELLED' })
+    finish({ province: '江西', timepoints: 24 })
+    await flush(0)
+
+    expect(queue.list()).toEqual([
+      expect.objectContaining({
+        id: 'late-result',
+        state: 'completed_late',
+        result: { province: '江西', timepoints: 24 },
+      }),
+    ])
+  })
 })

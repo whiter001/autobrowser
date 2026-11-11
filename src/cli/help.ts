@@ -255,12 +255,12 @@ export const HELP_ROOT: HelpNode = helpNode(
       [
         helpNode(
           'list',
-          'List queued and running commands.',
+          'List queued, running, and recent commands.',
           'autobrowser command list [--limit <n>] [--cursor <token>]',
         ),
         helpNode(
           'status',
-          'Show all commands or one command by id.',
+          'Show all commands or one command by id, including any late result.',
           'autobrowser command status [id]',
         ),
         helpNode('cancel', 'Cancel a command by id.', 'autobrowser command cancel <id>'),

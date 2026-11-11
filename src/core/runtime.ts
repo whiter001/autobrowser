@@ -62,7 +62,7 @@ function rejectPendingRequests(
 const NAVIGATION_COMMANDS = new Set(['reload', 'goto', 'open', 'back', 'forward'])
 
 /** 超时后的下一步：按命令类别给出"先核对再决定"的路径，而不是统一的 status 提示。 */
-function describeTimeoutAction(command: string, args: Record<string, unknown>): string {
+function describeTimeoutAction(command: string, args: Record<string, unknown>, id: string): string {
   if (command === 'network' && args.action === 'har' && args.subaction === 'stop') {
     return "The extension may still be finalizing the HAR. Run 'network har status', then use 'network har recover [output.har]' when checkpoint.recoverable is true; do not restart capture before checking."
   }
@@ -73,7 +73,7 @@ function describeTimeoutAction(command: string, args: Record<string, unknown>): 
       'and only re-issue the navigation if the page clearly did not move.'
     )
   }
-  return "Run 'status', then 'command list'. Tab control remains available; use 'tab list', 'target clear', or 'tab close <tN>' to recover before retrying."
+  return `Run 'command status ${id}' to check for a late result, then 'status' and 'command list'. Tab control remains available; use 'tab list', 'target clear', or 'tab close <tN>' to recover before retrying.`
 }
 
 function createDefaultSnapshot(): Snapshot {
@@ -567,7 +567,7 @@ export async function createRuntime(options: RuntimeOptions = {}): Promise<Runti
         ) as ErrorWithCode
         timeoutError.code = 'COMMAND_TIMEOUT'
         timeoutError.details = { commandId: id, command, deadlineAt }
-        timeoutError.suggestedAction = describeTimeoutAction(command, args)
+        timeoutError.suggestedAction = describeTimeoutAction(command, args, id)
         reject(timeoutError)
       }, budgetMs)
 

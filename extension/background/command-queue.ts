@@ -22,6 +22,8 @@ interface CommandQueueEntry {
   deadlineAt: string | null
   finishedAt: string | null
   error: string | null
+  /** 仅迟到完成时保留结果，避免正常历史额外持有大快照 */
+  result?: unknown
 }
 
 export interface CommandQueue {
@@ -56,6 +58,7 @@ export function createCommandQueue(): CommandQueue {
     item: QueueItem,
     state: CommandQueueEntry['state'],
     error: string | null = null,
+    result?: unknown,
   ): void {
     const entry: CommandQueueEntry = {
       id: item.id,
@@ -66,6 +69,7 @@ export function createCommandQueue(): CommandQueue {
       deadlineAt: item.deadlineAt,
       finishedAt: new Date().toISOString(),
       error,
+      ...(state === 'completed_late' ? { result } : {}),
     }
     const existing = history.findIndex((candidate) => candidate.id === item.id)
     if (existing >= 0) history[existing] = entry
@@ -115,7 +119,7 @@ export function createCommandQueue(): CommandQueue {
             item.resolve(result)
             recordHistory(item, 'completed')
           } else if (item.state === 'cancelled') {
-            recordHistory(item, 'completed_late')
+            recordHistory(item, 'completed_late', null, result)
           }
         },
         (error) => {

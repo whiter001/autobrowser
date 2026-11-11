@@ -853,6 +853,18 @@ describe('runtime snapshot', () => {
       code: 'COMMAND_TIMEOUT',
       suggestedAction: expect.stringContaining('may have navigated'),
     })
+
+    const evalError = (await runtime
+      .dispatchCommand('eval', { script: '1 + 1' })
+      .catch((error) => error)) as {
+      suggestedAction: string
+      details: { commandId: string }
+    }
+    expect(evalError).toMatchObject({
+      code: 'COMMAND_TIMEOUT',
+      details: { commandId: expect.any(String) },
+    })
+    expect(evalError.suggestedAction).toContain(`command status ${evalError.details.commandId}`)
   })
 
   test('records the last success time without clearing the historical error', async () => {

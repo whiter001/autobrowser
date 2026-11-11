@@ -32,7 +32,7 @@ autobrowser 是一个面向 Chrome/Edge 的浏览器自动化 CLI，通过本地
 - `back` / `forward` / `reload [--wait-for url <pattern>|selector <sel>]`
 - `tab list` / `tab new <url> [--wait-for url <pattern>|selector <css>]` / `tab select <tN>` / `tab close [tN]`
 - `target show` / `target set <tN>` / `target active` / `target clear`
-- `command list` / `command cancel <id>` / `command reset`
+- `command list` / `command status <id>` / `command cancel <id>` / `command reset`
 - `window new`
 - `frame <@fN|selector|top>`
 - `click` / `dblclick` / `fill` / `find` / `type` / `press` / `keyboard` / `hover` / `focus` / `select` / `check` / `uncheck` / `scroll` / `scrollintoview` / `drag` / `drop` / `upload`
@@ -92,6 +92,7 @@ autobrowser 是一个面向 Chrome/Edge 的浏览器自动化 CLI，通过本地
 - `status` 是确认扩展是否已连接的最快方式。
 - `version`（或 `autobrowser --version`）报告 CLI 自身的 version/commit/buildTime；relay 已在运行时还会带上扩展的 manifest 版本并给出 `versionSkew`。`consistent:false` 表示扩展是旧的没重载，或 CLI 是旧的——先 `bun run build:chrome` + `extension reload`（或升级 CLI）再信任版本相关行为；扩展的 commit/buildTime 用 `extension info` 查。
 - 每个错误码都带默认 `suggestedAction`（来自 `src/core/error-actions.ts`），按它给出的下一步排查；扩展自带的更具体建议优先。`retryable:true` 只表示检查状态后可以重试；`COMMAND_EXECUTION_UNKNOWN` 始终先查 `command status` 和页面，不能盲目重放。
+- `COMMAND_TIMEOUT` 返回 `error.details.commandId`。用 `command status <id>` 查询最终状态；若状态为 `completed_late`，返回的 `result` 就是迟到结果，不要重复执行原命令。`failed_late` 则查看 `error`，再检查页面决定下一步。
 - 查询无匹配不是失败：`empty:true` 配合 `emptyReason:NO_DATA|NO_MATCH|FILTERED_OUT`，`ok:true`、退出码 0；按原因调整查询、过滤条件或先等待数据。`find ... locate` 无匹配也走这一契约，但 `find ... click/fill/type` 缺目标是 `ELEMENT_NOT_FOUND`、退出码 1。
 - 解析期错误（缺参、多参、取值非法、未知选项、未知命令）和运行期错误走同一套 JSON 契约：stdout 上是 `{ok:false,error:{message,code,retryable,details,suggestedAction}}`，退出码 1。参数类错误码是 `CLI_INVALID_ARGUMENT`，未知命令是 `CLI_UNKNOWN_COMMAND`（`details.candidates` 给出最接近的命令名），其余 CLI 层失败是 `CLI_ERROR`。stdout 始终是 JSON，不要从 stderr 猜错误内容。
 - 扩展已在线时，修改代码并 `bun run build:chrome` 后用 `extension reload` 重载磁盘代码；只需重建 relay 连接时用 `extension reconnect`，它不会加载新代码。两者与刷新页面的 `reload` 不同，均不绑定 tab、不进入页面队列，仅用于 Chromium 扩展。

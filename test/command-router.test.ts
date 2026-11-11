@@ -1263,8 +1263,23 @@ describe('command router eval cancellation', () => {
     expect(snapshot).toMatchObject({ snapshotId: 'snapshot-1' })
     expect(snapshotCalls).toHaveLength(1)
 
-    releaseEval(undefined)
+    releaseEval({ province: '江西', timepoints: 24 })
     await evalPromise.catch(() => {})
+    await Bun.sleep(0)
+
+    const status = await router.handleCommand({
+      command: 'command',
+      args: { action: 'status', commandId: 'eval-running' },
+    })
+    expect(status).toMatchObject({
+      commands: [
+        {
+          id: 'eval-running',
+          state: 'completed_late',
+          result: { province: '江西', timepoints: 24 },
+        },
+      ],
+    })
   })
 
   test('does not terminate an eval that is still queued', async () => {
