@@ -12,6 +12,8 @@ export interface CliFlags {
   server: string
   session: string
   workspace: string | null
+  /** workspace 模式下是否允许自动认领已有标签页；--no-auto-attach 关闭 */
+  autoAttach: boolean
   engine: 'chromium' | 'firefox' | 'webkit'
   webdriverUrl: string
   relayPort: number

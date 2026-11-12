@@ -134,7 +134,7 @@ autobrowser --workspace ai-a snapshot
 - `tab list` 显示 `workspace`、`attachment` 和 `attachable`；`--response-format detailed` 还显示租约时间。
 - `tab attach <tN>` 原子复用已有页面，保留当前登录、表单和筛选状态；其他 workspace 已持有时返回 `TAB_BUSY`。`--readonly` 只允许观察命令，click/eval/run 等会被拒绝。
 - `tab detach [tN]` 解除归属但不改变页面。每个 workspace 可拥有多个 tab，并只保存自己的默认目标。
-- Workspace 没有目标时返回 `WORKSPACE_TARGET_REQUIRED`，不会回退到共享 current tab。此时 `open <url>` 会创建并绑定新 tab，`goto` 则要求先 `tab attach` 或 `tab new`。
+- Workspace 没有目标时，页面命令默认原子认领一个未绑定标签页：优先当前活动页，其余按 tabId 稳定排序；遇到 `TAB_BUSY` 会尝试下一空闲页，不抢占其他 workspace。localhost 等可调试页面均可使用，结果 meta 在首次认领带 `autoAttached:true`。没有空闲页时 `open <url>` 创建并绑定新 tab，其他命令返回 `WORKSPACE_TARGET_REQUIRED`。使用全局 `--no-auto-attach` 可恢复只接受显式目标的行为。
 - 标签归属默认租约 1 小时，命令执行会续约，并保存到 `chrome.storage.local` 供扩展重载后恢复。过期或异常回收只解除归属，不重置页面。
 - Workspace 模式下 `close all` 只关闭当前 workspace 的 owned 标签；`extension reload/reconnect`、`server stop` 等全局管理操作仍会影响所有调用方。
 

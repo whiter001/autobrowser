@@ -117,13 +117,16 @@ export function createTabsCommandHandler({
         if (action === 'current') return await workspaceManager.current(currentWorkspace)
         if (action === 'list') return await workspaceManager.list()
         if (action === 'assert') {
+          const tabId = await workspaceManager.resolveCommandTab(
+            currentWorkspace,
+            'run',
+            args,
+            explicitTabTarget,
+          )
+          const autoAttached = workspaceManager.consumeAutoAttachment(currentWorkspace, tabId)
           return {
-            tabId: await workspaceManager.resolveCommandTab(
-              currentWorkspace,
-              'run',
-              args,
-              explicitTabTarget,
-            ),
+            tabId,
+            ...(autoAttached ? { autoAttached: true, autoAttachedTabId: tabId } : {}),
           }
         }
         if (action === 'release') {

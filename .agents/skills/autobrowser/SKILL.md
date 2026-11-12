@@ -90,9 +90,9 @@ autobrowser 是一个面向 Chrome/Edge 的浏览器自动化 CLI，通过本地
 - Workspace 共享当前浏览器/profile/登录态，但隔离默认 tab 与操作权限；需要独立浏览器环境时仍用 `--session`。旧模式不使用 workspace 时行为不变。
 - 每个 AI 可在命令名前使用 `--workspace <id>`，或在宿主环境设置一次 `AUTOBROWSER_WORKSPACE=auto`，后续命令无需重复携带 tab。auto 组合可信祖先进程 PID、启动时间与终端标识；AI 宿主可用 `AUTOBROWSER_CALLER_ID` 注入稳定身份。身份优先级为显式参数、环境变量、MCP 客户端上下文、自动识别。它不是安全认证机制。
 - 先用 `tab list` 查看 `workspace` / `attachment` / `attachable`，再 `tab attach <tN>` 原子复用未占用页面，保留登录、表单、筛选等现有状态。已被其他 workspace 占用时返回 `TAB_BUSY`，不要强制接管；`--readonly` 只允许观察命令，click/eval/run 等会返回 `WORKSPACE_READONLY`。
-- Workspace 没有目标时返回 `WORKSPACE_TARGET_REQUIRED`，不要依赖共享 current tab。先 `tab attach <tN>` 或 `tab new [url]`；`open <url>` 在无目标时创建并绑定新 tab，`goto` 无目标则报错。
+- Workspace 没有目标时默认自动原子认领一个未绑定标签页：active 优先，其余按 tabId 升序；`TAB_BUSY` 时尝试下一空闲页，不能抢占。不要限制为 HTTP(S)，localhost 等可调试页面均可用；首次认领的 `result.meta.autoAttached:true` 会给出实际目标。没有空闲页时 `open <url>` 创建并绑定新 tab，其他命令返回 `WORKSPACE_TARGET_REQUIRED`。需要严格指定页面时使用全局 `--no-auto-attach`，batch 子步骤也会继承该关闭行为。
 - `tab detach [tN]`、`workspace release [id]` 和租约过期只解除归属，不关闭、刷新或重置页面。默认租约 1 小时，命令会续约，归属保存到 `chrome.storage.local`；detailed tab list 可查看租约时间。
-- Workspace 可以拥有多个 tab，但默认目标彼此独立。显式 `--tab` 也不能绕过归属；batch 子步骤继承外层 workspace，run 会先向扩展校验归属。
+- Workspace 可以拥有多个 tab，但默认目标彼此独立；自动认领一次后目标保持稳定，不会每条命令换页。显式 `--tab` 也不能绕过归属；batch 子步骤继承外层 workspace 和 `--no-auto-attach`，run 会先向扩展校验归属。
 - Workspace 模式下 `close all` 只关闭当前 workspace 的 owned tabs；`extension reload/reconnect`、`server stop` 等全局管理操作仍影响所有调用方。
 - 每个 MCP 服务实例自动获得独立 workspace，可用 `workspace`、`tab_attach`、`tab_detach` 工具管理和复用页面。
 

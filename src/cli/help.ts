@@ -41,6 +41,7 @@ export const HELP_ROOT: HelpNode = helpNode(
     '--server <url>',
     '--session <name>  select a named session (before the command)',
     '--workspace <id|auto>  isolate caller targets in the shared browser (before the command)',
+    '--no-auto-attach  require an explicit tab target instead of claiming a free tab',
     '--engine <chromium|firefox|webkit>  use the extension or WebDriver (before the command)',
     '--webdriver-url <url>  override geckodriver/safaridriver URL',
     '--relay-port <port>',
@@ -223,6 +224,8 @@ export const HELP_ROOT: HelpNode = helpNode(
       'autobrowser workspace [current|list|release] [workspace-id]',
       [
         'Use --workspace <id> or AUTOBROWSER_WORKSPACE=auto once per caller; subsequent commands inherit it.',
+        'Without a target, page commands atomically claim a free existing tab (active first, then stable tab order); localhost and other debuggable pages are eligible. The result meta marks autoAttached once.',
+        'Use --no-auto-attach to preserve explicit-only targeting. If no free tab exists, open creates one; other commands return WORKSPACE_TARGET_REQUIRED.',
         'release detaches tabs without closing, reloading, or resetting them.',
       ],
       [
@@ -1108,6 +1111,7 @@ const ROOT_HELP_FLAGS = [
   '--browser-command <command> browser launch command',
   '--browser-arg <arg> browser launch argument',
   '--auto-connect proactively open the extension connect page when disconnected',
+  '--no-auto-attach disable automatic workspace tab claiming',
 ]
 
 export function isHelpToken(value: string | undefined): boolean {

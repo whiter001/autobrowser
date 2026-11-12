@@ -438,6 +438,8 @@ function validateCommandArgsShape(command: string, args: unknown): void {
   readOptionalNonNegativeIntegerField(normalizedArgs, 'limit', command)
   readStringField(normalizedArgs, 'cursor', command, { required: false })
   readStringField(normalizedArgs, 'workspace', command, { required: false })
+  // workspace 自动认领开关由 CLI --no-auto-attach 下发，batch 外层值会传播到每个 step.args
+  readBooleanField(normalizedArgs, 'autoAttach', command)
 
   switch (command) {
     case 'extension': {

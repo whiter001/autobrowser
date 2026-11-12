@@ -664,6 +664,7 @@ export async function createRuntime(options: RuntimeOptions = {}): Promise<Runti
       throw error
     }
     let tabId = resolveCommandTabId(args)
+    let autoAttached = false
     if (typeof args.workspace === 'string' && args.workspace.trim()) {
       const assertion = await dispatchExtensionCommand(
         'workspace',
@@ -673,6 +674,7 @@ export async function createRuntime(options: RuntimeOptions = {}): Promise<Runti
       if (assertion && typeof assertion === 'object' && 'tabId' in assertion) {
         const assertedTabId = (assertion as { tabId?: unknown }).tabId
         if (typeof assertedTabId === 'number') tabId = assertedTabId
+        autoAttached = (assertion as { autoAttached?: unknown }).autoAttached === true
       }
     }
     if (tabId === null) {
@@ -703,6 +705,16 @@ export async function createRuntime(options: RuntimeOptions = {}): Promise<Runti
       })
       snapshot.lastSuccessAt = new Date().toISOString()
       schedulePersist()
+      if (autoAttached && isRecord(result)) {
+        return {
+          ...result,
+          meta: {
+            ...(isRecord(result.meta) ? result.meta : {}),
+            autoAttached: true,
+            autoAttachedTabId: tabId,
+          },
+        }
+      }
       return result
     } finally {
       release()

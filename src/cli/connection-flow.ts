@@ -439,6 +439,10 @@ export function createConnectionFlow(options: ConnectionFlowOptions): Connection
     if (flags.workspace && requestArgs.workspace === undefined) {
       requestArgs.workspace = flags.workspace
     }
+    // workspace 模式默认允许扩展自动认领已有标签；--no-auto-attach 显式关闭
+    if (flags.workspace && flags.autoAttach === false && requestArgs.autoAttach === undefined) {
+      requestArgs.autoAttach = false
+    }
 
     try {
       validateCommandArgs(command, requestArgs)

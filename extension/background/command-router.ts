@@ -130,7 +130,7 @@ export function createCommandRouter({
   sendDebuggerCommand,
 }: CommandRouterDependencies) {
   const commandQueue = createCommandQueue()
-  const workspaceManager = createWorkspaceManager({ state, getTargetTab, createTab })
+  const workspaceManager = createWorkspaceManager({ state, getTargetTab, createTab, listTabs })
   const { handleBatchCommand } = createBatchCommandHandler(executeCommand)
   const { buildCommandMeta, attachCommandMeta } = createCommandMetaBuilder({ state, getTargetTab })
   const { handleDiagnosticsCommand } = createDiagnosticsCommandHandler({ state, tracing, video })
@@ -339,14 +339,22 @@ export function createCommandRouter({
     const { request } = options
     context?.throwIfCancelled()
     const workspace = readStringArg(args, 'workspace').trim() || null
-    if (workspace && command === 'batch' && Array.isArray(args.steps)) {
+    const autoAttachDisabled = args.autoAttach === false
+    if (command === 'batch' && Array.isArray(args.steps) && (workspace || autoAttachDisabled)) {
+      // 外层 workspace / --no-auto-attach 必须压过 step 自身的 args，否则步骤能绕开归属或重新开启自动认领
+      const stepOverrides: CommandArgs = {}
+      if (workspace) stepOverrides.workspace = workspace
+      if (autoAttachDisabled) stepOverrides.autoAttach = false
       args = {
         ...args,
-        steps: args.steps.map((step) =>
-          isRecord(step) && isRecord(step.args)
-            ? { ...step, args: { ...step.args, workspace } }
-            : step,
-        ),
+        steps: args.steps.map((step) => {
+          if (typeof step === 'string') return { command: step, args: { ...stepOverrides } }
+          if (!isRecord(step) || (step.args !== undefined && !isRecord(step.args))) return step
+          return {
+            ...step,
+            args: { ...(isRecord(step.args) ? step.args : {}), ...stepOverrides },
+          }
+        }),
       }
     }
     validateCommandArgs(command, args)
@@ -371,6 +379,14 @@ export function createCommandRouter({
     const networkControl =
       command === 'network' && action === 'har' && ['stop', 'status', 'recover'].includes(subaction)
     let pinnedTabId: number | null = null
+    let autoAttachedTabId: number | null = null
+    // 自动认领只在该命令的首次 resolve 时报告；后续 lease/重试的 resolve 不再重复标记
+    const trackAutoAttachment = (tabId: number): number => {
+      if (workspace && workspaceManager.consumeAutoAttachment(workspace, tabId)) {
+        autoAttachedTabId = tabId
+      }
+      return tabId
+    }
     if (workspace) {
       const workspaceGlobalCommand = [
         'workspace',
@@ -394,11 +410,8 @@ export function createCommandRouter({
       ) {
         if (command === 'open') {
           try {
-            pinnedTabId = await workspaceManager.resolveCommandTab(
-              workspace,
-              command,
-              args,
-              explicitTabTarget,
+            pinnedTabId = trackAutoAttachment(
+              await workspaceManager.resolveCommandTab(workspace, command, args, explicitTabTarget),
             )
           } catch (error) {
             if ((error as ErrorWithCode).code !== 'WORKSPACE_TARGET_REQUIRED') throw error
@@ -408,11 +421,8 @@ export function createCommandRouter({
             pinnedTabId = tab.id
           }
         } else {
-          pinnedTabId = await workspaceManager.resolveCommandTab(
-            workspace,
-            command,
-            args,
-            explicitTabTarget,
+          pinnedTabId = trackAutoAttachment(
+            await workspaceManager.resolveCommandTab(workspace, command, args, explicitTabTarget),
           )
         }
       }
@@ -511,10 +521,18 @@ export function createCommandRouter({
       const meta = await buildCommandMeta(command, args, tabId, metaFrame, {
         pinnedTabId,
         targetTabIdBeforeCommand,
+        autoAttached: autoAttachedTabId !== null,
       })
       const withMeta = attachCommandMeta(result, meta)
       if (workspace && isRecord(withMeta) && isRecord(withMeta.meta)) {
-        return { ...withMeta, meta: { ...withMeta.meta, workspace } }
+        return {
+          ...withMeta,
+          meta: {
+            ...withMeta.meta,
+            workspace,
+            ...(autoAttachedTabId !== null ? { autoAttached: true, autoAttachedTabId } : {}),
+          },
+        }
       }
       return withMeta
     }

@@ -17,6 +17,7 @@ const SUPPORTED_GLOBAL_FLAGS = [
   '--server',
   '--session',
   '--workspace',
+  '--no-auto-attach',
   '--engine',
   '--webdriver-url',
   '--relay-port',
@@ -61,6 +62,7 @@ export function parseCli(argv: string[]): ParsedCli {
     server: `http://127.0.0.1:${DEFAULT_IPC_PORT}`,
     session: '',
     workspace: null,
+    autoAttach: true,
     engine: 'chromium',
     webdriverUrl: '',
     relayPort: DEFAULT_RELAY_PORT,
@@ -205,6 +207,11 @@ export function parseCli(argv: string[]): ParsedCli {
 
     if (value === '--auto-connect') {
       flags.autoConnect = true
+      continue
+    }
+
+    if (value === '--no-auto-attach') {
+      flags.autoAttach = false
       continue
     }
 

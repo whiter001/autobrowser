@@ -8,20 +8,46 @@ import {
   type WorkspaceRecord,
 } from '../../src/core/workspaces.js'
 import { createToolError } from '../../src/core/tool-error.js'
-import { storageLocalGet, storageLocalSet, tabsCreate } from './chrome.js'
+import { storageLocalGet, storageLocalSet, tabsCreate, tabsQuery } from './chrome.js'
 import { resolveTabInput } from './targeting.js'
 import type { CommandArgs, ExtensionState, TabInput, TabSummary, TabWithId } from './types.js'
 
 const WORKSPACE_STORAGE_KEY = 'autobrowser.workspaces.v1'
 
+/** 自动认领只需要 id/active/url；chrome.tabs.Tab 与 TabSummary 都满足 */
+interface AutoAttachTab {
+  id?: number | null
+  active?: boolean
+  url?: string
+}
+
 interface WorkspaceManagerDependencies {
   state: ExtensionState
   getTargetTab: (tabId: TabInput) => Promise<TabWithId>
   createTab?: (url: string) => Promise<chrome.tabs.Tab | undefined>
+  listTabs?: () => Promise<AutoAttachTab[]>
   storageGet?: (keys: string | string[] | null) => Promise<Record<string, unknown>>
   storageSet?: (items: Record<string, unknown>) => Promise<void>
   now?: () => number
   leaseMs?: number
+}
+
+/** 浏览器自身页面无法被 debugger 附加，自动认领时必须跳过；about:blank 仍可调试 */
+const UNDEBUGGABLE_URL_PROTOCOLS = new Set([
+  'chrome:',
+  'edge:',
+  'devtools:',
+  'chrome-extension:',
+  'edge-extension:',
+])
+
+function isAutoAttachableUrl(url: string | undefined): boolean {
+  const protocol = /^\s*([a-z][a-z0-9+.-]*):/i.exec(url || '')?.[1]
+  return !protocol || !UNDEBUGGABLE_URL_PROTOCOLS.has(`${protocol.toLowerCase()}:`)
+}
+
+function autoAttachmentKey(workspaceId: string, tabId: number): string {
+  return `${workspaceId}\u0000${tabId}`
 }
 
 interface StoredWorkspaces {
@@ -43,6 +69,7 @@ export function createWorkspaceManager({
   state,
   getTargetTab,
   createTab = async (url) => await tabsCreate({ url }),
+  listTabs = async () => await tabsQuery({}),
   storageGet = storageLocalGet,
   storageSet = storageLocalSet,
   now = Date.now,
@@ -50,6 +77,8 @@ export function createWorkspaceManager({
 }: WorkspaceManagerDependencies) {
   state.workspaces ??= createWorkspaceState()
   let loadPromise: Promise<void> | null = null
+  /** 自动认领只标记一次：由 command-router 在首次 resolve 后消费 */
+  const autoAttachments = new Set<string>()
 
   async function persist(): Promise<void> {
     const stored: StoredWorkspaces = {
@@ -209,6 +238,39 @@ export function createWorkspaceManager({
     return { detached: true, workspace: workspace.id, tabId }
   }
 
+  /**
+   * 自动认领：active 未绑定 tab 优先，其余按 tabId 升序。
+   * 候选之间用 attach 逐个原子尝试，TAB_BUSY 只说明被别的 workspace 抢先，继续换下一个。
+   */
+  async function autoAttachTab(workspaceId: string): Promise<number | null> {
+    const tabs = await listTabs()
+    const candidates = tabs
+      .filter(
+        (tab): tab is AutoAttachTab & { id: number } =>
+          typeof tab.id === 'number' &&
+          isAutoAttachableUrl(tab.url) &&
+          !state.workspaces.attachments.has(tab.id),
+      )
+      .sort((a, b) => Number(Boolean(b.active)) - Number(Boolean(a.active)) || a.id - b.id)
+
+    for (const candidate of candidates) {
+      try {
+        await attach(workspaceId, candidate.id)
+        autoAttachments.add(autoAttachmentKey(normalizeWorkspaceId(workspaceId), candidate.id))
+        return candidate.id
+      } catch (error) {
+        if ((error as { code?: unknown }).code === 'TAB_BUSY') continue
+        throw error
+      }
+    }
+    return null
+  }
+
+  /** 消费自动认领标记；同一 (workspace, tab) 只会返回一次 true */
+  function consumeAutoAttachment(workspaceId: string, tabId: number): boolean {
+    return autoAttachments.delete(autoAttachmentKey(normalizeWorkspaceId(workspaceId), tabId))
+  }
+
   async function resolveCommandTab(
     workspaceId: string,
     command: string,
@@ -218,7 +280,23 @@ export function createWorkspaceManager({
     const workspace = await ensureWorkspace(workspaceId)
     await pruneExpired()
     const explicit = tabInput != null && String(tabInput).trim() !== ''
-    const tabId = resolveTabInput(state, tabInput) ?? (explicit ? null : workspace.targetTabId)
+    let tabId = resolveTabInput(state, tabInput) ?? (explicit ? null : workspace.targetTabId)
+    if (typeof tabId !== 'number' && !explicit) {
+      // 没有默认目标时自动认领已有标签；显式 tab 仍走 TAB_NOT_ATTACHED，不能借自动认领绕过归属
+      if (args.autoAttach !== false) tabId = (await autoAttachTab(workspace.id)) ?? null
+      if (typeof tabId !== 'number') {
+        throw workspaceError(
+          'WORKSPACE_TARGET_REQUIRED',
+          args.autoAttach === false
+            ? `workspace ${workspace.id} has no target tab`
+            : `workspace ${workspace.id} has no target tab and no existing tab is available to auto-attach`,
+          args.autoAttach === false
+            ? "Run 'tab list', then 'tab attach <tN>' to reuse an existing tab or 'tab new [url]' to create one."
+            : "Open a page or run 'tab new [url]', or attach one explicitly with 'tab list' and 'tab attach <tN>'.",
+          { workspace: workspace.id },
+        )
+      }
+    }
     if (typeof tabId !== 'number') {
       throw workspaceError(
         explicit ? 'TAB_NOT_ATTACHED' : 'WORKSPACE_TARGET_REQUIRED',
@@ -351,6 +429,7 @@ export function createWorkspaceManager({
   return {
     attach,
     clearTarget,
+    consumeAutoAttachment,
     createWorkspaceTab,
     current,
     decorateTabs,

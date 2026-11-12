@@ -21,8 +21,11 @@ function routerWithTabs() {
 }
 
 describe('workspace target isolation', () => {
-  test('requires an explicit attach instead of falling back to the shared current tab', async () => {
-    const { router, snapshotCalls } = routerWithTabs()
+  test('requires an explicit attach when no tab can be auto-attached', async () => {
+    const { router, snapshotCalls } = createMinimalRouter({
+      getTargetTab: async (input) => ({ id: tabIdFromInput(input) }),
+      listTabs: async () => [],
+    })
 
     await expect(
       router.handleCommand({ command: 'snapshot', args: { workspace: 'ai-a' } }),
@@ -193,6 +196,7 @@ describe('workspace lease lifecycle', () => {
       },
       now: () => timestamp,
       leaseMs: 100,
+      listTabs: async () => [],
     })
     await manager.attach('ai-a', 1)
 

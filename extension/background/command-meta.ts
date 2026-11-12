@@ -47,7 +47,11 @@ export function createCommandMetaBuilder({ state, getTargetTab }: CommandMetaDep
     args: CommandArgs,
     tabTarget: TabInput,
     frameSelector: FrameSelector,
-    options: { pinnedTabId: number | null; targetTabIdBeforeCommand: number | null },
+    options: {
+      pinnedTabId: number | null
+      targetTabIdBeforeCommand: number | null
+      autoAttached?: boolean
+    },
   ): Promise<CommandMeta> {
     if (!commandSupportsTabTarget(command)) {
       return emptyCommandMeta()
@@ -101,7 +105,7 @@ export function createCommandMetaBuilder({ state, getTargetTab }: CommandMetaDep
       handle,
       explicit: explicitTarget,
     }
-    if (!explicitTarget && preCommandTargetTabId !== tab.id) {
+    if (!options.autoAttached && !explicitTarget && preCommandTargetTabId !== tab.id) {
       target.note = 'fell back to last non-active tab'
     }
     meta.target = target
