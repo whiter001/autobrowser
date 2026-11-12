@@ -28,7 +28,10 @@ interface ExtensionConnection {
   /** 关联一个新的扩展连接，并接管旧连接 */
   attach: (socket: Bun.ServerWebSocket<ExtensionMetadata>, meta?: ExtensionMetadata) => void
   /** 断开扩展连接；传入 socket 时仅当它是当前连接才断开（防重连竞态） */
-  detach: (socket?: Bun.ServerWebSocket<ExtensionMetadata>) => void
+  detach: (
+    socket?: Bun.ServerWebSocket<ExtensionMetadata>,
+    details?: { reason?: string; closeCode?: number; closeReason?: string },
+  ) => void
   /** 等待扩展连接；已连接时立即返回当前连接 */
   waitForConnection: (timeoutMs: number) => Promise<Bun.ServerWebSocket<ExtensionMetadata>>
   /** 处理心跳消息：刷新心跳时间、重置超时计时并回执 */
@@ -104,8 +107,21 @@ export function createExtensionConnection(
       } catch {
         // 连接可能已断开，忽略关闭失败
       }
-      detach(socket)
+      detach(socket, { reason: 'heartbeat-timeout' })
     }, heartbeatTimeoutMs)
+  }
+
+  function recordDisconnect(reason: string, closeCode?: number, closeReason?: string): void {
+    const extension = snapshot.extension
+    snapshot.lastDisconnect = {
+      at: new Date().toISOString(),
+      reason,
+      extensionId: extension?.extensionId ?? runtime.extensionId,
+      connectionGeneration: snapshot.connectionGeneration,
+      lastHeartbeatAt: extension?.lastHeartbeatAt ?? null,
+      ...(closeCode === undefined ? {} : { closeCode }),
+      ...(closeReason ? { closeReason } : {}),
+    }
   }
 
   function attach(
@@ -114,6 +130,7 @@ export function createExtensionConnection(
   ): void {
     const previousSocket = runtime.extensionSocket
     if (previousSocket && previousSocket !== socket) {
+      recordDisconnect('replaced')
       options.onConnectionLost('replaced')
       // 扩展重连时旧 socket 还挂在运行时上：先通知旧连接被新实例顶替，再主动关闭，
       // 否则旧侧会把断开误判成网络故障；detach 会做身份校验，不会误伤新连接
@@ -137,11 +154,13 @@ export function createExtensionConnection(
 
     runtime.extensionSocket = socket
     runtime.extensionId = typeof meta.extensionId === 'string' ? meta.extensionId : null
+    snapshot.connectionGeneration += 1
     snapshot.extension = {
       extensionId: runtime.extensionId,
       connectedAt: new Date().toISOString(),
       userAgent: (meta.userAgent as string) || null,
       lastHeartbeatAt: null,
+      connectionGeneration: snapshot.connectionGeneration,
       version: typeof meta.version === 'string' && meta.version ? meta.version : null,
     }
     resolveConnectionWaiters(socket)
@@ -149,12 +168,17 @@ export function createExtensionConnection(
     options.onConnectionChanged()
   }
 
-  function detach(socket?: Bun.ServerWebSocket<ExtensionMetadata>): void {
+  function detach(
+    socket?: Bun.ServerWebSocket<ExtensionMetadata>,
+    details: { reason?: string; closeCode?: number; closeReason?: string } = {},
+  ): void {
     if (socket && runtime.extensionSocket !== socket) {
       // 重连竞态：旧 socket 的 close 事件晚于新连接 attach 到达，不能把新连接踢掉
       return
     }
-
+    if (runtime.extensionSocket || snapshot.extension) {
+      recordDisconnect(details.reason || 'disconnected', details.closeCode, details.closeReason)
+    }
     runtime.extensionSocket = null
     runtime.extensionId = null
     snapshot.extension = null

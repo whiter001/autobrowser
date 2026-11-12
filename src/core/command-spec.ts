@@ -829,11 +829,19 @@ function validateCommandArgsShape(command: string, args: unknown): void {
       }
       return
     }
-    case 'snapshot':
+    case 'snapshot': {
       readStringField(normalizedArgs, 'selector', command, { required: false })
       readStringArrayField(normalizedArgs, 'roles', command, { required: false })
       readBooleanField(normalizedArgs, 'changed', command)
+      const limit = readOptionalNonNegativeIntegerField(normalizedArgs, 'limit', command)
+      if (limit !== undefined && (limit < 1 || limit > 200)) {
+        throw createCommandArgsValidationError(command, 'limit must be between 1 and 200', {
+          field: 'limit',
+          value: limit,
+        })
+      }
       return
+    }
     case 'search': {
       const query = readStringField(normalizedArgs, 'query', command)
       const context = readOptionalNonNegativeIntegerField(normalizedArgs, 'context', command)
@@ -1000,7 +1008,7 @@ function validateCommandArgsShape(command: string, args: unknown): void {
         readNumberField(normalizedArgs, 'height', command)
         readNumberField(normalizedArgs, 'deviceScaleFactor', command, { required: false })
         readBooleanField(normalizedArgs, 'mobile', command)
-      } else if (type === 'offline' || type === 'auto-snapshot') {
+      } else if (type === 'offline' || type === 'auto-snapshot' || type === 'focus') {
         readBooleanField(normalizedArgs, 'enabled', command)
       } else if (type === 'headers') {
         readObjectOrArrayField(normalizedArgs, 'headers', command)

@@ -141,6 +141,7 @@ export function createCommandRouter({
     extensionControl,
     listTabs,
     getTargetTab,
+    createTab,
     workspaceManager,
     commandQueue,
     cancelTrackedCommand,

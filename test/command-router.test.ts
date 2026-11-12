@@ -2272,3 +2272,13 @@ describe('element tooling routing', () => {
     expect(elementToolCalls[1]!.args.slice(1, 5)).toEqual(['@e1', '2px solid red', false, '@f1'])
   })
 })
+
+describe('command router snapshot limits', () => {
+  test('forwards the requested element limit to the page observer', async () => {
+    const { router, snapshotCalls } = createMinimalRouter()
+    await router.handleCommand({ command: 'snapshot', args: { limit: 60 } })
+
+    expect(snapshotCalls).toHaveLength(1)
+    expect(snapshotCalls[0]?.options).toMatchObject({ limit: 60, responseFormat: 'concise' })
+  })
+})

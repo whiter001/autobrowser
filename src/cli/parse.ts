@@ -69,6 +69,8 @@ interface SnapshotArgs {
   roles: string[] | null
   /** 增量模式：只返回相对上次快照新增/变化的元素 */
   changed: boolean
+  /** 返回元素数量上限；缺省时由扩展按 concise 50 / detailed 200 决定 */
+  limit?: number
 }
 
 interface SearchArgs {
@@ -984,9 +986,17 @@ export function parseSnapshotArgs(rest: string[]): SnapshotArgs {
   let target: string | null = null
   let roles: string[] | null = null
   let changed = false
+  let limit: number | undefined
 
   for (let index = 0; index < rest.length; index += 1) {
     const value = rest[index]
+
+    if (value === '--limit') {
+      // 上限与扩展侧 AGENT_SNAPSHOT_MAX_ELEMENTS 对齐，避免 CLI 先接受再被扩展静默收缩
+      limit = parseNumberArg(rest[index + 1], 'limit', { min: 1, max: 200, integer: true })
+      index += 1
+      continue
+    }
 
     if (value === '--target') {
       const rawTarget = rest[index + 1]
@@ -1042,7 +1052,7 @@ export function parseSnapshotArgs(rest: string[]): SnapshotArgs {
     throw new Error(`unexpected extra argument for snapshot: ${value}`)
   }
 
-  return { target, roles, changed }
+  return { target, roles, changed, ...(limit !== undefined ? { limit } : {}) }
 }
 
 export function parseSearchArgs(rest: string[], defaultLimit = 20): SearchArgs {

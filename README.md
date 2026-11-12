@@ -169,7 +169,7 @@ autobrowser snapshot --response-format detailed
 
 - `network/console/errors/actions/downloads/command` 默认最多 20 条，`--limit` 最大 100；`tab list` 和 route list 默认 50 条。使用响应里的 `pagination.nextCursor` 续页，并保持过滤条件不变；旧 `--page/--page-idx/--page-size` 仍兼容。
 - network 列表的 `rN` 是会话内稳定短引用，可直接传给 `network request`；旧 CDP ID 仍可使用。concise 详情去掉重复的 summary/HAR 结构，单个 body 最多 16KiB 并显式标记截断。
-- concise snapshot 默认最多 50 个元素、32KiB；search 默认 10 个窗口、100 行、32KiB；eval 默认结果上限 32KiB。`detailed` 保留原有更高预算。
+- concise snapshot 默认最多 50 个元素、32KiB，`--limit <1..200>` 可调整元素上限但不提高字节预算；search 默认 10 个窗口、100 行、32KiB；eval 默认结果上限 32KiB。`detailed` 保留原有更高预算。
 - `--raw` 仍表示原始文本输出，不与显式 `--response-format` 混用。大截图、视频、trace 和 HAR 继续落盘后只返回路径与摘要。
 
 ## 状态检查
@@ -263,7 +263,7 @@ autobrowser network har stop [output.har] [--timeout-ms <ms>] [--capture-id <id>
 
 `route` 既可以 `--abort` 拦截请求，也可以用 `--body` mock 响应（默认 200 + `application/json`，可用 `--status`、`--content-type`、`--header` 调整），还可以用 `--remove-headers` 在放行前删除请求头。不带 url 的 `unroute` 会清空所有路由。
 
-未开启 HAR 时自动监控仅保存元数据，`network request <id>` 按需通过 CDP 补取 body；历史请求/失效会话可能无法补取，需查看失败信息，`--include-details` 只返回已存详情。HAR body 获取最多 4 个并发槽、单次 10 秒逻辑超时；不可中止的 CDP 工作仍占槽直到结束。`--har-max-requests` 只限制本次 capture 的导出数量，不裁剪全局历史；`--har-max-body-bytes` 只限制存储，不限制 CDP 下载/传输量。`har stop` 只等待本次 capture，大结果透明分块重组；超出传输预算明确报错，不静默截断 HAR。大采集可用 `network har stop [output.har] --timeout-ms <ms>` 延长预算；超时后先查 `network har status` 的 `checkpoint.recoverable`，再决定是否 `network har recover`。
+未开启 HAR 时自动监控仅保存元数据，`network request <id>` 按需通过 CDP 补取 body；历史请求/失效会话可能无法补取，需查看失败信息，`--include-details` 只返回已存详情。HAR body 获取最多 4 个并发槽、单次 10 秒逻辑超时；不可中止的 CDP 工作仍占槽直到结束。`--har-max-requests` 只限制本次 capture 的导出数量，不裁剪全局历史；`--har-max-body-bytes` 只限制存储，不限制 CDP 下载/传输量。`har stop` 只等待本次 capture，大结果透明分块重组；超出传输预算明确报错，不静默截断 HAR。大采集可用 `network har stop [output.har] --timeout-ms <ms>` 延长预算，输出路径也可放在选项之后；超时后先查 `network har status` 的 `checkpoint.recoverable`，再决定是否 `network har recover`。
 
 ## 下载与页面媒体
 
@@ -295,7 +295,7 @@ autobrowser --tab t1 --frame top download --media 0 --selector 'article[data-rol
 
 采集前可用 `media list --wait-for 'article[data-role="tweet"]' --selector 'article[data-role="tweet"]' --timeout-ms 15000` 等待目标选择器可见。等待与采集在扩展同一次 media 请求中对同一已解析 tab/frame 执行，不会因 ambient target 切换而漂移；等待失败不继续采集。`--wait-for` 与 `--selector` 独立，`--timeout-ms` 仅设置等待阶段预算（默认 30 秒），不限制后续发现/播放探测。
 
-导航也支持条件等待：`goto/open <url> --wait-for url <pattern>|selector <css> --timeout-ms <ms>`。导航与附加条件等待各使用该预算；URL 条件不会覆盖导航地址。只改变 hash 时是同文档导航，提交后回执带 `navigationType:"same-document"` 和 `documentReloaded:false`；`outcome:"completed"` 不代表 SPA 目标路由已经渲染，应使用 `--wait-for selector` 等待目标路由独有元素，应用需要整页初始化时再显式 `reload`。`tab new <url> --wait-for selector <css> --timeout-ms <ms>` 在创建后等待返回的新 tab handle，而不是活动标签页；超时仍在错误响应的 `result.tab` 中保留新 tab 信息，便于找回或关闭。不带等待选项时输出不变。
+导航也支持条件等待：`goto/open <url> --wait-for url <pattern>|selector <css> --timeout-ms <ms>`。导航与附加条件等待各使用该预算；URL 条件不会覆盖导航地址。只改变 hash 时是同文档导航，提交后回执带 `navigationType:"same-document"` 和 `documentReloaded:false`；`outcome:"completed"` 不代表 SPA 目标路由已经渲染，应使用 `--wait-for selector` 等待目标路由独有元素，应用需要整页初始化时再显式 `reload`。`tab new <url> --wait-until domcontentloaded` 支持与导航一致的等待阶段，也可用 `--wait-for selector <css> --timeout-ms <ms>` 等待最终条件；始终等待返回的新 tab handle，而不是活动标签页，超时仍在错误响应的 `result.tab` 中保留新 tab 信息。受管标签页会在初始导航前 attach，以保留早期网络请求。不带等待选项时输出不变。
 
 `media list` 的溯源信息：
 
@@ -412,7 +412,7 @@ autobrowser frame @f1
 
 - `--role <button,link,...>`：只返回匹配这些 role 的元素（作为现有可见性过滤之上的附加过滤）。同一 document 内 snapshot/find 共用稳定 ref，过滤或删除节点后不复用已分配编号；这不表示被删除节点仍可操作，导航后引用会 stale，应重新 snapshot。
 - `--changed`：增量模式，返回相对上一次快照新增或变化的元素（包含 checked、disabled、href 等状态/语义字段变化）、`removedRefs` 与 `unchangedCount`。基线按 document/frame 隔离；首次运行或导航后退化为全量快照并带 `full: true`。
-- 输出最多 200000 UTF-8 字节，`truncated` 时用 `--target`/`--role` 收窄或 `--changed` 查看变化。只有实际交付的元素进入增量基线，不把裁掉的元素视为已读。
+- `--limit <1..200>` 覆盖默认元素数量上限，但不提高输出字节预算。输出最多 200000 UTF-8 字节，`truncated` 时用 `--target`/`--role` 收窄或 `--changed` 查看变化。只有实际交付的元素进入增量基线，不把裁掉的元素视为已读。
 
 页面被未处理的对话框阻塞时，`--changed` 仍返回 modal 描述，且不更新增量缓存。
 
@@ -453,7 +453,7 @@ autobrowser search "error" --limit 10
 
 条件不满足，或引用的步骤失败/被跳过时，该步骤被跳过（结果带 `skipped: true` 与 `reason`），后续步骤照常执行；`skipRemainingOnFailure: true` 只在 `continueOnError: true` 时生效——失败后剩余步骤会被显式标记跳过（summary 带 `terminated: true`），否则（默认）batch 在首个失败步骤处报 `BATCH_STEP_FAILED` 并中止。
 
-请求预算默认 30 秒；显式 eval/navigation/click `timeoutMs`、wait `timeout`/`ms` 加 5 秒传输余量且不低于默认预算。feed 按滚动次数（上限 40）× `pauseMs` + 60 秒执行余量 + 5 秒传输余量计算，不低于默认预算，超过 30 分钟则拒绝。batch 合成步骤、重试、延迟和嵌套预算，总上限 30 分钟（含余量），超大/非有限预算会拒绝。已发送后断连的结果可能未知，不自动重放；先检查 `status`、`command list` 和页面实际状态。显式 batch `retries` 可能重复失败步骤已发生的副作用，**不是幂等保证**；取消/超时阻止后续步骤，但不能撤销已发生的动作或所有在途 CDP 工作。
+请求预算默认 30 秒；显式 eval/navigation/click `timeoutMs`、wait `timeout`/`ms` 加 5 秒传输余量且不低于默认预算。feed 按滚动次数（上限 40）× `pauseMs` + 60 秒执行余量 + 5 秒传输余量计算，不低于默认预算，超过 30 分钟则拒绝。batch 合成步骤、重试、延迟和嵌套预算，总上限 30 分钟（含余量），超大/非有限预算会拒绝。已发送后断连的结果可能未知；仅白名单只读命令会在重连后按剩余预算重试一次，副作用命令不自动重放。先检查 `status`、`command list` 和页面实际状态。显式 batch `retries` 可能重复失败步骤已发生的副作用，**不是幂等保证**；取消/超时阻止后续步骤，但不能撤销已发生的动作或所有在途 CDP 工作。
 
 标签页会在 `tab list` 中暴露形如 `t<Chrome tabId>` 的稳定句柄（例如 `t2058764132`），CLI 可以直接使用返回的句柄切换或关闭标签页；不要猜测从 1 开始的短序号：
 
@@ -492,6 +492,7 @@ autobrowser set headers "X-Token:abc,Demo:1"
 autobrowser set offline                     # 切到离线；set offline false 恢复
 autobrowser set permission notifications --reset   # 授权当前源，--reset 撤销
 autobrowser set auto-snapshot on            # 导航和输入后自动附带 snapshot，默认 off
+autobrowser set focus on                    # 隐藏标签页焦点仿真；测量后用 off 关闭
 ```
 
 设备预设目前是 `desktop-chrome`、`iphone-15`、`pixel-10`，非法名字返回 `INVALID_DEVICE_PRESET`。

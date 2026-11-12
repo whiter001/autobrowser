@@ -362,6 +362,20 @@ export function createSessionDomain({
     return { offline: enabled }
   }
 
+  async function setFocus(tabId: TabInput, enabled: boolean) {
+    const tab = await getTargetTab(tabId)
+    // 只对目标 tab 打开焦点仿真，不激活 tab、也不触碰其他仿真项
+    await sendDebuggerCommand(tab.id, 'Emulation.setFocusEmulationEnabled', { enabled })
+    updateEmulation(state, tab.id, (overrides) => {
+      if (enabled) {
+        overrides.focus = true
+      } else {
+        delete overrides.focus
+      }
+    })
+    return { focus: enabled }
+  }
+
   async function setHeaders(
     tabId: TabInput,
     headers: Array<{ name?: string; value?: unknown }> | Record<string, unknown> | null | undefined,
@@ -790,6 +804,7 @@ export function createSessionDomain({
     loadStateByName,
     saveState,
     setDialogAutoAccept,
+    setFocus,
     setGeo,
     setHeaders,
     setLocale,

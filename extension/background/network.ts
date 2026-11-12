@@ -820,13 +820,37 @@ export function createNetworkDomain({
         getKey: (item) => String(item.ref || item.id),
       },
     )
+    const scopedTabId = typeof filters.tabId === 'number' ? filters.tabId : null
+    const hasTabHistory =
+      scopedTabId !== null && state.network.requests.some((record) => record.tabId === scopedTabId)
+    const hasEpochHistory =
+      scopedTabId !== null &&
+      (typeof filters.pageEpoch === 'number' || filters.currentEpochs !== undefined) &&
+      state.network.requests.some(
+        (record) =>
+          record.tabId === scopedTabId &&
+          !matchesNetworkRequestFilters(record, filters) &&
+          matchesNetworkRequestFilters(record, {
+            ...filters,
+            pageEpoch: undefined,
+            currentEpochs: undefined,
+          }),
+      )
+    const emptyReason =
+      items.length > 0
+        ? null
+        : scopedTabId !== null && !hasTabHistory && !state.targeting.attachedTabs.has(scopedTabId)
+          ? 'NOT_ATTACHED'
+          : hasEpochHistory
+            ? 'EPOCH_FILTERED'
+            : state.network.requests.length === 0
+              ? 'NO_DATA'
+              : 'FILTERED_OUT'
     const result: Record<string, unknown> = {
       total: requests.length,
       requests: items,
       empty: items.length === 0,
-      ...(items.length === 0
-        ? { emptyReason: state.network.requests.length === 0 ? 'NO_DATA' : 'FILTERED_OUT' }
-        : {}),
+      ...(emptyReason ? { emptyReason } : {}),
       pagination,
     }
     const unscopedFilters = { ...filters }
@@ -839,7 +863,17 @@ export function createNetworkDomain({
         !matchesNetworkRequestFilters(record, filters) &&
         matchesNetworkRequestFilters(record, unscopedFilters),
     )
-    if (
+    if (emptyReason === 'NOT_ATTACHED') {
+      result.meta = {
+        suggestedAction:
+          'The tab was not attached when requests occurred; missed requests cannot be recovered. Create managed tabs with tab new, or start HAR capture before triggering the action.',
+      }
+    } else if (emptyReason === 'EPOCH_FILTERED') {
+      result.meta = {
+        suggestedAction:
+          'Requests exist in another page epoch. Run network requests --all-epochs to inspect them.',
+      }
+    } else if (
       (requests.length === 0 || hasRequestsOutsideScope) &&
       filters.allTabs !== true &&
       filters.allEpochs !== true

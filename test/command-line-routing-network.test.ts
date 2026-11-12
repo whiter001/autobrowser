@@ -225,7 +225,7 @@ describe('cli command routing', () => {
       ['--timeout-ms', '1', '--timeout-ms', '2'],
       ['--timeout-ms', '0'],
       ['--bogus'],
-      ['--include-urls', 'extra'],
+      ['--include-urls', 'extra', 'another.har'],
     ]) {
       const result = await runCli(['network', 'har', 'stop', ...args])
       expect(result.exitCode).toBe(1)

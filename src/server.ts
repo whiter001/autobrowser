@@ -426,8 +426,12 @@ export async function startServers(options: ServerOptions = {}): Promise<StartSe
       message(socket, message) {
         runtime.handleExtensionMessage(message)
       },
-      close(socket) {
-        runtime.detachExtension(socket)
+      close(socket, code, reason) {
+        runtime.detachExtension(socket, {
+          reason: 'socket-closed',
+          closeCode: code,
+          closeReason: reason,
+        })
       },
     },
   })

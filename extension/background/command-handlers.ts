@@ -427,6 +427,9 @@ export function createCommandHandlers({
       selector: selector.trim() || undefined,
       ...(roles.length > 0 ? { roles } : {}),
       ...(readBooleanArg(scope.args, 'changed') ? { changed: true } : {}),
+      ...(scope.args.limit !== undefined
+        ? { limit: readOptionalNumberArg(scope.args, 'limit') }
+        : {}),
       responseFormat: scope.args.responseFormat === 'detailed' ? 'detailed' : 'concise',
     })
   })

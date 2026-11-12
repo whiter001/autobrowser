@@ -30,7 +30,7 @@ autobrowser 是一个面向 Chrome/Edge 的浏览器自动化 CLI，通过本地
 - `extension info` / `extension reload` / `extension reconnect`
 - `open <url>` / `goto <url>`（均可加 `--wait-for url <pattern>|selector <css>`）
 - `back` / `forward` / `reload [--wait-for url <pattern>|selector <sel>]`
-- `tab list` / `tab new <url> [--wait-for url <pattern>|selector <css>]` / `tab select <tN>` / `tab close [tN]`
+- `tab list` / `tab new <url> [--wait-until <mode>] [--wait-for url <pattern>|selector <css>]` / `tab select <tN>` / `tab close [tN]`
 - `tab attach <tN> [--readonly]` / `tab detach [tN]` — 在 workspace 里复用 / 解除已有页面归属
 - `workspace current` / `workspace list` / `workspace release [workspace-id]`
 - `target show` / `target set <tN>` / `target active` / `target clear`
@@ -70,7 +70,7 @@ autobrowser 是一个面向 Chrome/Edge 的浏览器自动化 CLI，通过本地
 - 列表和查询默认是 `concise`，需要完整字段时才加 `--response-format detailed`；MCP 对应 `response_format`。不要为了一次拿全量而省略分页。
 - network/console/errors/actions/downloads/command 默认 20 条，`--limit` 最大 100；tab/route 默认 50 条。更多结果用响应中的 `pagination.nextCursor` 搭配 `--cursor`，过滤与排序条件必须保持不变。旧 `--page/--page-size` 仅作兼容。
 - network 列表优先使用稳定的 `rN` 短引用，再执行 `network request rN`；不要把长 CDP ID 当作首选。concise 详情已去掉重复 summary/HAR，body 超过 16KiB 会明确标记截断。
-- concise snapshot 默认 50 元素/32KiB，search 默认 10 窗口/100 行/32KiB，eval 默认结果上限 32KiB。结果截断时按 `nextCursor`、`nextStartLine`、`--target/--role` 或 `--changed` 续读/缩小范围，不要改用无界输出。
+- concise snapshot 默认 50 元素/32KiB，可用 `snapshot --limit <1..200>` 调整元素上限但不提高字节预算；search 默认 10 窗口/100 行/32KiB，eval 默认结果上限 32KiB。结果截断时按 `nextCursor`、`nextStartLine`、`--target/--role` 或 `--changed` 续读/缩小范围，不要改用无界输出。
 
 ## 浏览器引擎与能力边界
 
@@ -102,11 +102,11 @@ autobrowser 是一个面向 Chrome/Edge 的浏览器自动化 CLI，通过本地
 - `connect` 会打开扩展连接页，并自动保存 token、relay port，以及后续运行所需的浏览器配置。
 - 操作系统都不为 `chrome-extension://` 注册协议关联，打开扩展页必须显式指定浏览器（`--browser-command`，首次传入后会写进 `~/.autobrowser/config.json` 复用）；没指定时 CLI 直接报错并改为打开 relay 的 `/connect` 页，不会交给系统弹窗。
 - 如果 `connect` 传入了有效 token 且扩展已经报告 `connected`，连接页可能会自动关闭；这通常表示连接成功。
-- `status` 是确认扩展是否已连接的最快方式。
+- `status` 是确认扩展是否已连接的最快方式；`status --json` 的 `snapshot.connectionGeneration` 和 `snapshot.lastDisconnect` 可区分重连代次并查看最近断开原因、心跳和 close code。
 - `version`（或 `autobrowser --version`）报告 CLI 自身的 version/commit/buildTime；relay 已在运行时还会带上扩展的 manifest 版本并给出 `versionSkew`。`consistent:false` 表示扩展是旧的没重载，或 CLI 是旧的——先 `bun run build:chrome` + `extension reload`（或升级 CLI）再信任版本相关行为；扩展的 commit/buildTime 用 `extension info` 查。
 - 每个错误码都带默认 `suggestedAction`（来自 `src/core/error-actions.ts`），按它给出的下一步排查；扩展自带的更具体建议优先。`retryable:true` 只表示检查状态后可以重试；`COMMAND_EXECUTION_UNKNOWN` 始终先查 `command status` 和页面，不能盲目重放。
 - `COMMAND_TIMEOUT` 返回 `error.details.commandId`。用 `command status <id>` 查询最终状态；若状态为 `completed_late`，返回的 `result` 就是迟到结果，不要重复执行原命令。`failed_late` 则查看 `error`，再检查页面决定下一步。
-- 查询无匹配不是失败：`empty:true` 配合 `emptyReason:NO_DATA|NO_MATCH|FILTERED_OUT`，`ok:true`、退出码 0；按原因调整查询、过滤条件或先等待数据。`find ... locate` 无匹配也走这一契约，但 `find ... click/fill/type` 缺目标是 `ELEMENT_NOT_FOUND`、退出码 1。
+- 查询无匹配不是失败：`empty:true` 配合 `emptyReason:NO_DATA|NO_MATCH|FILTERED_OUT|NOT_ATTACHED|EPOCH_FILTERED`，`ok:true`、退出码 0；按原因调整查询、过滤条件或先等待数据。网络结果为 `EPOCH_FILTERED` 时尝试 `--all-epochs`；`NOT_ATTACHED` 表示早期请求已错过、无法补回，应由 `tab new` 创建受管标签页或提前启动 HAR。`find ... locate` 无匹配也走这一契约，但 `find ... click/fill/type` 缺目标是 `ELEMENT_NOT_FOUND`、退出码 1。
 - 解析期错误（缺参、多参、取值非法、未知选项、未知命令）和运行期错误走同一套 JSON 契约：stdout 上是 `{ok:false,error:{message,code,retryable,details,suggestedAction}}`，退出码 1。参数类错误码是 `CLI_INVALID_ARGUMENT`，未知命令是 `CLI_UNKNOWN_COMMAND`（`details.candidates` 给出最接近的命令名），其余 CLI 层失败是 `CLI_ERROR`。stdout 始终是 JSON，不要从 stderr 猜错误内容。
 - 扩展已在线时，修改代码并 `bun run build:chrome` 后用 `extension reload` 重载磁盘代码；只需重建 relay 连接时用 `extension reconnect`，它不会加载新代码。两者与刷新页面的 `reload` 不同，均不绑定 tab、不进入页面队列，仅用于 Chromium 扩展。
 - `extension reload/reconnect` 先返回 `reloading:true` / `reconnecting:true` 和 `reconnectExpected:true`，约 50ms 后异步执行。回执不是恢复完成；稍等后用 `status` 确认重新连接，再用 `tab list`、`snapshot` 刷新目标与引用，不要盲目重放原页面动作。离线时先修复连接；首次升级到支持该命令的版本需手动在 chrome://extensions 重载。
@@ -120,7 +120,7 @@ autobrowser 是一个面向 Chrome/Edge 的浏览器自动化 CLI，通过本地
 - 未启动 HAR 时只自动监控网络元数据，不预取 body；`network request <id>` 按需通过 CDP 获取 body，历史请求或失效 CDP 会话可能无法补取，须查看获取失败信息。`--include-details` 只包含已存储的详情，不保证 body 完整。
 - HAR body 获取使用 4 个并发槽和每次 10 秒逻辑超时；底层 CDP 不可中止时仍占槽直到结束，不会因超时无限启动新请求。`stop` 只等待本次 capture 的有界任务。
 - `--har-max-body-bytes` 只限制 body 存储大小，不限制 CDP 下载或传输量。
-- `network har stop [output.har]` 等大结果在 relay 支持时走“WebSocket 控制消息 + 本地鉴权 HTTP 数据通道”：扩展发送响应元数据，HTTP 按字节范围上传，relay 落盘并校验 SHA-256 后重组；中断会从已确认偏移续传，15 秒无数据进度才判定传输停滞，整体仍受原命令预算约束。旧 relay 或小响应自动沿用 WebSocket 内联/分片协议，CLI/MCP 返回格式不变；传输超限明确报错，不静默截断。CLI 只会在面对较旧扩展时回退到重新组装网络请求。
+- `network har stop [output.har]` 的输出路径可放在选项前后；等大结果在 relay 支持时走“WebSocket 控制消息 + 本地鉴权 HTTP 数据通道”：扩展发送响应元数据，HTTP 按字节范围上传，relay 落盘并校验 SHA-256 后重组；中断会从已确认偏移续传，15 秒无数据进度才判定传输停滞，整体仍受原命令预算约束。旧 relay 或小响应自动沿用 WebSocket 内联/分片协议，CLI/MCP 返回格式不变；传输超限明确报错，不静默截断。CLI 只会在面对较旧扩展时回退到重新组装网络请求。
 - `--har-unlimited` 不限制 autobrowser 自身保存的 body 大小，但不是绕过 CDP/传输资源上限；若浏览器 CDP 对 `Network.getResponseBody` 触发配额错误，HAR 仍会导出，并在对应 entry 的 `response.content.comment` 标明 body 获取失败原因。
 
 ## 媒体仿真与设备预设
@@ -142,6 +142,7 @@ autobrowser 是一个面向 Chrome/Edge 的浏览器自动化 CLI，通过本地
 - `video start` / `video stop [output.webm]` 使用 Chrome tabCapture + offscreen MediaRecorder 录制 WebM，默认最长 10 分钟、文件上限 64MiB。`video chapter <title>` 添加章节，JSON sidecar 在 `video stop` 时输出；`video show-actions` / `video hide-actions` 控制后续动作 callout 和目标高亮。浏览器不支持 tabCapture 时按错误信息诊断，不伪造视频结果。
 - `actions [list|clear]` 查看或清理有界动作时间线，包含命令、目标、耗时和错误，但不保存参数值，密码、脚本、cookie 等不会进入日志。
 - `set auto-snapshot on|off` 控制动作后自动 snapshot，默认关闭；只覆盖导航和输入动作，snapshot 失败通过 `snapshotError` 返回，不覆盖原动作结果。开启后会显著增加输出，排查完应关闭。
+- `set focus on|off` 只对目标 tab 设置 CDP 焦点仿真，可在隐藏标签页测量依赖可见性或动画的弹窗；不会激活标签页，测量后应关闭。
 
 ## 信息流与虚拟列表采集
 
@@ -206,7 +207,7 @@ autobrowser 是一个面向 Chrome/Edge 的浏览器自动化 CLI，通过本地
 ## 总预算与重试
 
 - 请求预算默认 30 秒；显式 eval/run/navigation/click `timeoutMs`、wait `timeout`/`ms` 加 5 秒传输余量，且不低于默认预算。feed 将 `maxScrolls` 限制为最多 40，按滚动次数 × `pauseMs` + 60 秒执行余量 + 5 秒传输余量计算，不低于默认预算，超过 30 分钟则拒绝。batch 合成逐步预算、重试、延迟和嵌套预算；总上限 30 分钟，**包含余量**，超大或非有限值会被拒绝。
-- 已发送命令断连时结果可能未知，不会自动重放。先检查 `status`、`command list` 与页面实际状态，确认副作用后再决定是否重试；取消/超时阻止后续 batch 步骤，但不能撤销已发生的操作或所有在途 CDP 调用。
+- 已发送命令断连时结果可能未知。仅 `snapshot/get/tab.list/status` 等白名单只读命令会在重连后按剩余预算自动重试一次；点击、填写、导航等副作用命令不会自动重放。先检查 `status`、`command list` 与页面实际状态，确认副作用后再决定是否重试；取消/超时阻止后续 batch 步骤，但不能撤销已发生的操作或所有在途 CDP 调用。
 - batch 显式 `retries` 可能重复失败步骤已发生的副作用，不是幂等保证。提交、付款、删除等动作不要仅因报错就重放。
 
 ## CLI 参数与回放
@@ -252,7 +253,7 @@ autobrowser 是一个面向 Chrome/Edge 的浏览器自动化 CLI，通过本地
 - `find role`、`find text`、`find label` 适合先语义定位，再点击、读取或填写。
 - `tab list` 返回形如 `t<Chrome tabId>` 的稳定句柄，例如 `t2058764132`，优先用返回的 `tab select tN`，不要依赖原始 tab id 或猜测短序号。
 - 页面命令超时后先运行 `status` 和 `command list`。标签页控制走独立控制面，可继续用 `tab list`、`target clear`、`tab close <tN>` 恢复；不要连续重试并堆积命令。运行中的 `eval` 被取消或超时后会定向执行 `Runtime.terminateExecution`，其他 CDP 操作仍可能继续在浏览器侧完成。`status.lastError` 保留历史最后错误，可结合 `lastSuccessAt` 判断它是否早于最近成功。
-- `goto/open/reload` 可用 `--wait-until none|commit|domcontentloaded|interactive|load|networkidle|domquiet` 选择等待阶段；三者及 `tab new` 还可追加 `--wait-for url <pattern>` 或 `--wait-for selector <sel>` 等最终结果。`tab new` 固定等待新建 handle；等待失败仍在 `result.tab` 保留新 tab。旧扩展缺少 wait 执行证明时 CLI 返回失败，不伪造已等待。
+- `goto/open/reload/tab new` 可用 `--wait-until none|commit|domcontentloaded|interactive|load|networkidle|domquiet` 选择等待阶段，并可追加 `--wait-for url <pattern>` 或 `--wait-for selector <sel>` 等最终结果。`tab new` 固定等待新建 handle；等待失败仍在 `result.tab` 保留新 tab。旧扩展缺少 wait 执行证明时 CLI 返回失败，不伪造已等待。
 - `cookies list` 是 `cookies get` 的别名，支持同样的 `--domain` / `--path` 过滤。
 - `network requests` 默认只看目标 tab 的当前页面 epoch；跨 tab 或跨页面历史必须显式使用 `--all-tabs` / `--all-epochs`，headers/body 用 `network request <id>` 或 `--include-details` 获取。默认按最旧记录分页（每页 50，`--page` / `--page-size` 调页；`--limit` 是 `--page-size` 的别名），调试最新流量加 `--sort newest`；`total` 是过滤后的总数，不是当前页条数。
 - HAR start 默认包含目标 tab 的全部请求，可用 `--include-pattern <text>` 只采 URL 子串命中项，或用 `--exclude-pattern <text>` 排除页面播放器/无关流量；过滤不会删除全局请求历史。并发任务保存 start 返回的 captureId，stop 传 `--capture-id <id>` 防止误停其他 capture；stop 加 `--include-urls` 可直接返回本次捕获的去重 URL。中断或 stop 超时后先查 `network har status` 的 `checkpoint.recoverable`，再用 `network har recover [output.har]`；大采集可用 `--timeout-ms <ms>` 延长预算。stop/recover 的 `meta.har` 回显 captureId、原 capture tab 和请求数。

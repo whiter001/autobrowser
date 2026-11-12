@@ -271,6 +271,106 @@ ${PAGE_CONTEXT_FIND_HELPERS_SOURCE}
           };
         };
 
+        // ---- candidates 展示去重 ----
+        // 同一交互目标常被祖先包装节点重复命中（如 role=menuitem 的 <li> 与其内部 <a href>），
+        // 二者共享 accessible name/文本与中心点。这里只在“嵌套 + 同点位 + 同名/同文本”时收敛，
+        // 并列目标、位置不同的目标一律保留；locate/click 的匹配序列不经过这段逻辑。
+
+        const candidateCenters = new Map();
+        const readCandidateCenter = (node) => {
+          if (!candidateCenters.has(node)) {
+            const rect = node.getBoundingClientRect();
+            // 与 toTargetDescriptor 的取整一致，避免亚像素差异把同一目标判成两个点位
+            candidateCenters.set(
+              node,
+              Math.round(rect.left + rect.width / 2) + ':' + Math.round(rect.top + rect.height / 2),
+            );
+          }
+          return candidateCenters.get(node);
+        };
+
+        const isNativeInteractive = (node) => {
+          const tagName = String(node.tagName || '').toLowerCase();
+          if (tagName === 'a') {
+            return Boolean(node.getAttribute('href'));
+          }
+          return ['button', 'input', 'textarea', 'select', 'summary'].includes(tagName);
+        };
+
+        // deepCollectElements 同时收光 DOM 与影子树节点，祖先判定要能跨 shadow 边界上溯
+        const isAncestorNode = (ancestor, node) => {
+          for (let current = node; current; ) {
+            if (current === ancestor) {
+              return true;
+            }
+            const parent = current.parentElement || current.parentNode;
+            if (parent) {
+              current = parent;
+              continue;
+            }
+            const root = typeof current.getRootNode === 'function' ? current.getRootNode() : null;
+            current = root && root.host ? root.host : null;
+          }
+          return false;
+        };
+
+        // 名称或文本任一相同即视为同一目标文案；两者都空时不合并，避免误删无文案的真实目标
+        const sharesCandidateText = (left, right) => {
+          const leftName = getAccessibleName(left);
+          if (leftName && leftName === getAccessibleName(right)) {
+            return true;
+          }
+          const leftText = readText(left);
+          return Boolean(leftText) && leftText === readText(right);
+        };
+
+        // 原生可交互元素比纯 role/tabindex 包装更具体；同类时保留更深的那个
+        const prefersNestedTarget = (outer, inner) => {
+          const outerNative = isNativeInteractive(outer);
+          const innerNative = isNativeInteractive(inner);
+          if (outerNative !== innerNative) {
+            return innerNative;
+          }
+          return true;
+        };
+
+        const dedupeNestedCandidates = (sorted) => {
+          const kept = [];
+          const buckets = new Map();
+          for (const candidate of sorted) {
+            const node = candidate.node;
+            const center = readCandidateCenter(node);
+            // 只有同中心点的节点才可能互为重复，按点位分桶避免 O(n²) 全量祖先比较
+            let bucket = buckets.get(center);
+            if (!bucket) {
+              bucket = [];
+              buckets.set(center, bucket);
+            }
+            let merged = false;
+            for (const keptIndex of bucket) {
+              const existing = kept[keptIndex];
+              const related =
+                existing.node === node ||
+                isAncestorNode(existing.node, node) ||
+                isAncestorNode(node, existing.node);
+              if (!related || !sharesCandidateText(existing.node, node)) {
+                continue;
+              }
+              // 原位替换：沿用外层节点已占的排序位，Top-N 顺序保持稳定
+              if (prefersNestedTarget(existing.node, node)) {
+                kept[keptIndex] = candidate;
+              }
+              merged = true;
+              break;
+            }
+            if (!merged) {
+              bucket.push(kept.length);
+              kept.push(candidate);
+            }
+          }
+          return kept;
+        };
+
         // 按 DOM 顺序收集全部匹配，first/last/nth 都基于这个序列取值
         const matches = [];
 
@@ -383,12 +483,13 @@ ${PAGE_CONTEXT_FIND_HELPERS_SOURCE}
         }
         if (candidatesCount > 0) {
           const sorted = matches.slice().sort((a, b) => rankMatch(a) - rankMatch(b));
+          const deduped = dedupeNestedCandidates(sorted);
           return {
             found: true,
             pageEpoch,
-            empty: sorted.length === 0,
-            ...(sorted.length === 0 ? { emptyReason: 'NO_MATCH' } : {}),
-            candidates: sorted
+            empty: deduped.length === 0,
+            ...(deduped.length === 0 ? { emptyReason: 'NO_MATCH' } : {}),
+            candidates: deduped
               .slice(0, candidatesCount)
               .map((candidate) => toTargetDescriptor(candidate.node)),
           };

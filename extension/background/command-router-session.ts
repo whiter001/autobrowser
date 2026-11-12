@@ -51,6 +51,7 @@ export interface SessionDomain {
     mobile?: boolean,
   ) => Promise<unknown>
   setOffline: (tabId: TabInput, enabled: boolean) => Promise<unknown>
+  setFocus: (tabId: TabInput, enabled: boolean) => Promise<unknown>
   setHeaders: (
     tabId: TabInput,
     headers: Array<{ name?: string; value?: unknown }> | Record<string, unknown> | null | undefined,
@@ -188,6 +189,9 @@ export function createSessionCommandHandler({ state, session }: SessionCommandDe
         }
         if (readStringArg(args, 'type') === 'offline') {
           return await session.setOffline(tabId, enabled)
+        }
+        if (readStringArg(args, 'type') === 'focus') {
+          return await session.setFocus(tabId, enabled)
         }
         if (readStringArg(args, 'type') === 'auto-snapshot') {
           state.session.autoSnapshot = enabled

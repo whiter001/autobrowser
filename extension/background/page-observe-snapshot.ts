@@ -15,6 +15,7 @@ import {
 import type { FrameSelector, TabInput } from './types.js'
 
 const AGENT_SNAPSHOT_MAX_ELEMENTS = 200
+const CONCISE_SNAPSHOT_MAX_ELEMENTS = 50
 const SNAPSHOT_MAX_JSON_BYTES = 200_000
 
 export interface SnapshotTabOptions {
@@ -24,7 +25,27 @@ export interface SnapshotTabOptions {
   roles?: string[]
   /** 增量模式：只返回相对上次快照新增/变化的元素，并带 unchangedCount 汇总 */
   changed?: boolean
+  /**
+   * 返回元素数量上限。只为 concise 抬升默认 50，硬上限仍是 AGENT_SNAPSHOT_MAX_ELEMENTS；
+   * 字节预算不随 limit 放宽。
+   */
+  limit?: number
   responseFormat?: 'concise' | 'detailed'
+}
+
+// limit 是用户可控输入：非法值回落到该格式的默认值，合法值夹在 [1, 200]，
+// 保证 concise 能被抬到 200、detailed 也绝不会越过硬上限。
+function resolveSnapshotMaxElements(
+  responseFormat: SnapshotTabOptions['responseFormat'],
+  limit: number | undefined,
+): number {
+  const fallback =
+    responseFormat === 'detailed' ? AGENT_SNAPSHOT_MAX_ELEMENTS : CONCISE_SNAPSHOT_MAX_ELEMENTS
+  if (limit === undefined || !Number.isFinite(limit) || limit < 1) {
+    return fallback
+  }
+
+  return Math.min(Math.floor(limit), AGENT_SNAPSHOT_MAX_ELEMENTS)
 }
 
 /**
@@ -36,9 +57,10 @@ export function createSnapshotFeature({
   resolveElementSelectorForTab,
   evaluateInTabContext,
 }: PageObserveDependencies) {
-  // 增量快照缓存：按 tab + roles + 子树 selector 缓存最近一次快照的元素签名，随 pageEpoch 变化作废。
+  // 增量快照缓存：按 tab + roles + 子树 selector + 元素上限缓存最近一次快照的元素签名，随 pageEpoch 变化作废。
   // 签名集合由 roles 过滤与子树范围共同决定，只按 tab 键控会让 role 子集快照覆盖全量签名，
   // 之后不带 roles 的全量 --changed 用子集签名 diff 全量元素，导致非目标角色被误判为 changed。
+  // limit 同理：不同上限交付的元素不同，共用键会让被截掉的元素在下次更宽的 limit 下丢失 baseline。
   const snapshotSignatureCache = new Map<
     string,
     { pageEpoch: number; documentId?: string; signatures: string[] }
@@ -47,9 +69,11 @@ export function createSnapshotFeature({
   const snapshotCacheKey = (
     tabId: number,
     roles: string[],
-    selector?: string,
-    frame?: FrameSelector,
-  ) => JSON.stringify([tabId, [...roles].sort(), selector?.trim() || '', frame || 'top'])
+    selector: string | undefined,
+    frame: FrameSelector | undefined,
+    maxElements: number,
+  ) =>
+    JSON.stringify([tabId, [...roles].sort(), selector?.trim() || '', frame || 'top', maxElements])
 
   async function snapshotTab(
     tabId: TabInput,
@@ -86,11 +110,18 @@ export function createSnapshotFeature({
     const pageEpoch = getPageEpoch(state, tab.id)
     const roles = options.roles ?? []
     const changedMode = Boolean(options.changed)
-    const maxElements = options.responseFormat === 'detailed' ? AGENT_SNAPSHOT_MAX_ELEMENTS : 50
+    // 字节预算只跟输出格式走，limit 再大也不放宽，避免 concise 变成无上限大包
+    const maxElements = resolveSnapshotMaxElements(options.responseFormat, options.limit)
     const maxJsonBytes = options.responseFormat === 'detailed' ? SNAPSHOT_MAX_JSON_BYTES : 32_768
     // 增量模式：pageEpoch 未变时用上次缓存的签名做页内 diff，否则退化为全量
     const effectiveFrameSelector = resolveEffectiveFrameSelector(state, tab, frameSelector)
-    const cacheKey = snapshotCacheKey(tab.id, roles, options.selector, effectiveFrameSelector)
+    const cacheKey = snapshotCacheKey(
+      tab.id,
+      roles,
+      options.selector,
+      effectiveFrameSelector,
+      maxElements,
+    )
     const cached = changedMode ? snapshotSignatureCache.get(cacheKey) : undefined
     const previousSignatures = cached && cached.pageEpoch === pageEpoch ? cached.signatures : []
     const refAttribute = AGENT_ELEMENT_REF_ATTRIBUTE

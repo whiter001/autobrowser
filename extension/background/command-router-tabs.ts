@@ -18,6 +18,7 @@ interface TabsCommandDependencies {
   extensionControl: ExtensionControlDomain
   listTabs: () => Promise<TabSummary[]>
   getTargetTab: (tabId: TabInput) => Promise<TabWithId>
+  createTab?: (url: string) => Promise<chrome.tabs.Tab | undefined>
   workspaceManager: ReturnType<typeof createWorkspaceManager>
   /** 命令队列：供 command list/reset 查询与重置 */
   commandQueue: CommandQueue
@@ -33,6 +34,8 @@ export function createTabsCommandHandler({
   extensionControl,
   listTabs,
   getTargetTab,
+  createTab = async (url) =>
+    await import('./chrome.js').then(({ tabsCreate }) => tabsCreate({ url })),
   workspaceManager,
   commandQueue,
   cancelTrackedCommand,
@@ -188,7 +191,7 @@ export function createTabsCommandHandler({
         return await selectTab(explicitTabTarget, workspace)
       case 'tab.new': {
         if (workspace) return await workspaceManager.createWorkspaceTab(workspace, url)
-        const tab = await import('./chrome.js').then(({ tabsCreate }) => tabsCreate({ url }))
+        const tab = await createTab(url)
 
         if (tab && typeof tab.id === 'number') {
           rememberTargetTab(state, tab.id)

@@ -30,6 +30,7 @@ export const COMMAND_ACTIONS = {
       'viewport',
       'offline',
       'auto-snapshot',
+      'focus',
       'headers',
       'geo',
       'media',

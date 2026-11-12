@@ -482,6 +482,7 @@ async function handleSnapshot(rest: string[], context: CommandContext): Promise<
       ? { roles: snapshotTarget.roles }
       : {}),
     ...(snapshotTarget.changed ? { changed: true } : {}),
+    ...(snapshotTarget.limit !== undefined ? { limit: snapshotTarget.limit } : {}),
   })
   context.writeResult(payload)
   return 0

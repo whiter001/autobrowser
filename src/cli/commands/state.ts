@@ -67,6 +67,62 @@ function parseNetworkTimeoutArgs(
   return result
 }
 
+interface NetworkHarStopArgs {
+  outputPath: string | null
+  options: { timeoutMs?: number; captureId?: string; includeUrls?: boolean }
+}
+
+/**
+ * 解析 network har stop/recover 的参数。
+ *
+ * 输出路径是可选的位置参数，允许出现在选项前后；选项值（--capture-id/--timeout-ms）
+ * 在消费时整体跳过，因此不会被误判成路径。位置参数最多一个：重复或多余都按用法错误处理，
+ * 避免静默覆盖用户给的路径。
+ */
+function parseNetworkHarStopArgs(rest: string[], harStop: boolean): NetworkHarStopArgs {
+  const args: NetworkHarStopArgs = { outputPath: null, options: {} }
+  const seen = new Set<string>()
+
+  for (let index = 0; index < rest.length; index += 1) {
+    const value = rest[index]
+
+    if (!value.startsWith('--')) {
+      if (!value.trim()) throw new Error('missing value for HAR output path')
+      if (args.outputPath !== null) throw new Error(`duplicate HAR output path: ${value}`)
+      args.outputPath = value
+      continue
+    }
+
+    if (seen.has(value)) throw new Error(`duplicate network option: ${value}`)
+    seen.add(value)
+
+    if (harStop && value === '--include-urls') {
+      args.options.includeUrls = true
+      continue
+    }
+
+    if (value === '--timeout-ms' || (harStop && value === '--capture-id')) {
+      const argument = rest[index + 1]
+      if (!argument?.trim() || argument.startsWith('--')) {
+        throw new Error(`missing value for ${value}`)
+      }
+      if (value === '--capture-id') args.options.captureId = argument
+      else {
+        args.options.timeoutMs = parseOptionalNumberArg(argument, 'timeout ms', Number.NaN, {
+          min: 1,
+          integer: true,
+        })
+      }
+      index += 1
+      continue
+    }
+
+    throw new Error(`unsupported network option: ${value}`)
+  }
+
+  return args
+}
+
 const handleCookies = createActionCommand({
   helpPath: ['cookies'],
   allowed: COMMAND_ACTIONS.cookies.actions,
@@ -225,6 +281,15 @@ async function handleSet(rest: string[], context: CommandContext): Promise<numbe
   if (type === 'auto-snapshot') {
     await requestAndWrite(context, 'set', {
       type: 'auto-snapshot',
+      enabled: !['false', 'off', '0'].includes(subArgs[0] || ''),
+    })
+    return 0
+  }
+
+  if (type === 'focus') {
+    // 缺省即开启；显式的 off/false/0 才关闭，与 auto-snapshot 的布尔写法保持一致
+    await requestAndWrite(context, 'set', {
+      type: 'focus',
       enabled: !['false', 'off', '0'].includes(subArgs[0] || ''),
     })
     return 0
@@ -565,10 +630,11 @@ async function handleNetwork(rest: string[], context: CommandContext): Promise<n
     }
 
     if (subaction === 'stop' || subaction === 'recover') {
-      const outputPath = rest[2] && !rest[2].startsWith('--') ? rest[2] : null
-      const timeoutArgs = parseOrThrow(() =>
-        parseNetworkTimeoutArgs(outputPath ? rest.slice(3) : rest.slice(2), subaction === 'stop'),
+      const harStopArgs = parseOrThrow(() =>
+        parseNetworkHarStopArgs(rest.slice(2), subaction === 'stop'),
       )
+      const outputPath = harStopArgs.outputPath
+      const timeoutArgs = harStopArgs.options
       if (timeoutArgs.captureId !== undefined) {
         // Use the same ambient --tab as stop. Never send a destructive request unless
         // the extension proves it understands capture identities before stopping.

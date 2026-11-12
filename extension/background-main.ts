@@ -6,6 +6,7 @@ import {
   debuggerSendCommand,
   storageLocalGet,
   storageLocalSet,
+  tabsCreate,
   tabsGet,
   tabsQuery,
   tabsReload,
@@ -61,6 +62,17 @@ const { sendDebuggerCommand } = createDebuggerCommandSender({
   ensureDebuggerAttached: tabSessions.ensureAttached,
   sendRawDebuggerCommand,
 })
+
+async function createManagedTab(url: string): Promise<chrome.tabs.Tab | undefined> {
+  const created = await tabsCreate({ url: 'about:blank' })
+  if (typeof created?.id !== 'number') return created
+
+  // 先 attach 再导航，确保页面最早一批请求也进入网络缓冲。
+  await tabSessions.ensureAttached(created.id)
+  await sendRawDebuggerCommand(created.id, 'Network.enable', {})
+  if (!url || url === 'about:blank') return created
+  return (await tabsUpdate(created.id, { url })) ?? created
+}
 
 const downloads = createDownloadsDomain(state)
 
@@ -193,6 +205,7 @@ const commandRouter = createCommandRouter({
   initScripts,
   listTabs,
   getTargetTab,
+  createTab: createManagedTab,
   sendDebuggerCommand,
   tracing,
   video,

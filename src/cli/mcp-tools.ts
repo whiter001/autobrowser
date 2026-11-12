@@ -161,7 +161,7 @@ export const MCP_TOOLS: McpToolDefinition[] = [
   {
     name: 'snapshot',
     description:
-      'Capture interactive/visible elements with @eN refs, roles, names and positions, plus @fN frame refs. Refs are not reused within a document, but removed nodes are invalid and navigation makes refs stale: refresh snapshot before acting. Concise output is bounded to 50 elements and 32768 UTF-8 bytes (detailed: 200 elements and 200000 bytes); when truncated, narrow target/roles or use changed to read changes. Start here to discover targets.',
+      'Capture interactive/visible elements with @eN refs, roles, names and positions, plus @fN frame refs. Refs are not reused within a document, but removed nodes are invalid and navigation makes refs stale: refresh snapshot before acting. Concise output defaults to 50 elements and 32768 UTF-8 bytes (detailed: 200 elements and 200000 bytes); limit can select 1..200 elements without raising the byte budget. When truncated, narrow target/roles or use changed to read changes. Start here to discover targets.',
     command: 'snapshot',
     inputSchema: {
       type: 'object',
@@ -181,10 +181,16 @@ export const MCP_TOOLS: McpToolDefinition[] = [
           description:
             'Return added/changed elements including state changes (checked/disabled etc.) and removedRefs. Baselines are document/frame scoped; first run or navigation returns full: true. Truncated snapshots only cache delivered elements.',
         },
+        limit: {
+          type: 'number',
+          minimum: 1,
+          maximum: 200,
+          description: 'Maximum elements to return; byte budgets still apply.',
+        },
       },
     },
     toArgs: (args) => {
-      const out = onlyDefined(args, ['roles', 'changed'])
+      const out = onlyDefined(args, ['roles', 'changed', 'limit'])
       if (args.target !== undefined) {
         out.selector = args.target
       }

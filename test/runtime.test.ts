@@ -77,7 +77,9 @@ describe('runtime snapshot', () => {
     const start = (id: string, totalBytes = MAX_RESPONSE_BYTES) =>
       runtime.handleExtensionMessage({ type: 'response.start', id, sequence: 0, totalBytes })
     const begin = async () => {
-      const outcome = runtime.dispatchCommand('snapshot').catch((error: unknown) => error)
+      const outcome = runtime
+        .dispatchCommand('goto', { url: 'https://example.com' })
+        .catch((error: unknown) => error)
       await Promise.resolve()
       const id = sent.filter((message) => message.type === 'command').at(-1)!.id
       return { id, outcome }

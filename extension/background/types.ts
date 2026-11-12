@@ -187,6 +187,8 @@ interface TargetingState {
 export interface EmulationOverrides {
   viewport?: true
   offline?: true
+  /** 已开启焦点仿真（Emulation.setFocusEmulationEnabled） */
+  focus?: true
   geo?: true
   ua?: true
   locale?: true

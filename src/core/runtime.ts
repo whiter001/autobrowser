@@ -44,14 +44,15 @@ const DEFAULT_HEARTBEAT_TIMEOUT_MS = 45_000
 function rejectPendingRequests(
   pendingRequests: Map<string, PendingRequest>,
   message: string,
+  connectionDetails: { connectionGeneration: number; lastDisconnect: Snapshot['lastDisconnect'] },
 ): void {
   for (const [id, pending] of pendingRequests) {
     clearTimeout(pending.timer)
     // 已交给 socket 的命令可能产生副作用，不能让 CLI 把断线当作安全重放信号。
     const error = new Error(`${message}; command execution result is unknown`) as ErrorWithCode
     error.code = 'COMMAND_EXECUTION_UNKNOWN'
-    error.details = { commandId: id }
-    error.suggestedAction = `Reconnect, then run 'command status ${id}' and inspect 'snapshot' or the target page before deciding whether to retry. Do not blindly replay side-effecting commands.`
+    error.details = { commandId: id, ...connectionDetails }
+    error.suggestedAction = `Reconnect, then run 'command status ${id}', 'status', and 'extension info'; inspect the target page before deciding whether to retry. Do not blindly replay side-effecting commands.`
     pending.reject(error)
     pendingRequests.delete(id)
   }
@@ -60,6 +61,12 @@ function rejectPendingRequests(
 // 导航类命令的超时几乎都不是"指令没执行"，而是导航已发出、等待阶段没拿到回执。
 // 这类命令有副作用（页面已经变了、表单上下文已经失效），不能建议无条件重发。
 const NAVIGATION_COMMANDS = new Set(['reload', 'goto', 'open', 'back', 'forward'])
+const READ_ONLY_RETRY_COMMANDS = new Set(['snapshot', 'get', 'tab.list', 'status'])
+
+function canRetryAfterDisconnect(command: string, args: Record<string, unknown>): boolean {
+  if (READ_ONLY_RETRY_COMMANDS.has(command)) return true
+  return command === 'command' && (args.action === 'status' || args.action === 'list')
+}
 
 /** 超时后的下一步：按命令类别给出"先核对再决定"的路径，而不是统一的 status 提示。 */
 function describeTimeoutAction(command: string, args: Record<string, unknown>, id: string): string {
@@ -86,6 +93,8 @@ function createDefaultSnapshot(): Snapshot {
     lastCommand: null,
     lastError: null,
     lastSuccessAt: null,
+    connectionGeneration: 0,
+    lastDisconnect: null,
   }
 }
 
@@ -224,7 +233,10 @@ export interface Runtime {
     meta?: ExtensionMetadata,
   ) => void
   /** 断开浏览器扩展连接并清理状态；传入 socket 时仅当它是当前连接才断开（防重连竞态） */
-  detachExtension: (socket?: Bun.ServerWebSocket<ExtensionMetadata>) => void
+  detachExtension: (
+    socket?: Bun.ServerWebSocket<ExtensionMetadata>,
+    details?: { reason?: string; closeCode?: number; closeReason?: string },
+  ) => void
   /** 处理来自扩展的原始消息（RPC 响应、事件、心跳） */
   handleExtensionMessage: (rawMessage: unknown) => void
   /** 查询大响应已持久化的字节偏移 */
@@ -357,6 +369,10 @@ export async function createRuntime(options: RuntimeOptions = {}): Promise<Runti
       rejectPendingRequests(
         pendingRequests,
         reason === 'replaced' ? 'extension connection replaced' : 'extension disconnected',
+        {
+          connectionGeneration: snapshot.connectionGeneration,
+          lastDisconnect: snapshot.lastDisconnect,
+        },
       )
     },
     onConnectionChanged: () => schedulePersist(),
@@ -529,10 +545,10 @@ export async function createRuntime(options: RuntimeOptions = {}): Promise<Runti
   async function dispatchExtensionCommand(
     command: string,
     args: Record<string, unknown> = {},
-    options: { trackCommand?: boolean } = {},
+    options: { trackCommand?: boolean; budgetMs?: number } = {},
   ): Promise<unknown> {
     validateCommandArgs(command, args)
-    const budgetMs = getCommandRequestBudgetMs(command, args, requestTimeoutMs)
+    const budgetMs = options.budgetMs ?? getCommandRequestBudgetMs(command, args, requestTimeoutMs)
     const downloadOutputPath = command === 'download' ? resolveDownloadOutputPath(args) : null
     if (options.trackCommand !== false) setLastCommand(command, args)
 
@@ -700,8 +716,38 @@ export async function createRuntime(options: RuntimeOptions = {}): Promise<Runti
     if (command === 'run') return await dispatchPlaywrightRun(args)
     const tracksTab = commandSupportsTabTarget(command) || command === 'tab.close'
     const release = tabRunLock.beginCommand(tracksTab ? resolveCommandTabId(args) : null)
+    const startedAt = Date.now()
     try {
-      return await dispatchExtensionCommand(command, args)
+      try {
+        return await dispatchExtensionCommand(command, args)
+      } catch (error) {
+        const disconnect = error as ErrorWithCode
+        const disconnectDetails = isRecord(disconnect?.details) ? disconnect.details : null
+        const lastDisconnect =
+          disconnectDetails && isRecord(disconnectDetails.lastDisconnect)
+            ? disconnectDetails.lastDisconnect
+            : null
+        if (
+          disconnect?.code !== 'COMMAND_EXECUTION_UNKNOWN' ||
+          lastDisconnect?.reason === 'replaced' ||
+          !canRetryAfterDisconnect(command, args)
+        ) {
+          throw error
+        }
+        const remainingMs =
+          getCommandRequestBudgetMs(command, args, requestTimeoutMs) - (Date.now() - startedAt)
+        if (remainingMs <= 0) throw error
+        try {
+          await connection.waitForConnection(Math.min(remainingMs, 10_000))
+        } catch {
+          throw error
+        }
+        // 仅白名单只读命令在重连后重试一次；点击、填写和导航仍保持结果未知。
+        return await dispatchExtensionCommand(command, args, {
+          trackCommand: false,
+          budgetMs: remainingMs,
+        })
+      }
     } finally {
       release()
     }

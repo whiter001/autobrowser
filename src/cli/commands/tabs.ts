@@ -96,12 +96,26 @@ async function handleTab(rest: string[], context: CommandContext): Promise<numbe
         for (let index = 0; index < tabArgs.length; index += 1) {
           const value = tabArgs[index]!
           if (value === '--wait-for') index += 2
-          else if (value === '--timeout-ms') index += 1
-          else if (value.startsWith('--')) throw new Error(`unsupported tab new option: ${value}`)
+          else if (
+            value === '--timeout-ms' ||
+            value === '--wait-until' ||
+            value === '--settle-timeout' ||
+            value === '--dom-quiet-ms'
+          ) {
+            index += 1
+          } else if (value.startsWith('--')) {
+            throw new Error(`unsupported tab new option: ${value}`)
+          }
         }
         const options = parseGotoArgs(tabArgs)
-        if (options.timeoutMs !== undefined && !options.waitFor) {
-          throw new Error('--timeout-ms requires --wait-for for tab new')
+        if (
+          options.timeoutMs !== undefined &&
+          !options.waitFor &&
+          options.waitUntil === undefined &&
+          options.settleTimeoutMs === undefined &&
+          options.domQuietMs === undefined
+        ) {
+          throw new Error('--timeout-ms requires a wait option for tab new')
         }
         return options
       })
@@ -243,28 +257,75 @@ interface GotoArgs {
   selector?: string
 }
 
+function buildWaitForArgs(options: GotoArgs): Record<string, unknown> {
+  const args: Record<string, unknown> = { type: options.waitFor }
+  if (options.waitFor === 'url') args.url = options.waitUrl
+  else {
+    args.selector = options.selector
+    args.state = 'visible'
+  }
+  if (options.timeoutMs !== undefined) args.timeout = options.timeoutMs
+  return args
+}
+
 async function createTabAndWait(
   context: CommandContext,
   url: string,
   options: GotoArgs,
 ): Promise<CommandResponse> {
-  const created = await context.requestCommand(context.flags.server, 'tab.new', { url })
-  if (!created.ok || !options.waitFor) return created
+  const waitForNavigation =
+    (options.waitUntil !== undefined && options.waitUntil !== 'none') ||
+    options.settleTimeoutMs !== undefined ||
+    options.domQuietMs !== undefined
+  // 需要导航等待时只创建空白页，随后对同一新 handle goto 一次，避免重复导航。
+  const created = await context.requestCommand(context.flags.server, 'tab.new', {
+    url: waitForNavigation ? 'about:blank' : url,
+  })
+  if (!created.ok || (!waitForNavigation && !options.waitFor)) return created
+
   const result = isRecord(created.result) ? created.result : {}
   const tab = isRecord(result.tab) ? result.tab : {}
   const target = tab.handle ?? tab.id
+  if (typeof target !== 'string' && typeof target !== 'number') {
+    const failure: CommandResponse = {
+      ok: false,
+      error: { message: 'tab.new returned no handle or id; cannot safely wait for the new tab' },
+    }
+    return { ...failure, result: { ...result, wait: failure } }
+  }
+
+  let navigation: CommandResponse | null = null
+  if (waitForNavigation) {
+    try {
+      navigation = await context.requestCommand(context.flags.server, 'goto', {
+        tabId: target,
+        url,
+        ...(options.timeoutMs !== undefined ? { timeoutMs: options.timeoutMs } : {}),
+        ...(options.waitUntil !== undefined ? { waitUntil: options.waitUntil } : {}),
+        ...(options.settleTimeoutMs !== undefined
+          ? { settleTimeoutMs: options.settleTimeoutMs }
+          : {}),
+        ...(options.domQuietMs !== undefined ? { domQuietMs: options.domQuietMs } : {}),
+      })
+    } catch (error) {
+      navigation = {
+        ok: false,
+        error: { message: error instanceof Error ? error.message : String(error) },
+      }
+    }
+    if (!navigation.ok) {
+      return { ...navigation, result: { ...result, wait: navigation } }
+    }
+    if (!options.waitFor) {
+      return { ...navigation, result: { ...result, wait: navigation.result } }
+    }
+  }
+
   let waited: CommandResponse
   try {
-    if (typeof target !== 'string' && typeof target !== 'number') {
-      throw new Error('tab.new returned no handle or id; cannot safely wait for the new tab')
-    }
     waited = await context.requestCommand(context.flags.server, 'wait', {
       tabId: target,
-      type: options.waitFor,
-      ...(options.waitFor === 'url'
-        ? { url: options.waitUrl }
-        : { selector: options.selector, state: 'visible' }),
-      ...(options.timeoutMs !== undefined ? { timeout: options.timeoutMs } : {}),
+      ...buildWaitForArgs(options),
     })
   } catch (error) {
     waited = {
@@ -272,8 +333,14 @@ async function createTabAndWait(
       error: { message: error instanceof Error ? error.message : String(error) },
     }
   }
-  // Only emit the final response. Keep the created tab recoverable even on wait/transport failure.
-  return { ...waited, result: { ...result, wait: waited.ok ? waited.result : waited } }
+  return {
+    ...waited,
+    result: {
+      ...result,
+      ...(navigation ? { navigation: navigation.result } : {}),
+      wait: waited.ok ? waited.result : waited,
+    },
+  }
 }
 
 function parseGotoArgs(rest: string[]): GotoArgs {

@@ -28,6 +28,8 @@ export interface ExtensionInfo {
   connectedAt: string
   userAgent: string | null
   lastHeartbeatAt: string | null
+  /** relay 进程内递增，用于区分重连前后的命令与响应 */
+  connectionGeneration: number
   /** manifest 版本；老协议/手工 attach 可能为 null */
   version?: string | null
 }
@@ -45,6 +47,16 @@ export interface Snapshot {
    * 调用方可比较两者判断当前是否仍有故障（lastError.at > lastSuccessAt）。
    */
   lastSuccessAt: string | null
+  connectionGeneration: number
+  lastDisconnect: {
+    at: string
+    reason: string
+    extensionId: string | null
+    connectionGeneration: number
+    lastHeartbeatAt: string | null
+    closeCode?: number
+    closeReason?: string
+  } | null
 }
 
 export interface RuntimeOptions {

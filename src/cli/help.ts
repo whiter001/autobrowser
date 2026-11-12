@@ -132,6 +132,9 @@ export const HELP_ROOT: HelpNode = helpNode(
       'status',
       'Show server status. Default output is a readable summary; pass --json for the raw status object or --brief to also collapse per-tab page epochs.',
       'autobrowser status [--json|--brief]',
+      [
+        'Raw status includes connectionGeneration and lastDisconnect diagnostics; safe read-only commands retry once after reconnect, while side-effecting commands are never replayed automatically.',
+      ],
     ),
     helpNode(
       'doctor',
@@ -250,10 +253,12 @@ export const HELP_ROOT: HelpNode = helpNode(
         helpNode(
           'new',
           'Open a new tab and bind it to the current workspace when workspace mode is enabled.',
-          'autobrowser tab new [url] [--wait-for url <pattern>|selector <sel>] [--timeout-ms <ms>]',
+          'autobrowser tab new [url] [--wait-until <mode>] [--settle-timeout <ms>] [--dom-quiet-ms <ms>] [--wait-for url <pattern>|selector <sel>] [--timeout-ms <ms>]',
           [
             'Wait on the newly created handle (not the active tab); failures retain result.tab.',
-            '--timeout-ms sets the post-creation wait budget (default 30000 ms); requires --wait-for.',
+            '--wait-until supports none|commit|domcontentloaded|interactive|load|networkidle|domquiet; no sleep command is needed.',
+            '--timeout-ms sets the post-creation wait budget (default 30000 ms); requires a wait option.',
+            'Managed tabs attach the debugger before the initial URL navigation so early requests are captured.',
           ],
         ),
         helpNode(
@@ -814,7 +819,7 @@ export const HELP_ROOT: HelpNode = helpNode(
     helpNode(
       'set',
       'Adjust browser state.',
-      'autobrowser set <viewport|offline|auto-snapshot|headers|geo|media|media-type|reduced-motion|forced-colors|contrast|device|permission|ua|timezone|locale>',
+      'autobrowser set <viewport|offline|auto-snapshot|focus|headers|geo|media|media-type|reduced-motion|forced-colors|contrast|device|permission|ua|timezone|locale>',
       undefined,
       [
         helpNode(
@@ -827,6 +832,11 @@ export const HELP_ROOT: HelpNode = helpNode(
           'auto-snapshot',
           'Attach a snapshot after successful navigation and input actions (default off).',
           'autobrowser set auto-snapshot [on|off]',
+        ),
+        helpNode(
+          'focus',
+          'Emulate focus and visibility for a hidden target tab without activating it; disable after measurement.',
+          'autobrowser set focus [on|off]',
         ),
         helpNode('headers', 'Set request headers.', 'autobrowser set headers <name:value,...>'),
         helpNode(
@@ -957,6 +967,7 @@ export const HELP_ROOT: HelpNode = helpNode(
             '--page-size <n>  legacy alias; prefer --limit',
             '--all-tabs',
             '--all-epochs',
+            'Empty results distinguish NOT_ATTACHED (missed requests are unrecoverable), EPOCH_FILTERED (try --all-epochs), NO_DATA and FILTERED_OUT.',
             '--include-details  detailed mode avoids concise field projection',
           ],
         ),
@@ -1016,6 +1027,7 @@ export const HELP_ROOT: HelpNode = helpNode(
                 '--timeout-ms <ms>',
                 '--capture-id <id>  stop only the matching active capture; save start.captureId for concurrent tasks',
                 '--include-urls  return { path, captureId, urls }; URLs are deduplicated in capture order',
+                'output.har may appear before or after options; option values are never parsed as paths.',
                 'Without --include-urls, result remains the file path; captureId is in meta.har.',
                 'Waits only for this capture; large results are transparently chunked/reassembled or explicitly rejected for size, not silently truncated.',
                 'On timeout, check network har status and recover when checkpoint.recoverable is true.',
@@ -1042,13 +1054,14 @@ export const HELP_ROOT: HelpNode = helpNode(
     helpNode(
       'snapshot',
       'Capture or export a page snapshot.',
-      'autobrowser snapshot [selector|--target <selector|@eN>] [--role <a,b,c>] [--changed]',
+      'autobrowser snapshot [selector|--target <selector|@eN>] [--role <a,b,c>] [--changed] [--limit <1..200>]',
       [
         '--target <selector|@eN>  limit the snapshot to an element subtree',
         '--role <button,link,...>  only return elements with matching roles; @eN refs stay stable across snapshots',
         '--changed  return added/changed elements including checked/disabled state and removedRefs; first run or navigation returns full:true',
+        '--limit <1..200>  override the default element cap without raising the byte budget',
         'Refs are not reused within a document; removed nodes are invalid and navigation makes refs stale. Refresh before acting.',
-        'Concise output is capped at 50 elements and 32768 UTF-8 bytes; detailed retains 200 elements and 200000 bytes. If truncated, narrow --target/--role or use --changed; only delivered elements enter the baseline.',
+        'Concise output defaults to 50 elements and 32768 UTF-8 bytes; detailed defaults to 200 elements and 200000 bytes. If truncated, narrow --target/--role or use --changed; only delivered elements enter the baseline.',
       ],
       [
         helpNode(
