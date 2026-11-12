@@ -117,6 +117,23 @@ describe('navigation wait for commit', () => {
     expect(evaluateCalls.every((call) => call.afterCommit)).toBe(true)
   })
 
+  test('navigateTo identifies hash-only navigation without claiming a document reload', async () => {
+    const { pageInput } = createNavigateHarness()
+
+    const result = await pageInput.navigateTo(1, 'https://example.com/#/target', {
+      timeoutMs: 5000,
+    })
+
+    expect(result).toMatchObject({
+      outcome: 'completed',
+      phase: 'settle',
+      settled: true,
+      navigationType: 'same-document',
+      documentReloaded: false,
+      note: expect.stringContaining('wait for a route-specific selector or run reload'),
+    })
+  })
+
   test('navigateTo reports navigation never committed when the epoch never changes', async () => {
     const { pageInput, evaluateCalls } = createNavigateHarness({ commit: false })
 

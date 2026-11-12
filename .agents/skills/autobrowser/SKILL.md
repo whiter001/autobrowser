@@ -172,11 +172,12 @@ autobrowser 是一个面向 Chrome/Edge 的浏览器自动化 CLI，通过本地
 ## 导航结果、脚本注入与断连恢复
 
 - `goto` / `open` 返回 `outcome`（dispatched|completed|partial）、`phase`（dispatch|commit|settle）、`settled` / `settleReason`；`reload` 另带 `committed`（导航是否已提交）、`dispatchTimedOut`（指令发出但没拿到 CDP 回执）、`observedUrl` / `observedTitle` / `observedEpoch` 和回显的 `waitUntil`；`back` / `forward` 返回 `navigated` / `settled`，等待失败时给 `settleReason`。
+- 只改变 hash 是浏览器标准的同文档导航，不会自动整页刷新。提交后回执带 `navigationType:"same-document"`、`documentReloaded:false` 和提示；`outcome:"completed"` 只代表导航与 DOM 稳定等待完成，不证明 SPA 已渲染目标路由。用 `--wait-for selector <目标路由独有元素>` 验证最终页面；应用确实要求整页初始化时再显式 `reload`。
 - 读到 `partial` 先按字段判断停在哪一步：`phase:"commit"` + `committed:false` 表示导航没提交；`phase:"settle"` + `committed:true` 表示已提交但页面没稳定（业务页长轮询很常见，不等同失败）。先 `get url`、必要时 `eval document.readyState` 确认页面实际状态，**不要因为 `partial` 就重发 `reload`**。
 - 收不到扩展回执时 relay 报 `COMMAND_TIMEOUT`，此时导航往往已经发生；同样先核对页面再决定是否重发，不要把它当成"没执行"。
 - `script add` 注册的是"下一次文档加载前注入"的脚本：返回 `registration.appliesTo:"next-document-load"`、`attachedTabs`、`failures`，必要时附 `warnings`。`registeredTabs: []` 表示当时没有已附加的标签页——配置已保存但不会注入，要等导航/刷新后才生效；`failures` 非空说明注册失败，不要只看 `ok:true`。
 - 已注册的 init script 会持久化：扩展被回收或重载后，重新 attach 时自动 replay。`script list` 为空就是确实没有注册，不要把它当成"已注册但没生效"。
-- `--tab tN` 的句柄由 Chrome tabId 直接派生：扩展重连、句柄表还没重建时依然可用；真正已关闭的标签页仍然返回 `STALE_TAB_HANDLE`，按建议先 `tab list`。
+- `--tab tN` 的句柄由 Chrome tabId 直接派生，实际形如 `t2058764132`，不是从 1 开始分配的短序号：扩展重连、句柄表还没重建时依然可用；真正已关闭的标签页仍然返回 `STALE_TAB_HANDLE`，按建议先 `tab list`，不要猜测 `t1`/`t2`。
 - `pageEpoch` 是扩展内存态，重连或重载后从 1 重新计，旧的 `@eN#pX` / `@fN#pX` 会被判过期——先 `snapshot` 再操作，不要误判成元素丢失。
 - 未显式指定 `--tab` 时，兜底目标会跳过浏览器自身页面（`chrome-extension://`、`chrome://`、`edge://`、`devtools://`、`about:`）。如果只剩下这类页面，命令会直接报没有可用目标——先 `tab new <url>` 或显式指定 tab，而不是反复重试或怀疑连接。
 - MCP 客户端无需走 CLI：导航类可用 `navigate` / `reload` / `back` / `forward`，脚本与扩展控制用 `script` / `extension`，参数与 CLI 同名（`tab` / `frame` 由工具自动注入）。
@@ -216,20 +217,27 @@ autobrowser 是一个面向 Chrome/Edge 的浏览器自动化 CLI，通过本地
 - 单行源码可用 `eval --expr '<script>'` 显式传值，也继续支持位置参数。
 - 复杂或多行源码优先通过 `eval --file <path>` 或 `eval --stdin` 传入，避免命令行转义干扰判断；脚本可直接包含顶层 `return` 和 `await`，无需手工包装 async IIFE，多语句脚本用 `return` 返回结果。CSS 属性选择器的值仍需按 CSS 语法加引号，例如 `a[href*="/status/"]`；`not a valid selector` 表示脚本已解析并运行、页面拒绝了 CSS，错误的 `suggestedAction` 会明确区分这种情况与 JavaScript 语法错误。
 - 页面执行启用 `awaitPromise`，可直接使用顶层 `await` 或返回 async IIFE / Promise 结果，不需要为异步采集手工拆成同步片段；长任务仍需设置合理 `--timeout-ms`。
-- `--timeout-ms <ms>` 只在确认脚本本身是长任务时使用；不要把它作为复杂流程失败后的默认处理。需要限制返回值时用 `eval --max-result-bytes <n>`，超限会得到 `EVAL_RESULT_TOO_LARGE` 和实际字节数，不会静默截断；未设置时结果超过 256 KiB 会走 upload，并与命令共享 deadline。
+- `--timeout-ms <ms>` 只在确认脚本本身是长任务时使用；不要把它作为复杂流程失败后的默认处理。`concise` 默认限制 eval 结果为 32KiB，`detailed` 默认不设结果字节上限；显式 `--max-result-bytes <n>` 会覆盖两者，超限得到 `EVAL_RESULT_TOO_LARGE` 和实际字节数，不会静默截断。搬运 storage 等大状态时在页面侧先过滤 key、聚合或分页，不要默认提高上限；未设置上限且结果超过 256 KiB 时会走 upload，并与命令共享 deadline。
 - 复杂交互优先拆成更小的 autobrowser 命令或脚本步骤，保留原任务目标逐步推进。
 - 针对单个元素执行函数脚本时用 `eval --element <selector|@eN> 'el => el.textContent'`，保留 stale/frame 检查。`locator <selector>` 会生成并验证唯一 locator；`highlight <selector> [--style <outline>]` 做不改布局的高亮，单元素恢复用 `highlight <selector> --hide`，全部恢复用 `highlight --hide`。
 - `cdp <Domain.method> [json]` 用于现有命令无法覆盖的 tab 级 CDP 场景，例如 `cdp Runtime.evaluate '{"expression":"6 * 7","returnByValue":true}'`；复杂参数也可使用 `--params '<json>'`。
 - CDP 仅允许 tab 级方法，拒绝 `Browser/Target/SystemInfo` 和 `Debugger.disable`。它可能产生页面副作用，断连后的未知结果不能盲目重放；优先使用语义明确的普通命令，不要把 CDP 当成默认操作方式。
 - 自定义 HTML5 拖放用 `drop <selector> --data 'text/plain=hello'`，本地文件用重复 `--path <file>`；单文件最大 32MiB、总计 64MiB。文件 input 仍优先 `upload`。坐标鼠标用 `mousemove` 定位后配套 `mousedown`/`mouseup`，`mousewheel` 在当前位置滚动。
 
+## 组件交互与异步断言
+
+- `fill` 负责派发真实输入事件，但受控组件可能按自身状态回滚输入值。antd DatePicker 等组件若未接受直接填写，先打开面板再点击具体日期单元格，不要反复 `fill` 或改用 DOM 赋值绕过组件。
+- `click` 是一次真实点击；对按钮、输入框等 toggle 控件，先用 snapshot/eval 检查面板或弹层当前状态，不要在 eval 里调用 `el.click()` 后又无条件执行一次 `click`，否则第二次可能把刚打开的面板关闭。
+- Vue/React 等框架的状态更新和渲染是异步的，`.click()` 后同步读取 DOM 可能仍是旧值。优先用 `wait <selector>`、`wait --fn '<expression>'` 或 `wait --text <text>` 等条件等待；不要固定 sleep 2~3 秒后就断定所有页面都已完成更新。
+
 ## 常见回退策略
 
-- `connect` 之后如果连接页自动关闭，优先用 `status` 检查连接结果，不要反复等待页面。
+- `connect` 打开连接页后会输出确认，但这只表示页面已打开；如果连接页自动关闭，优先用 `status` 检查连接结果，不要反复等待页面。
 - 如果 `connect` 没有打开或没有连上，确认浏览器命令指向已加载解包扩展的配置文件，必要时显式传 `--browser-command`。
+- `screenshot` 的输出路径是位置参数：`screenshot [path]`，不是 `screenshot --path <path>`；误用 `--path` 时错误会直接给出正确形式。
 - `snapshot` 返回的 `@eN` / `@fN` 引用比脆弱的 CSS 选择器更适合后续操作。
 - `find role`、`find text`、`find label` 适合先语义定位，再点击、读取或填写。
-- `tab list` 返回稳定句柄如 `t1`、`t2`，优先用 `tab select tN`，不要依赖原始 tab id。
+- `tab list` 返回形如 `t<Chrome tabId>` 的稳定句柄，例如 `t2058764132`，优先用返回的 `tab select tN`，不要依赖原始 tab id 或猜测短序号。
 - 页面命令超时后先运行 `status` 和 `command list`。标签页控制走独立控制面，可继续用 `tab list`、`target clear`、`tab close <tN>` 恢复；不要连续重试并堆积命令。运行中的 `eval` 被取消或超时后会定向执行 `Runtime.terminateExecution`，其他 CDP 操作仍可能继续在浏览器侧完成。`status.lastError` 保留历史最后错误，可结合 `lastSuccessAt` 判断它是否早于最近成功。
 - `goto/open/reload` 可用 `--wait-until none|commit|domcontentloaded|interactive|load|networkidle|domquiet` 选择等待阶段；三者及 `tab new` 还可追加 `--wait-for url <pattern>` 或 `--wait-for selector <sel>` 等最终结果。`tab new` 固定等待新建 handle；等待失败仍在 `result.tab` 保留新 tab。旧扩展缺少 wait 执行证明时 CLI 返回失败，不伪造已等待。
 - `cookies list` 是 `cookies get` 的别名，支持同样的 `--domain` / `--path` 过滤。

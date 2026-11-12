@@ -943,6 +943,12 @@ export function parseScreenshotArgs(rest: string[]): ScreenshotArgs {
       continue
     }
 
+    if (value === '--path') {
+      throw new Error(
+        'unsupported screenshot option --path: pass the output path as a positional argument: autobrowser screenshot [path]',
+      )
+    }
+
     if (value.startsWith('--')) {
       throw new Error(`unsupported screenshot option: ${value}`)
     }

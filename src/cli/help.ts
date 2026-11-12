@@ -205,7 +205,7 @@ export const HELP_ROOT: HelpNode = helpNode(
     helpNode('config', 'Show persisted CLI connection settings.', 'autobrowser config'),
     helpNode(
       'connect',
-      'Open the extension connect page, starting the local server when needed. Pass --print-token to print the persisted token instead (useful when the extension page cannot open).',
+      'Open the extension connect page and print a confirmation, starting the local server when needed. Pass --print-token to print the persisted token instead (useful when the extension page cannot open).',
       'autobrowser connect [--print-token] [--relay-port <port>] [--ipc-port <port>] [--extension-id <id>] [--browser-command <command>] [--browser-arg <arg>]',
     ),
     helpNode(
@@ -216,7 +216,7 @@ export const HELP_ROOT: HelpNode = helpNode(
     helpNode('tab', 'Manage tabs.', 'autobrowser tab <list|new|select|close>', undefined, [
       helpNode(
         'list',
-        'List tabs.',
+        'List tabs with stable handles in the form t<Chrome tabId>; read the returned handle instead of guessing t1/t2.',
         'autobrowser tab list [--active] [--current-window] [--filter <text>] [--limit <n>] [--cursor <token>] [--page <n>] [--page-size <n>]',
       ),
       helpNode(
@@ -271,11 +271,17 @@ export const HELP_ROOT: HelpNode = helpNode(
       'open',
       'Navigate to a URL.',
       'autobrowser open <url> [--wait-until <mode>] [--settle-timeout <ms>] [--dom-quiet-ms <ms>] [--wait-for url <pattern>|selector <sel>] [--timeout-ms <ms>]',
+      [
+        'Hash-only changes are same-document navigations and do not reload the page; use --wait-for selector for the target SPA route, or reload when the application requires it.',
+      ],
     ),
     helpNode(
       'goto',
       'Navigate to a URL.',
       'autobrowser goto <url> [--wait-until <mode>] [--settle-timeout <ms>] [--dom-quiet-ms <ms>] [--wait-for url <pattern>|selector <sel>] [--timeout-ms <ms>]',
+      [
+        'Hash-only changes return navigationType=same-document and documentReloaded=false after commit; use --wait-for selector for the target SPA route, or reload when the application requires it.',
+      ],
     ),
     helpNode(
       'close',
@@ -306,7 +312,8 @@ export const HELP_ROOT: HelpNode = helpNode(
         '--file <path>  read complex or multiline script source from file',
         '--base64',
         '--timeout-ms <ms>  page evaluation timeout in milliseconds',
-        '--max-result-bytes <n>  fail with EVAL_RESULT_TOO_LARGE when the JSON result exceeds n UTF-8 bytes (no limit by default; results are not truncated)',
+        '--max-result-bytes <n>  fail with EVAL_RESULT_TOO_LARGE when the JSON result exceeds n UTF-8 bytes; overrides the concise 32768-byte default (detailed has no default limit; results are not truncated)',
+        'Prefer returning only required fields, or paginate/aggregate in the page instead of exporting all browser storage at once.',
         'Top-level return and await are supported; use return to yield a script result.',
         'For complex interactions, split work into smaller browser commands or script steps.',
       ],
@@ -983,6 +990,7 @@ export const HELP_ROOT: HelpNode = helpNode(
       'Capture a screenshot.',
       'autobrowser screenshot [path] [--element <selector|@eN>] [--full] [--annotate] [--screenshot-dir <dir>] [--screenshot-format png|jpeg] [--screenshot-quality <n>]',
       [
+        'path  output file as a positional argument; use screenshot ./shot.png, not screenshot --path ./shot.png',
         '--element <selector|@eN>  capture only this element; an @eN ref positional also works, cannot be combined with --full',
         '--full',
         '--annotate',

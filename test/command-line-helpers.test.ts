@@ -682,6 +682,10 @@ describe('cli helpers', () => {
       { argv: ['click', '#field', 'extra'], message: 'unexpected extra argument' },
       { argv: ['back', 'extra'], message: 'unexpected argument for back' },
       { argv: ['screenshot', '--formt', 'jpeg'], message: 'unsupported screenshot option' },
+      {
+        argv: ['screenshot', '--path', 'shot.png'],
+        message: 'pass the output path as a positional argument: autobrowser screenshot [path]',
+      },
       { argv: ['wait', '#field', '--bogus'], message: 'unsupported wait option' },
       {
         argv: ['wait', '--text', 'a', '--url', 'b'],
@@ -701,6 +705,16 @@ describe('cli helpers', () => {
       expect(result.fetchCalls).toHaveLength(0)
       expect(cliErrorPayload(result.stdout).error.message).toContain(testCase.message)
     }
+  })
+
+  test('screenshot --path gives positional-path guidance without a contradictory option hint', async () => {
+    const result = await runCli(['screenshot', '--path', 'shot.png'])
+
+    expect(result.exitCode).toBe(1)
+    expect(cliErrorPayload(result.stdout).error.message).toContain(
+      'pass the output path as a positional argument',
+    )
+    expect(result.stdout).not.toContain('did you mean --path?')
   })
 
   test('passes flag-shaped text literally after a separator', async () => {

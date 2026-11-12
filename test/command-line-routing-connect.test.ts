@@ -22,6 +22,8 @@ describe('cli command routing', () => {
       'chrome-extension://bfccnpkjkbhceghimfjgnkigilidldep/connect.html?token=live-token&relayPort=48011&ipcPort=48012',
     ])
     expect(result.browserCalls).toEqual([null])
+    expect(result.stdout).toContain('autobrowser connect page opened')
+    expect(result.stdout).toContain('run `autobrowser status` to confirm the extension connection')
   })
 
   test('connect honors an explicit extension id override', async () => {

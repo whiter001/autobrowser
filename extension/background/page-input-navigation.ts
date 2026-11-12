@@ -282,6 +282,22 @@ export function createNavigationCommands(pageContext: PageInputContext) {
     return false
   }
 
+  function isHashOnlyNavigation(previousUrl: string | undefined, requestedUrl: string): boolean {
+    if (!previousUrl) return false
+    try {
+      const previous = new URL(previousUrl)
+      const requested = new URL(requestedUrl, previous)
+      return (
+        previous.origin === requested.origin &&
+        previous.pathname === requested.pathname &&
+        previous.search === requested.search &&
+        previous.hash !== requested.hash
+      )
+    } catch {
+      return false
+    }
+  }
+
   async function navigateTo(
     tabId: TabInput,
     url: string,
@@ -294,6 +310,7 @@ export function createNavigationCommands(pageContext: PageInputContext) {
     } = {},
   ): Promise<Record<string, unknown>> {
     const tab = await getTargetTab(tabId)
+    const hashOnlyNavigation = isHashOnlyNavigation(tab.url, url)
     invalidatePageRefs(state, tab.id)
     // 基线必须在 invalidatePageRefs（已让 epoch +1）之后取：
     // 导航 commit 时 connection.ts 再 +1，轮询 epoch !== 基线即代表导航真正发生
@@ -351,10 +368,20 @@ export function createNavigationCommands(pageContext: PageInputContext) {
         settleReason: 'navigation never committed',
       }
     }
+    // hash 变化是合法的同文档导航，不能强制 reload；但必须让调用方知道没有发生整页加载，
+    // 以免仅凭 outcome=completed 把旧标题或旧路由 DOM 当成目标页面已经渲染。
+    const committedNavigation = hashOnlyNavigation
+      ? {
+          navigationType: 'same-document',
+          documentReloaded: false,
+          note: 'Hash-only navigation stayed in the same document. If the SPA route has not rendered, wait for a route-specific selector or run reload.',
+        }
+      : {}
     if (waitUntil === 'commit') {
       const observed = await getTargetTab(tab.id).catch(() => null)
       return {
         ...dispatchNote,
+        ...committedNavigation,
         tabId: tab.id,
         url,
         requestedUrl: url,
@@ -378,6 +405,7 @@ export function createNavigationCommands(pageContext: PageInputContext) {
     const observed = await getTargetTab(tab.id).catch(() => null)
     return {
       ...dispatchNote,
+      ...committedNavigation,
       tabId: tab.id,
       url,
       requestedUrl: url,

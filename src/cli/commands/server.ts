@@ -400,6 +400,9 @@ async function handleConnect(rest: string[], context: CommandContext): Promise<n
   }
 
   await context.openConnectFlow(status, true)
+  process.stdout.write(
+    'autobrowser connect page opened; run `autobrowser status` to confirm the extension connection\n',
+  )
   return 0
 }
 

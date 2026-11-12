@@ -12,8 +12,8 @@ interface AgentFrameRefInfo {
 }
 
 /**
- * 把标签页序号格式化为 agent 可引用的句柄（t1、t2…）。
- * 序号非法时直接抛错，避免上层把 t0/t-1 当成合法目标继续下发。
+ * 把 Chrome tabId 格式化为 agent 可引用的句柄（t<tabId>）。
+ * ID 非法时直接抛错，避免上层把 t0/t-1 当成合法目标继续下发。
  */
 export function formatAgentTabHandle(index: number): string {
   if (!Number.isInteger(index) || index <= 0) {

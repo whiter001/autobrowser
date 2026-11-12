@@ -95,7 +95,7 @@ autobrowser server stop
 autobrowser connect
 ```
 
-如果本地后台服务尚未运行，`connect` 会自动先启动它。
+如果本地后台服务尚未运行，`connect` 会自动先启动它。连接页打开后 CLI 会输出确认；这表示页面已打开，不代表扩展握手已完成，再运行 `autobrowser status` 确认 `extension: connected`。
 
 ## 命名会话与生命周期
 
@@ -273,7 +273,7 @@ autobrowser --tab t1 --frame top download --media 0 --selector 'article[data-rol
 
 采集前可用 `media list --wait-for 'article[data-role="tweet"]' --selector 'article[data-role="tweet"]' --timeout-ms 15000` 等待目标选择器可见。等待与采集在扩展同一次 media 请求中对同一已解析 tab/frame 执行，不会因 ambient target 切换而漂移；等待失败不继续采集。`--wait-for` 与 `--selector` 独立，`--timeout-ms` 仅设置等待阶段预算（默认 30 秒），不限制后续发现/播放探测。
 
-导航也支持条件等待：`goto/open <url> --wait-for url <pattern>|selector <css> --timeout-ms <ms>`。导航与附加条件等待各使用该预算；URL 条件不会覆盖导航地址。`tab new <url> --wait-for selector <css> --timeout-ms <ms>` 在创建后等待返回的新 tab handle，而不是活动标签页；超时仍在错误响应的 `result.tab` 中保留新 tab 信息，便于找回或关闭。不带等待选项时输出不变。
+导航也支持条件等待：`goto/open <url> --wait-for url <pattern>|selector <css> --timeout-ms <ms>`。导航与附加条件等待各使用该预算；URL 条件不会覆盖导航地址。只改变 hash 时是同文档导航，提交后回执带 `navigationType:"same-document"` 和 `documentReloaded:false`；`outcome:"completed"` 不代表 SPA 目标路由已经渲染，应使用 `--wait-for selector` 等待目标路由独有元素，应用需要整页初始化时再显式 `reload`。`tab new <url> --wait-for selector <css> --timeout-ms <ms>` 在创建后等待返回的新 tab handle，而不是活动标签页；超时仍在错误响应的 `result.tab` 中保留新 tab 信息，便于找回或关闭。不带等待选项时输出不变。
 
 `media list` 的溯源信息：
 
@@ -310,7 +310,7 @@ autobrowser screenshot --annotate
 autobrowser screenshot --screenshot-dir ./shots --screenshot-format jpeg --screenshot-quality 80
 ```
 
-`--full` 会截取整页，`--element` 只截取某个元素（接受选择器或 `@eN` 引用，与 `--full` 互斥），`--annotate` 会给元素添加编号标签，而 `--screenshot-format` / `--screenshot-quality` 用于控制编码后的图片输出。
+输出路径是位置参数，写法为 `autobrowser screenshot ./shot.png`，不支持 `--path`；误用时会直接提示正确形式。`--full` 会截取整页，`--element` 只截取某个元素（接受选择器或 `@eN` 引用，与 `--full` 互斥），`--annotate` 会给元素添加编号标签，而 `--screenshot-format` / `--screenshot-quality` 用于控制编码后的图片输出。
 
 ## 视觉差异比对
 
@@ -433,12 +433,12 @@ autobrowser search "error" --limit 10
 
 请求预算默认 30 秒；显式 eval/navigation/click `timeoutMs`、wait `timeout`/`ms` 加 5 秒传输余量且不低于默认预算。feed 按滚动次数（上限 40）× `pauseMs` + 60 秒执行余量 + 5 秒传输余量计算，不低于默认预算，超过 30 分钟则拒绝。batch 合成步骤、重试、延迟和嵌套预算，总上限 30 分钟（含余量），超大/非有限预算会拒绝。已发送后断连的结果可能未知，不自动重放；先检查 `status`、`command list` 和页面实际状态。显式 batch `retries` 可能重复失败步骤已发生的副作用，**不是幂等保证**；取消/超时阻止后续步骤，但不能撤销已发生的动作或所有在途 CDP 工作。
 
-标签页现在会在 `tab list` 中暴露稳定句柄，CLI 也可以在不依赖原始数字 id 的情况下切换或关闭它们：
+标签页会在 `tab list` 中暴露形如 `t<Chrome tabId>` 的稳定句柄（例如 `t2058764132`），CLI 可以直接使用返回的句柄切换或关闭标签页；不要猜测从 1 开始的短序号：
 
 ```bash
 autobrowser tab list
-autobrowser tab select t2
-autobrowser tab close t3
+autobrowser tab select t2058764132
+autobrowser tab close t2058764137
 ```
 
 如果页面发生了大规模重渲染或导航，请先重新运行 `snapshot` 刷新引用，再继续操作。

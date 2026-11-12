@@ -181,7 +181,9 @@ describe('production evaluate and debugger dispatch cancellation gates', () => {
       ),
     ).rejects.toMatchObject({
       code: 'PAGE_EVALUATION_EXCEPTION',
-      suggestedAction: expect.stringContaining('the page rejected a CSS selector'),
+      suggestedAction: expect.stringMatching(
+        /the page rejected a CSS selector.*eval --stdin.*shell, JavaScript, and CSS quoting separate/s,
+      ),
     })
     await expect(evaluateWithException('SyntaxError: Unexpected token ;')).rejects.toMatchObject({
       code: 'PAGE_EVALUATION_EXCEPTION',
