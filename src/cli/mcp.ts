@@ -4,6 +4,7 @@ import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js'
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js'
 import type { CallToolResult, Tool } from '@modelcontextprotocol/sdk/types.js'
 import { commandSupportsFrameTarget, commandSupportsTabTarget } from '../core/command-spec.js'
+import { createId } from '../core/protocol.js'
 import { isRecord, type CommandResponse } from './client.js'
 import { CLI_ERROR_CODES } from './cli-error.js'
 import { helpRequested } from './commands/shared.js'
@@ -211,12 +212,25 @@ export async function handleMcpCommand(
     // The first tool call surfaces any connection problem as an isError result.
   }
 
+  const workspace = context.flags.workspace || createId('mcp')
   const server = new AutobrowserMcpServer({
     requestCommand: async (command, args) =>
-      await context.requestCommand(context.flags.server, command, args),
+      await context.requestCommand(context.flags.server, command, { workspace, ...args }),
   })
   const transport = new StdioServerTransport()
-  transport.onclose = () => process.exit(0)
+  const leaseRenewal = setInterval(
+    () => {
+      void context
+        .requestCommand(context.flags.server, 'workspace', { action: 'current', workspace })
+        .catch(() => {})
+    },
+    10 * 60 * 1000,
+  )
+  leaseRenewal.unref()
+  transport.onclose = () => {
+    clearInterval(leaseRenewal)
+    process.exit(0)
+  }
   await server.connect(transport)
   return undefined
 }

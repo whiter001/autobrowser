@@ -16,6 +16,7 @@ const SUPPORTED_GLOBAL_FLAGS = [
   '--file',
   '--server',
   '--session',
+  '--workspace',
   '--engine',
   '--webdriver-url',
   '--relay-port',
@@ -59,6 +60,7 @@ export function parseCli(argv: string[]): ParsedCli {
     responseFormatExplicitlySet: false,
     server: `http://127.0.0.1:${DEFAULT_IPC_PORT}`,
     session: '',
+    workspace: null,
     engine: 'chromium',
     webdriverUrl: '',
     relayPort: DEFAULT_RELAY_PORT,
@@ -152,6 +154,12 @@ export function parseCli(argv: string[]): ParsedCli {
 
     if (value === '--session' && args.length === 0) {
       flags.session = readFlagValue(argv, index, value)
+      index += 1
+      continue
+    }
+
+    if (value === '--workspace' && args.length === 0) {
+      flags.workspace = readFlagValue(argv, index, value)
       index += 1
       continue
     }

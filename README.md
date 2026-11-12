@@ -118,6 +118,28 @@ autobrowser session delete-data research # 停止 relay 并删除该会话数据
 
 `delete-data` 只接受命名会话，重复执行会返回已清理，不会删除默认会话。如果返回 `SESSION_DATA_LOCKED`，先关闭仍占用该 profile 的浏览器，再重试清理；不要强制删除正在使用的 profile。
 
+## 多 AI Workspace 与标签复用
+
+Workspace 用于多个 AI 共享同一个浏览器、profile 和登录态，同时隔离默认目标与标签归属；它不同于会创建独立浏览器环境的 `--session`。未启用 workspace 时保留原来的共享目标行为。
+
+```bash
+# 每个 AI 使用固定 ID，或在各自宿主环境中设置一次 AUTOBROWSER_WORKSPACE=auto
+autobrowser --workspace ai-a tab list
+autobrowser --workspace ai-a tab attach t2058764180
+autobrowser --workspace ai-a snapshot
+```
+
+`auto` 根据可信祖先进程、进程启动时间和终端标识生成稳定 workspace；AI 宿主可用 `AUTOBROWSER_CALLER_ID` 注入更可靠的调用方身份。身份优先级为 `--workspace`、`AUTOBROWSER_WORKSPACE`、MCP 客户端上下文、自动识别。`workspace current` 可确认实际身份；`workspace list` 查看归属，`workspace release [id]` 只解除绑定，不关闭或刷新页面。
+
+- `tab list` 显示 `workspace`、`attachment` 和 `attachable`；`--response-format detailed` 还显示租约时间。
+- `tab attach <tN>` 原子复用已有页面，保留当前登录、表单和筛选状态；其他 workspace 已持有时返回 `TAB_BUSY`。`--readonly` 只允许观察命令，click/eval/run 等会被拒绝。
+- `tab detach [tN]` 解除归属但不改变页面。每个 workspace 可拥有多个 tab，并只保存自己的默认目标。
+- Workspace 没有目标时返回 `WORKSPACE_TARGET_REQUIRED`，不会回退到共享 current tab。此时 `open <url>` 会创建并绑定新 tab，`goto` 则要求先 `tab attach` 或 `tab new`。
+- 标签归属默认租约 1 小时，命令执行会续约，并保存到 `chrome.storage.local` 供扩展重载后恢复。过期或异常回收只解除归属，不重置页面。
+- Workspace 模式下 `close all` 只关闭当前 workspace 的 owned 标签；`extension reload/reconnect`、`server stop` 等全局管理操作仍会影响所有调用方。
+
+每个 MCP 服务实例自动使用独立 workspace，并提供 `workspace`、`tab_attach`、`tab_detach` 工具。Workspace 用于本机误操作隔离，不是跨用户安全认证机制。
+
 ## Firefox / WebKit
 
 默认 `--engine chromium` 保持扩展 + CDP 工作流。Firefox 和 WebKit 改用标准 WebDriver，启动 driver 后可在命令名前选择引擎：

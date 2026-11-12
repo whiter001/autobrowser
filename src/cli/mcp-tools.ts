@@ -479,8 +479,51 @@ export const MCP_TOOLS: McpToolDefinition[] = [
     toArgs: (args) => onlyDefined(args, ['full', 'annotate', 'format', 'quality', 'element']),
   },
   {
+    name: 'workspace',
+    description:
+      'Inspect the current MCP workspace, list workspaces, or release a workspace without closing its tabs.',
+    command: 'workspace',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        action: { type: 'string', enum: ['current', 'list', 'release'] },
+        workspaceId: { type: 'string', description: 'Workspace to release; defaults to current.' },
+      },
+      required: ['action'],
+    },
+    toArgs: (args) => ({ action: args.action, ...onlyDefined(args, ['workspaceId']) }),
+  },
+  {
+    name: 'tab_attach',
+    description:
+      'Atomically attach an existing tab to this workspace and preserve its current page state. Fails with TAB_BUSY when another workspace owns it.',
+    command: 'tab.attach',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        handle: { type: 'string', description: 'Stable tN handle from tab_list.' },
+        readonly: { type: 'boolean', description: 'Allow only observation commands.' },
+      },
+      required: ['handle'],
+    },
+    toArgs: (args) => ({ handle: args.handle, readonly: args.readonly === true }),
+  },
+  {
+    name: 'tab_detach',
+    description: 'Detach a tab from this workspace without closing or reloading it.',
+    command: 'tab.detach',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        handle: { type: 'string', description: 'Attached tab handle; defaults to current target.' },
+      },
+    },
+    toArgs: (args) => onlyDefined(args, ['handle']),
+  },
+  {
     name: 'tab_list',
-    description: 'List open tabs with their stable handles (tN), titles, and URLs.',
+    description:
+      'List open tabs with stable handles, titles, URLs, workspace ownership and attachability.',
     command: 'tab.list',
     inputSchema: {
       type: 'object',

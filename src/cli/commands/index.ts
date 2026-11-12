@@ -117,7 +117,7 @@ const COMMAND_GROUPS: Record<string, string[]> = {
   ],
   skill: ['skill'],
   state: ['cookies', 'storage', 'set', 'clipboard', 'state', 'network'],
-  tabs: ['tab', 'target', 'command', 'open', 'goto'],
+  tabs: ['tab', 'target', 'command', 'workspace', 'open', 'goto'],
   version: ['version'],
   webmcp: ['webmcp'],
   mcp: ['mcp'],

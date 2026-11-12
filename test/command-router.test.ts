@@ -61,6 +61,7 @@ export function singlePageInfo(count: number): Record<string, unknown> {
 
 export function createMinimalRouter(overrides?: {
   getTargetTab?: (tabId?: unknown) => Promise<{ id: number }>
+  createTab?: (url: string) => Promise<{ id: number; url: string }>
   snapshotTab?: (tabId: unknown, frameSelector: unknown, options?: unknown) => Promise<unknown>
   navigateTo?: (tabId: unknown, url: string) => Promise<unknown>
   listTabs?: () => Promise<unknown[]>
@@ -465,6 +466,7 @@ export function createMinimalRouter(overrides?: {
     },
     listTabs: (overrides?.listTabs ?? (async () => [])) as never,
     getTargetTab: (overrides?.getTargetTab ?? (async () => ({ id: 1 }))) as never,
+    createTab: overrides?.createTab,
     sendDebuggerCommand: async (
       tabId: number,
       method: string,

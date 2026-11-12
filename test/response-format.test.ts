@@ -81,6 +81,29 @@ describe('response format', () => {
     expect(result).not.toHaveProperty('harEntry')
   })
 
+  test('concise tab list preserves explicit null workspace ownership', () => {
+    const result = presentCommandResult(
+      'tab.list',
+      {
+        tabs: [
+          {
+            handle: 't1',
+            title: 'Existing page',
+            url: 'https://example.com',
+            workspace: null,
+            attachment: null,
+            attachable: true,
+          },
+        ],
+      },
+      'concise',
+    )
+
+    expect(result).toMatchObject({
+      tabs: [{ workspace: null, attachment: null, attachable: true }],
+    })
+  })
+
   test('MCP advertises response_format and emits compact concise content', async () => {
     const server = new AutobrowserMcpServer({
       requestCommand: async () => ({

@@ -32,6 +32,9 @@ const KNOWN_TOOL_NAMES = [
   'get',
   'wait',
   'screenshot',
+  'workspace',
+  'tab_attach',
+  'tab_detach',
   'tab_list',
   'target',
   'command_control',
@@ -90,7 +93,7 @@ function okResult(result: unknown): CommandResponse {
 }
 
 describe('AutobrowserMcpServer.listTools', () => {
-  test('exposes all 51 tools with object-typed input schemas', () => {
+  test('exposes all 54 tools with object-typed input schemas', () => {
     const server = new AutobrowserMcpServer({ requestCommand: async () => okResult({}) })
     const tools = server.listTools()
 
@@ -1022,7 +1025,7 @@ describe('search interfaces', () => {
         },
       })
       expect(resumed.structuredContent).toEqual(secondPage)
-      expect(calls.at(-1)).toEqual({
+      expect(calls.at(-1)).toMatchObject({
         command: 'search',
         args: {
           query: 'error',
@@ -1032,6 +1035,7 @@ describe('search interfaces', () => {
           tabId: 't2',
           frame: '@f1',
           responseFormat: 'concise',
+          workspace: expect.stringMatching(/^mcp_[0-9a-f]+$/),
         },
       })
       for (const args of [
@@ -1075,14 +1079,14 @@ describe('search interfaces', () => {
           const valid = await client.callTool({ name, arguments: args })
           expect(valid.isError).toBeFalsy()
           expect(calls).toHaveLength(before + 1)
-          expect(calls.at(-1)).toEqual({ command: name, args })
+          expect(calls.at(-1)).toMatchObject({ command: name, args })
         }
         for (const action of name === 'cookies' ? ['get', 'list'] : ['get']) {
           const before = calls.length
           const valid = await client.callTool({ name, arguments: { action } })
           expect(valid.isError).toBeFalsy()
           expect(calls).toHaveLength(before + 1)
-          expect(calls.at(-1)).toEqual({ command: name, args: { action: 'get' } })
+          expect(calls.at(-1)).toMatchObject({ command: name, args: { action: 'get' } })
         }
       }
       const failure = await client.callTool({

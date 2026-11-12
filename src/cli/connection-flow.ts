@@ -427,11 +427,17 @@ export function createConnectionFlow(options: ConnectionFlowOptions): Connection
     if (['snapshot', 'search', 'eval'].includes(command)) {
       requestArgs.responseFormat = flags.responseFormat
     }
+    if (command === 'tab.list' && flags.responseFormatExplicitlySet) {
+      requestArgs.responseFormat = flags.responseFormat
+    }
     if (commandSupportsTabTarget(command) && requestArgs.tabId === undefined && flags.tab) {
       requestArgs.tabId = flags.tab
     }
     if (commandSupportsFrameTarget(command) && requestArgs.frame === undefined && flags.frame) {
       requestArgs.frame = flags.frame
+    }
+    if (flags.workspace && requestArgs.workspace === undefined) {
+      requestArgs.workspace = flags.workspace
     }
 
     try {

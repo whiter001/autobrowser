@@ -110,6 +110,25 @@ async function handleTab(rest: string[], context: CommandContext): Promise<numbe
       return payload.ok === false ? 1 : 0
     }
 
+    case 'attach': {
+      const handle = readRequiredArg(tabArgs[0], context, ['tab', 'attach'])
+      if (!handle) return 0
+      const readonly = tabArgs.includes('--readonly')
+      for (const value of tabArgs.slice(1)) {
+        if (value !== '--readonly') throw new Error(`unsupported tab attach option: ${value}`)
+      }
+      await requestAndWrite(context, 'tab.attach', { handle, readonly })
+      return 0
+    }
+
+    case 'detach': {
+      const handle = tabArgs[0]
+      if (helpRequested(handle, context, ['tab', 'detach'])) return 0
+      if (handle?.startsWith('--')) throw new Error(`unsupported tab detach option: ${handle}`)
+      await requestAndWrite(context, 'tab.detach', handle ? { handle } : {})
+      return 0
+    }
+
     case 'select': {
       const handle = readRequiredArg(tabArgs[0], context, ['tab', 'select'])
       if (!handle) {
@@ -133,6 +152,19 @@ async function handleTab(rest: string[], context: CommandContext): Promise<numbe
       return throwCommandError(`tab action is not implemented: ${tabAction}`)
     }
   }
+}
+
+async function handleWorkspace(rest: string[], context: CommandContext): Promise<number | void> {
+  const resolution = resolveCommandAction(rest[0], 'workspace', context, ['workspace'])
+  if (resolution.kind === 'help') return 0
+  if (resolution.kind !== 'action') return context.writeHelp(['workspace'])
+  if (resolution.action === 'release' && rest[1]?.startsWith('--')) {
+    throw new Error(`unsupported workspace release option: ${rest[1]}`)
+  }
+  return await runActionCommand(context, 'workspace', {
+    action: resolution.action,
+    ...(resolution.action === 'release' && rest[1] ? { workspaceId: rest[1] } : {}),
+  })
 }
 
 async function handleTarget(rest: string[], context: CommandContext): Promise<number | void> {
@@ -361,7 +393,11 @@ async function handleOpenOrGoto(
     else args.selector = parsedArgs.selector
   }
 
-  const payload = await context.requestCommand(context.flags.server, 'goto', args)
+  const payload = await context.requestCommand(
+    context.flags.server,
+    command === 'open' && context.flags.workspace ? 'open' : 'goto',
+    args,
+  )
 
   if (shouldOpenInNewTab(payload)) {
     const fallbackPayload = await createTabAndWait(context, url, parsedArgs)
@@ -394,6 +430,7 @@ export const tabCommandRegistry: CommandRegistry = {
   tab: handleTab,
   target: handleTarget,
   command: handleCommandControl,
+  workspace: handleWorkspace,
   open: (rest, context) => handleOpenOrGoto('open', rest, context),
   goto: (rest, context) => handleOpenOrGoto('goto', rest, context),
 }

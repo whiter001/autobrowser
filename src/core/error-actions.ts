@@ -175,6 +175,32 @@ export const ERROR_ACTIONS: Record<string, ErrorAction> = {
     retryable: false,
     action: "Run 'tab list' to see live handles; a closed tab cannot be recovered.",
   },
+  TAB_BUSY: {
+    retryable: true,
+    action:
+      "Choose an attachable tab from 'tab list', or ask the owning workspace to detach it; do not force ownership.",
+  },
+  TAB_NOT_ATTACHED: {
+    retryable: false,
+    action: "Run 'tab attach <tN>' from the current workspace before operating this tab.",
+  },
+  WORKSPACE_IDENTITY_UNAVAILABLE: {
+    retryable: false,
+    action:
+      'Set AUTOBROWSER_CALLER_ID to a stable caller identity, or pass --workspace <id> explicitly.',
+  },
+  WORKSPACE_READONLY: {
+    retryable: false,
+    action: 'Use an observation command, or reattach the tab without readonly mode.',
+  },
+  WORKSPACE_REQUIRED: {
+    retryable: false,
+    action: 'Set AUTOBROWSER_WORKSPACE=auto or pass --workspace <id>.',
+  },
+  WORKSPACE_TARGET_REQUIRED: {
+    retryable: false,
+    action: "Run 'tab attach <tN>' to reuse a page or 'tab new [url]' to create one.",
+  },
   UNAUTHORIZED: {
     retryable: false,
     action: "Run 'autobrowser connect' so the CLI and relay share the current token.",

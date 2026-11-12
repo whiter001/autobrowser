@@ -1,4 +1,5 @@
 import type { CommandExecutionContext } from './command-queue.js'
+import type { WorkspaceState } from '../../src/core/workspaces.js'
 import type {
   CommandErrorInfo,
   ConnectionErrorInfo,
@@ -257,6 +258,7 @@ export interface ExtensionState {
   session: SessionState
   network: NetworkState
   initScripts: InitScriptRecord[]
+  workspaces: WorkspaceState
 }
 
 export type TabInput = number | string | null | undefined
@@ -311,6 +313,11 @@ export interface TabSummary {
   pinned: boolean
   status: string
   windowId: number | null
+  workspace?: string | null
+  attachment?: 'owned' | 'readonly' | null
+  attachable?: boolean
+  lastActiveAt?: string
+  leaseExpiresAt?: string
 }
 
 /** 命令成功响应中回显的目标 tab 上下文元数据，取不到的字段为 null */
@@ -321,6 +328,7 @@ export interface CommandMeta {
   pageEpoch: number | null
   url: string | null
   title: string | null
+  workspace?: string | null
   /** 目标 tab 当前有未处理 dialog 时的描述；没有则缺省不附 */
   dialog?: { type: string; message: string; openedAt: string }
   /** 目标 tab 生效中的仿真覆盖摘要（只含设置过的键）；无覆盖则缺省不附 */

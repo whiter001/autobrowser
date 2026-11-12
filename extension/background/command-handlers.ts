@@ -267,12 +267,28 @@ export function createCommandHandlers({
     throw new Error(`unsupported wait type: ${waitType}`)
   }
 
-  async function closeTabs(tabId: TabInput, closeAll: boolean) {
+  async function closeTabs(tabId: TabInput, closeAll: boolean, workspace: string | null) {
     if (closeAll) {
       const tabs = await tabsQuery({ currentWindow: true })
-      const tabIds = tabs.map((tab) => tab.id).filter((candidate) => typeof candidate === 'number')
+      const tabIds = workspace
+        ? Array.from(state.workspaces.attachments.values())
+            .filter(
+              (attachment) => attachment.workspaceId === workspace && attachment.mode === 'owned',
+            )
+            .map((attachment) => attachment.tabId)
+        : tabs.map((tab) => tab.id).filter((candidate) => typeof candidate === 'number')
       if (tabIds.length > 0) await tabsRemove(tabIds)
-      return { closed: true, all: true, count: tabIds.length }
+      if (workspace) {
+        for (const id of tabIds) state.workspaces.attachments.delete(id)
+        const record = state.workspaces.workspaces.get(workspace)
+        if (record && tabIds.includes(record.targetTabId ?? -1)) record.targetTabId = null
+      }
+      return {
+        closed: true,
+        all: true,
+        count: tabIds.length,
+        ...(workspace ? { workspace, tabIds } : {}),
+      }
     }
     const tab = await getTargetTab(tabId)
     await tabsRemove([tab.id])
@@ -291,7 +307,17 @@ export function createCommandHandlers({
     return await handleDiagnosticsCommand(scope)
   })
   register(
-    ['tab.list', 'tab.select', 'tab.new', 'tab.close', 'target', 'command'],
+    [
+      'workspace',
+      'tab.list',
+      'tab.attach',
+      'tab.detach',
+      'tab.select',
+      'tab.new',
+      'tab.close',
+      'target',
+      'command',
+    ],
     async ({ scope }) => await handleTabsCommand(scope),
   )
 
@@ -645,7 +671,7 @@ export function createCommandHandlers({
     return reloadResult
   })
   register(['close'], async ({ scope }) => {
-    return await closeTabs(scope.tabId, readBooleanArg(scope.args, 'all'))
+    return await closeTabs(scope.tabId, readBooleanArg(scope.args, 'all'), scope.workspace)
   })
   register(['window'], async ({ scope }) => {
     if (scope.action === 'new') return await createWindow()

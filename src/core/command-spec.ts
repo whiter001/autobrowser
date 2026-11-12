@@ -437,6 +437,7 @@ function validateCommandArgsShape(command: string, args: unknown): void {
   }
   readOptionalNonNegativeIntegerField(normalizedArgs, 'limit', command)
   readStringField(normalizedArgs, 'cursor', command, { required: false })
+  readStringField(normalizedArgs, 'workspace', command, { required: false })
 
   switch (command) {
     case 'extension': {
@@ -1133,6 +1134,15 @@ function validateCommandArgsShape(command: string, args: unknown): void {
     case 'close':
       readBooleanField(normalizedArgs, 'all', command)
       return
+    case 'workspace':
+      readStringField(normalizedArgs, 'action', command)
+      readStringField(normalizedArgs, 'workspaceId', command, { required: false })
+      return
+    case 'tab.attach':
+      readTabInputField(normalizedArgs, 'handle', command)
+      readBooleanField(normalizedArgs, 'readonly', command)
+      return
+    case 'tab.detach':
     case 'tab.select':
     case 'tab.close':
       readTabInputField(normalizedArgs, 'handle', command)

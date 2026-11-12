@@ -95,6 +95,8 @@ export interface CommandRunScope {
   command: string
   /** 原始参数 */
   args: CommandArgs
+  /** 当前调用方 workspace；null 表示兼容旧模式 */
+  workspace: string | null
   /** 命令的二级动作 */
   action: string
   /** network 等命令的三级子动作 */

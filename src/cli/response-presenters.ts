@@ -125,9 +125,25 @@ export function presentCommandResult(
   if ((command === 'tab.list' || command === 'tab') && Array.isArray(value.tabs)) {
     return concisePagination({
       ...value,
-      tabs: value.tabs.map((tab) =>
-        pickFields(tab, ['handle', 'title', 'url', 'active', 'pinned', 'status']),
-      ),
+      tabs: value.tabs.map((tab) => {
+        const summary = pickFields(tab, [
+          'handle',
+          'title',
+          'url',
+          'active',
+          'pinned',
+          'status',
+          'workspace',
+          'attachment',
+          'attachable',
+        ])
+        if (!isRecord(tab) || !isRecord(summary)) return summary
+        return {
+          ...summary,
+          ...('workspace' in tab ? { workspace: tab.workspace } : {}),
+          ...('attachment' in tab ? { attachment: tab.attachment } : {}),
+        }
+      }),
     })
   }
 

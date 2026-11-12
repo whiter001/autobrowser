@@ -529,11 +529,12 @@ export async function createRuntime(options: RuntimeOptions = {}): Promise<Runti
   async function dispatchExtensionCommand(
     command: string,
     args: Record<string, unknown> = {},
+    options: { trackCommand?: boolean } = {},
   ): Promise<unknown> {
     validateCommandArgs(command, args)
     const budgetMs = getCommandRequestBudgetMs(command, args, requestTimeoutMs)
     const downloadOutputPath = command === 'download' ? resolveDownloadOutputPath(args) : null
-    setLastCommand(command, args)
+    if (options.trackCommand !== false) setLastCommand(command, args)
 
     const connectionTimeoutMs = Math.min(requestTimeoutMs, 10_000)
     const socket = await connection.waitForConnection(connectionTimeoutMs)
@@ -646,7 +647,18 @@ export async function createRuntime(options: RuntimeOptions = {}): Promise<Runti
         "Build and reload the current extension, confirm recovery with 'status', then retry 'run'."
       throw error
     }
-    const tabId = resolveCommandTabId(args)
+    let tabId = resolveCommandTabId(args)
+    if (typeof args.workspace === 'string' && args.workspace.trim()) {
+      const assertion = await dispatchExtensionCommand(
+        'workspace',
+        { action: 'assert', workspace: args.workspace, ...(tabId === null ? {} : { tabId }) },
+        { trackCommand: false },
+      )
+      if (assertion && typeof assertion === 'object' && 'tabId' in assertion) {
+        const assertedTabId = (assertion as { tabId?: unknown }).tabId
+        if (typeof assertedTabId === 'number') tabId = assertedTabId
+      }
+    }
     if (tabId === null) {
       const error = new Error('no target tab available for Playwright run') as ErrorWithCode
       error.code = 'STALE_TAB_HANDLE'

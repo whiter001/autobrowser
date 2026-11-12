@@ -1,5 +1,7 @@
 import { getHomeDir } from '../core/protocol.js'
 import { readSession } from '../core/sessions.js'
+import { normalizeWorkspaceId } from '../core/workspaces.js'
+import { resolveAutomaticWorkspaceId } from './caller-identity.js'
 import { parseCli } from './flags.js'
 import type { CliFlags } from './types.js'
 
@@ -36,6 +38,20 @@ export async function resolveInvocation(argv: string[]): Promise<Invocation> {
     if (!flags.serverExplicitlySet && !flags.ipcPortExplicitlySet) {
       flags.server = `http://127.0.0.1:${session.ipcPort}`
     }
+  }
+
+  const requestedWorkspace =
+    flags.workspace ||
+    process.env.AUTOBROWSER_WORKSPACE?.trim() ||
+    (command === 'workspace' ? 'auto' : '')
+  if (requestedWorkspace) {
+    if (flags.engine !== 'chromium') {
+      throw new Error('workspace mode is only supported by the Chromium extension')
+    }
+    flags.workspace =
+      requestedWorkspace === 'auto'
+        ? await resolveAutomaticWorkspaceId()
+        : normalizeWorkspaceId(requestedWorkspace)
   }
 
   return { flags, args, homeDir }

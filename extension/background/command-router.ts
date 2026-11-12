@@ -7,6 +7,7 @@ import { createCommandHandlers } from './command-handlers.js'
 import { createNetworkCommandHandler } from './command-router-network.js'
 import { createSessionCommandHandler } from './command-router-session.js'
 import { createTabsCommandHandler } from './command-router-tabs.js'
+import { createWorkspaceManager } from './workspaces.js'
 import type { CommandRunScope } from './command-router-context.js'
 import { getCommandRequestBudgetMs } from '../../src/core/command-budget.js'
 import { commandSupportsTabTarget, validateCommandArgs } from '../../src/core/command-spec.js'
@@ -93,6 +94,7 @@ interface CommandRouterDependencies {
   webmcp: WebMcpDomain
   listTabs: () => Promise<TabSummary[]>
   getTargetTab: (tabId: TabInput) => Promise<TabWithId>
+  createTab?: (url: string) => Promise<chrome.tabs.Tab | undefined>
   sendDebuggerCommand: <TResult = unknown>(
     tabId: number,
     method: string,
@@ -124,9 +126,11 @@ export function createCommandRouter({
   webmcp,
   listTabs,
   getTargetTab,
+  createTab,
   sendDebuggerCommand,
 }: CommandRouterDependencies) {
   const commandQueue = createCommandQueue()
+  const workspaceManager = createWorkspaceManager({ state, getTargetTab, createTab })
   const { handleBatchCommand } = createBatchCommandHandler(executeCommand)
   const { buildCommandMeta, attachCommandMeta } = createCommandMetaBuilder({ state, getTargetTab })
   const { handleDiagnosticsCommand } = createDiagnosticsCommandHandler({ state, tracing, video })
@@ -137,6 +141,7 @@ export function createCommandRouter({
     extensionControl,
     listTabs,
     getTargetTab,
+    workspaceManager,
     commandQueue,
     cancelTrackedCommand,
     resolveCommandQueueKey,
@@ -258,7 +263,10 @@ export function createCommandRouter({
   const CONTROL_COMMANDS = new Set([
     'extension',
     'status',
+    'workspace',
     'tab.list',
+    'tab.attach',
+    'tab.detach',
     'tab.select',
     'tab.new',
     'tab.close',
@@ -329,6 +337,17 @@ export function createCommandRouter({
     let context = options.context
     const { request } = options
     context?.throwIfCancelled()
+    const workspace = readStringArg(args, 'workspace').trim() || null
+    if (workspace && command === 'batch' && Array.isArray(args.steps)) {
+      args = {
+        ...args,
+        steps: args.steps.map((step) =>
+          isRecord(step) && isRecord(step.args)
+            ? { ...step, args: { ...step.args, workspace } }
+            : step,
+        ),
+      }
+    }
     validateCommandArgs(command, args)
 
     const requestedTabId = readTabInputArg(args, 'tabId')
@@ -345,22 +364,74 @@ export function createCommandRouter({
     const limit = readOptionalNumberArg(args, 'limit')
     const cursor = readStringArg(args, 'cursor')
 
-    // fallback note 与查询口径都要用固定之前的目标。
+    // fallback note 与旧模式的全局查询口径都要用固定之前的目标。
     const targetTabIdBeforeCommand = state.targeting.targetTabId
-    const queryTargetTabId = resolveEffectiveTargetTabId(explicitTabTarget)
+    const legacyQueryTargetTabId = resolveEffectiveTargetTabId(explicitTabTarget)
     const networkControl =
       command === 'network' && action === 'har' && ['stop', 'status', 'recover'].includes(subaction)
-    const pinnedTabId =
-      CONTROL_COMMANDS.has(command) || networkControl
-        ? null
-        : await pinCommandTargetTabId(command, explicitTabTarget)
+    let pinnedTabId: number | null = null
+    if (workspace) {
+      const workspaceGlobalCommand = [
+        'workspace',
+        'status',
+        'extension',
+        'tab.list',
+        'tab.new',
+        'tab.attach',
+        'tab.detach',
+      ].includes(command)
+      const workspaceTargetCommand =
+        commandSupportsTabTarget(command) ||
+        command === 'open' ||
+        ['tab.select', 'tab.close'].includes(command) ||
+        (command === 'target' && action === 'set') ||
+        (command === 'command' && action === 'reset')
+      if (
+        !workspaceGlobalCommand &&
+        workspaceTargetCommand &&
+        !(command === 'window' && action === 'new')
+      ) {
+        if (command === 'open') {
+          try {
+            pinnedTabId = await workspaceManager.resolveCommandTab(
+              workspace,
+              command,
+              args,
+              explicitTabTarget,
+            )
+          } catch (error) {
+            if ((error as ErrorWithCode).code !== 'WORKSPACE_TARGET_REQUIRED') throw error
+            const created = await workspaceManager.createWorkspaceTab(workspace, url)
+            const tab = isRecord(created.tab) ? created.tab : {}
+            if (typeof tab.id !== 'number') throw new Error('workspace open created no target tab')
+            pinnedTabId = tab.id
+          }
+        } else {
+          pinnedTabId = await workspaceManager.resolveCommandTab(
+            workspace,
+            command,
+            args,
+            explicitTabTarget,
+          )
+        }
+      }
+    } else {
+      pinnedTabId =
+        CONTROL_COMMANDS.has(command) || networkControl
+          ? null
+          : await pinCommandTargetTabId(command, explicitTabTarget)
+    }
     const tabId: TabInput = typeof pinnedTabId === 'number' ? pinnedTabId : explicitTabTarget
+    const queryTargetTabId = workspace
+      ? (pinnedTabId ?? legacyQueryTargetTabId)
+      : legacyQueryTargetTabId
 
     await assertNoOpenDialog(command, tabId)
 
     const scope: CommandRunScope = {
       command,
       args,
+      workspace,
       action,
       subaction,
       url,
@@ -377,6 +448,9 @@ export function createCommandRouter({
 
     async function runWithMeta() {
       context?.throwIfCancelled()
+      if (workspace && pinnedTabId !== null) {
+        await workspaceManager.resolveCommandTab(workspace, command, args, pinnedTabId)
+      }
       await assertNoOpenDialog(command, tabId)
       const executionFrame =
         pinnedTabId === null
@@ -392,10 +466,26 @@ export function createCommandRouter({
       if (evalTabId !== null && context?.signal) {
         context.signal.addEventListener('abort', terminateEval, { once: true })
       }
+      const stopLease =
+        workspace && pinnedTabId !== null
+          ? workspaceManager.startCommandLease(workspace, command, args, pinnedTabId)
+          : () => {}
       let result: unknown
       try {
         result = await commandHandlers.handle({ scope, executionFrame, context, request })
+        if (workspace && command === 'close' && args.all === true && isRecord(result)) {
+          if (Array.isArray(result.tabIds)) {
+            for (const id of result.tabIds) {
+              if (typeof id === 'number') await workspaceManager.detach(workspace, id)
+            }
+          }
+        }
+        if (workspace && command === 'window' && action === 'new' && isRecord(result)) {
+          if (typeof result.tabId === 'number')
+            await workspaceManager.attach(workspace, result.tabId)
+        }
       } finally {
+        stopLease()
         if (evalTabId !== null) context?.signal?.removeEventListener('abort', terminateEval)
       }
 
@@ -421,7 +511,11 @@ export function createCommandRouter({
         pinnedTabId,
         targetTabIdBeforeCommand,
       })
-      return attachCommandMeta(result, meta)
+      const withMeta = attachCommandMeta(result, meta)
+      if (workspace && isRecord(withMeta) && isRecord(withMeta.meta)) {
+        return { ...withMeta, meta: { ...withMeta.meta, workspace } }
+      }
+      return withMeta
     }
 
     const runsInQueue = !options.skipQueue && !CONTROL_COMMANDS.has(command) && !networkControl

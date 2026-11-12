@@ -40,6 +40,7 @@ export const HELP_ROOT: HelpNode = helpNode(
     '--response-format <concise|detailed>  response detail level (default concise)',
     '--server <url>',
     '--session <name>  select a named session (before the command)',
+    '--workspace <id|auto>  isolate caller targets in the shared browser (before the command)',
     '--engine <chromium|firefox|webkit>  use the extension or WebDriver (before the command)',
     '--webdriver-url <url>  override geckodriver/safaridriver URL',
     '--relay-port <port>',
@@ -213,28 +214,67 @@ export const HELP_ROOT: HelpNode = helpNode(
       'Expose core autobrowser commands as an MCP server over stdio (for Claude Desktop and other MCP clients).',
       'autobrowser mcp',
     ),
-    helpNode('tab', 'Manage tabs.', 'autobrowser tab <list|new|select|close>', undefined, [
-      helpNode(
-        'list',
-        'List tabs with stable handles in the form t<Chrome tabId>; read the returned handle instead of guessing t1/t2.',
-        'autobrowser tab list [--active] [--current-window] [--filter <text>] [--limit <n>] [--cursor <token>] [--page <n>] [--page-size <n>]',
-      ),
-      helpNode(
-        'new',
-        'Open a new tab.',
-        'autobrowser tab new [url] [--wait-for url <pattern>|selector <sel>] [--timeout-ms <ms>]',
-        [
-          'Wait on the newly created handle (not the active tab); failures retain result.tab.',
-          '--timeout-ms sets the post-creation wait budget (default 30000 ms); requires --wait-for.',
-        ],
-      ),
-      helpNode('select', 'Select a tab by handle.', 'autobrowser tab select <tN>'),
-      helpNode(
-        'close',
-        'Close the current tab or a specific tab (use `close all` to close all tabs).',
-        'autobrowser tab close [tN]',
-      ),
-    ]),
+    helpNode(
+      'workspace',
+      'Isolate an AI caller target while sharing the current browser profile and login state.',
+      'autobrowser workspace [current|list|release] [workspace-id]',
+      [
+        'Use --workspace <id> or AUTOBROWSER_WORKSPACE=auto once per caller; subsequent commands inherit it.',
+        'release detaches tabs without closing, reloading, or resetting them.',
+      ],
+      [
+        helpNode(
+          'current',
+          'Show the current workspace and attached tabs.',
+          'autobrowser workspace current',
+        ),
+        helpNode('list', 'List known workspaces and their tab ids.', 'autobrowser workspace list'),
+        helpNode(
+          'release',
+          'Release a workspace without changing its pages.',
+          'autobrowser workspace release [workspace-id]',
+        ),
+      ],
+    ),
+    helpNode(
+      'tab',
+      'Manage tabs and workspace attachments.',
+      'autobrowser tab <list|new|attach|detach|select|close>',
+      undefined,
+      [
+        helpNode(
+          'list',
+          'List tabs with stable handles and workspace ownership; read the returned handle instead of guessing t1/t2.',
+          'autobrowser tab list [--active] [--current-window] [--filter <text>] [--limit <n>] [--cursor <token>] [--page <n>] [--page-size <n>]',
+        ),
+        helpNode(
+          'new',
+          'Open a new tab and bind it to the current workspace when workspace mode is enabled.',
+          'autobrowser tab new [url] [--wait-for url <pattern>|selector <sel>] [--timeout-ms <ms>]',
+          [
+            'Wait on the newly created handle (not the active tab); failures retain result.tab.',
+            '--timeout-ms sets the post-creation wait budget (default 30000 ms); requires --wait-for.',
+          ],
+        ),
+        helpNode(
+          'attach',
+          'Atomically reuse an existing tab in the current workspace without changing its page state.',
+          'autobrowser tab attach <tN> [--readonly]',
+          ['Fails with TAB_BUSY when another workspace owns the tab.'],
+        ),
+        helpNode(
+          'detach',
+          'Detach a tab from the current workspace without closing or reloading it.',
+          'autobrowser tab detach [tN]',
+        ),
+        helpNode('select', 'Select a tab by handle.', 'autobrowser tab select <tN>'),
+        helpNode(
+          'close',
+          'Close the current tab or a specific tab (use `close all` to close all tabs; workspace mode limits close all to owned tabs).',
+          'autobrowser tab close [tN]',
+        ),
+      ],
+    ),
     helpNode(
       'target',
       'Inspect or change the persistent target tab.',

@@ -1,4 +1,5 @@
 import type { DialogState, EmulationOverrides, ExtensionState } from './types.js'
+import { createWorkspaceState } from '../../src/core/workspaces.js'
 
 /**
  * 初始化扩展运行时状态：连接、目标、网络、媒体等子状态各自带默认值。
@@ -61,5 +62,6 @@ export function createExtensionState(defaultRelayPort: number): ExtensionState {
       harMaxBodyBytes: 256 * 1024,
     },
     initScripts: [],
+    workspaces: createWorkspaceState(),
   }
 }

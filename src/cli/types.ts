@@ -11,6 +11,7 @@ export interface CliFlags {
   responseFormatExplicitlySet: boolean
   server: string
   session: string
+  workspace: string | null
   engine: 'chromium' | 'firefox' | 'webkit'
   webdriverUrl: string
   relayPort: number

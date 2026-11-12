@@ -56,7 +56,8 @@ export const COMMAND_ACTIONS = {
   webmcp: { actions: ['list', 'call'] },
   extension: { actions: ['info', 'reload', 'reconnect'] },
   skill: { actions: ['sync', 'status'] },
-  tab: { actions: ['list', 'new', 'select', 'close'] },
+  tab: { actions: ['list', 'new', 'attach', 'detach', 'select', 'close'] },
+  workspace: { actions: ['current', 'list', 'release'], defaultAction: 'current' },
   target: { actions: ['show', 'clear', 'active', 'set'], defaultAction: 'show' },
   command: { actions: ['list', 'status', 'cancel', 'reset'], defaultAction: 'list' },
   session: {
