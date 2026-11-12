@@ -66,6 +66,25 @@ describe('CLI parse-time error contract', () => {
     expect(payload.error.details).toMatchObject({ command: 'snap', candidates: ['snapshot'] })
   })
 
+  test('a Playwright text= selector is rejected as JSON before any request is sent', async () => {
+    // text= 不是 CSS，交给扩展只会得到原生 DOMException；必须在 CLI 层就给出可执行的修复建议
+    const result = await runCli(['scrollintoview', 'text=十连抽'])
+
+    expect(result.exitCode).toBe(1)
+    expect(result.fetchCalls).toHaveLength(0)
+    expect(result.stderr).toBe('')
+
+    const payload = cliErrorPayload(result.stdout)
+    expect(payload.error.code).toBe('CLI_INVALID_ARGUMENT')
+    expect(payload.error.details).toMatchObject({
+      command: 'scrollintoview',
+      selector: 'text=十连抽',
+      usage: 'autobrowser scrollintoview <selector>',
+    })
+    expect(payload.error.suggestedAction).toContain('autobrowser find text')
+    expect(payload.error.suggestedAction).not.toContain('command list')
+  })
+
   test('text mode keeps errors on stderr with the suggested action', async () => {
     const result = await runCli(['--raw', 'click'])
 

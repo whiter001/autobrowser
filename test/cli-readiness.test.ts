@@ -48,9 +48,35 @@ async function runCli(argv: string[], replies: unknown[]) {
   }
 }
 
-const success = { ok: true, result: { waited: true } }
+const waitMeta = {
+  tabHandle: 't7',
+  tabId: 42,
+  frame: null,
+  pageEpoch: 2,
+  url: 'https://example.com/',
+  title: 'Example Domain',
+}
+const success = { ok: true, result: { waited: true, meta: waitMeta } }
 const failure = { ok: false, error: { code: 'TIMEOUT', message: 'selector wait timed out' } }
 const created = { ok: true, result: { tab: { id: 42, handle: 't7', url: 'https://example.com' } } }
+// 等待成功后的最新摘要：与创建时不同，url/title 已是导航后的页面。
+const listed = {
+  ok: true,
+  result: {
+    tabs: [
+      {
+        id: 42,
+        handle: 't7',
+        title: 'Example Domain',
+        url: 'https://example.com/',
+        active: true,
+        pinned: false,
+        status: 'complete',
+        windowId: 1,
+      },
+    ],
+  },
+}
 
 describe('CLI navigation and media readiness', () => {
   for (const command of ['goto', 'open']) {
@@ -210,57 +236,88 @@ describe('CLI navigation and media readiness', () => {
     expect(error.message).toContain('network har recover')
   })
 
-  for (const waited of [success, failure]) {
-    test(`tab new binds new handle and preserves tab on wait ${waited.ok}`, async () => {
-      const result = await runCli(
-        [
-          '--tab',
-          't1',
-          '--frame',
-          '#content',
-          'tab',
-          'new',
-          'https://example.com',
-          '--wait-for',
-          'selector',
-          'article',
-          '--timeout-ms',
-          '45000',
-        ],
-        [created, waited],
-      )
-      expect(result.exitCode).toBe(waited.ok ? 0 : 1)
-      expect(result.requests).toEqual([
-        { command: 'tab.new', args: { url: 'https://example.com' } },
-        {
-          command: 'wait',
-          args: {
-            tabId: 't7',
-            frame: '#content',
-            type: 'selector',
-            selector: 'article',
-            state: 'visible',
-            timeout: 45000,
-          },
+  test('tab new binds new handle and preserves tab on wait failure', async () => {
+    const result = await runCli(
+      [
+        '--tab',
+        't1',
+        '--frame',
+        '#content',
+        'tab',
+        'new',
+        'https://example.com',
+        '--wait-for',
+        'selector',
+        'article',
+        '--timeout-ms',
+        '45000',
+      ],
+      [created, failure],
+    )
+    expect(result.exitCode).toBe(1)
+    expect(result.requests).toEqual([
+      { command: 'tab.new', args: { url: 'https://example.com' } },
+      {
+        command: 'wait',
+        args: {
+          tabId: 't7',
+          frame: '#content',
+          type: 'selector',
+          selector: 'article',
+          state: 'visible',
+          timeout: 45000,
         },
-      ])
-      const output = JSON.parse(result.stdout)
-      expect(output.ok).toBe(waited.ok)
-      expect(output.result.tab).toEqual(created.result.tab)
-      if (!waited.ok) expect(output.error).toEqual(failure.error)
-    })
-  }
+      },
+    ])
+    const output = JSON.parse(result.stdout)
+    expect(output.ok).toBe(false)
+    // 失败路径不刷新摘要，保留创建时的 tab
+    expect(output.result.tab).toEqual(created.result.tab)
+    expect(output.error).toEqual(failure.error)
+  })
+
+  test('tab new refreshes the created tab and meta after a successful wait', async () => {
+    const result = await runCli(
+      [
+        '--tab',
+        't1',
+        '--frame',
+        '#content',
+        'tab',
+        'new',
+        'https://example.com',
+        '--wait-for',
+        'selector',
+        'article',
+        '--timeout-ms',
+        '45000',
+      ],
+      [created, success, listed],
+    )
+    expect(result.exitCode).toBe(0)
+    expect(result.requests.map((request) => request.command)).toEqual([
+      'tab.new',
+      'wait',
+      'tab.list',
+    ])
+    expect(result.requests[2]).toEqual({ command: 'tab.list', args: { limit: 200 } })
+    const output = JSON.parse(result.stdout)
+    expect(output.ok).toBe(true)
+    expect(output.result.tab).toEqual(listed.result.tabs[0])
+    expect(output.result.meta).toEqual(waitMeta)
+  })
 
   test('tab new url condition uses the new handle', async () => {
     const result = await runCli(
       ['tab', 'new', 'https://example.com', '--wait-for', 'url', '#ready'],
-      [created, success],
+      [created, success, listed],
     )
     expect(result.requests[1]).toEqual({
       command: 'wait',
       args: { tabId: 't7', type: 'url', url: '#ready' },
     })
     expect(result.exitCode).toBe(0)
+    expect(JSON.parse(result.stdout).result.tab).toEqual(listed.result.tabs[0])
   })
 
   test('tab new missing handle fails without waiting on an ambient tab', async () => {

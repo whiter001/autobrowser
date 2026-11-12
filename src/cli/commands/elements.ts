@@ -1,6 +1,7 @@
 import { readFile, stat } from 'node:fs/promises'
 import path from 'node:path'
 import { DROP_MAX_FILE_BYTES, DROP_MAX_TOTAL_BYTES } from '../../core/command-spec.js'
+import { CLI_ERROR_CODES, CliUsageError } from '../cli-error.js'
 import { parseFindArgs, parseOptionalNumberArg } from '../parse.js'
 import { COMMAND_ACTIONS } from './actions.js'
 import {
@@ -329,11 +330,58 @@ async function handleDrop(rest: string[], context: CommandContext): Promise<numb
   return 0
 }
 
-const handleScrollIntoView = createSingleArgRequestCommand({
-  helpPath: ['scrollintoview'],
-  command: 'scrollintoview',
-  argName: 'selector',
-})
+const SCROLL_INTO_VIEW_USAGE = 'autobrowser scrollintoview <selector>'
+
+/**
+ * 拒绝 Playwright 风格的 text= 引擎选择器。
+ *
+ * 扩展侧的 scrollintoview 只认 CSS/@eN，text= 会一路走到 Element.matches 才抛原生
+ * DOMException，调用方只能看到含糊的 EXTENSION_COMMAND_ERROR。在这里提前拦下，
+ * 让错误直接说明该换成什么写法。
+ */
+function rejectTextEngineSelector(selector: string): void {
+  // Playwright 的选择器引擎前缀大小写不敏感，这里按同一语义处理，并容忍前导空白
+  if (!/^text=/i.test(selector.trimStart())) {
+    return
+  }
+
+  throw new CliUsageError(
+    `scrollintoview does not support Playwright text= selectors: ${selector}`,
+    {
+      code: CLI_ERROR_CODES.INVALID_ARGUMENT,
+      details: {
+        command: 'scrollintoview',
+        selector,
+        usage: SCROLL_INTO_VIEW_USAGE,
+        supported: 'CSS selector or @eN ref (e.g. "#footer", ".item", "@e12")',
+      },
+      suggestedAction:
+        `Use a CSS selector or @eN ref with '${SCROLL_INTO_VIEW_USAGE}', ` +
+        "or locate the element by text with 'autobrowser find text <text> click'.",
+    },
+  )
+}
+
+async function handleScrollIntoView(
+  rest: string[],
+  context: CommandContext,
+): Promise<number | void> {
+  // 与 createSingleArgRequestCommand 保持一致：-- 之后的内容才是 selector
+  const args = rest[0] === '--' ? rest.slice(1) : rest
+  const selector = readRequiredArg(args[0], context, ['scrollintoview'])
+  if (!selector) {
+    return 0
+  }
+  rejectTextEngineSelector(selector)
+  if (args.length > 1) {
+    throw new CliUsageError(`unexpected extra argument for scrollintoview: ${args[1]}`, {
+      details: { path: 'scrollintoview' },
+    })
+  }
+
+  await requestAndWrite(context, 'scrollintoview', { selector })
+  return 0
+}
 
 export const elementCommandRegistry: CommandRegistry = {
   click: handleClick,

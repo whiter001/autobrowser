@@ -257,6 +257,48 @@ interface GotoArgs {
   selector?: string
 }
 
+function responseMeta(payload: CommandResponse): Record<string, unknown> | null {
+  if (!isRecord(payload.result)) return null
+  return isRecord(payload.result.meta) ? payload.result.meta : null
+}
+
+function nonEmptyString(value: unknown): value is string {
+  return typeof value === 'string' && value.length > 0
+}
+
+/**
+ * 等待/导航成功后用 tab.list 的最新摘要刷新 result.tab。
+ *
+ * tab.new 返回的是创建瞬间的摘要（url 常为 about:blank），而导航发生在之后的请求里。
+ * 这里只做"读回同一 tab"，不改变命令成败：tab.list 不可用时退化为用响应 meta 的
+ * url/title 更新原摘要，因为等待本身已经成功，摘要不新不该让调用方重新执行导航。
+ */
+async function refreshTabSummary(
+  context: CommandContext,
+  target: string | number,
+  originalTab: Record<string, unknown>,
+  lastSuccess: CommandResponse,
+): Promise<Record<string, unknown>> {
+  const meta = responseMeta(lastSuccess)
+  try {
+    const listed = await context.requestCommand(context.flags.server, 'tab.list', { limit: 200 })
+    const tabs =
+      isRecord(listed.result) && Array.isArray(listed.result.tabs) ? listed.result.tabs : []
+    const match = tabs.find(
+      (candidate) =>
+        isRecord(candidate) && (candidate.handle === target || candidate.id === target),
+    )
+    if (isRecord(match)) return match
+  } catch {
+    // 摘要刷新失败与等待结果无关，继续走下方兜底。
+  }
+
+  const fallback = { ...originalTab }
+  if (meta && nonEmptyString(meta.url)) fallback.url = meta.url
+  if (meta && nonEmptyString(meta.title)) fallback.title = meta.title
+  return fallback
+}
+
 function buildWaitForArgs(options: GotoArgs): Record<string, unknown> {
   const args: Record<string, unknown> = { type: options.waitFor }
   if (options.waitFor === 'url') args.url = options.waitUrl
@@ -317,7 +359,18 @@ async function createTabAndWait(
       return { ...navigation, result: { ...result, wait: navigation } }
     }
     if (!options.waitFor) {
-      return { ...navigation, result: { ...result, wait: navigation.result } }
+      // 纯导航等待：最后一次成功响应就是 goto，直接拿它的 meta 并刷新摘要。
+      const meta = responseMeta(navigation)
+      const refreshed = await refreshTabSummary(context, target, tab, navigation)
+      return {
+        ...navigation,
+        result: {
+          ...result,
+          wait: navigation.result,
+          tab: refreshed,
+          ...(meta ? { meta } : {}),
+        },
+      }
     }
   }
 
@@ -333,12 +386,28 @@ async function createTabAndWait(
       error: { message: error instanceof Error ? error.message : String(error) },
     }
   }
+  if (!waited.ok) {
+    // 失败路径保留创建时的摘要，不做任何额外请求：wait 的可见性失败不代表导航失败，
+    // 但也不该用未验证的摘要冒充当前页面状态。
+    return {
+      ...waited,
+      result: {
+        ...result,
+        ...(navigation ? { navigation: navigation.result } : {}),
+        wait: waited,
+      },
+    }
+  }
+  const meta = responseMeta(waited)
+  const refreshed = await refreshTabSummary(context, target, tab, waited)
   return {
     ...waited,
     result: {
       ...result,
       ...(navigation ? { navigation: navigation.result } : {}),
-      wait: waited.ok ? waited.result : waited,
+      tab: refreshed,
+      ...(meta ? { meta } : {}),
+      wait: waited.result,
     },
   }
 }

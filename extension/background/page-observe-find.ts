@@ -371,6 +371,36 @@ ${PAGE_CONTEXT_FIND_HELPERS_SOURCE}
           return kept;
         };
 
+        // text 策略的 broad 兜底会收进所有含文本的可见节点，html/nav 等祖先会和真正的叶子
+        // 同时命中；祖先在 DOM 顺序里靠前，first 会直接选中它。这里自底向上标记"含有另一个
+        // 匹配后代"的节点并剔除，只保留最深层匹配：平行分支与独立同文节点没有祖先关系，
+        // 因此全部保留，剩余节点的 DOM 顺序也不变。
+        const dropMatchedAncestors = (broadMatches) => {
+          if (broadMatches.length < 2) {
+            return broadMatches;
+          }
+
+          const matchedNodes = new Set(broadMatches.map((candidate) => candidate.node));
+          const ancestorNodes = new Set();
+          for (const candidate of broadMatches) {
+            let current = candidate.node.parentElement || candidate.node.parentNode;
+            while (current) {
+              if (matchedNodes.has(current)) {
+                ancestorNodes.add(current);
+              }
+              const parent = current.parentElement || current.parentNode;
+              if (parent) {
+                current = parent;
+                continue;
+              }
+              // 跨越 shadow 边界：DocumentFragment/ShadowRoot 没有父元素，但 host 仍算祖先
+              const root = typeof current.getRootNode === 'function' ? current.getRootNode() : null;
+              current = root && root.host ? root.host : null;
+            }
+          }
+          return broadMatches.filter((candidate) => !ancestorNodes.has(candidate.node));
+        };
+
         // 按 DOM 顺序收集全部匹配，first/last/nth 都基于这个序列取值
         const matches = [];
 
@@ -400,10 +430,15 @@ ${PAGE_CONTEXT_FIND_HELPERS_SOURCE}
             }
           }
           if (matches.length === 0) {
+            const broadMatches = [];
             for (const node of getBroadTextCandidates()) {
               if (matchesText(readText(node), query)) {
-                matches.push({ node, exact: isExactText(readText(node), query) });
+                broadMatches.push({ node, exact: isExactText(readText(node), query) });
               }
+            }
+            // 只收敛 text 兜底序列；后面的 requireUnique/first/last/nth 都作用于过滤结果
+            for (const candidate of dropMatchedAncestors(broadMatches)) {
+              matches.push(candidate);
             }
           }
         }

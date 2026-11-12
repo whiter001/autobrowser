@@ -320,6 +320,105 @@ describe('find candidates nested dedupe', () => {
   })
 })
 
+describe('find text broad fallback drops matching ancestors', () => {
+  // 没有可交互候选时 text 策略才走 broad 兜底，此时 html/nav/div/span 会因同一段文本全部命中
+  function nestedTextChain() {
+    const span = new MockNode('SPAN')
+    span.innerText = 'Deep'
+    const container = new MockNode('DIV')
+    container.innerText = 'Deep'
+    container.children = [span]
+    const nav = new MockNode('NAV')
+    nav.innerText = 'Deep'
+    nav.children = [container]
+    const html = new MockNode('HTML')
+    html.innerText = 'Deep'
+    html.children = [nav]
+    return { html, nav, container, span, nodes: [html, nav, container, span] }
+  }
+
+  test('default first returns the deepest match instead of html/nav', async () => {
+    const { span, nodes } = nestedTextChain()
+
+    const result = await createHarness(nodes).find({ strategy: 'text', query: 'Deep' })
+
+    expect(result.match).toMatchObject({ tag: 'span', ref: '@e1#p1' })
+    expect(span.attributes.get('data-autobrowser-ref')).toBe('e1')
+  })
+
+  test('explicit position=first returns the same deepest match', async () => {
+    const { nodes } = nestedTextChain()
+
+    const result = await createHarness(nodes).find({
+      strategy: 'text',
+      query: 'Deep',
+      position: 'first',
+    })
+
+    expect(result.match).toMatchObject({ tag: 'span' })
+  })
+
+  test('candidates exclude the matching ancestors', async () => {
+    const { nodes } = nestedTextChain()
+
+    const result = await createHarness(nodes).find({
+      strategy: 'text',
+      query: 'Deep',
+      candidates: 5,
+    })
+
+    expect(candidateTags(result.candidates as Candidate[])).toEqual(['span'])
+  })
+
+  test('parallel same-text leaves all survive and keep DOM order', async () => {
+    const first = setRect(new MockNode('SPAN'), 0, 0, 40, 20)
+    first.innerText = 'Deep'
+    const second = setRect(new MockNode('SPAN'), 100, 0, 40, 20)
+    second.innerText = 'Deep'
+    const container = new MockNode('DIV')
+    container.innerText = 'Deep'
+    container.children = [first, second]
+    const nav = new MockNode('NAV')
+    nav.innerText = 'Deep'
+    nav.children = [container]
+    const html = new MockNode('HTML')
+    html.innerText = 'Deep'
+    html.children = [nav]
+    const nodes = [html, nav, container, first, second]
+    const h = createHarness(nodes)
+    const options = { strategy: 'text', query: 'Deep' }
+
+    expect(
+      candidateTags((await h.find({ ...options, candidates: 5 })).candidates as Candidate[]),
+    ).toEqual(['span', 'span'])
+    // 过滤后仍是原 DOM 顺序：first/last/nth 都基于这个序列
+    expect((await h.find({ ...options, position: 'first' })).match).toMatchObject({
+      tag: 'span',
+      x: 20,
+    })
+    expect((await h.find({ ...options, position: 'nth=2' })).match).toMatchObject({
+      tag: 'span',
+      x: 120,
+    })
+    expect((await h.find({ ...options, position: 'last' })).match).toMatchObject({
+      tag: 'span',
+      x: 120,
+    })
+  })
+
+  test('requireUnique no longer reports the dropped ancestors as ambiguity', async () => {
+    const { nodes } = nestedTextChain()
+
+    const result = await createHarness(nodes).find({
+      strategy: 'text',
+      query: 'Deep',
+      requireUnique: true,
+    })
+
+    expect(result.match).toMatchObject({ tag: 'span' })
+  })
+})
+
 describe('find candidates dedupe leaves matching semantics untouched', () => {
   test('frees a Top-N slot that the duplicate wrapper used to occupy', async () => {
     const { anchor, menuItem } = menuItemWithAnchor()

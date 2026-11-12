@@ -180,7 +180,7 @@ autobrowser 是一个面向 Chrome/Edge 的浏览器自动化 CLI，通过本地
 
 - `wait time 3`、`wait ms 3` 和 `wait 3` 都表示 **3 毫秒**。
 - 如果要等 3 秒，请写成 `wait time 3000`。
-- `--timeout <ms>` 也是毫秒。
+- 超时参数名按命令区分，单位均为毫秒：`goto`/`open`/`tab new`/`eval`/`run` 使用 `--timeout-ms <ms>`；`wait` 也使用 `--timeout-ms <ms>`，`--timeout <ms>` 只是 legacy alias。
 - 如果页面仍在加载，优先使用 `open <url>` 后再配合短等待，或直接用 `wait --load networkidle`。
 
 ## 导航结果、脚本注入与断连恢复
@@ -199,6 +199,7 @@ autobrowser 是一个面向 Chrome/Edge 的浏览器自动化 CLI，通过本地
 ## 搜索、引用与歧义恢复
 
 - `search "error" --context 3 --limit 20` 只读搜索可见文本。`context` 为 0–50；`limit` 限制匹配窗口数（默认 20、最大 200；0 不返回窗口或续读游标），但每次仍最多返回 200 行、100000 UTF-8 字节，单个合并窗口也可能截断。
+- 普通 query 始终按字面量匹配，`|` 也只是普通字符；正则必须写成 `/pattern/flags`，例如 `search "/签到|打卡|抽奖/" --context 2 --limit 20`。`g` 标志会被忽略，非法正则直接报错。`emptyReason:NO_MATCH` 只表示当前匹配模式（字面量或正则）在范围内无结果，不代表页面没有内容。
 - `--start-line <n>` 是 1 起算的正安全整数，默认 1。若 `truncated:true` 且有 `nextStartLine:201`，保持查询和 tab/frame 不变，运行 `search "error" --context 3 --limit 20 --start-line 201` 续读；MCP 对应 `search({query:"error", context:3, limit:20, startLine:201})`。页面变更后行号可能变化，应重新搜索确认。
 - `snapshot`/`find` 在同一 document 内不复用已分配 ref；这不代表被删除节点仍有效。导航后 ref stale，删除/重渲染后先刷新 snapshot。
 - `snapshot --changed` 包含 checked/disabled 等状态变化与 `removedRefs`；基线按 document/frame 隔离。输出有 200000 UTF-8 字节预算，`truncated` 时用 `--target`/`--role` 收窄或 `--changed` 查看后续变化；只有实际交付的元素进入基线。
@@ -253,7 +254,7 @@ autobrowser 是一个面向 Chrome/Edge 的浏览器自动化 CLI，通过本地
 - `find role`、`find text`、`find label` 适合先语义定位，再点击、读取或填写。
 - `tab list` 返回形如 `t<Chrome tabId>` 的稳定句柄，例如 `t2058764132`，优先用返回的 `tab select tN`，不要依赖原始 tab id 或猜测短序号。
 - 页面命令超时后先运行 `status` 和 `command list`。标签页控制走独立控制面，可继续用 `tab list`、`target clear`、`tab close <tN>` 恢复；不要连续重试并堆积命令。运行中的 `eval` 被取消或超时后会定向执行 `Runtime.terminateExecution`，其他 CDP 操作仍可能继续在浏览器侧完成。`status.lastError` 保留历史最后错误，可结合 `lastSuccessAt` 判断它是否早于最近成功。
-- `goto/open/reload/tab new` 可用 `--wait-until none|commit|domcontentloaded|interactive|load|networkidle|domquiet` 选择等待阶段，并可追加 `--wait-for url <pattern>` 或 `--wait-for selector <sel>` 等最终结果。`tab new` 固定等待新建 handle；等待失败仍在 `result.tab` 保留新 tab。旧扩展缺少 wait 执行证明时 CLI 返回失败，不伪造已等待。
+- `goto/open/reload/tab new` 可用 `--wait-until none|commit|domcontentloaded|interactive|load|networkidle|domquiet` 选择等待阶段，并可追加 `--wait-for url <pattern>` 或 `--wait-for selector <sel>` 等最终结果。`tab new` 固定等待新建 handle；等待失败仍在 `result.tab` 保留新 tab。等待成功后 `result.tab`/`result.meta` 会刷新为最后观察到的页面状态，`wait.meta` 仍可用于核对等待时的上下文。旧扩展缺少 wait 执行证明时 CLI 返回失败，不伪造已等待。
 - `cookies list` 是 `cookies get` 的别名，支持同样的 `--domain` / `--path` 过滤。
 - `network requests` 默认只看目标 tab 的当前页面 epoch；跨 tab 或跨页面历史必须显式使用 `--all-tabs` / `--all-epochs`，headers/body 用 `network request <id>` 或 `--include-details` 获取。默认按最旧记录分页（每页 50，`--page` / `--page-size` 调页；`--limit` 是 `--page-size` 的别名），调试最新流量加 `--sort newest`；`total` 是过滤后的总数，不是当前页条数。
 - HAR start 默认包含目标 tab 的全部请求，可用 `--include-pattern <text>` 只采 URL 子串命中项，或用 `--exclude-pattern <text>` 排除页面播放器/无关流量；过滤不会删除全局请求历史。并发任务保存 start 返回的 captureId，stop 传 `--capture-id <id>` 防止误停其他 capture；stop 加 `--include-urls` 可直接返回本次捕获的去重 URL。中断或 stop 超时后先查 `network har status` 的 `checkpoint.recoverable`，再用 `network har recover [output.har]`；大采集可用 `--timeout-ms <ms>` 延长预算。stop/recover 的 `meta.har` 回显 captureId、原 capture tab 和请求数。

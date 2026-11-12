@@ -3,12 +3,43 @@ import { cliErrorPayload, runCli, type FetchResponseLike } from './command-line-
 
 const createdPayload = {
   ok: true,
-  result: { tab: { id: 42, handle: 't42', url: 'about:blank' } },
+  result: { tab: { id: 42, handle: 't42', url: 'about:blank', status: 'loading' } },
 }
 
+// 导航/等待后的真实摘要：URL 已不是创建时的 about:blank。
+const listedPayload = {
+  ok: true,
+  result: {
+    tabs: [
+      {
+        id: 42,
+        handle: 't42',
+        title: 'Example Domain',
+        url: 'https://example.com/',
+        active: true,
+        pinned: false,
+        status: 'complete',
+        windowId: 1,
+      },
+    ],
+  },
+}
+
+const gotoMeta = {
+  tabHandle: 't42',
+  tabId: 42,
+  frame: null,
+  pageEpoch: 2,
+  url: 'https://example.com/',
+  title: 'Example Domain',
+}
+
+const waitMeta = { ...gotoMeta, pageEpoch: 3, url: 'https://example.com/#ready' }
+
 function navigationFetchMock(
-  gotoPayload: unknown = { ok: true, result: { settled: true, phase: 'settle' } },
-  waitPayload: unknown = { ok: true, result: { waited: true } },
+  gotoPayload: unknown = { ok: true, result: { settled: true, phase: 'settle', meta: gotoMeta } },
+  waitPayload: unknown = { ok: true, result: { waited: true, meta: waitMeta } },
+  tabListPayload: unknown = listedPayload,
 ) {
   return async (_url: string, init: { body?: string } = {}): Promise<FetchResponseLike> => {
     const body = init.body ? JSON.parse(init.body) : null
@@ -17,7 +48,9 @@ function navigationFetchMock(
         ? createdPayload
         : body?.command === 'goto'
           ? gotoPayload
-          : waitPayload
+          : body?.command === 'tab.list'
+            ? tabListPayload
+            : waitPayload
     return {
       ok: true,
       async json() {
@@ -61,11 +94,56 @@ describe('tab new navigation wait options', () => {
           domQuietMs: 100,
         },
       },
+      { command: 'tab.list', args: { limit: 200 } },
     ])
     expect(JSON.parse(result.stdout).result).toMatchObject({
       tab: { handle: 't42' },
       wait: { settled: true },
     })
+  })
+
+  test('refreshes the created tab from tab.list after navigation-only success', async () => {
+    const result = await runCli(
+      ['tab', 'new', 'https://example.com', '--wait-until', 'load'],
+      null,
+      { fetchImpl: navigationFetchMock() },
+    )
+
+    expect(result.exitCode).toBe(0)
+    const output = JSON.parse(result.stdout)
+    // 创建时的 about:blank 摘要必须被最新 tab 摘要替换，meta 来自最后一次成功响应（goto）。
+    expect(output.result.tab).toEqual(listedPayload.result.tabs[0])
+    expect(output.result.meta).toEqual(gotoMeta)
+    expect(output.result.tab.url).not.toBe('about:blank')
+  })
+
+  test('refreshes the created tab and copies meta from the successful wait', async () => {
+    const result = await runCli(
+      [
+        'tab',
+        'new',
+        'https://example.com',
+        '--wait-until',
+        'load',
+        '--wait-for',
+        'selector',
+        '#ready',
+      ],
+      null,
+      { fetchImpl: navigationFetchMock() },
+    )
+
+    expect(result.exitCode).toBe(0)
+    expect(result.fetchCalls.map((call) => call.body?.command)).toEqual([
+      'tab.new',
+      'goto',
+      'wait',
+      'tab.list',
+    ])
+    const output = JSON.parse(result.stdout)
+    expect(output.result.tab).toEqual(listedPayload.result.tabs[0])
+    // 最后一次成功响应是 wait，而不是更早的 goto
+    expect(output.result.meta).toEqual(waitMeta)
   })
 
   test('forwards every real navigation wait mode to goto', async () => {
@@ -75,7 +153,11 @@ describe('tab new navigation wait options', () => {
         null,
         { fetchImpl: navigationFetchMock() },
       )
-      expect(result.fetchCalls.map((call) => call.body?.command)).toEqual(['tab.new', 'goto'])
+      expect(result.fetchCalls.map((call) => call.body?.command)).toEqual([
+        'tab.new',
+        'goto',
+        'tab.list',
+      ])
       expect(result.fetchCalls[1].body?.args).toMatchObject({
         tabId: 't42',
         waitUntil: mode,
@@ -105,7 +187,9 @@ describe('tab new navigation wait options', () => {
         command: 'wait',
         args: { tabId: 't42', type: 'selector', selector: '#ready', state: 'visible' },
       },
+      { command: 'tab.list', args: { limit: 200 } },
     ])
+    expect(JSON.parse(waitForOnly.stdout).result.tab).toEqual(listedPayload.result.tabs[0])
 
     const combined = await runCli(
       [
@@ -125,11 +209,39 @@ describe('tab new navigation wait options', () => {
       'tab.new',
       'goto',
       'wait',
+      'tab.list',
     ])
     expect(JSON.parse(combined.stdout).result).toMatchObject({
       navigation: { settled: true },
       wait: { waited: true },
     })
+  })
+
+  test('falls back to meta url/title when the tab summary refresh fails', async () => {
+    for (const tabListPayload of [
+      { ok: false, error: { code: 'COMMAND_TIMEOUT', message: 'tab list timed out' } },
+      { ok: true, result: { tabs: [] } },
+      { ok: true, result: { tabs: [{ id: 7, handle: 't7', url: 'https://other.example/' }] } },
+    ]) {
+      const result = await runCli(
+        ['tab', 'new', 'https://example.com', '--wait-for', 'selector', '#ready'],
+        null,
+        { fetchImpl: navigationFetchMock(undefined, undefined, tabListPayload) },
+      )
+
+      // 摘要刷新只是补充信息：失败或找不到该 tab 不能把已成功的等待改成失败。
+      expect(result.exitCode).toBe(0)
+      const output = JSON.parse(result.stdout)
+      expect(output.ok).toBe(true)
+      expect(output.result.tab).toMatchObject({
+        handle: 't42',
+        url: waitMeta.url,
+        title: waitMeta.title,
+        // 保留创建时的状态，不伪造 complete
+        status: 'loading',
+      })
+      expect(output.result.meta).toEqual(waitMeta)
+    }
   })
 
   test('retains the created tab when navigation or the later condition fails', async () => {
@@ -144,6 +256,10 @@ describe('tab new navigation wait options', () => {
       },
     )
     expect(navigationFailure.exitCode).toBe(1)
+    expect(navigationFailure.fetchCalls.map((call) => call.body?.command)).toEqual([
+      'tab.new',
+      'goto',
+    ])
     expect(JSON.parse(navigationFailure.stdout).result.tab).toMatchObject({ handle: 't42' })
 
     const conditionFailure = await runCli(
@@ -157,7 +273,12 @@ describe('tab new navigation wait options', () => {
       },
     )
     expect(conditionFailure.exitCode).toBe(1)
-    expect(JSON.parse(conditionFailure.stdout).result.tab).toMatchObject({ handle: 't42' })
+    // 失败路径不做摘要刷新
+    expect(conditionFailure.fetchCalls.map((call) => call.body?.command)).toEqual([
+      'tab.new',
+      'wait',
+    ])
+    expect(JSON.parse(conditionFailure.stdout).result.tab).toEqual(createdPayload.result.tab)
   })
 
   test('rejects unsupported or incomplete options before creating a tab', async () => {

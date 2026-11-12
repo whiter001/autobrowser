@@ -805,6 +805,77 @@ describe('cli command routing', () => {
     })
   })
 
+  test('routes @eN scroll into view refs to the extension', async () => {
+    const result = await runCli(['scrollintoview', '@e12'])
+
+    expect(result.exitCode).toBe(0)
+    expect(result.fetchCalls).toHaveLength(1)
+    expect(result.fetchCalls[0].body).toEqual({
+      command: 'scrollintoview',
+      args: {
+        selector: '@e12',
+      },
+    })
+  })
+
+  test('keeps the -- separator for scroll into view selectors', async () => {
+    const result = await runCli(['scrollintoview', '--', '.draw-button'])
+
+    expect(result.exitCode).toBe(0)
+    expect(result.fetchCalls).toHaveLength(1)
+    expect(result.fetchCalls[0].body).toEqual({
+      command: 'scrollintoview',
+      args: {
+        selector: '.draw-button',
+      },
+    })
+  })
+
+  test('documents the scroll into view selector syntax in help', async () => {
+    const result = await runCli(['help', 'scrollintoview'])
+
+    expect(result.exitCode).toBe(0)
+    expect(result.fetchCalls).toHaveLength(0)
+    expect(result.stdout).toContain('@eN')
+    expect(result.stdout).toContain('text=')
+    expect(result.stdout).toContain('not supported')
+  })
+
+  test('rejects Playwright text= selectors before calling the extension', async () => {
+    const result = await runCli(['scrollintoview', 'text=十连抽'])
+
+    // 关键点：不发请求，避免扩展在 Element.matches 才抛原生 DOMException
+    expect(result.exitCode).toBe(1)
+    expect(result.fetchCalls).toHaveLength(0)
+    expect(result.stderr).toBe('')
+
+    const payload = cliErrorPayload(result.stdout)
+    expect(payload.ok).toBe(false)
+    expect(payload.error.code).toBe('CLI_INVALID_ARGUMENT')
+    expect(payload.error.details).toMatchObject({
+      command: 'scrollintoview',
+      selector: 'text=十连抽',
+      usage: 'autobrowser scrollintoview <selector>',
+    })
+    expect(String((payload.error.details as { supported?: string }).supported)).toContain(
+      'CSS selector',
+    )
+    expect(String((payload.error.details as { supported?: string }).supported)).toContain('@eN')
+    expect(payload.error.suggestedAction).toContain('find text')
+    expect(payload.error.suggestedAction).not.toContain('command list')
+    expect(payload.error.suggestedAction).not.toContain('status')
+  })
+
+  test('rejects text= selectors case-insensitively', async () => {
+    const result = await runCli(['scrollintoview', 'TEXT=Save'])
+
+    expect(result.exitCode).toBe(1)
+    expect(result.fetchCalls).toHaveLength(0)
+    const payload = cliErrorPayload(result.stdout)
+    expect(payload.error.code).toBe('CLI_INVALID_ARGUMENT')
+    expect(payload.error.details).toMatchObject({ selector: 'TEXT=Save' })
+  })
+
   test('routes stable frame refs to the extension', async () => {
     const result = await runCli(['frame', '@f1'])
 

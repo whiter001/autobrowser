@@ -559,6 +559,9 @@ export const HELP_ROOT: HelpNode = helpNode(
       'scrollintoview',
       'Scroll a selector into view.',
       'autobrowser scrollintoview <selector>',
+      [
+        'Supports CSS selectors and @eN refs only; Playwright text= selectors are not supported. Use "find text <text> click" to act on elements by text.',
+      ],
     ),
     helpNode('drag', 'Drag between elements.', 'autobrowser drag <startSelector> <endSelector>'),
     helpNode(
