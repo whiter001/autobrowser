@@ -1,3 +1,5 @@
+import { writeFile } from 'node:fs/promises'
+import path from 'node:path'
 import { resolveConnectLaunchConfig, resolveExtensionId } from '../core/config.js'
 import { getExtensionUrl } from '../core/extension.js'
 import { DEFAULT_RELAY_PORT, getTokenPath, writeJsonFile } from '../core/protocol.js'
@@ -10,6 +12,7 @@ import {
 } from '../core/command-spec.js'
 import {
   getStatus,
+  isRecord,
   requestCommandRaw,
   shouldTriggerAutoConnect,
   type CommandResponse,
@@ -418,13 +421,18 @@ export function createConnectionFlow(options: ConnectionFlowOptions): Connection
     return await requestCommandRaw(baseUrl, command, args, { token: target.token })
   }
 
-  async function requestCommand(
+  async function requestCommandInternal(
     baseUrl: string,
     command: string,
     args: object = {},
   ): Promise<CommandResponse> {
     const requestArgs: Record<string, unknown> = { ...args }
-    if (['snapshot', 'search', 'eval'].includes(command)) {
+    // handler 显式写了 responseFormat（例如 eval --output 默认走 detailed）时不能被
+    // 根级 flags 的默认值覆盖；只有没设置时才补默认值。
+    if (
+      ['snapshot', 'search', 'eval'].includes(command) &&
+      requestArgs.responseFormat === undefined
+    ) {
       requestArgs.responseFormat = flags.responseFormat
     }
     if (command === 'tab.list' && flags.responseFormatExplicitlySet) {
@@ -564,6 +572,60 @@ export function createConnectionFlow(options: ConnectionFlowOptions): Connection
     }
 
     return payload
+  }
+
+  /**
+   * eval 大结果落盘：把完整 result 写成 2 空格缩进的 JSON（末尾换行），只回小型摘要。
+   * 放在连接层而不是 CLI handler，是因为 MCP 的 eval 复用同一条请求路径；
+   * output 是客户端侧的落盘选项，不参与扩展参数校验，也不会发给 relay。
+   */
+  async function writeEvalResultToFile(
+    payload: CommandResponse,
+    outputPath: string,
+  ): Promise<CommandResponse> {
+    if (payload.ok === false) {
+      return payload
+    }
+
+    const content = `${JSON.stringify(payload.result ?? null, null, 2)}\n`
+    await writeFile(outputPath, content, 'utf8')
+
+    // 扩展会把命令级 meta（目标标签页、对话框/仿真状态等）挂在对象结果里；
+    // 正文被移到文件后，这些执行上下文仍要留在返回值上。
+    const meta = isRecord(payload.result) ? payload.result.meta : undefined
+
+    return {
+      ...payload,
+      result: {
+        path: outputPath,
+        format: 'json',
+        bytes: Buffer.byteLength(content, 'utf8'),
+        ...(meta !== undefined ? { meta } : {}),
+      },
+    }
+  }
+
+  async function requestCommand(
+    baseUrl: string,
+    command: string,
+    args: object = {},
+  ): Promise<CommandResponse> {
+    const requestArgs: Record<string, unknown> = { ...args }
+    let outputPath: string | null = null
+
+    if (command === 'eval' && requestArgs.output !== undefined) {
+      const output = requestArgs.output
+      if (typeof output !== 'string' || !output.trim()) {
+        return createInvalidCommandArgsResponse(
+          new Error('invalid command arguments for eval: output must be a non-empty string'),
+        )
+      }
+      outputPath = path.resolve(output)
+      delete requestArgs.output
+    }
+
+    const payload = await requestCommandInternal(baseUrl, command, requestArgs)
+    return outputPath ? await writeEvalResultToFile(payload, outputPath) : payload
   }
 
   return {

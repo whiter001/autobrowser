@@ -102,6 +102,63 @@ describe('workspace target isolation', () => {
     })
   })
 
+  test('TAB_BUSY recovery names the actual owning workspace and tab', async () => {
+    const { router, snapshotCalls } = routerWithTabs()
+    await router.handleCommand({
+      command: 'tab.attach',
+      args: { workspace: 'owner-ws', handle: 't2' },
+    })
+
+    const promise = router.handleCommand({
+      command: 'snapshot',
+      args: { workspace: 'caller-ws', tabId: 2 },
+    })
+    await expect(promise).rejects.toMatchObject({ code: 'TAB_BUSY' })
+    const error = (await promise.catch((reason) => reason)) as {
+      message: string
+      suggestedAction: string
+      details: Record<string, unknown>
+    }
+
+    // 归属校验不变：调用方没有拿到页面，也没有被静默改绑
+    expect(snapshotCalls).toHaveLength(0)
+    expect(error.details).toMatchObject({
+      tabHandle: 't2',
+      workspace: 'owner-ws',
+      attachment: 'owned',
+    })
+    expect(error.message).toContain('t2')
+    expect(error.message).toContain('owner-ws')
+
+    // 同一工作流：给出可直接复制执行的完整命令
+    expect(error.suggestedAction).toContain('autobrowser --workspace owner-ws --tab t2 <command>')
+    // 不同工作流：从 tab list 选 attachable，或让持有方 detach，不得强制接管
+    expect(error.suggestedAction).toContain('autobrowser tab list')
+    expect(error.suggestedAction).toContain('attachable: true')
+    expect(error.suggestedAction).toContain('autobrowser --workspace owner-ws tab detach t2')
+    expect(error.suggestedAction).toContain('do not force takeover')
+    // 单 Agent 可选的退路，但不改变默认归属语义
+    expect(error.suggestedAction).toContain('autobrowser --no-workspace <command>')
+
+    // 建议来自实际归属，而不是写死的样例
+    await router.handleCommand({
+      command: 'tab.attach',
+      args: { workspace: 'other-ws', handle: 't1' },
+    })
+    const second = router.handleCommand({
+      command: 'snapshot',
+      args: { workspace: 'caller-ws', tabId: 1 },
+    })
+    await expect(second).rejects.toMatchObject({
+      code: 'TAB_BUSY',
+      details: { tabHandle: 't1', workspace: 'other-ws' },
+    })
+    const secondError = (await second.catch((reason) => reason)) as { suggestedAction: string }
+    expect(secondError.suggestedAction).toContain(
+      'autobrowser --workspace other-ws --tab t1 <command>',
+    )
+  })
+
   test('readonly attachments allow snapshots but reject writes and eval', async () => {
     const { router, snapshotCalls, clickCalls, evalCalls } = routerWithTabs()
     await router.handleCommand({

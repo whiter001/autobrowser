@@ -189,7 +189,7 @@ autobrowser snapshot --response-format detailed
 
 - `network/console/errors/actions/downloads/command` 默认最多 20 条，`--limit` 最大 100；`tab list` 和 route list 默认 50 条。使用响应里的 `pagination.nextCursor` 续页，并保持过滤条件不变；旧 `--page/--page-idx/--page-size` 仍兼容。
 - network 列表的 `rN` 是会话内稳定短引用，可直接传给 `network request`；旧 CDP ID 仍可使用。concise 详情去掉重复的 summary/HAR 结构，单个 body 最多 16KiB 并显式标记截断。
-- concise snapshot 默认最多 50 个元素、32KiB，`--limit <1..200>` 可调整元素上限但不提高字节预算；元素只带可操作字段（ref/tag/role/name/value/placeholder/type/href/disabled/checked），省略 text 与坐标，`--include-text` 可显式附带整页 text（`--changed` 仍是纯 diff）；search 默认 10 个窗口、100 行、32KiB；eval 默认结果上限 32KiB。`detailed` 完整保留旧字段与更高预算，是需要的兼容出口。
+- concise snapshot 默认最多 50 个元素、32KiB，`--limit <1..200>` 可调整元素上限但不提高字节预算；元素只带可操作字段（ref/tag/role/name/value/placeholder/type/href/disabled/checked），省略 text 与坐标，`--include-text` 可显式附带整页 text（`--changed` 仍是纯 diff）；search 默认 10 个窗口、100 行、32KiB；eval 默认结果上限 32KiB（指定 `--output <path>` 落盘时默认按 detailed 执行，不再受该上限约束）。`detailed` 完整保留旧字段与更高预算，是需要的兼容出口。
 - `--raw` 仍表示原始文本输出，不与显式 `--response-format` 混用。大截图、视频、trace 和 HAR 继续落盘后只返回路径与摘要。
 
 ## 状态检查
@@ -495,6 +495,10 @@ autobrowser tab close t2058764137
 ### eval 源码输入与 PowerShell
 
 `eval` 的源码输入按形态分流：`--expr '<script>'`（位置参数同理）只用于简单单行表达式。只要源码包含 CSS 选择器、JSON、正则、模板字符串或多行语句，就直接用 `--stdin` 或 `--file`，不要先拼一版内联转义再排错。一次性脚本走 `--stdin`；需要复用的脚本写成 `.js` 用 `--file`；`--base64` 只用于机器生成的传输，不作为人工默认写法。
+
+脚本默认在隔离的函数作用域中执行：顶层 `const`/`let`/`var`/`function` 不会留在页面全局，同一个脚本可原样重复执行，不需要手工包 IIFE；简单表达式仍返回 completion value（最后一个表达式的值）。脚本可直接使用顶层 `return` 和 `await`，多语句脚本用 `return` 返回结果。`--element` 的函数脚本同样隔离，也不影响原有的元素未找到（stale）判断。
+
+结果装不下终端时用 `--output <path>` 落盘：`eval` 把完整结果写成 2 空格缩进的 JSON（末尾换行），stdout 只留 `{ path, format: "json", bytes }` 这个小型摘要（`meta` 等执行上下文保留），不再把正文写进 stdout。相对路径按当前目录解析，同名文件会被覆盖，写文件失败按普通 CLI 错误返回。指定 `--output` 且没有显式 `--response-format` 时按 `detailed` 执行，因此默认不受 concise 的 32KiB 结果上限约束；显式 `--response-format concise` 仍保留 32KiB，显式 `--max-result-bytes <n>` 始终优先。MCP 的 `eval` 工具同样如此：传 `output` 且不传 `response_format` 时按 `detailed` 执行，显式 `response_format: "concise"` 才保留 32KiB 上限。落盘只改变结果的去向，不改变页面脚本的语义。
 
 PowerShell 用单引号 here-string 直通 stdin，`@'` 与结束的 `'@` 都必须独占行首：
 

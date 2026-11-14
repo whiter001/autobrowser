@@ -2,6 +2,8 @@ import { describe, expect, test } from 'bun:test'
 import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
+import { createConnectionFlow } from '../src/cli/connection-flow.js'
+import { parseCli } from '../src/cli/flags.js'
 import { cliErrorPayload, runCli } from './command-line-test-utils.js'
 
 describe('cli command routing', () => {
@@ -882,5 +884,44 @@ describe('cli command routing', () => {
         navigated: true,
       },
     })
+  })
+
+  test('connection flow keeps a response format the handler set explicitly', async () => {
+    const homeDir = await mkdtemp(path.join(os.tmpdir(), 'autobrowser-flow-'))
+    const flags = parseCli(['eval', '--expr', 'value']).flags
+    // 根级默认是 concise，handler 为 eval --output 注入的 detailed 不能被它覆盖
+    expect(flags.responseFormat).toBe('concise')
+
+    const bodies: unknown[] = []
+    const originalFetch = globalThis.fetch
+    globalThis.fetch = (async (_url: unknown, init?: { body?: string }) => {
+      bodies.push(JSON.parse(String(init?.body ?? '{}')))
+      return {
+        ok: true,
+        async json() {
+          return { ok: true, result: 42 }
+        },
+      }
+    }) as typeof fetch
+
+    try {
+      const flow = createConnectionFlow({
+        flags,
+        homeDir,
+        dependencies: {},
+        webDriverCommand: null,
+      })
+      const payload = await flow.requestCommand('http://127.0.0.1:57979', 'eval', {
+        script: 'value',
+        responseFormat: 'detailed',
+      })
+      expect(payload).toEqual({ ok: true, result: 42 })
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+
+    expect(bodies).toEqual([
+      { command: 'eval', args: { script: 'value', responseFormat: 'detailed' } },
+    ])
   })
 })

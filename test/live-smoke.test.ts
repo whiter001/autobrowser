@@ -830,6 +830,16 @@ suite('live browser smoke test', () => {
     expect(evalResponse.result).toBe('1')
   }, 30_000)
 
+  test('repeated eval scripts keep top-level declarations isolated', async () => {
+    const script =
+      'const liveScoped = document.title; var liveHelper = liveScoped.length; liveHelper > 0'
+    await expect(checkedCommand('eval', { script })).resolves.toBe(true)
+    // 第二次原样执行同一脚本：声明不能落到页面全局，否则这里会报 already declared
+    await expect(checkedCommand('eval', { script })).resolves.toBe(true)
+    await expect(checkedCommand('eval', { script: 'typeof liveScoped' })).resolves.toBe('undefined')
+    await expect(checkedCommand('eval', { script: 'typeof liveHelper' })).resolves.toBe('undefined')
+  }, 30_000)
+
   test('run exposes a real Playwright Page and releases exclusive tab access', async () => {
     await loadSmokePage()
     const running = command('run', {
@@ -911,6 +921,63 @@ suite('live browser smoke test', () => {
       ok: true,
       result: { value: 'from-cli' },
     })
+  }, 30_000)
+
+  test('eval CLI writes large results to --output instead of stdout', async () => {
+    await loadSmokePage()
+    const outputPath = path.join(homeDir, 'live-eval-output.json')
+    // 70KB 字符串超过 concise 的 32KiB 上限，只有 --output 默认 detailed 才能原样落盘
+    const result = await new Promise<{ code: number | null; stdout: string; stderr: string }>(
+      (resolve, reject) => {
+        const child = spawn(
+          process.execPath,
+          [
+            path.resolve(import.meta.dir, '..', 'src/cli.ts'),
+            '--server',
+            baseUrl,
+            'eval',
+            '--expr',
+            "'x'.repeat(70000)",
+            '--output',
+            outputPath,
+          ],
+          {
+            cwd: path.resolve(import.meta.dir, '..'),
+            env: { ...process.env, AUTOBROWSER_HOME: homeDir },
+            stdio: ['ignore', 'pipe', 'pipe'],
+          },
+        )
+        let stdout = ''
+        let stderr = ''
+        child.stdout.on('data', (chunk) => (stdout += String(chunk)))
+        child.stderr.on('data', (chunk) => (stderr += String(chunk)))
+        const timer = setTimeout(() => {
+          child.kill()
+          reject(new Error('eval CLI timed out'))
+        }, 20000)
+        child.once('error', reject)
+        child.once('exit', (code) => {
+          clearTimeout(timer)
+          resolve({ code, stdout, stderr })
+        })
+      },
+    )
+    expect(result.stderr).toBe('')
+    expect(result.code).toBe(0)
+
+    const content = await readFile(outputPath, 'utf8')
+    expect(Buffer.byteLength(content, 'utf8')).toBeGreaterThan(32 * 1024)
+    expect(JSON.parse(content)).toBe('x'.repeat(70000))
+
+    const payload = JSON.parse(result.stdout) as {
+      ok: boolean
+      result: { path: string; format: string; bytes: number }
+    }
+    expect(payload.ok).toBe(true)
+    expect(payload.result).toMatchObject({ path: outputPath, format: 'json' })
+    expect(payload.result.bytes).toBe(Buffer.byteLength(content, 'utf8'))
+    // 大正文只落盘，stdout 不应再出现结果内容
+    expect(result.stdout).not.toContain('xxxxxxxxxx')
   }, 30_000)
 
   test('run evaluates JavaScript through Playwright', async () => {

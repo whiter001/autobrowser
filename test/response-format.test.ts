@@ -1,7 +1,11 @@
 import { describe, expect, test } from 'bun:test'
+import { mkdtemp } from 'node:fs/promises'
+import os from 'node:os'
+import path from 'node:path'
 import { parseCli } from '../src/cli/flags.js'
 import { presentCommandResult } from '../src/cli/response-presenters.js'
 import { AutobrowserMcpServer } from '../src/cli/mcp.js'
+import { runCli } from './command-line-test-utils.js'
 
 describe('response format', () => {
   test('defaults to concise and accepts detailed explicitly', () => {
@@ -102,6 +106,23 @@ describe('response format', () => {
     expect(result).toMatchObject({
       tabs: [{ workspace: null, attachment: null, attachable: true }],
     })
+  })
+
+  test('eval --output defaults to detailed unless the format is explicit', async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), 'autobrowser-eval-format-'))
+    const outputPath = path.join(dir, 'result.json')
+
+    const defaulted = await runCli(['eval', '--expr', '1 + 1', '--output', outputPath], {
+      ok: true,
+      result: 2,
+    })
+    expect(defaulted.fetchCalls[0].body?.args?.responseFormat).toBe('detailed')
+
+    const explicit = await runCli(
+      ['eval', '--expr', '1 + 1', '--output', outputPath, '--response-format', 'concise'],
+      { ok: true, result: 2 },
+    )
+    expect(explicit.fetchCalls[0].body?.args?.responseFormat).toBe('concise')
   })
 
   test('MCP advertises response_format and emits compact concise content', async () => {

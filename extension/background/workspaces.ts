@@ -197,10 +197,19 @@ export function createWorkspaceManager({
   }
 
   function busyError(attachment: WorkspaceAttachment, tabId: number) {
+    const owner = attachment.workspaceId
+    const handle = `t${tabId}`
+    // 连续命令失败最常见的原因是自动 workspace 每次不同：必须把真实归属和句柄写进建议，
+    // 否则调用方只知道“忙”，不知道是换 workspace、换 tab 还是等租约。
+    const suggestedAction = [
+      `If this is the same workflow that owns the tab, rerun the command in the owning workspace: 'autobrowser --workspace ${owner} --tab ${handle} <command>'.`,
+      `Otherwise pick a free tab from 'autobrowser tab list' (attachable: true) and run 'autobrowser --workspace <your-workspace> tab attach <tN>', or ask workspace ${owner} to release it with 'autobrowser --workspace ${owner} tab detach ${handle}'; do not force takeover.`,
+      `A single agent that needs no isolation can drop workspaces with 'autobrowser --no-workspace <command>'.`,
+    ].join(' ')
     return workspaceError(
       'TAB_BUSY',
-      `tab t${tabId} is attached to workspace ${attachment.workspaceId}`,
-      "Choose an unattached tab from 'tab list', use 'tab detach' from the owning workspace, or retry after its lease expires.",
+      `tab ${handle} is attached to workspace ${owner}`,
+      suggestedAction,
       {
         tabHandle: `t${tabId}`,
         workspace: attachment.workspaceId,

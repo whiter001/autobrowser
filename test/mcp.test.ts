@@ -288,6 +288,61 @@ describe('AutobrowserMcpServer.callTool', () => {
     ])
   })
 
+  test('eval forwards output and rejects a non-string output', async () => {
+    const mock = recordingRequestCommand(
+      okResult({ path: 'C:/tmp/result.json', format: 'json', bytes: 12 }),
+    )
+    const server = new AutobrowserMcpServer({ requestCommand: mock, responseMode: 'both' })
+
+    const evalTool = server.listTools().find((tool) => tool.name === 'eval')!
+    expect(evalTool.inputSchema.properties?.output).toMatchObject({ type: 'string' })
+
+    const forwarded = await server.callTool('eval', {
+      script: 'document.body.innerText',
+      output: 'result.json',
+    })
+    expect(forwarded.isError).toBeFalsy()
+
+    // 显式 concise 不能被 output 的默认 detailed 覆盖
+    const explicitConcise = await server.callTool('eval', {
+      script: 'document.body.innerText',
+      output: 'result.json',
+      response_format: 'concise',
+    })
+    expect(explicitConcise.isError).toBeFalsy()
+
+    expect(mock.calls).toEqual([
+      {
+        command: 'eval',
+        args: {
+          script: 'document.body.innerText',
+          output: 'result.json',
+          responseFormat: 'detailed',
+        },
+      },
+      {
+        command: 'eval',
+        args: {
+          script: 'document.body.innerText',
+          output: 'result.json',
+          responseFormat: 'concise',
+        },
+      },
+    ])
+    expect(forwarded.structuredContent).toMatchObject({
+      path: 'C:/tmp/result.json',
+      format: 'json',
+      bytes: 12,
+    })
+
+    const invalid = await server.callTool('eval', { script: '1 + 1', output: 42 })
+    expect(invalid.isError).toBe(true)
+    expect(
+      (invalid.structuredContent as { error: { code: string; message: string } }).error,
+    ).toMatchObject({ code: 'CLI_INVALID_ARGUMENT', message: 'output must be a non-empty string' })
+    expect(mock.calls).toHaveLength(2)
+  })
+
   test('snapshot maps target to selector and passes roles array', async () => {
     const mock = recordingRequestCommand(okResult({ elements: [] }))
     const server = new AutobrowserMcpServer({ requestCommand: mock })

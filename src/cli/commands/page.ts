@@ -218,11 +218,13 @@ function extractEvalOptions(rest: string[]): {
   timeoutMs?: number
   element?: string
   maxResultBytes?: number
+  outputPath?: string
 } {
   const scriptRest: string[] = []
   let timeoutMs: number | undefined
   let element: string | undefined
   let maxResultBytes: number | undefined
+  let outputPath: string | undefined
 
   for (let index = 0; index < rest.length; index += 1) {
     const value = rest[index]
@@ -244,6 +246,15 @@ function extractEvalOptions(rest: string[]): {
       index += 1
       continue
     }
+    if (value === '--output') {
+      const output = rest[index + 1]
+      if (output === undefined || !output.trim()) {
+        throw new Error('missing value for --output')
+      }
+      outputPath = output
+      index += 1
+      continue
+    }
     if (value === '--element') {
       element = rest[index + 1]
       if (!element) throw new Error('missing value for --element')
@@ -262,7 +273,7 @@ function extractEvalOptions(rest: string[]): {
     scriptRest.push(value)
   }
 
-  return { scriptRest, timeoutMs, element, maxResultBytes }
+  return { scriptRest, timeoutMs, element, maxResultBytes, outputPath }
 }
 
 async function handleEval(rest: string[], context: CommandContext): Promise<number | void> {
@@ -270,7 +281,7 @@ async function handleEval(rest: string[], context: CommandContext): Promise<numb
     return 0
   }
 
-  const { scriptRest, timeoutMs, element, maxResultBytes } = parseOrThrow(() =>
+  const { scriptRest, timeoutMs, element, maxResultBytes, outputPath } = parseOrThrow(() =>
     extractEvalOptions(rest),
   )
   const script = await context.resolveEvalScript(scriptRest)
@@ -280,6 +291,15 @@ async function handleEval(rest: string[], context: CommandContext): Promise<numb
   }
   if (element !== undefined) args.element = element
   if (maxResultBytes !== undefined) args.maxResultBytes = maxResultBytes
+  if (outputPath !== undefined) {
+    args.output = outputPath
+    // 落盘时默认 detailed：concise 的 32KiB 上限会让一次正文抓取就失败，
+    // 而文件本来就是为了承接 stdout 装不下的大结果。显式 --response-format
+    // 和 --max-result-bytes 仍然按用户选择生效（后者在扩展侧优先级更高）。
+    if (!context.flags.responseFormatExplicitlySet) {
+      args.responseFormat = 'detailed'
+    }
+  }
   const payload = await context.requestCommand(context.flags.server, 'eval', args)
   context.writeResult(payload)
   return 0

@@ -34,7 +34,14 @@ export function createEvalCommands(pageContext: PageInputContext) {
       })()`
     }
     try {
-      const { value } = await evaluateInTabContext(tabId, effectiveScript, options)
+      // 直接以全局脚本执行会把顶层 const/let 留在页面词法环境，第二次运行同一脚本即报
+      // "already declared"。包进函数作用域的 direct eval：仍返回 completion value（简单
+      // 表达式的值不变），声明与函数只在 wrapper 内可见，用户可以原样重复执行。
+      const { value } = await evaluateInTabContext(
+        tabId,
+        `(() => eval(${JSON.stringify(effectiveScript)}))()`,
+        options,
+      )
       if (
         elementSelector &&
         value &&
@@ -54,7 +61,7 @@ export function createEvalCommands(pageContext: PageInputContext) {
         throw error
       }
       // 表达式必须保留直接求值语义；仅编译期确认存在顶层 return/await 时才按 async 函数体重试，
-      // 避免普通脚本被包装后不再返回表达式值，也避免其他错误导致脚本重复执行。
+      // async IIFE 同样是函数作用域，声明不会泄漏；其他错误直接抛出，不让脚本重复执行。
       const { value } = await evaluateInTabContext(
         tabId,
         `(async () => {\n${effectiveScript}\n})()`,

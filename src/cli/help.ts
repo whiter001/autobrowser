@@ -373,7 +373,7 @@ export const HELP_ROOT: HelpNode = helpNode(
     helpNode(
       'eval',
       'Run a small page-context JavaScript snippet for read-only extraction or state checks.',
-      'autobrowser eval [--stdin|--file <path>|--base64] [--timeout-ms <ms>] [--max-result-bytes <n>] [--element <selector>] [--expr] <script>',
+      'autobrowser eval [--stdin|--file <path>|--base64] [--timeout-ms <ms>] [--max-result-bytes <n>] [--output <path>] [--element <selector>] [--expr] <script>',
       [
         '--expr <script>  pass script source as an explicit option value; only for simple single-line expressions',
         '--element <selector>  pass the CSS/@eN target as el to a function such as el => el.textContent',
@@ -382,6 +382,7 @@ export const HELP_ROOT: HelpNode = helpNode(
         '--base64  decode a machine-generated base64 payload (transport only, not a default for hand-written sources)',
         '--timeout-ms <ms>  page evaluation timeout in milliseconds (--timeout is accepted as an alias for --timeout-ms; combining or repeating either name is an error)',
         '--max-result-bytes <n>  fail with EVAL_RESULT_TOO_LARGE when the JSON result exceeds n UTF-8 bytes; overrides the concise 32768-byte default (detailed has no default limit; results are not truncated)',
+        '--output <path>  write the full JSON result to this file (2-space indent, trailing newline) and print only { path, format: "json", bytes }; relative paths resolve against the current directory and existing files are overwritten. Implies detailed unless --response-format is explicit; --max-result-bytes still wins',
         'If the source contains a CSS selector, JSON, regex, template literals, or multiple lines, use --file or --stdin directly; do not start with inline shell escaping.',
         'One-off scripts go through --stdin; reusable scripts belong in a .js file passed to --file; --base64 is for machine-generated payloads, not a default for hand-written sources.',
         "PowerShell example (the two-space indent is help formatting only; @' and the closing '@ must each start at column 0):",

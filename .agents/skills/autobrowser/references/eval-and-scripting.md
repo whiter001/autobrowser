@@ -7,7 +7,7 @@
   - 需要复用或留档的脚本写成 `.js` 文件，用 `--file <path>`。
   - `--base64` 只用于机器生成的传输（调用方已经持有编码后的字节），不要作为人工手写的默认写法。
 - `eval` 适合执行小段页面上下文 JS，用于只读提取、状态检查或轻量验证。
-- 脚本可直接包含顶层 `return` 和 `await`，无需手工包装 async IIFE，多语句脚本用 `return` 返回结果。
+- 脚本默认在隔离的函数作用域里执行：顶层 `const`/`let`/`var`/`function` 不会写进页面全局，同一个脚本可以原样重复执行，不需要手工包 IIFE。单个表达式仍返回 completion value（最后一个表达式的值），多语句脚本可直接包含顶层 `return` 和 `await`，无需手工包装 async IIFE，用 `return` 返回结果。
 - CSS 属性选择器的值本身必须按 CSS 语法带引号，例如 `a[href*="/n/"]`——这正是最容易被命令行层层吞掉的一类源码。`not a valid selector` 表示脚本已解析并运行、页面拒绝了 CSS：原因既可能是引号被转义吃掉，也可能是选择器本身非法，不要把所有 selector 错误都归因成命令行引号问题。
 
 PowerShell 一次性脚本的标准写法（`@'` 与结束的 `'@` 都必须独占行首，不能缩进）：
@@ -23,6 +23,7 @@ return links.slice(0, 10)
 
 - 页面执行启用 `awaitPromise`，可直接使用顶层 `await` 或返回 async IIFE / Promise 结果，不需要为异步采集手工拆成同步片段；长任务仍需设置合理 `--timeout-ms`。
 - `--timeout-ms <ms>` 只在确认脚本本身是长任务时使用；不要把它作为复杂流程失败后的默认处理。`concise` 默认限制 eval 结果为 32KiB，`detailed` 默认不设结果字节上限；显式 `--max-result-bytes <n>` 会覆盖两者，超限得到 `EVAL_RESULT_TOO_LARGE` 和实际字节数，不会静默截断。搬运 storage 等大状态时在页面侧先过滤 key、聚合或分页，不要默认提高上限；未设置上限且结果超过 256 KiB 时会走 upload，并与命令共享 deadline。
+- 结果确实要一次拿全（整篇正文、成批明细）就用 `--output <path>` 落盘：完整结果写成 2 空格缩进的 JSON（末尾换行），stdout 只回 `{ path, format: "json", bytes }` 这个小型摘要（保留 meta），正文不再进终端。相对路径按当前目录解析，同名文件直接覆盖，写文件失败按普通 CLI 错误返回。指定 `--output` 且未显式写 `--response-format` 时按 `detailed` 执行，所以一次 67KiB 的正文只加 `--output` 即可；显式 `concise` 仍保留 32KiB 上限，显式 `--max-result-bytes` 始终优先。落盘后再用本地文件工具解析，不要为了看内容把文件整个 cat 回上下文。
 - 复杂交互优先拆成更小的 autobrowser 命令或脚本步骤，保留原任务目标逐步推进。
 - 针对单个元素执行函数脚本时用 `eval --element <selector|@eN> 'el => el.textContent'`，保留 stale/frame 检查。`locator <selector>` 会生成并验证唯一 locator；`highlight <selector> [--style <outline>]` 做不改布局的高亮，单元素恢复用 `highlight <selector> --hide`，全部恢复用 `highlight --hide`。
 

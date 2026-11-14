@@ -165,6 +165,15 @@ export class AutobrowserMcpServer {
     try {
       responseFormat = parseResponseFormat(args?.response_format)
       Object.assign(commandArgs, definition.toArgs(args ?? {}))
+      // eval 落盘与 CLI 契约一致：未显式指定 response_format 时按 detailed 执行，
+      // 否则默认 concise 的 32KiB 上限会在结果写入文件之前就拒绝掉。
+      if (
+        definition.command === 'eval' &&
+        commandArgs.output !== undefined &&
+        args?.response_format === undefined
+      ) {
+        responseFormat = 'detailed'
+      }
       if (['snapshot', 'search', 'eval'].includes(definition.command)) {
         commandArgs.responseFormat = responseFormat
       }

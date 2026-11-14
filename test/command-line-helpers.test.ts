@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { mkdtemp, readFile, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import {
@@ -257,9 +257,11 @@ describe('cli helpers', () => {
     expect(result.exitCode).toBe(0)
     expect(result.fetchCalls).toHaveLength(0)
     expect(result.stdout).toContain(
-      'autobrowser eval [--stdin|--file <path>|--base64] [--timeout-ms <ms>] [--max-result-bytes <n>] [--element <selector>] [--expr] <script>',
+      'autobrowser eval [--stdin|--file <path>|--base64] [--timeout-ms <ms>] [--max-result-bytes <n>] [--output <path>] [--element <selector>] [--expr] <script>',
     )
     expect(result.stdout).toContain('--max-result-bytes <n>')
+    expect(result.stdout).toContain('--output <path>')
+    expect(result.stdout).toContain('existing files are overwritten')
     expect(result.stdout).toContain('--element <selector>')
     expect(result.stdout).toContain('--expr <script>')
     expect(result.stdout).toContain('--timeout-ms <ms>')
@@ -326,6 +328,159 @@ describe('cli helpers', () => {
       expect(error.code).toBe('CLI_INVALID_ARGUMENT')
       expect(error.message).toContain('duplicate')
     }
+  })
+
+  test('writes large eval results to --output and keeps stdout small', async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), 'autobrowser-eval-output-'))
+    const outputPath = path.join(dir, 'result.json')
+    // 120000 字节远高于 concise 的 32768 上限，必须靠 detailed 默认值才不会被扩展拒绝
+    const body = '正文'.repeat(20_000)
+    const script = 'document.body.innerText'
+    const evalResult = { body, meta: { url: 'https://example.com/article' } }
+
+    const result = await runCli(['eval', '--expr', script, '--output', outputPath], {
+      ok: true,
+      result: evalResult,
+    })
+
+    expect(result.exitCode).toBe(0)
+    // output 是客户端侧落盘选项，不发给 relay；未显式指定格式时按 detailed 执行
+    expect(result.fetchCalls[0].body).toEqual({
+      command: 'eval',
+      args: { script, responseFormat: 'detailed' },
+    })
+
+    const content = await readFile(outputPath, 'utf8')
+    expect(content).toBe(`${JSON.stringify(evalResult, null, 2)}\n`)
+    expect(Buffer.byteLength(content, 'utf8')).toBeGreaterThan(32 * 1024)
+
+    expect(JSON.parse(result.stdout)).toEqual({
+      ok: true,
+      result: {
+        path: outputPath,
+        format: 'json',
+        bytes: Buffer.byteLength(content, 'utf8'),
+        meta: { url: 'https://example.com/article' },
+      },
+    })
+    // 大正文只落盘：stdout 不应再出现结果内容
+    expect(result.stdout).not.toContain('正文正文')
+    expect(result.stderr).toBe('')
+  })
+
+  test('resolves eval --output against the working directory and overwrites files', async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), 'autobrowser-eval-output-'))
+    const outputPath = path.join(dir, 'nested', 'result.json')
+    await mkdir(path.dirname(outputPath), { recursive: true })
+    await writeFile(outputPath, 'stale content')
+    const relativePath = path.relative(process.cwd(), outputPath)
+
+    const result = await runCli(['eval', '--expr', 'payload', '--output', relativePath], {
+      ok: true,
+      result: ['first', 'second'],
+    })
+
+    expect(result.exitCode).toBe(0)
+    const payload = JSON.parse(result.stdout)
+    expect(payload.result).toMatchObject({
+      path: path.resolve(relativePath),
+      format: 'json',
+    })
+    expect(payload.result.path).toBe(outputPath)
+    expect(await readFile(outputPath, 'utf8')).toBe('[\n  "first",\n  "second"\n]\n')
+  })
+
+  test('keeps the concise 32KiB limit when --response-format is explicit', async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), 'autobrowser-eval-output-'))
+    const outputPath = path.join(dir, 'result.json')
+
+    const result = await runCli(
+      [
+        'eval',
+        '--expr',
+        'document.body.innerText',
+        '--output',
+        outputPath,
+        '--response-format',
+        'concise',
+      ],
+      {
+        ok: false,
+        error: {
+          message: 'eval result is 70000 bytes, exceeding the 32768-byte limit',
+          code: 'EVAL_RESULT_TOO_LARGE',
+        },
+      },
+    )
+
+    // 显式 concise 不被 --output 改写，扩展仍按 32KiB 拒绝
+    expect(result.fetchCalls[0].body).toEqual({
+      command: 'eval',
+      args: { script: 'document.body.innerText', responseFormat: 'concise' },
+    })
+    expect(result.exitCode).toBe(1)
+    // 运行期错误在 JSON 模式下走 stdout，与成功响应同一位置
+    const failure = JSON.parse(result.stdout)
+    expect(failure.error.code).toBe('EVAL_RESULT_TOO_LARGE')
+    expect(failure.error.message).toContain('exceeding the 32768-byte limit')
+    await expect(readFile(outputPath, 'utf8')).rejects.toThrow()
+  })
+
+  test('forwards --max-result-bytes ahead of the --output detailed default', async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), 'autobrowser-eval-output-'))
+    const outputPath = path.join(dir, 'result.json')
+
+    const explicit = await runCli(
+      ['eval', '--expr', 'value', '--output', outputPath, '--max-result-bytes', '1024'],
+      { ok: true, result: { value: 1 } },
+    )
+    expect(explicit.fetchCalls[0].body?.args).toEqual({
+      script: 'value',
+      maxResultBytes: 1024,
+      responseFormat: 'detailed',
+    })
+
+    const concise = await runCli(
+      [
+        'eval',
+        '--expr',
+        'value',
+        '--output',
+        outputPath,
+        '--response-format',
+        'concise',
+        '--max-result-bytes',
+        '1024',
+      ],
+      { ok: true, result: { value: 1 } },
+    )
+    // 上限显式给出时优先级最高；显式 concise 也保持不变
+    expect(concise.fetchCalls[0].body?.args).toEqual({
+      script: 'value',
+      maxResultBytes: 1024,
+      responseFormat: 'concise',
+    })
+  })
+
+  test('rejects a missing --output value without sending the command', async () => {
+    const missing = await runCli(['eval', '--expr', 'value', '--output'])
+
+    expect(missing.exitCode).toBe(1)
+    expect(missing.fetchCalls).toHaveLength(0)
+    expect(cliErrorPayload(missing.stdout).error.message).toContain('missing value for --output')
+  })
+
+  test('surfaces eval --output write failures as normal CLI errors', async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), 'autobrowser-eval-output-'))
+    const outputPath = path.join(dir, 'missing-dir', 'result.json')
+
+    const result = await runCli(['eval', '--expr', 'value', '--output', outputPath], {
+      ok: true,
+      result: 42,
+    })
+
+    expect(result.exitCode).toBe(1)
+    expect(cliErrorPayload(result.stdout).error.message).toMatch(/ENOENT|no such file/i)
   })
 
   test('routes CDP JSON params and rejects non-object payloads', async () => {

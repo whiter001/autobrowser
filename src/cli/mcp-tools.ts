@@ -623,7 +623,7 @@ export const MCP_TOOLS: McpToolDefinition[] = [
   {
     name: 'eval',
     description:
-      'Run JavaScript in the page context and return the serialized result. The script can use await.',
+      'Run JavaScript in the page context and return the serialized result. The script can use await. Pass output to write the full JSON result to a file (2-space indent, trailing newline) and return {path, format, bytes} instead of inlining the body; output defaults to response_format detailed, so results above the concise 32KiB limit still reach the file unless you ask for concise explicitly.',
     command: 'eval',
     inputSchema: {
       type: 'object',
@@ -637,10 +637,20 @@ export const MCP_TOOLS: McpToolDefinition[] = [
           type: 'string',
           description: 'Optional CSS/@eN target passed to the script as el.',
         },
+        output: {
+          type: 'string',
+          description:
+            'Write the full JSON result to this path (relative to the MCP server working directory) and return {path, format, bytes}. Existing files are overwritten. Defaults to response_format detailed so large payloads are not rejected by the concise 32KiB limit; an explicit response_format of concise still applies that limit.',
+        },
       },
       required: ['script'],
     },
-    toArgs: (args) => ({ script: args.script, ...onlyDefined(args, ['element']) }),
+    toArgs: (args) => {
+      if (args.output !== undefined && (typeof args.output !== 'string' || !args.output.trim())) {
+        throw new Error('output must be a non-empty string')
+      }
+      return { script: args.script, ...onlyDefined(args, ['element', 'output']) }
+    },
   },
   {
     name: 'cdp',

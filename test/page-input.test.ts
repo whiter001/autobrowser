@@ -213,6 +213,43 @@ describe('production evaluate and debugger dispatch cancellation gates', () => {
 })
 
 describe('evaluateScript top-level function body compatibility', () => {
+  const isolated = (script: string) => `(() => eval(${JSON.stringify(script)}))()`
+  // 间接 eval 在全局作用域执行，连续两次即可复现页面里的"重复声明"现场
+  // oxlint-disable-next-line no-eval -- 只有间接 eval 能模拟页面全局执行
+  const runInPageScope = (expression: string) => globalThis.eval(expression)
+
+  test('returns the completion value of a simple expression through the isolated wrapper', async () => {
+    let expression = ''
+    const pageInput = createPageInputDomain({
+      evaluateInTabContext: async (_tabId: unknown, source: string) => {
+        expression = source
+        return { value: runInPageScope(source) } as never
+      },
+    } as never)
+
+    await expect(pageInput.evaluateScript(1, '6 * 7', null)).resolves.toBe(42)
+    expect(expression.endsWith(isolated('6 * 7'))).toBe(true)
+  })
+
+  test('reruns a top-level const script without leaking declarations into the page global', async () => {
+    let expression = ''
+    const pageInput = createPageInputDomain({
+      evaluateInTabContext: async (_tabId: unknown, source: string) => {
+        expression = source
+        return { value: runInPageScope(source) } as never
+      },
+    } as never)
+    const script =
+      'const collected = [1, 2, 3]; var total = collected.length; function pick() { return total }; pick()'
+
+    await expect(pageInput.evaluateScript(1, script, null)).resolves.toBe(3)
+    await expect(pageInput.evaluateScript(1, script, null)).resolves.toBe(3)
+    expect(expression.endsWith(isolated(script))).toBe(true)
+    expect(runInPageScope('typeof collected')).toBe('undefined')
+    expect(runInPageScope('typeof total')).toBe('undefined')
+    expect(runInPageScope('typeof pick')).toBe('undefined')
+  })
+
   test('retries an illegal top-level return as an async IIFE', async () => {
     const expressions: string[] = []
     const pageInput = createPageInputDomain({
@@ -229,7 +266,7 @@ describe('evaluateScript top-level function body compatibility', () => {
       ok: true,
     })
     expect(expressions).toHaveLength(2)
-    expect(expressions[0]?.endsWith('return { ok: true }')).toBe(true)
+    expect(expressions[0]?.endsWith(isolated('return { ok: true }'))).toBe(true)
     expect(expressions[1]?.endsWith('(async () => {\nreturn { ok: true }\n})()')).toBe(true)
   })
 
@@ -250,7 +287,7 @@ describe('evaluateScript top-level function body compatibility', () => {
 
     await expect(pageInput.evaluateScript(1, script, null)).resolves.toBe(42)
     expect(expressions).toHaveLength(2)
-    expect(expressions[0]?.endsWith(script)).toBe(true)
+    expect(expressions[0]?.endsWith(isolated(script))).toBe(true)
     expect(expressions[1]?.endsWith(`(async () => {\n${script}\n})()`)).toBe(true)
   })
 
@@ -267,7 +304,7 @@ describe('evaluateScript top-level function body compatibility', () => {
       'missing is not defined',
     )
     expect(expressions).toHaveLength(1)
-    expect(expressions[0]?.endsWith('missing')).toBe(true)
+    expect(expressions[0]?.endsWith(isolated('missing'))).toBe(true)
   })
 
   test('enforces an opt-in UTF-8 result size limit without truncating', async () => {
@@ -1671,7 +1708,10 @@ describe('element eval, locator and highlight tools', () => {
     await expect(
       pageInput.evaluateScript(1, 'el => el.textContent', '#frame', undefined, '@e1'),
     ).resolves.toBe('element text')
-    expect(expressions[0]).toContain('[data-autobrowser-ref=\\"e1\\"]')
+    // 元素脚本同样包进隔离的 direct eval，声明不会落到页面全局
+    expect(expressions[0]).toContain('(() => eval("(() => {')
+    expect(expressions[0]).toContain('data-autobrowser-ref')
+    expect(expressions[0]).toContain('__autobrowserElementNotFound')
     expect(expressions[0]).toContain('return (el => el.textContent)(el)')
   })
 
@@ -1681,6 +1721,26 @@ describe('element eval, locator and highlight tools', () => {
       pageInput.evaluateScript(1, 'el => el.textContent', null, undefined, '@e1'),
       '@e1',
     )
+  })
+
+  test('element scripts keep the not-found marker through the isolation wrapper', async () => {
+    const expressions: string[] = []
+    const pageInput = createPageInputDomain({
+      resolveElementSelectorForTab: async () => ({ resolvedSelector: '#missing' }),
+      evaluateInTabContext: async (_tab: unknown, source: string) => {
+        expressions.push(source)
+        // 真实执行包好的表达式：deepQuerySelector 落空时必须把 marker 原样带回来
+        const value = executePageExpression(source, {})
+        return { value } as never
+      },
+    } as never)
+
+    await expectElementNotFound(
+      pageInput.evaluateScript(1, 'el => el.textContent', null, undefined, '@e1'),
+      '@e1',
+    )
+    expect(expressions).toHaveLength(1)
+    expect(expressions[0]).toContain('(() => eval("(() => {')
   })
 
   test('generates locators with test-id, id and CSS path fallbacks', async () => {
