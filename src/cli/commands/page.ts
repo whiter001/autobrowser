@@ -404,7 +404,10 @@ async function handleSnapshot(rest: string[], context: CommandContext): Promise<
       }
 
       const outputPath = await resolveSnapshotExportPath(rest[1] || null)
-      const payload = await context.requestCommand(context.flags.server, 'snapshot', {})
+      // 导出要还原完整快照记录（text/buttons/headings/坐标），不能被默认 concise 投影裁剪。
+      const payload = await context.requestCommand(context.flags.server, 'snapshot', {
+        includeAllFields: true,
+      })
 
       if (payload.ok === false) {
         context.writeResult(payload)
@@ -443,7 +446,10 @@ async function handleSnapshot(rest: string[], context: CommandContext): Promise<
       const parsedExtractArgs = parseOrThrow(() => parseSnapshotFieldSelectors(rest.slice(1)))
 
       const resolvedOutputPath = await resolveSnapshotExportPath(parsedExtractArgs.outputPath)
-      const payload = await context.requestCommand(context.flags.server, 'snapshot', {})
+      // 字段提取同样基于完整快照字段，默认 concise 投影会让 fields.* 缺项。
+      const payload = await context.requestCommand(context.flags.server, 'snapshot', {
+        includeAllFields: true,
+      })
 
       if (payload.ok === false) {
         context.writeResult(payload)
@@ -493,6 +499,7 @@ async function handleSnapshot(rest: string[], context: CommandContext): Promise<
       ? { roles: snapshotTarget.roles }
       : {}),
     ...(snapshotTarget.changed ? { changed: true } : {}),
+    ...(snapshotTarget.includeText ? { includeText: true } : {}),
     ...(snapshotTarget.limit !== undefined ? { limit: snapshotTarget.limit } : {}),
   })
   context.writeResult(payload)

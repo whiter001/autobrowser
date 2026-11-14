@@ -423,6 +423,10 @@ export function createCommandHandlers({
   register(['snapshot'], async ({ scope }) => {
     const roles = readStringArrayArg(scope.args, 'roles')
     const selector = readStringArg(scope.args, 'selector')
+    // includeAllFields 是 CLI 本地 export/extract 的内部开关：它们需要完整字段重建 JSONL，
+    // 而根级 --response-format 只描述用户可见的输出形态，不能由子命令覆盖。
+    const detailed =
+      scope.args.responseFormat === 'detailed' || scope.args.includeAllFields === true
     return await pageObserve.snapshotTab(scope.tabId, scope.frameSelector, {
       selector: selector.trim() || undefined,
       ...(roles.length > 0 ? { roles } : {}),
@@ -430,7 +434,8 @@ export function createCommandHandlers({
       ...(scope.args.limit !== undefined
         ? { limit: readOptionalNumberArg(scope.args, 'limit') }
         : {}),
-      responseFormat: scope.args.responseFormat === 'detailed' ? 'detailed' : 'concise',
+      ...(readBooleanArg(scope.args, 'includeText') ? { includeText: true } : {}),
+      responseFormat: detailed ? 'detailed' : 'concise',
     })
   })
   register(['feed'], async ({ scope }) => {

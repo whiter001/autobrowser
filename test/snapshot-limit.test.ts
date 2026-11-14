@@ -211,6 +211,7 @@ describe('snapshot --limit parsing', () => {
       target: '#panel',
       roles: ['button'],
       changed: false,
+      includeText: false,
       limit: 120,
     })
   })
@@ -219,6 +220,11 @@ describe('snapshot --limit parsing', () => {
     expect(parseSnapshotArgs(['--limit', '1']).limit).toBe(1)
     expect(parseSnapshotArgs(['--limit', '200']).limit).toBe(200)
     expect(parseSnapshotArgs([])).not.toHaveProperty('limit')
+  })
+
+  test('parses --include-text as an explicit opt-in', () => {
+    expect(parseSnapshotArgs(['--include-text']).includeText).toBe(true)
+    expect(parseSnapshotArgs([]).includeText).toBe(false)
   })
 
   test('rejects non-integer and out-of-range limits', () => {
@@ -257,6 +263,18 @@ describe('snapshot --limit forwarding', () => {
     expect(result.fetchCalls[0].body).toEqual({
       command: 'snapshot',
       args: {
+        responseFormat: 'concise',
+      },
+    })
+  })
+
+  test('forwards --include-text only when explicitly requested', async () => {
+    const result = await runCli(['snapshot', '--include-text'])
+
+    expect(result.fetchCalls[0].body).toEqual({
+      command: 'snapshot',
+      args: {
+        includeText: true,
         responseFormat: 'concise',
       },
     })
@@ -399,8 +417,8 @@ describe('snapshot limit cache isolation', () => {
       limit: 2,
       changed: true,
     })) as SnapshotResult
-    // 未进入 baseline 的第 3、4 项会在下一次同 limit 快照中补交付。
-    expect(sameLimit.elements.map((element) => element.text)).toEqual(['Button 3', 'Button 4'])
+    // 未进入 baseline 的第 3、4 项会在下一次同 limit 快照中补交付（concise 不带 text，按 ref 断言）。
+    expect(sameLimit.elements.map((element) => element.ref)).toEqual(['@e3#p1', '@e4#p1'])
     expect(sameLimit.unchangedCount).toBe(2)
 
     // 不同 limit 必须换键：不能拿 limit=2 的 baseline 去 diff limit=3 的交付集

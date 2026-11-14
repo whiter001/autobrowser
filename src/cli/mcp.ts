@@ -10,11 +10,13 @@ import { CLI_ERROR_CODES } from './cli-error.js'
 import { helpRequested } from './commands/shared.js'
 import type { CommandContext } from './commands/types.js'
 import {
+  parseMcpResponseMode,
   toErrorResult,
   toScreenshotResult,
   toSuccessResult,
   toTracingResult,
   toVideoResult,
+  type McpResponseMode,
 } from './mcp-response.js'
 import { MCP_TOOLS, MCP_TOOLS_BY_NAME } from './mcp-tools.js'
 import { parseResponseFormat } from './response-format.js'
@@ -28,25 +30,75 @@ const CURSOR_LIST_COMMANDS = new Set([
   'command',
 ])
 
+/**
+ * 默认只暴露高频工具，避免 tools/list 一次塞进约 41KB schema 占满模型上下文。
+ * 未列出的工具仍然注册在 callTool 中，知道名字的调用方可以直接使用。
+ */
+export const MCP_CORE_TOOL_NAMES = [
+  'navigate',
+  'reload',
+  'snapshot',
+  'search',
+  'find',
+  'click',
+  'fill',
+  'type',
+  'press',
+  'get',
+  'wait',
+  'eval',
+  'tab_list',
+  'tab_attach',
+  'tab_detach',
+  'tab_new',
+  'tab_select',
+  'tab_close',
+  'workspace',
+] as const
+
+export type McpToolset = 'core' | 'all'
+
+export function parseMcpToolset(value: string | undefined): McpToolset {
+  const normalized = value?.trim().toLowerCase()
+  if (!normalized) return 'core'
+  if (normalized === 'core' || normalized === 'all') {
+    return normalized
+  }
+  throw new Error(`Invalid AUTOBROWSER_MCP_TOOLSET "${value}": expected "core" or "all".`)
+}
+
 interface McpServerDependencies {
   name?: string
   version?: string
+  responseMode?: McpResponseMode
+  toolset?: McpToolset
   requestCommand: (command: string, args: Record<string, unknown>) => Promise<CommandResponse>
 }
 
 export class AutobrowserMcpServer {
   readonly name: string
   readonly version: string
+  readonly responseMode: McpResponseMode
+  readonly toolset: McpToolset
   private readonly requestCommand: McpServerDependencies['requestCommand']
 
   constructor(dependencies: McpServerDependencies) {
     this.name = dependencies.name ?? 'autobrowser'
     this.version = dependencies.version ?? '0.1.0'
+    this.responseMode = dependencies.responseMode ?? 'text'
+    this.toolset = dependencies.toolset ?? 'core'
     this.requestCommand = dependencies.requestCommand
   }
 
   listTools(): Tool[] {
-    return MCP_TOOLS.map((definition) => {
+    const definitions =
+      this.toolset === 'all'
+        ? MCP_TOOLS
+        : MCP_CORE_TOOL_NAMES.flatMap((name) => {
+            const definition = MCP_TOOLS_BY_NAME.get(name)
+            return definition ? [definition] : []
+          })
+    return definitions.map((definition) => {
       const properties: Record<string, object> = {
         ...definition.inputSchema.properties,
         response_format: {
@@ -96,9 +148,16 @@ export class AutobrowserMcpServer {
   async callTool(name: string, args?: Record<string, unknown>): Promise<CallToolResult> {
     const definition = MCP_TOOLS_BY_NAME.get(name)
     if (!definition) {
-      return toErrorResult('UNKNOWN_TOOL', `Unknown tool: ${name}`, {
-        suggestedAction: `Available tools: ${MCP_TOOLS.map((tool) => tool.name).join(', ')}`,
-      })
+      return toErrorResult(
+        'UNKNOWN_TOOL',
+        `Unknown tool: ${name}`,
+        {
+          suggestedAction: `Available tools: ${this.listTools()
+            .map((tool) => tool.name)
+            .join(', ')}`,
+        },
+        { responseMode: this.responseMode },
+      )
     }
 
     const commandArgs: Record<string, unknown> = {}
@@ -128,6 +187,8 @@ export class AutobrowserMcpServer {
       return toErrorResult(
         CLI_ERROR_CODES.INVALID_ARGUMENT,
         error instanceof Error ? error.message : String(error),
+        {},
+        { responseMode: this.responseMode },
       )
     }
 
@@ -135,23 +196,38 @@ export class AutobrowserMcpServer {
     try {
       payload = await this.requestCommand(definition.command, commandArgs)
     } catch (error) {
-      return toErrorResult(undefined, error instanceof Error ? error.message : String(error))
+      return toErrorResult(
+        undefined,
+        error instanceof Error ? error.message : String(error),
+        {},
+        { responseMode: this.responseMode },
+      )
     }
 
     if (payload.ok === false) {
       const error = payload.error
-      return toErrorResult(error?.code, error?.message || 'command failed', {
-        suggestion: error?.suggestion,
-        suggestedAction: error?.suggestedAction,
-        details: error?.details,
-      })
+      return toErrorResult(
+        error?.code,
+        error?.message || 'command failed',
+        {
+          suggestion: error?.suggestion,
+          suggestedAction: error?.suggestedAction,
+          details: error?.details,
+        },
+        { responseMode: this.responseMode },
+      )
     }
 
     if (definition.command === 'video' && isRecord(payload.result)) {
       try {
         return await toVideoResult(payload.result)
       } catch (error) {
-        return toErrorResult(undefined, error instanceof Error ? error.message : String(error))
+        return toErrorResult(
+          undefined,
+          error instanceof Error ? error.message : String(error),
+          {},
+          { responseMode: this.responseMode },
+        )
       }
     }
 
@@ -159,7 +235,12 @@ export class AutobrowserMcpServer {
       try {
         return await toTracingResult(payload.result)
       } catch (error) {
-        return toErrorResult(undefined, error instanceof Error ? error.message : String(error))
+        return toErrorResult(
+          undefined,
+          error instanceof Error ? error.message : String(error),
+          {},
+          { responseMode: this.responseMode },
+        )
       }
     }
 
@@ -171,13 +252,19 @@ export class AutobrowserMcpServer {
       try {
         return toScreenshotResult(payload.result)
       } catch (error) {
-        return toErrorResult(undefined, error instanceof Error ? error.message : String(error))
+        return toErrorResult(
+          undefined,
+          error instanceof Error ? error.message : String(error),
+          {},
+          { responseMode: this.responseMode },
+        )
       }
     }
 
     return toSuccessResult(payload.result, {
       command: definition.command,
       responseFormat,
+      responseMode: this.responseMode,
     })
   }
 
@@ -206,6 +293,10 @@ export async function handleMcpCommand(
     return 0
   }
 
+  // 非法配置直接抛错，由 CLI 顶层写 stderr 并退出 1，避免静默回退到默认值
+  const responseMode = parseMcpResponseMode(process.env.AUTOBROWSER_MCP_RESPONSE_MODE)
+  const toolset = parseMcpToolset(process.env.AUTOBROWSER_MCP_TOOLSET)
+
   try {
     await context.getCommandStatus(context.flags.server)
   } catch {
@@ -214,6 +305,8 @@ export async function handleMcpCommand(
 
   const workspace = context.flags.workspace || createId('mcp')
   const server = new AutobrowserMcpServer({
+    responseMode,
+    toolset,
     requestCommand: async (command, args) =>
       await context.requestCommand(context.flags.server, command, { workspace, ...args }),
   })

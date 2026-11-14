@@ -9,7 +9,29 @@ import path from 'node:path'
 import { PassThrough } from 'node:stream'
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import type { CommandResponse } from '../src/cli/client.js'
-import { AutobrowserMcpServer } from '../src/cli/mcp.js'
+import { AutobrowserMcpServer, parseMcpToolset } from '../src/cli/mcp.js'
+
+const CORE_TOOL_NAMES = [
+  'navigate',
+  'reload',
+  'snapshot',
+  'search',
+  'find',
+  'click',
+  'fill',
+  'type',
+  'press',
+  'get',
+  'wait',
+  'eval',
+  'tab_list',
+  'tab_attach',
+  'tab_detach',
+  'tab_new',
+  'tab_select',
+  'tab_close',
+  'workspace',
+]
 
 const KNOWN_TOOL_NAMES = [
   'navigate',
@@ -93,15 +115,47 @@ function okResult(result: unknown): CommandResponse {
 }
 
 describe('AutobrowserMcpServer.listTools', () => {
-  test('exposes all 54 tools with object-typed input schemas', () => {
+  test('exposes only the 19 core tools by default', () => {
     const server = new AutobrowserMcpServer({ requestCommand: async () => okResult({}) })
     const tools = server.listTools()
 
+    expect(tools.map((tool) => tool.name)).toEqual(CORE_TOOL_NAMES)
+    for (const tool of tools) {
+      expect(tool.inputSchema.type).toBe('object')
+      expect(tool.inputSchema.properties).toBeTypeOf('object')
+    }
+  })
+
+  test('exposes all 54 tools with object-typed input schemas when toolset is all', () => {
+    const server = new AutobrowserMcpServer({
+      toolset: 'all',
+      requestCommand: async () => okResult({}),
+    })
+    const tools = server.listTools()
+
+    expect(tools).toHaveLength(54)
     expect(tools.map((tool) => tool.name)).toEqual(KNOWN_TOOL_NAMES)
     for (const tool of tools) {
       expect(tool.inputSchema.type).toBe('object')
       expect(tool.inputSchema.properties).toBeTypeOf('object')
     }
+  })
+
+  test('keeps the default core tools/list under 20KB when serialized', () => {
+    const server = new AutobrowserMcpServer({ requestCommand: async () => okResult({}) })
+    const serialized = JSON.stringify(server.listTools())
+
+    expect(Buffer.byteLength(serialized)).toBeLessThanOrEqual(20_000)
+  })
+
+  test('parses the toolset option with core as the default', () => {
+    expect(parseMcpToolset(undefined)).toBe('core')
+    expect(parseMcpToolset('')).toBe('core')
+    expect(parseMcpToolset('core')).toBe('core')
+    expect(parseMcpToolset('all')).toBe('all')
+    expect(() => parseMcpToolset('everything')).toThrow(
+      'Invalid AUTOBROWSER_MCP_TOOLSET "everything": expected "core" or "all".',
+    )
   })
 
   test('adds tab/frame properties only where the underlying command supports them', () => {
@@ -140,7 +194,9 @@ describe('AutobrowserMcpServer.callTool', () => {
     expect(mock.calls).toEqual([
       { command: 'click', args: { selector: '#submit', tabId: 't2', frame: '@f1' } },
     ])
-    expect(result.structuredContent).toEqual({ clicked: true })
+    // 默认 text 模式只写 content，不再重复一份 structuredContent
+    expect(result.structuredContent).toBeUndefined()
+    expect(JSON.parse((result.content[0] as { text: string }).text)).toEqual({ clicked: true })
   })
 
   test('navigate maps to goto and injects tabId but not frame', async () => {
@@ -239,12 +295,32 @@ describe('AutobrowserMcpServer.callTool', () => {
     await server.callTool('snapshot', {
       target: '@e4',
       roles: ['button', 'link'],
+      includeText: true,
     })
 
     expect(mock.calls).toEqual([
       {
         command: 'snapshot',
-        args: { roles: ['button', 'link'], selector: '@e4', responseFormat: 'concise' },
+        args: {
+          roles: ['button', 'link'],
+          includeText: true,
+          selector: '@e4',
+          responseFormat: 'concise',
+        },
+      },
+    ])
+  })
+
+  test('snapshot omits includeText unless requested', async () => {
+    const mock = recordingRequestCommand(okResult({ elements: [] }))
+    const server = new AutobrowserMcpServer({ requestCommand: mock })
+
+    await server.callTool('snapshot', { changed: true })
+
+    expect(mock.calls).toEqual([
+      {
+        command: 'snapshot',
+        args: { changed: true, responseFormat: 'concise' },
       },
     ])
   })
@@ -659,18 +735,32 @@ describe('AutobrowserMcpServer.callTool', () => {
     }
   })
 
-  test('unknown tool returns an isError result with a suggestion', async () => {
+  test('unknown tool suggests only the currently visible tools', async () => {
     const mock = recordingRequestCommand(okResult({}))
     const server = new AutobrowserMcpServer({ requestCommand: mock })
 
     const result = await server.callTool('definitely_not_a_tool', {})
 
     expect(result.isError).toBe(true)
+    expect(result.structuredContent).toBeUndefined()
     const textBlock = result.content[0]
     expect(textBlock.type).toBe('text')
-    expect((textBlock as { text: string }).text).toContain('Unknown tool: definitely_not_a_tool')
-    const error = (result.structuredContent as { error: Record<string, unknown> }).error
-    expect(error.code).toBe('UNKNOWN_TOOL')
+    const text = (textBlock as { text: string }).text
+    expect(text).toContain('Unknown tool: definitely_not_a_tool')
+    expect(text).toContain(`Available tools: ${CORE_TOOL_NAMES.join(', ')}`)
+    expect(text).not.toContain('cookies')
+  })
+
+  test('hidden tools stay callable even though they are not listed', async () => {
+    const mock = recordingRequestCommand(okResult({ cookies: [] }))
+    const server = new AutobrowserMcpServer({ requestCommand: mock })
+
+    expect(server.listTools().map((tool) => tool.name)).not.toContain('cookies')
+    const result = await server.callTool('cookies', { action: 'get' })
+
+    expect(result.isError).toBeFalsy()
+    expect(mock.calls).toEqual([{ command: 'cookies', args: { action: 'get' } }])
+    expect(JSON.parse((result.content[0] as { text: string }).text)).toEqual({ cookies: [] })
   })
 
   test('passes through command errors with code and suggestedAction', async () => {
@@ -687,15 +777,13 @@ describe('AutobrowserMcpServer.callTool', () => {
     const result = await server.callTool('click', { selector: '@e7' })
 
     expect(result.isError).toBe(true)
+    expect(result.structuredContent).toBeUndefined()
     const textBlock = result.content[0]
     expect(textBlock.type).toBe('text')
     expect((textBlock as { text: string }).text).toContain('element ref @e7 is stale')
     expect((textBlock as { text: string }).text).toContain(
       '[AI SUGGESTION]: Run snapshot to refresh element refs before retrying.',
     )
-    const error = (result.structuredContent as { error: Record<string, unknown> }).error
-    expect(error.code).toBe('STALE_ELEMENT_REF')
-    expect(error.suggestedAction).toContain('Run snapshot')
   })
 
   test('returns an isError result when requestCommand throws', async () => {
@@ -778,7 +866,7 @@ describe('AutobrowserMcpServer.connect (JSON-RPC over stdio)', () => {
 
     const listResponse = await waitForMessage(received, (message) => message.id === 2)
     const listResult = listResponse.result as { tools: Array<{ name: string }> }
-    expect(listResult.tools.map((tool) => tool.name)).toEqual(KNOWN_TOOL_NAMES)
+    expect(listResult.tools.map((tool) => tool.name)).toEqual(CORE_TOOL_NAMES)
 
     client.write(
       JSON.stringify({
@@ -799,7 +887,9 @@ describe('AutobrowserMcpServer.connect (JSON-RPC over stdio)', () => {
     }
     expect(callResponse.error).toBeUndefined()
     expect(callResult.content[0].type).toBe('text')
-    expect(callResult.structuredContent).toEqual({ ok: true })
+    // 默认 text 模式不再写 structuredContent
+    expect(callResult.structuredContent).toBeUndefined()
+    expect(JSON.parse((callResult.content[0] as { text: string }).text)).toEqual({ ok: true })
     expect(mock.calls).toEqual([{ command: 'click', args: { selector: '#a', tabId: 't1' } }])
 
     client.write(
@@ -816,6 +906,41 @@ describe('AutobrowserMcpServer.connect (JSON-RPC over stdio)', () => {
     expect(errorResult.isError).toBe(true)
 
     await transport.close()
+  })
+})
+
+describe('mcp environment configuration', () => {
+  test('rejects invalid response mode and toolset values with a clear error', async () => {
+    const cliPath = path.resolve(import.meta.dir, '../src/cli.ts')
+    const cases = [
+      {
+        key: 'AUTOBROWSER_MCP_RESPONSE_MODE',
+        value: 'json',
+        message: 'Invalid AUTOBROWSER_MCP_RESPONSE_MODE "json"',
+      },
+      {
+        key: 'AUTOBROWSER_MCP_TOOLSET',
+        value: 'everything',
+        message: 'Invalid AUTOBROWSER_MCP_TOOLSET "everything"',
+      },
+    ] as const
+
+    for (const entry of cases) {
+      const child = Bun.spawn([process.execPath, cliPath, 'mcp'], {
+        env: { ...process.env, [entry.key]: entry.value },
+        stdin: 'ignore',
+        stdout: 'pipe',
+        stderr: 'pipe',
+      })
+      const [stdout, stderr, exitCode] = await Promise.all([
+        new Response(child.stdout).text(),
+        new Response(child.stderr).text(),
+        child.exited,
+      ])
+      expect(exitCode).toBe(1)
+      expect(stdout).toBe('')
+      expect(stderr).toContain(entry.message)
+    }
   })
 })
 
@@ -953,6 +1078,9 @@ describe('search interfaces', () => {
         AUTOBROWSER_HOME: home,
         // 旧的精确 args 断言基于无 workspace；关闭 CLI 默认 auto，MCP 仍会用自己的 mcp_ 身份
         AUTOBROWSER_WORKSPACE: 'off',
+        // 本用例断言 structuredContent 与全量工具；默认 text/core 下需显式打开兼容开关
+        AUTOBROWSER_MCP_RESPONSE_MODE: 'both',
+        AUTOBROWSER_MCP_TOOLSET: 'all',
       },
       stderr: 'pipe',
     })

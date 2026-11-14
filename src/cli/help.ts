@@ -1089,12 +1089,14 @@ export const HELP_ROOT: HelpNode = helpNode(
     helpNode(
       'snapshot',
       'Capture or export a page snapshot.',
-      'autobrowser snapshot [selector|--target <selector|@eN>] [--role <a,b,c>] [--changed] [--limit <1..200>]',
+      'autobrowser snapshot [selector|--target <selector|@eN>] [--role <a,b,c>] [--changed] [--include-text] [--limit <1..200>]',
       [
         '--target <selector|@eN>  limit the snapshot to an element subtree',
         '--role <button,link,...>  only return elements with matching roles; @eN refs stay stable across snapshots',
-        '--changed  return added/changed elements including checked/disabled state and removedRefs; first run or navigation returns full:true',
+        '--changed  return added/changed elements including checked/disabled state and removedRefs; first run or navigation returns full:true. The reply is a pure diff (no text, buttons, headings, frames or page metadata).',
+        '--include-text  also return the full page text in a concise snapshot; ignored by --changed, which stays a pure diff',
         '--limit <1..200>  override the default element cap without raising the byte budget',
+        'Concise elements keep ref, tag, role, name, value, placeholder, type, href, disabled and checked; text and x/y/width/height are omitted, headings keep ref/tag/text only. Use --response-format detailed for the full legacy shape.',
         'Refs are not reused within a document; removed nodes are invalid and navigation makes refs stale. Refresh before acting.',
         'Concise output defaults to 50 elements and 32768 UTF-8 bytes; detailed defaults to 200 elements and 200000 bytes. If truncated, narrow --target/--role or use --changed; only delivered elements enter the baseline.',
       ],

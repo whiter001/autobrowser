@@ -8,10 +8,10 @@ import { runCli } from './command-line-test-utils.js'
 import { createCommandHandlers } from '../extension/background/command-handlers.js'
 import { COMMAND_CATALOG } from '../src/core/command-catalog.js'
 import {
-  extractSkillCommandPaths,
-  extractSkillCommandSection,
+  COMMANDS_REFERENCE_PATH,
+  extractCommandListPaths,
+  extractCommandListSection,
   readWorkspaceFile,
-  SKILL_MARKDOWN_PATH,
   uniqueSorted,
 } from './command-surface-utils.js'
 
@@ -28,8 +28,8 @@ import {
 const ROUTER_COMMANDS = createCommandHandlers({} as never).commands
 const REGISTRY_KEYS = Object.keys(COMMAND_LOADERS)
 
-const SKILL_COMMAND_PATHS = extractSkillCommandPaths(
-  extractSkillCommandSection(await readWorkspaceFile(SKILL_MARKDOWN_PATH)),
+const COMMAND_LIST_PATHS = extractCommandListPaths(
+  extractCommandListSection(await readWorkspaceFile(COMMANDS_REFERENCE_PATH)),
 )
 
 /**
@@ -194,26 +194,26 @@ describe('cli argument parsing matches the command spec', () => {
   }
 })
 
-describe('agent skill command list only names real commands', () => {
+describe('agent command reference list only names real commands', () => {
   /**
-   * SKILL.md 是 agent 真正加载的那份指引，它的「常用命令」清单比 help 树更容易过期：
-   * help 树改了没人会主动同步 skill 文件，而 agent 读到的是后者。
+   * references/commands.md 是 agent 按需读取的命令参考，它的「常用命令」清单比 help 树更容易过期：
+   * help 树改了没人会主动同步参考文档，而 agent 读到的是后者。
    *
    * 单向锁：清单里写到的命令必须真实存在（CLI 能分发、帮助树里有条目）；
    * 但不要求清单覆盖全部命令——它本来就是策展子集，漏写不算漂移，写错才算。
    */
-  test('SKILL.md 常用命令清单里的每条命令都真实存在', () => {
+  test('commands.md 常用命令清单里的每条命令都真实存在', () => {
     // 段落被改名或解析失灵时这里会掉到 0，防止整组断言变成空转。
-    expect(SKILL_COMMAND_PATHS.length).toBeGreaterThanOrEqual(50)
+    expect(COMMAND_LIST_PATHS.length).toBeGreaterThanOrEqual(50)
 
     // 命令必须真的能分发，而不是只在文档里出现过。
-    const unknownCommands = SKILL_COMMAND_PATHS.filter(
+    const unknownCommands = COMMAND_LIST_PATHS.filter(
       (path) => !REGISTRY_KEYS.includes(path.split(' ')[0]),
     )
     expect(unknownCommands).toEqual([])
 
     // 带子命令的条目（tab list、network har start）必须在帮助树里有对应层级。
-    const undocumented = SKILL_COMMAND_PATHS.filter((path) => !resolvesToHelpNode(path))
+    const undocumented = COMMAND_LIST_PATHS.filter((path) => !resolvesToHelpNode(path))
     expect(undocumented).toEqual([])
   })
 })

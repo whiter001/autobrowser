@@ -106,6 +106,7 @@ describe('response format', () => {
 
   test('MCP advertises response_format and emits compact concise content', async () => {
     const server = new AutobrowserMcpServer({
+      responseMode: 'both',
       requestCommand: async () => ({
         ok: true,
         result: {

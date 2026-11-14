@@ -42,7 +42,14 @@ describe('error recovery contract', () => {
       detail: 'Error opening local segment',
     })
 
-    const mcp = toErrorResult('WAIT_NOT_CONFIRMED', 'selector is not visible')
+    const mcp = toErrorResult(
+      'WAIT_NOT_CONFIRMED',
+      'selector is not visible',
+      {},
+      {
+        responseMode: 'both',
+      },
+    )
     expect(mcp.structuredContent).toMatchObject({
       error: {
         code: 'WAIT_NOT_CONFIRMED',

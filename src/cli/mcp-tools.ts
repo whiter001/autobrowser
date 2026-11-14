@@ -161,7 +161,7 @@ export const MCP_TOOLS: McpToolDefinition[] = [
   {
     name: 'snapshot',
     description:
-      'Capture interactive/visible elements with @eN refs, roles, names and positions, plus @fN frame refs. Refs are not reused within a document, but removed nodes are invalid and navigation makes refs stale: refresh snapshot before acting. Concise output defaults to 50 elements and 32768 UTF-8 bytes (detailed: 200 elements and 200000 bytes); limit can select 1..200 elements without raising the byte budget. When truncated, narrow target/roles or use changed to read changes. Start here to discover targets.',
+      'Capture interactive/visible elements with @eN refs, roles and names, plus @fN frame refs. Concise replies keep only action-relevant element fields (ref, tag, role, name, value, placeholder, type, href, disabled, checked) and omit element text, positions and buttons; pass includeText to add the page text. changed returns a pure diff only (pageEpoch, elements, unchangedCount, full, removedRefs and truncation info). Refs are not reused within a document, but removed nodes are invalid and navigation makes refs stale: refresh snapshot before acting. Concise output defaults to 50 elements and 32768 UTF-8 bytes (detailed: full legacy fields, 200 elements and 200000 bytes); limit can select 1..200 elements without raising the byte budget. When truncated, narrow target/roles or use changed to read changes. Start here to discover targets.',
     command: 'snapshot',
     inputSchema: {
       type: 'object',
@@ -179,7 +179,12 @@ export const MCP_TOOLS: McpToolDefinition[] = [
         changed: {
           type: 'boolean',
           description:
-            'Return added/changed elements including state changes (checked/disabled etc.) and removedRefs. Baselines are document/frame scoped; first run or navigation returns full: true. Truncated snapshots only cache delivered elements.',
+            'Return added/changed elements including state changes (checked/disabled etc.) and removedRefs as a pure diff (no text/buttons/headings/frames/page metadata). Baselines are document/frame scoped; first run or navigation returns full: true. Truncated snapshots only cache delivered elements.',
+        },
+        includeText: {
+          type: 'boolean',
+          description:
+            'Include the full page text in a concise snapshot. Ignored by changed, which stays a pure diff; detailed always includes text.',
         },
         limit: {
           type: 'number',
@@ -190,7 +195,7 @@ export const MCP_TOOLS: McpToolDefinition[] = [
       },
     },
     toArgs: (args) => {
-      const out = onlyDefined(args, ['roles', 'changed', 'limit'])
+      const out = onlyDefined(args, ['roles', 'changed', 'includeText', 'limit'])
       if (args.target !== undefined) {
         out.selector = args.target
       }

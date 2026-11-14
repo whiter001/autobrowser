@@ -71,6 +71,8 @@ interface SnapshotArgs {
   changed: boolean
   /** 返回元素数量上限；缺省时由扩展按 concise 50 / detailed 200 决定 */
   limit?: number
+  /** concise 普通快照附带整页 text；changed 模式忽略 */
+  includeText: boolean
 }
 
 interface SearchArgs {
@@ -986,6 +988,7 @@ export function parseSnapshotArgs(rest: string[]): SnapshotArgs {
   let target: string | null = null
   let roles: string[] | null = null
   let changed = false
+  let includeText = false
   let limit: number | undefined
 
   for (let index = 0; index < rest.length; index += 1) {
@@ -1040,6 +1043,11 @@ export function parseSnapshotArgs(rest: string[]): SnapshotArgs {
       continue
     }
 
+    if (value === '--include-text') {
+      includeText = true
+      continue
+    }
+
     if (value.startsWith('--')) {
       throw new Error(`unsupported snapshot option: ${value}`)
     }
@@ -1052,7 +1060,13 @@ export function parseSnapshotArgs(rest: string[]): SnapshotArgs {
     throw new Error(`unexpected extra argument for snapshot: ${value}`)
   }
 
-  return { target, roles, changed, ...(limit !== undefined ? { limit } : {}) }
+  return {
+    target,
+    roles,
+    changed,
+    includeText,
+    ...(limit !== undefined ? { limit } : {}),
+  }
 }
 
 export function parseSearchArgs(rest: string[], defaultLimit = 20): SearchArgs {

@@ -12,6 +12,56 @@ import { describeErrorCode } from '../core/error-actions.js'
 // 超过该体积的截图 base64 不再内联进 MCP 响应（会爆模型上下文），改为落盘后回文本路径
 const SCREENSHOT_MAX_INLINE_BYTES = 2 * 1024 * 1024
 
+/**
+ * MCP 响应模式：
+ * - text：只写 content 文本，模型按文本解析，体积最小（默认）
+ * - structured：普通 object 结果只写 structuredContent，content 留空
+ * - both：同时写 content 与 structuredContent，兼容旧客户端
+ */
+export type McpResponseMode = 'text' | 'structured' | 'both'
+
+export function parseMcpResponseMode(value: string | undefined): McpResponseMode {
+  const normalized = value?.trim().toLowerCase()
+  if (!normalized) return 'text'
+  if (normalized === 'text' || normalized === 'structured' || normalized === 'both') {
+    return normalized
+  }
+  throw new Error(
+    `Invalid AUTOBROWSER_MCP_RESPONSE_MODE "${value}": expected "text", "structured" or "both".`,
+  )
+}
+
+interface McpResultContent {
+  text: string
+  structuredContent: Record<string, unknown>
+  isError?: boolean
+}
+
+// 同一份结果按模式决定落 content 还是 structuredContent，避免两边重复搬运大对象
+function buildResult(
+  mode: McpResponseMode,
+  { text, structuredContent, isError }: McpResultContent,
+): CallToolResult {
+  if (mode === 'text') {
+    return {
+      ...(isError ? { isError: true } : {}),
+      content: [{ type: 'text', text }],
+    }
+  }
+  if (mode === 'both') {
+    return {
+      ...(isError ? { isError: true } : {}),
+      content: [{ type: 'text', text }],
+      structuredContent,
+    }
+  }
+  return {
+    ...(isError ? { isError: true } : {}),
+    content: [],
+    structuredContent,
+  }
+}
+
 export function toErrorResult(
   code: string | undefined,
   message: string,
@@ -21,13 +71,13 @@ export function toErrorResult(
     retryable?: boolean
     details?: unknown
   } = {},
+  options: { responseMode?: McpResponseMode } = {},
 ): CallToolResult {
   const suggestedAction =
     error.suggestedAction || error.suggestion || describeErrorCode(code)?.action
   const text = suggestedAction ? `${message}\n\n[AI SUGGESTION]: ${suggestedAction}` : message
-  return {
-    isError: true,
-    content: [{ type: 'text', text }],
+  return buildResult(options.responseMode ?? 'text', {
+    text,
     structuredContent: {
       error: {
         ...(code ? { code } : {}),
@@ -38,12 +88,17 @@ export function toErrorResult(
         ...(error.details !== undefined ? { details: error.details } : {}),
       },
     },
-  }
+    isError: true,
+  })
 }
 
 export function toSuccessResult(
   result: unknown,
-  options: { command?: string; responseFormat?: ResponseFormat } = {},
+  options: {
+    command?: string
+    responseFormat?: ResponseFormat
+    responseMode?: McpResponseMode
+  } = {},
 ): CallToolResult {
   const responseFormat = options.responseFormat ?? 'concise'
   const presented = options.command
@@ -51,10 +106,12 @@ export function toSuccessResult(
     : result
   const structuredContent = isRecord(presented) && !Array.isArray(presented) ? presented : undefined
   const spacing = responseFormat === 'concise' ? undefined : 2
-  return {
-    content: [{ type: 'text', text: JSON.stringify(presented, null, spacing) }],
-    ...(structuredContent ? { structuredContent } : {}),
+  const text = JSON.stringify(presented, null, spacing)
+  // 数组/原始值无法表达 structuredContent，structured 模式必须回退为文本，否则客户端拿不到任何数据
+  if (!structuredContent) {
+    return { content: [{ type: 'text', text }] }
   }
+  return buildResult(options.responseMode ?? 'text', { text, structuredContent })
 }
 
 export function toScreenshotResult(result: Record<string, unknown>): Promise<CallToolResult> {

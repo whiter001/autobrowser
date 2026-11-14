@@ -346,6 +346,7 @@ describe('page observe snapshot role filter & incremental', () => {
 
     const result = (await pageObserve.snapshotTab(1, null, {
       changed: true,
+      responseFormat: 'detailed',
     })) as Record<string, unknown>
 
     expect(expressions).toHaveLength(1)
@@ -406,10 +407,11 @@ describe('page observe snapshot role filter & incremental', () => {
       sendDebuggerCommand: async () => undefined as never,
     } as never)
 
-    await pageObserve.snapshotTab(1, null, { changed: true })
+    await pageObserve.snapshotTab(1, null, { changed: true, responseFormat: 'detailed' })
 
     const second = (await pageObserve.snapshotTab(1, null, {
       changed: true,
+      responseFormat: 'detailed',
     })) as Record<string, unknown>
 
     expect(expressions).toHaveLength(2)
@@ -1250,7 +1252,9 @@ describe('executed observation expressions', () => {
     label.innerText = 'Account password'
     aria.setAttribute('aria-label', 'Secret input')
     const h = expressionHarness(new ObserveDocument([...nodes, label]))
-    const first = (await h.domain.snapshotTab(1, null)) as ObservedSnapshot
+    const first = (await h.domain.snapshotTab(1, null, {
+      responseFormat: 'detailed',
+    })) as ObservedSnapshot
     expect(first.elements.map((node) => node.value)).toEqual([null, null, null])
     expect(first.elements.map((node) => node.name)).toEqual([
       '',
@@ -1266,7 +1270,10 @@ describe('executed observation expressions', () => {
           return 'changed-password'
         },
       })
-    const delta = (await h.domain.snapshotTab(1, null, { changed: true })) as ObservedSnapshot
+    const delta = (await h.domain.snapshotTab(1, null, {
+      changed: true,
+      responseFormat: 'detailed',
+    })) as ObservedSnapshot
     expect(delta.elements).toHaveLength(0)
     expect((h.payloads.at(-1) as { signatures: string[] }).signatures).toEqual(signatures)
     expect(valueReads).toBe(0)
@@ -1579,7 +1586,9 @@ describe('executed observation expressions', () => {
       shadowHostWithLabelledButton('Delete'),
     ])
     const h = expressionHarness(doc)
-    const snapshot = (await h.domain.snapshotTab(1, null)) as ObservedSnapshot
+    const snapshot = (await h.domain.snapshotTab(1, null, {
+      responseFormat: 'detailed',
+    })) as ObservedSnapshot
     expect(snapshot.elements.map((element) => element.name)).toEqual(['Save', 'Delete'])
     expect(snapshot.elements.map((element) => element.text)).toEqual(['', ''])
     for (const [index, name] of ['Save', 'Delete'].entries()) {
@@ -1659,7 +1668,10 @@ describe('executed observation expressions', () => {
     const doc = new ObserveDocument([host])
     const h = expressionHarness(doc)
 
-    const scoped = (await h.domain.snapshotTab(1, null, { selector: '#card' })) as ObservedSnapshot
+    const scoped = (await h.domain.snapshotTab(1, null, {
+      selector: '#card',
+      responseFormat: 'detailed',
+    })) as ObservedSnapshot
 
     expect(scoped.elements).toHaveLength(1)
     expect(scoped.elements[0]).toMatchObject({ role: 'link', text: 'Book title', href: '/book/1' })
@@ -1804,5 +1816,134 @@ describe('executed observation expressions', () => {
       startLine = result.nextStartLine
     }
     expect(lines).toEqual(Array.from({ length: 501 }, (_, i) => i + 1))
+  })
+})
+
+describe('snapshot concise projection', () => {
+  function projectionDocument() {
+    const button = new ObserveNode()
+    button.innerText = 'Save'
+    const input = new ObserveInput()
+    input.setAttribute('placeholder', 'Email')
+    input.value = 'a@b.c'
+    const anchor = new ObserveAnchor()
+    anchor.innerText = 'Detail'
+    const heading = new ObserveNode('H2')
+    heading.id = 'heading-id'
+    heading.className = 'heading-class'
+    heading.innerText = 'Section title'
+    const frame = new ObserveFrame()
+    frame.src = '/frame'
+    const doc = new ObserveDocument([button, input, anchor, heading, frame])
+    doc.body.innerText = 'Full page text body'
+    return doc
+  }
+
+  test('concise normal snapshot keeps actionable fields and drops text, buttons and coordinates', async () => {
+    const h = expressionHarness(projectionDocument())
+
+    const result = (await h.domain.snapshotTab(1, null)) as Record<string, any>
+
+    expect(result).not.toHaveProperty('text')
+    expect(result).not.toHaveProperty('buttons')
+    expect(result.title).toBe('')
+    expect(result.pageEpoch).toBe(1)
+    expect(Object.keys(result.elements[0]).sort()).toEqual(
+      [
+        'checked',
+        'disabled',
+        'href',
+        'name',
+        'placeholder',
+        'ref',
+        'role',
+        'tag',
+        'type',
+        'value',
+      ].sort(),
+    )
+    expect(result.elements[0]).toMatchObject({ tag: 'button', role: 'button', name: 'Save' })
+    expect(result.frames[0]).not.toHaveProperty('x')
+    expect(result.frames[0]).not.toHaveProperty('width')
+    expect(result.frames[0]).toMatchObject({ src: '/frame' })
+    expect(result.headings[0]).toEqual({
+      ref: result.headings[0].ref,
+      tag: 'H2',
+      text: 'Section title',
+    })
+  })
+
+  test('includeText adds the page text to a concise snapshot only when requested', async () => {
+    const h = expressionHarness(projectionDocument())
+
+    const withText = (await h.domain.snapshotTab(1, null, {
+      includeText: true,
+    })) as Record<string, unknown>
+
+    expect(withText.text).toBe('Full page text body')
+    expect(withText).not.toHaveProperty('buttons')
+  })
+
+  test('changed mode is a pure diff and ignores includeText', async () => {
+    const h = expressionHarness(projectionDocument())
+    await h.domain.snapshotTab(1, null, { changed: true })
+
+    const delta = (await h.domain.snapshotTab(1, null, {
+      changed: true,
+      includeText: true,
+    })) as Record<string, unknown>
+    const changed = (await h.domain.snapshotTab(1, null, { changed: true })) as Record<string, any>
+
+    expect(Object.keys(delta).sort()).toEqual([
+      'elements',
+      'full',
+      'pageEpoch',
+      'removedRefs',
+      'unchangedCount',
+    ])
+    expect(delta.unchangedCount).toBe(3)
+    expect(delta.elements).toHaveLength(0)
+    expect(new TextEncoder().encode(JSON.stringify(changed)).byteLength).toBeLessThan(1024)
+  })
+
+  test('changed elements use the concise element shape after a semantic change', async () => {
+    const doc = projectionDocument()
+    const h = expressionHarness(doc)
+    await h.domain.snapshotTab(1, null, { changed: true })
+
+    doc.nodes[0]!.innerText = 'Save changes'
+    const delta = (await h.domain.snapshotTab(1, null, { changed: true })) as Record<string, any>
+
+    expect(delta.elements).toHaveLength(1)
+    expect(delta.elements[0]).not.toHaveProperty('text')
+    expect(delta.elements[0]).not.toHaveProperty('x')
+    expect(delta.elements[0]).toMatchObject({ ref: '@e1#p1', name: 'Save changes' })
+  })
+
+  test('detailed keeps the legacy fields, element text and coordinates', async () => {
+    const h = expressionHarness(projectionDocument())
+
+    const result = (await h.domain.snapshotTab(1, null, {
+      responseFormat: 'detailed',
+    })) as Record<string, any>
+
+    expect(result.text).toBe('Full page text body')
+    expect(result.buttons).toHaveLength(1)
+    expect(result.elements[0].text).toBe('Save')
+    expect(result.elements[0]).toHaveProperty('x')
+    expect(result.frames[0]).toHaveProperty('width')
+    expect(result.headings[0]).toHaveProperty('id', 'heading-id')
+    expect(result.headings[0]).toHaveProperty('className', 'heading-class')
+  })
+
+  test('projection does not change the incremental baseline', async () => {
+    const h = expressionHarness(projectionDocument())
+    await h.domain.snapshotTab(1, null)
+
+    const delta = (await h.domain.snapshotTab(1, null, { changed: true })) as Record<string, any>
+
+    expect(delta.full).toBe(false)
+    expect(delta.elements).toHaveLength(0)
+    expect(delta.unchangedCount).toBe(3)
   })
 })

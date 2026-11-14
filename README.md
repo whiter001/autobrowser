@@ -189,7 +189,7 @@ autobrowser snapshot --response-format detailed
 
 - `network/console/errors/actions/downloads/command` 默认最多 20 条，`--limit` 最大 100；`tab list` 和 route list 默认 50 条。使用响应里的 `pagination.nextCursor` 续页，并保持过滤条件不变；旧 `--page/--page-idx/--page-size` 仍兼容。
 - network 列表的 `rN` 是会话内稳定短引用，可直接传给 `network request`；旧 CDP ID 仍可使用。concise 详情去掉重复的 summary/HAR 结构，单个 body 最多 16KiB 并显式标记截断。
-- concise snapshot 默认最多 50 个元素、32KiB，`--limit <1..200>` 可调整元素上限但不提高字节预算；search 默认 10 个窗口、100 行、32KiB；eval 默认结果上限 32KiB。`detailed` 保留原有更高预算。
+- concise snapshot 默认最多 50 个元素、32KiB，`--limit <1..200>` 可调整元素上限但不提高字节预算；元素只带可操作字段（ref/tag/role/name/value/placeholder/type/href/disabled/checked），省略 text 与坐标，`--include-text` 可显式附带整页 text（`--changed` 仍是纯 diff）；search 默认 10 个窗口、100 行、32KiB；eval 默认结果上限 32KiB。`detailed` 完整保留旧字段与更高预算，是需要的兼容出口。
 - `--raw` 仍表示原始文本输出，不与显式 `--response-format` 混用。大截图、视频、trace 和 HAR 继续落盘后只返回路径与摘要。
 
 ## 状态检查
@@ -428,11 +428,12 @@ autobrowser frame @f1
 
 `snapshot` 也接受一个可选的选择器或 `@eN` 引用（`snapshot @e4` 或 `snapshot --target @e4`），只输出该元素子树的结构。
 
-为降低大页面快照的 token 消耗，`snapshot` 支持两种模式：
+为降低大页面快照的 token 消耗，`snapshot` 默认使用 `concise` 输出：`elements` 只保留操作需要的 `ref`、`tag`、`role`、`name`、`value`、`placeholder`、`type`、`href`、`disabled`、`checked`，省略 `text` 与 `x/y/width/height`；`frames` 省略坐标；`headings` 只保留 `ref/tag/text`；默认不返回 `buttons` 和整页 `text`。需要旧版完整字段时加 `--response-format detailed`。
 
+- `--include-text`：仅对 `concise` 普通快照生效，附带整页 `text`；`--changed` 即使加了该选项也保持纯 diff。
 - `--role <button,link,...>`：只返回匹配这些 role 的元素（作为现有可见性过滤之上的附加过滤）。同一 document 内 snapshot/find 共用稳定 ref，过滤或删除节点后不复用已分配编号；这不表示被删除节点仍可操作，导航后引用会 stale，应重新 snapshot。
-- `--changed`：增量模式，返回相对上一次快照新增或变化的元素（包含 checked、disabled、href 等状态/语义字段变化）、`removedRefs` 与 `unchangedCount`。基线按 document/frame 隔离；首次运行或导航后退化为全量快照并带 `full: true`。
-- `--limit <1..200>` 覆盖默认元素数量上限，但不提高输出字节预算。输出最多 200000 UTF-8 字节，`truncated` 时用 `--target`/`--role` 收窄或 `--changed` 查看变化。只有实际交付的元素进入增量基线，不把裁掉的元素视为已读。
+- `--changed`：增量模式，返回相对上一次快照新增或变化的元素（包含 checked、disabled、href 等状态/语义字段变化）、`removedRefs` 与 `unchangedCount`。响应只包含 `pageEpoch`、`elements`、`unchangedCount`、`full`、`removedRefs` 以及实际存在的截断字段，空 diff 通常小于 1KB。基线按 document/frame 隔离；首次运行或导航后退化为全量快照并带 `full: true`。
+- `--limit <1..200>` 覆盖默认元素数量上限，但不提高输出字节预算。`truncated` 时用 `--target`/`--role` 收窄或 `--changed` 查看变化。只有实际交付的元素进入增量基线，不把裁掉的元素视为已读。
 
 页面被未处理的对话框阻塞时，`--changed` 仍返回 modal 描述，且不更新增量缓存。
 
@@ -663,12 +664,19 @@ autobrowser dialog auto --on
 autobrowser mcp
 ```
 
-当前暴露 46 个工具，按用途分组如下：
+默认只暴露 19 个核心工具，并且响应只写文本，避免 `tools/list` 的约 41KB schema 和同一结果的 JSON 双写占满模型上下文。核心工具为：`navigate`、`reload`、`snapshot`、`search`、`find`、`click`、`fill`、`type`、`press`、`get`、`wait`、`eval`、`tab_list`、`tab_attach`、`tab_detach`、`tab_new`、`tab_select`、`tab_close`、`workspace`。
 
-- 页面与导航：`navigate`、`snapshot`、`search`、`feed`、`find`、`click`、`dblclick`、`hover`、`fill`、`type`、`press`、`scroll`、`get`、`wait`、`screenshot`、`eval`。
-- 标签页与控制：`tab_list`、`target`、`command_control`、`tab_new`、`tab_select`、`tab_close`。
-- 浏览器、网络与状态：`cdp`、`webmcp_list`、`webmcp_call`、`console`、`errors`、`network_requests`、`network_har`、`dialog`、`cookies`、`storage`。
-- 其他交互与诊断：`locator`、`highlight`、`drop`、`mouse_move`、`mouse_down`、`mouse_up`、`mouse_wheel`、`video`、`tracing`、`actions`、`auto_snapshot`、`media_emulation`、`device`、`fill_form`。
+兼容开关通过环境变量控制：
+
+```bash
+# 恢复完整 54 个工具，并保留旧版 content + structuredContent 双写
+AUTOBROWSER_MCP_TOOLSET=all AUTOBROWSER_MCP_RESPONSE_MODE=both autobrowser mcp
+```
+
+- `AUTOBROWSER_MCP_TOOLSET=core|all`，默认 `core`。`all` 恢复完整 54 个工具；未列出的工具仍然注册且可直接调用，只是不出现在 `tools/list` 里，未知工具的错误建议也只列当前可见工具。
+- `AUTOBROWSER_MCP_RESPONSE_MODE=text|structured|both`，默认 `text`。`text` 只写 `content`；`structured` 对普通 object 结果只写 `structuredContent`，`content` 为空数组，数组/原始值无法结构化时回退文本；`both` 同时写两份，保持旧行为。成功和错误结果都遵循该模式。
+- `screenshot`、`video`、`tracing` 的专用媒体结果不参与上述折叠，仍按原样返回图片块或落盘路径摘要，避免重复全量数据。
+- 非法环境变量值会直接报错退出，不会静默回退到默认值。
 
 行为约定与上文的「面向 Agent 的引用」保持一致：
 
@@ -676,7 +684,7 @@ autobrowser mcp
 - 多标签页流程优先用 `tab_list` 获取 `tN` 句柄，再通过 `tab_select` / `tab_close` 操作。
 - 支持目标定位的工具可以传入 `tab`（`tN` 句柄）和 `frame`（`@fN` 引用）参数，把命令绑定到特定标签页或 frame。
 - 页面大规模重渲染或导航后（epoch 变化），先重新运行 `snapshot` 刷新引用，再继续操作。
-- 工具失败会返回 MCP 的 isError 结果，错误文本带有 `[AI SUGGESTION]` 修复建议；结构化错误见 `structuredContent.error`（`code` / `message` / `suggestedAction`）。
+- 工具失败会返回 MCP 的 isError 结果。默认 `text` 模式下错误只出现在 `content` 文本中，并带 `[AI SUGGESTION]` 修复建议；需要结构化错误时使用 `structured` 或 `both`，读取 `structuredContent.error`（`code` / `message` / `suggestedAction`）。
 
 ## 测试
 

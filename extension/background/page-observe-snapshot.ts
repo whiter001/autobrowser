@@ -18,6 +18,48 @@ const AGENT_SNAPSHOT_MAX_ELEMENTS = 200
 const CONCISE_SNAPSHOT_MAX_ELEMENTS = 50
 const SNAPSHOT_MAX_JSON_BYTES = 200_000
 
+/** concise 元素只保留可操作字段；text 与坐标在大页面上占比最高，默认不返回。 */
+const CONCISE_ELEMENT_FIELDS = [
+  'ref',
+  'tag',
+  'role',
+  'name',
+  'value',
+  'placeholder',
+  'type',
+  'href',
+  'disabled',
+  'checked',
+] as const
+const CONCISE_HEADING_FIELDS = ['ref', 'tag', 'text'] as const
+// changed 模式是纯 diff：页面元信息、text、buttons、headings、frames 与 diff 无关，
+// 即使 includeText 也不附带，保证空 diff 稳定在 1KB 以内。
+const CHANGED_SNAPSHOT_FIELDS = [
+  'pageEpoch',
+  'elements',
+  'unchangedCount',
+  'full',
+  'removedRefs',
+  'truncated',
+  'totalElements',
+  'returnedElements',
+  'suggestedAction',
+] as const
+const CONCISE_SNAPSHOT_FIELDS = [
+  'pageEpoch',
+  'title',
+  'url',
+  'readyState',
+  'elements',
+  'frames',
+  'headings',
+  // 截断诊断属于操作信息，保留在普通 concise 快照里；changed 模式的同名字段在其白名单中。
+  'truncated',
+  'totalElements',
+  'returnedElements',
+  'suggestedAction',
+] as const
+
 export interface SnapshotTabOptions {
   /** CSS selector 或 @eN ref：只截取该元素子树 */
   selector?: string
@@ -30,6 +72,11 @@ export interface SnapshotTabOptions {
    * 字节预算不随 limit 放宽。
    */
   limit?: number
+  /**
+   * concise 普通快照显式附带整页 text；changed 模式始终是纯 diff，忽略该选项。
+   * detailed 本来就带 text，不需要这个开关。
+   */
+  includeText?: boolean
   responseFormat?: 'concise' | 'detailed'
 }
 
@@ -46,6 +93,67 @@ function resolveSnapshotMaxElements(
   }
 
   return Math.min(Math.floor(limit), AGENT_SNAPSHOT_MAX_ELEMENTS)
+}
+
+function projectFields(value: unknown, fields: readonly string[]): unknown {
+  if (!value || typeof value !== 'object') return value
+  const source = value as Record<string, unknown>
+  const projected: Record<string, unknown> = {}
+  for (const field of fields) {
+    if (source[field] !== undefined) projected[field] = source[field]
+  }
+  return projected
+}
+
+function projectFrames(value: unknown): unknown {
+  if (!Array.isArray(value)) return value
+  return value.map((frame) => {
+    if (!frame || typeof frame !== 'object') return frame
+    const {
+      x: _x,
+      y: _y,
+      width: _width,
+      height: _height,
+      ...rest
+    } = frame as Record<string, unknown>
+    return rest
+  })
+}
+
+/**
+ * concise 输出投影：只裁剪最终返回体，不参与签名、baseline、截断和遍历，
+ * 因此缓存仍基于未投影结果，diff 语义不受影响。modal 阻塞分支单独返回，不走这里。
+ */
+function projectConciseSnapshot(
+  result: Record<string, unknown>,
+  options: { changed: boolean; includeText: boolean },
+): Record<string, unknown> {
+  const fields = options.changed ? CHANGED_SNAPSHOT_FIELDS : CONCISE_SNAPSHOT_FIELDS
+  const projected: Record<string, unknown> = {}
+  for (const field of fields) {
+    if (!(field in result)) continue
+    if (field === 'elements') {
+      projected.elements = Array.isArray(result.elements)
+        ? result.elements.map((item) => projectFields(item, CONCISE_ELEMENT_FIELDS))
+        : result.elements
+      continue
+    }
+    if (field === 'frames') {
+      projected.frames = projectFrames(result.frames)
+      continue
+    }
+    if (field === 'headings') {
+      projected.headings = Array.isArray(result.headings)
+        ? result.headings.map((item) => projectFields(item, CONCISE_HEADING_FIELDS))
+        : result.headings
+      continue
+    }
+    projected[field] = result[field]
+  }
+  if (!options.changed && options.includeText && 'text' in result) {
+    projected.text = result.text
+  }
+  return projected
 }
 
 /**
@@ -385,11 +493,16 @@ ${PAGE_CONTEXT_SNAPSHOT_HELPERS_SOURCE}
             .slice(0, 1000),
         })
       }
-      return delivered
+      // 投影只影响返回体：缓存写入在投影前完成，签名/ref/baseline 仍是未裁剪结果。
+      return options.responseFormat === 'detailed'
+        ? delivered
+        : projectConciseSnapshot(delivered, {
+            changed: changedMode,
+            includeText: Boolean(options.includeText),
+          })
     }
 
     return value
   }
-
   return { snapshotTab }
 }
