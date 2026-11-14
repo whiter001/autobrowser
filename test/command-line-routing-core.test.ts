@@ -264,6 +264,43 @@ describe('cli command routing', () => {
     })
   })
 
+  test('routes the --timeout alias for goto, open and reload while keeping timeoutMs', async () => {
+    const goto = await runCli(['goto', 'https://example.com/app', '--timeout', '7000'])
+    expect(goto.fetchCalls[0].body).toEqual({
+      command: 'goto',
+      args: { url: 'https://example.com/app', timeoutMs: 7000 },
+    })
+
+    const open = await runCli(['open', 'https://example.com/open', '--timeout', '7100'])
+    expect(open.fetchCalls[0].body).toEqual({
+      command: 'goto',
+      args: { url: 'https://example.com/open', timeoutMs: 7100 },
+    })
+
+    const reload = await runCli(['reload', '--timeout', '7200'])
+    expect(reload.fetchCalls[0].body).toEqual({
+      command: 'reload',
+      args: { timeoutMs: 7200 },
+    })
+  })
+
+  test('rejects mixing --timeout-ms and --timeout before sending navigation requests', async () => {
+    for (const args of [
+      ['goto', 'https://example.com', '--timeout-ms', '5000', '--timeout', '6000'],
+      ['goto', 'https://example.com', '--timeout-ms', '5000', '--timeout-ms', '6000'],
+      ['open', 'https://example.com', '--timeout', '5000', '--timeout-ms', '6000'],
+      ['reload', '--timeout-ms', '5000', '--timeout', '6000'],
+      ['reload', '--timeout', '5000', '--timeout', '6000'],
+    ]) {
+      const result = await runCli(args)
+      expect(result.exitCode).toBe(1)
+      expect(result.fetchCalls).toHaveLength(0)
+      const error = cliErrorPayload(result.stdout).error
+      expect(error.code).toBe('CLI_INVALID_ARGUMENT')
+      expect(error.message).toContain('duplicate')
+    }
+  })
+
   test('routes reload result waits to the extension', async () => {
     const result = await runCli([
       'reload',

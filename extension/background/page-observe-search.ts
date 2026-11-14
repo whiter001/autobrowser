@@ -34,6 +34,8 @@ export interface SearchPageTextResult {
   totalMatches: number
   empty?: boolean
   emptyReason?: 'NO_DATA' | 'NO_MATCH'
+  /** 字面量查询零命中且含正则元字符时的改写提示（有命中、显式正则、NO_DATA 时不存在） */
+  hint?: string
   returned: number
   /** 窗口、行数、字节或单行宽度发生截断 */
   truncated: boolean
@@ -94,6 +96,7 @@ export function computeSearchPageTextMatches(
   const encoder = new TextEncoder()
   // 回显也计入预算，超大查询不能挤占全部行预算。
   const echo = (text: string) => text.slice(0, 1024)
+  const hasText = rawText.trim() !== ''
   const windows: SearchWindow[] = []
   const result: Omit<SearchPageTextResult, 'pageEpoch'> = {
     query: echo(query),
@@ -105,10 +108,18 @@ export function computeSearchPageTextMatches(
     readyState: echo(readyState),
     totalMatches: matchedLines.size,
     empty: matchedLines.size === 0,
-    ...(matchedLines.size === 0 ? { emptyReason: rawText.trim() ? 'NO_MATCH' : 'NO_DATA' } : {}),
+    ...(matchedLines.size === 0 ? { emptyReason: hasText ? 'NO_MATCH' : 'NO_DATA' } : {}),
     returned: 0,
     truncated: query.length > 1024 || pattern.length > 1024,
     windows,
+  }
+  // 字面量模式下元字符只是普通字符，零命中时最容易误判成“页面没有内容”；
+  // 只在有文本可查时提示改写方式，避免对 NO_DATA 或无元字符的普通查询刷噪音。
+  if (literal && hasText && matchedLines.size === 0 && /[\\^$.*+?()[\]{}|]/.test(query)) {
+    const example = echo(query).replace(/\//g, '\\/')
+    result.hint =
+      'Matched the query as literal text, so regex metacharacters such as | * ( ) [ ] ? + \\ ' +
+      `are not operators; no line contains it. To match as a regex, use /pattern/flags, e.g. /${example}/.`
   }
   let remaining = byteMax - encoder.encode(JSON.stringify(result)).length - 1024
   let count = 0
@@ -240,6 +251,7 @@ ${SEARCH_TEXT_MATCH_HELPERS_SOURCE}
       totalMatches: matches.totalMatches ?? 0,
       ...(matches.empty !== undefined ? { empty: matches.empty } : {}),
       ...(matches.emptyReason !== undefined ? { emptyReason: matches.emptyReason } : {}),
+      ...(matches.hint !== undefined ? { hint: matches.hint } : {}),
       returned: matches.returned ?? 0,
       truncated: matches.truncated ?? false,
       windows: matches.windows ?? [],

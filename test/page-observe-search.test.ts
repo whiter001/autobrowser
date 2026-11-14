@@ -57,6 +57,120 @@ describe('page observe search', () => {
     ])
   })
 
+  test('hints at the /pattern/flags form when a literal query with metacharacters finds nothing', () => {
+    // 原始复现：页面分别出现三个词，字面量查询整串"签到|打卡|抽奖"自然零命中
+    const result = computeSearchPageTextMatches(
+      '今日签到\n完成打卡\n参与抽奖',
+      '签到|打卡|抽奖',
+      '签到|打卡|抽奖',
+      'i',
+      1,
+      20,
+      240,
+      'complete',
+    )
+
+    expect(result.totalMatches).toBe(0)
+    expect(result.emptyReason).toBe('NO_MATCH')
+    expect(result.hint).toContain('literal')
+    expect(result.hint).toContain('/签到|打卡|抽奖/')
+  })
+
+  test('treats every regex metacharacter as a literal-hint trigger', () => {
+    for (const query of [
+      'a|b',
+      'a*b',
+      'a(b',
+      'a)b',
+      'a[b',
+      'a]b',
+      'a?b',
+      'a+b',
+      'a\\b',
+      'a.b',
+      'a^b',
+      'a$b',
+      'a{b',
+      'a}b',
+    ]) {
+      const result = computeSearchPageTextMatches(
+        'no match here',
+        query,
+        query,
+        'i',
+        0,
+        20,
+        240,
+        'complete',
+      )
+      expect(result.hint).toContain(`/${query}/`)
+    }
+  })
+
+  test('does not hint for plain literal misses, matches or an explicit regex', () => {
+    // 无元字符的普通字面量 NO_MATCH
+    const plain = computeSearchPageTextMatches(
+      '今日签到',
+      'missing',
+      'missing',
+      'i',
+      1,
+      20,
+      240,
+      'complete',
+    )
+    expect(plain.emptyReason).toBe('NO_MATCH')
+    expect(plain.hint).toBeUndefined()
+
+    // 字面量本身就命中（元字符当普通字符参与匹配）
+    const literalHit = computeSearchPageTextMatches(
+      '签到|打卡|抽奖',
+      '签到|打卡|抽奖',
+      '签到|打卡|抽奖',
+      'i',
+      0,
+      20,
+      240,
+      'complete',
+    )
+    expect(literalHit.totalMatches).toBe(1)
+    expect(literalHit.hint).toBeUndefined()
+
+    // 显式正则，命中与不命中都不提示
+    const regexHit = computeSearchPageTextMatches(
+      '今日签到',
+      '/签到|打卡/',
+      '签到|打卡',
+      '',
+      0,
+      20,
+      240,
+      'complete',
+    )
+    expect(regexHit.totalMatches).toBe(1)
+    expect(regexHit.hint).toBeUndefined()
+
+    const regexMiss = computeSearchPageTextMatches(
+      '今日签到',
+      '/秒杀|预售/',
+      '秒杀|预售',
+      '',
+      0,
+      20,
+      240,
+      'complete',
+    )
+    expect(regexMiss.emptyReason).toBe('NO_MATCH')
+    expect(regexMiss.hint).toBeUndefined()
+  })
+
+  test('does not hint when the page text is empty (NO_DATA)', () => {
+    const result = computeSearchPageTextMatches('   ', 'a|b', 'a|b', 'i', 1, 20, 240, 'complete')
+
+    expect(result.emptyReason).toBe('NO_DATA')
+    expect(result.hint).toBeUndefined()
+  })
+
   test('merges overlapping and adjacent context windows', () => {
     // line 2 命中（context 1 -> 窗口 1-3），line 4 命中（窗口 3-5）重叠合并为 1-5
     const overlapping = computeSearchPageTextMatches(
@@ -174,6 +288,35 @@ describe('page observe search', () => {
         readyState: 'complete',
       }),
     )
+  })
+
+  test('keeps the literal-match hint when the page result is assembled', async () => {
+    const pageObserve = createPageObserveDomain({
+      state: createObserveState(),
+      getTargetTab: async () => ({ id: 1 }) as never,
+      resolveElementSelectorForTab: async () => {
+        throw new Error('not used')
+      },
+      resolveFrameTarget: async () => {
+        throw new Error('not used')
+      },
+      evaluateInTabContext: async (_tabId: unknown, expression: string) => {
+        // 直接执行注入页面的真实表达式，验证 hint 经过组装层后仍然存在
+        const value = new Function('document', `return ${expression}`)({
+          readyState: 'complete',
+          body: { innerText: '今日签到\n完成打卡\n参与抽奖' },
+        })
+        return { tab: { id: 1 } as never, response: { result: {} }, value }
+      },
+      sendDebuggerCommand: async () => undefined as never,
+    } as never)
+
+    const result = await pageObserve.searchPageText(1, { query: '签到|打卡|抽奖' }, null)
+
+    expect(result.regex).toBe(false)
+    expect(result.totalMatches).toBe(0)
+    expect(result.emptyReason).toBe('NO_MATCH')
+    expect(result.hint).toContain('/签到|打卡|抽奖/')
   })
 
   test('reads readyState from the live document instead of hardcoding complete', async () => {

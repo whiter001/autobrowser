@@ -185,6 +185,22 @@ describe('cli helpers', () => {
     expect(result.stdout).toContain('--timeout is a legacy alias')
   })
 
+  test('documents --timeout as an alias while keeping --timeout-ms canonical', async () => {
+    const helps = await Promise.all(
+      [['goto'], ['open'], ['reload'], ['tab', 'new'], ['eval'], ['run']].map((path) =>
+        runCli(['help', ...path]),
+      ),
+    )
+
+    for (const result of helps) {
+      expect(result.exitCode).toBe(0)
+      expect(result.fetchCalls).toHaveLength(0)
+      // 正式名仍是 --timeout-ms，--timeout 只作为兼容别名出现在说明里
+      expect(result.stdout).toContain('[--timeout-ms <ms>]')
+      expect(result.stdout).toContain('--timeout is accepted as an alias for --timeout-ms')
+    }
+  })
+
   test('documents root server ports in help output', async () => {
     const result = await runCli(['help'])
 
@@ -275,6 +291,25 @@ describe('cli helpers', () => {
     expect(missing.exitCode).toBe(1)
     expect(missing.fetchCalls).toHaveLength(0)
     expect(cliErrorPayload(missing.stdout).error.message).toContain('missing value for --expr')
+  })
+
+  test('routes the eval --timeout alias and rejects duplicate timeout names', async () => {
+    const script = 'document.title'
+    const aliased = await runCli(['eval', '--expr', script, '--timeout', '4500'])
+    expect(aliased.exitCode).toBe(0)
+    expect(aliased.fetchCalls[0].body?.args).toMatchObject({ timeoutMs: 4500 })
+
+    for (const timeoutArgs of [
+      ['--timeout-ms', '4500', '--timeout', '5000'],
+      ['--timeout', '4500', '--timeout', '5000'],
+    ]) {
+      const duplicate = await runCli(['eval', '--expr', script, ...timeoutArgs])
+      expect(duplicate.exitCode).toBe(1)
+      expect(duplicate.fetchCalls).toHaveLength(0)
+      const error = cliErrorPayload(duplicate.stdout).error
+      expect(error.code).toBe('CLI_INVALID_ARGUMENT')
+      expect(error.message).toContain('duplicate')
+    }
   })
 
   test('routes CDP JSON params and rejects non-object payloads', async () => {

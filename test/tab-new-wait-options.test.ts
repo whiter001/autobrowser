@@ -281,6 +281,67 @@ describe('tab new navigation wait options', () => {
     expect(JSON.parse(conditionFailure.stdout).result.tab).toEqual(createdPayload.result.tab)
   })
 
+  test('accepts --timeout as the alias of --timeout-ms for tab new', async () => {
+    const result = await runCli(
+      [
+        'tab',
+        'new',
+        'https://example.com',
+        '--wait-until',
+        'load',
+        '--wait-for',
+        'selector',
+        '#ready',
+        '--timeout',
+        '7000',
+      ],
+      null,
+      { fetchImpl: navigationFetchMock() },
+    )
+
+    expect(result.exitCode).toBe(0)
+    // 发往 relay 的字段仍是 timeoutMs，别名只影响 CLI 解析
+    expect(result.fetchCalls[1].body?.args).toMatchObject({ timeoutMs: 7000 })
+    expect(result.fetchCalls[2].body).toEqual({
+      command: 'wait',
+      args: { tabId: 't42', type: 'selector', selector: '#ready', state: 'visible', timeout: 7000 },
+    })
+  })
+
+  test('rejects a tab new timeout alias without any wait option', async () => {
+    const result = await runCli(['tab', 'new', 'https://example.com', '--timeout', '1000'])
+
+    expect(result.exitCode).toBe(1)
+    expect(result.fetchCalls).toHaveLength(0)
+    expect(cliErrorPayload(result.stdout).error.message).toContain('requires a wait option')
+  })
+
+  test('rejects duplicate timeout names for tab new before creating a tab', async () => {
+    for (const timeoutArgs of [
+      // 跨名字重复
+      ['--timeout-ms', '1000', '--timeout', '2000'],
+      // 同名重复
+      ['--timeout-ms', '1000', '--timeout-ms', '2000'],
+      ['--timeout', '1000', '--timeout', '2000'],
+    ]) {
+      const result = await runCli([
+        'tab',
+        'new',
+        'https://example.com',
+        '--wait-for',
+        'selector',
+        '#ready',
+        ...timeoutArgs,
+      ])
+
+      expect(result.exitCode).toBe(1)
+      expect(result.fetchCalls).toHaveLength(0)
+      const error = cliErrorPayload(result.stdout).error
+      expect(error.code).toBe('CLI_INVALID_ARGUMENT')
+      expect(error.message).toContain('duplicate')
+    }
+  })
+
   test('rejects unsupported or incomplete options before creating a tab', async () => {
     for (const args of [
       ['tab', 'new', 'https://example.com', '--wait'],

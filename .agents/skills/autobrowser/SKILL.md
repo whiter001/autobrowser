@@ -180,7 +180,7 @@ autobrowser 是一个面向 Chrome/Edge 的浏览器自动化 CLI，通过本地
 
 - `wait time 3`、`wait ms 3` 和 `wait 3` 都表示 **3 毫秒**。
 - 如果要等 3 秒，请写成 `wait time 3000`。
-- 超时参数名按命令区分，单位均为毫秒：`goto`/`open`/`tab new`/`eval`/`run` 使用 `--timeout-ms <ms>`；`wait` 也使用 `--timeout-ms <ms>`，`--timeout <ms>` 只是 legacy alias。
+- 超时参数单位均为毫秒，正式名统一为 `--timeout-ms <ms>`；`--timeout <ms>` 是 `wait`/`goto`/`open`/`tab new`/`eval`/`run`/`reload` 都接受的兼容别名。`goto`/`open`/`tab new`/`eval`/`run`/`reload` 发往 relay 的字段是 `timeoutMs`；`wait` 仍映射到既有的 `args.timeout`。同一条命令里混用两个名字或重复同名会按参数错误拒绝（`CLI_INVALID_ARGUMENT`，不发送请求），不要靠重复传入来覆盖前值。`tab new` 的 `--timeout-ms`/`--timeout` 必须搭配等待选项（`--wait-until`/`--settle-timeout`/`--dom-quiet-ms`/`--wait-for`）使用。
 - 如果页面仍在加载，优先使用 `open <url>` 后再配合短等待，或直接用 `wait --load networkidle`。
 
 ## 导航结果、脚本注入与断连恢复
@@ -199,7 +199,8 @@ autobrowser 是一个面向 Chrome/Edge 的浏览器自动化 CLI，通过本地
 ## 搜索、引用与歧义恢复
 
 - `search "error" --context 3 --limit 20` 只读搜索可见文本。`context` 为 0–50；`limit` 限制匹配窗口数（默认 20、最大 200；0 不返回窗口或续读游标），但每次仍最多返回 200 行、100000 UTF-8 字节，单个合并窗口也可能截断。
-- 普通 query 始终按字面量匹配，`|` 也只是普通字符；正则必须写成 `/pattern/flags`，例如 `search "/签到|打卡|抽奖/" --context 2 --limit 20`。`g` 标志会被忽略，非法正则直接报错。`emptyReason:NO_MATCH` 只表示当前匹配模式（字面量或正则）在范围内无结果，不代表页面没有内容。
+- 普通 query 始终按字面量匹配，`|`、`*`、`(`、`?`、`\` 等正则元字符都只是普通字符；正则必须写成 `/pattern/flags`，例如 `search "/签到|打卡|抽奖/" --context 2 --limit 20`。`g` 标志会被忽略，非法正则直接报错。`emptyReason:NO_MATCH` 只表示当前匹配模式（字面量或正则）在范围内无结果，不代表页面没有内容。
+- 字面量查询含正则元字符且在有文本的页面上零命中时，结果会带 `hint`：它说明本次按字面量匹配、元字符不是操作符，并给出 `/pattern/flags` 改写示例（如 `签到|打卡|抽奖` -> `/签到|打卡|抽奖/`）。有命中、显式正则、无元字符的普通查询和 `NO_DATA` 都不会带该字段；看到 `hint` 就先按提示改用正则重试，而不是断言页面没内容。
 - `--start-line <n>` 是 1 起算的正安全整数，默认 1。若 `truncated:true` 且有 `nextStartLine:201`，保持查询和 tab/frame 不变，运行 `search "error" --context 3 --limit 20 --start-line 201` 续读；MCP 对应 `search({query:"error", context:3, limit:20, startLine:201})`。页面变更后行号可能变化，应重新搜索确认。
 - `snapshot`/`find` 在同一 document 内不复用已分配 ref；这不代表被删除节点仍有效。导航后 ref stale，删除/重渲染后先刷新 snapshot。
 - `snapshot --changed` 包含 checked/disabled 等状态变化与 `removedRefs`；基线按 document/frame 隔离。输出有 200000 UTF-8 字节预算，`truncated` 时用 `--target`/`--role` 收窄或 `--changed` 查看后续变化；只有实际交付的元素进入基线。
@@ -266,6 +267,8 @@ autobrowser 是一个面向 Chrome/Edge 的浏览器自动化 CLI，通过本地
 - 禁用 npm 安装脚本时仍是旧 shim，**不保证存在 exe**；放行脚本后 `npm rebuild -g @whiter001/autobrowser`。缺少预编译文件/不支持平台/非全局才沿用旧修正；原生复制失败会明确报错，不静默回退。不要显式调用 `autobrowser.cmd`，PowerShell → cmd.exe 会破坏引号和 `& | ^` 参数。原生入口也不能还原调用方 shell 的展开，复杂 eval 仍用 `--file`、`--stdin` 或 `--base64`。
 - 卸载 npm 包后清理 npm 未登记的 Windows `<prefix>/autobrowser.exe`、回退 `.bat`，POSIX 检查 `<prefix>/bin/autobrowser` 是否残留；prefix 可用 `npm prefix -g` 查询。
 - 对于类似 x.com 的 SPA 列表页，优先从 `article` 等可见节点读取内容，不要直接相信 `get text body`。
+- 列表页/详情页的常见选择器落空时，先用 `eval` 从目标文本节点逐级 `parentElement` 打印 DOM 层级链（节点写成 `tagName#id.class`），再按真实层级写选择器；层级只是当前页面的结构，不是工具契约，不要固化成站点专属选择器。
+- 这类探测脚本一长就改用 `eval --file <path>` 或 `eval --stdin` 传入，避免 PowerShell → argv → 页面多层引号被吞。若源码里的 CSS 属性选择器值已按语法加引号、页面仍报 `not a valid selector`，再检查是否为转义吞掉引号，并用 `--file`/`--stdin` 排除；该错误同样可能来自非法 CSS 本身。
 - `eval` 超时或页面内异常时保持原任务目标，不要换方案；先用 `status`、`snapshot`、`console`、`errors` 诊断页面状态和脚本问题，再围绕原任务重试。
 
 ## AI 专属原则 (AI-Agent Exclusives)

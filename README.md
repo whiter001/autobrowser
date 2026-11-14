@@ -212,7 +212,7 @@ autobrowser wait "#spinner" --state hidden
 autobrowser wait "#spinner" --state hidden --timeout-ms 10000
 ```
 
-`--gone` 与 `--text` 搭配，等待文本从页面消失。等待预算统一使用 `--timeout-ms <ms>`；旧写法 `--timeout` 仍作为兼容别名保留。
+`--gone` 与 `--text` 搭配，等待文本从页面消失。超时预算统一使用 `--timeout-ms <ms>`；`--timeout` 作为兼容别名保留，`goto`/`open`/`tab new`/`eval`/`run`/`reload` 也同样接受该别名（单位毫秒；这些命令发往 relay 的字段是 `timeoutMs`，`wait` 仍映射到既有的 `args.timeout`）。同一条命令里两个名字混用或同名重复会按参数错误拒绝，不会静默采用后一个值。
 
 ## 扩展
 
@@ -295,7 +295,7 @@ autobrowser --tab t1 --frame top download --media 0 --selector 'article[data-rol
 
 采集前可用 `media list --wait-for 'article[data-role="tweet"]' --selector 'article[data-role="tweet"]' --timeout-ms 15000` 等待目标选择器可见。等待与采集在扩展同一次 media 请求中对同一已解析 tab/frame 执行，不会因 ambient target 切换而漂移；等待失败不继续采集。`--wait-for` 与 `--selector` 独立，`--timeout-ms` 仅设置等待阶段预算（默认 30 秒），不限制后续发现/播放探测。
 
-导航也支持条件等待：`goto/open <url> --wait-for url <pattern>|selector <css> --timeout-ms <ms>`。导航与附加条件等待各使用该预算；URL 条件不会覆盖导航地址。只改变 hash 时是同文档导航，提交后回执带 `navigationType:"same-document"` 和 `documentReloaded:false`；`outcome:"completed"` 不代表 SPA 目标路由已经渲染，应使用 `--wait-for selector` 等待目标路由独有元素，应用需要整页初始化时再显式 `reload`。`tab new <url> --wait-until domcontentloaded` 支持与导航一致的等待阶段，也可用 `--wait-for selector <css> --timeout-ms <ms>` 等待最终条件；始终等待返回的新 tab handle，而不是活动标签页，超时仍在错误响应的 `result.tab` 中保留新 tab 信息。受管标签页会在初始导航前 attach，以保留早期网络请求。不带等待选项时输出不变。
+导航也支持条件等待：`goto/open <url> --wait-for url <pattern>|selector <css> --timeout-ms <ms>`。超时预算也可写成 `--timeout <ms>`（`--timeout-ms` 的兼容别名，二者不可同时或重复出现）。导航与附加条件等待各使用该预算；URL 条件不会覆盖导航地址。只改变 hash 时是同文档导航，提交后回执带 `navigationType:"same-document"` 和 `documentReloaded:false`；`outcome:"completed"` 不代表 SPA 目标路由已经渲染，应使用 `--wait-for selector` 等待目标路由独有元素，应用需要整页初始化时再显式 `reload`。`tab new <url> --wait-until domcontentloaded` 支持与导航一致的等待阶段，也可用 `--wait-for selector <css> --timeout-ms <ms>` 等待最终条件；始终等待返回的新 tab handle，而不是活动标签页，超时仍在错误响应的 `result.tab` 中保留新 tab 信息。受管标签页会在初始导航前 attach，以保留早期网络请求。不带等待选项时输出不变。
 
 `media list` 的溯源信息：
 

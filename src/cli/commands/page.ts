@@ -226,7 +226,12 @@ function extractEvalOptions(rest: string[]): {
 
   for (let index = 0; index < rest.length; index += 1) {
     const value = rest[index]
-    if (value === '--timeout-ms') {
+    // --timeout 是 --timeout-ms 的兼容别名；重复出现（同名或跨名）按用法错误拒绝，
+    // 避免脚本里两个超时互相覆盖却静默生效。
+    if (value === '--timeout-ms' || value === '--timeout') {
+      if (timeoutMs !== undefined) {
+        throw new Error('duplicate eval timeout option: --timeout-ms/--timeout')
+      }
       timeoutMs = parseNumberArg(rest[index + 1], 'timeout ms', { min: 1, integer: true })
       index += 1
       continue
@@ -265,7 +270,9 @@ async function handleEval(rest: string[], context: CommandContext): Promise<numb
     return 0
   }
 
-  const { scriptRest, timeoutMs, element, maxResultBytes } = extractEvalOptions(rest)
+  const { scriptRest, timeoutMs, element, maxResultBytes } = parseOrThrow(() =>
+    extractEvalOptions(rest),
+  )
   const script = await context.resolveEvalScript(scriptRest)
   const args: Record<string, unknown> = { script }
   if (timeoutMs !== undefined) {
@@ -290,7 +297,11 @@ async function handleRun(rest: string[], context: CommandContext): Promise<numbe
   let timeoutMs: number | undefined
   for (let index = 0; index < rest.length; index += 1) {
     const value = rest[index]
-    if (value === '--timeout-ms') {
+    // --timeout 是 --timeout-ms 的兼容别名，重复使用同样视为参数冲突
+    if (value === '--timeout-ms' || value === '--timeout') {
+      if (timeoutMs !== undefined) {
+        return throwCommandError('duplicate run timeout option: --timeout-ms/--timeout')
+      }
       timeoutMs = parseNumberArg(rest[++index], 'timeout ms', { min: 1, integer: true })
       continue
     }
@@ -589,7 +600,10 @@ const handleReload: CommandHandler = async (rest, context) => {
       index += 1
       continue
     }
-    if (value === '--timeout-ms') {
+    if (value === '--timeout-ms' || value === '--timeout') {
+      if (args.timeoutMs !== undefined) {
+        return throwCommandError('duplicate reload timeout option: --timeout-ms/--timeout')
+      }
       args.timeoutMs = parseNumberArg(rest[++index], 'timeout ms', { min: 1, integer: true })
       continue
     }

@@ -27,6 +27,40 @@ describe('cli run', () => {
     }
   })
 
+  test('accepts --timeout as the alias of --timeout-ms and rejects duplicate names', async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), 'autobrowser-run-alias-'))
+    try {
+      const scriptPath = path.join(directory, 'script.js')
+      const source = 'async (page) => await page.url()'
+      await writeFile(scriptPath, source)
+
+      const aliased = await runCli(['run', '--tab', 't7', scriptPath, '--timeout', '45000'], {
+        ok: true,
+        result: { value: 'https://example.com/' },
+      })
+      expect(aliased.exitCode).toBe(0)
+      expect(aliased.fetchCalls[0].body).toEqual({
+        command: 'run',
+        args: { source, tabId: 't7', timeoutMs: 45000 },
+      })
+
+      for (const timeoutArgs of [
+        ['--timeout-ms', '45000', '--timeout', '30000'],
+        ['--timeout-ms', '45000', '--timeout-ms', '30000'],
+        ['--timeout', '45000', '--timeout', '30000'],
+      ]) {
+        const duplicate = await runCli(['run', scriptPath, ...timeoutArgs])
+        expect(duplicate.exitCode).toBe(1)
+        expect(duplicate.fetchCalls).toHaveLength(0)
+        const error = cliErrorPayload(duplicate.stdout).error
+        expect(error.code).toBe('CLI_INVALID_ARGUMENT')
+        expect(error.message).toContain('duplicate')
+      }
+    } finally {
+      await rm(directory, { recursive: true, force: true })
+    }
+  })
+
   test('supports the shared --file source input', async () => {
     const directory = await mkdtemp(path.join(os.tmpdir(), 'autobrowser-run-file-'))
     try {

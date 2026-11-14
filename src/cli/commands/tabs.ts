@@ -98,6 +98,7 @@ async function handleTab(rest: string[], context: CommandContext): Promise<numbe
           if (value === '--wait-for') index += 2
           else if (
             value === '--timeout-ms' ||
+            value === '--timeout' ||
             value === '--wait-until' ||
             value === '--settle-timeout' ||
             value === '--dom-quiet-ms'
@@ -115,7 +116,7 @@ async function handleTab(rest: string[], context: CommandContext): Promise<numbe
           options.settleTimeoutMs === undefined &&
           options.domQuietMs === undefined
         ) {
-          throw new Error('--timeout-ms requires a wait option for tab new')
+          throw new Error('--timeout-ms/--timeout requires a wait option for tab new')
         }
         return options
       })
@@ -418,8 +419,12 @@ function parseGotoArgs(rest: string[]): GotoArgs {
   for (let index = 0; index < rest.length; index += 1) {
     const value = rest[index]
 
-    if (value === '--timeout-ms') {
-      if (parsed.timeoutMs !== undefined) throw new Error('duplicate goto option: --timeout-ms')
+    // --timeout 是 --timeout-ms 的兼容别名；两个名字指向同一设置，
+    // 重复出现（同名或跨名）说明调用方参数有冲突，必须报错而不是 last-wins。
+    if (value === '--timeout-ms' || value === '--timeout') {
+      if (parsed.timeoutMs !== undefined) {
+        throw new Error('duplicate goto timeout option: --timeout-ms/--timeout')
+      }
       parsed.timeoutMs = parseNumberArg(rest[index + 1], 'timeout ms', { min: 1, integer: true })
       index += 1
       continue

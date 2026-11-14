@@ -260,7 +260,7 @@ export const HELP_ROOT: HelpNode = helpNode(
           [
             'Wait on the newly created handle (not the active tab); failures retain result.tab.',
             '--wait-until supports none|commit|domcontentloaded|interactive|load|networkidle|domquiet; no sleep command is needed.',
-            '--timeout-ms sets the post-creation wait budget (default 30000 ms); requires a wait option.',
+            '--timeout-ms sets the post-creation wait budget (default 30000 ms); requires a wait option. --timeout is accepted as an alias for --timeout-ms; combining or repeating either name is an error.',
             'Managed tabs attach the debugger before the initial URL navigation so early requests are captured.',
           ],
         ),
@@ -321,6 +321,7 @@ export const HELP_ROOT: HelpNode = helpNode(
       'autobrowser open <url> [--wait-until <mode>] [--settle-timeout <ms>] [--dom-quiet-ms <ms>] [--wait-for url <pattern>|selector <sel>] [--timeout-ms <ms>]',
       [
         'Hash-only changes are same-document navigations and do not reload the page; use --wait-for selector for the target SPA route, or reload when the application requires it.',
+        '--timeout is accepted as an alias for --timeout-ms (milliseconds, sent as timeoutMs); combining or repeating either name is an error.',
       ],
     ),
     helpNode(
@@ -329,6 +330,7 @@ export const HELP_ROOT: HelpNode = helpNode(
       'autobrowser goto <url> [--wait-until <mode>] [--settle-timeout <ms>] [--dom-quiet-ms <ms>] [--wait-for url <pattern>|selector <sel>] [--timeout-ms <ms>]',
       [
         'Hash-only changes return navigationType=same-document and documentReloaded=false after commit; use --wait-for selector for the target SPA route, or reload when the application requires it.',
+        '--timeout is accepted as an alias for --timeout-ms (milliseconds, sent as timeoutMs); combining or repeating either name is an error.',
       ],
     ),
     helpNode(
@@ -345,6 +347,9 @@ export const HELP_ROOT: HelpNode = helpNode(
       'reload',
       'Reload the current page.',
       'autobrowser reload [--wait-until <mode>] [--timeout-ms <ms>] [--wait-for url <pattern>|selector <sel>]',
+      [
+        '--timeout is accepted as an alias for --timeout-ms (milliseconds, sent as timeoutMs); combining or repeating either name is an error.',
+      ],
     ),
     helpNode('window', 'Manage browser windows.', 'autobrowser window <new>', undefined, [
       helpNode('new', 'Open a new window.', 'autobrowser window new'),
@@ -359,7 +364,7 @@ export const HELP_ROOT: HelpNode = helpNode(
         '--stdin  read complex or multiline script source from stdin',
         '--file <path>  read complex or multiline script source from file',
         '--base64',
-        '--timeout-ms <ms>  page evaluation timeout in milliseconds',
+        '--timeout-ms <ms>  page evaluation timeout in milliseconds (--timeout is accepted as an alias for --timeout-ms; combining or repeating either name is an error)',
         '--max-result-bytes <n>  fail with EVAL_RESULT_TOO_LARGE when the JSON result exceeds n UTF-8 bytes; overrides the concise 32768-byte default (detailed has no default limit; results are not truncated)',
         'Prefer returning only required fields, or paginate/aggregate in the page instead of exporting all browser storage at once.',
         'Top-level return and await are supported; use return to yield a script result.',
@@ -376,6 +381,7 @@ export const HELP_ROOT: HelpNode = helpNode(
         'Commands targeting the same tab fail with PAGE_SCRIPT_ACTIVE while a script is running or waiting for exclusive access.',
         'The bridge exposes only the selected existing tab. Use page.frames()/frameLocator() for frames; root --frame is not applicable.',
         'Scripts are unsafe local code with Node.js/Bun access. Timeout closes the bridge but cannot roll back completed browser side effects.',
+        '--timeout is accepted as an alias for --timeout-ms (milliseconds, sent as timeoutMs); combining or repeating either name is an error.',
       ],
     ),
     helpNode(
@@ -1090,6 +1096,10 @@ export const HELP_ROOT: HelpNode = helpNode(
         '--context <n>  surrounding lines before and after each match (default 3, integer 0-50)',
         '--limit <n>  maximum match windows (concise default 10, detailed default 20, capped at 200; 0 returns no windows or cursor)',
         '--start-line <n>  positive safe integer, 1-based starting line (default 1)',
+        'A plain query is a literal, case-insensitive substring: | * ( ) [ ] ? + \\ and other regex metacharacters are ordinary characters, not operators.',
+        'Regex requires the /pattern/flags form, e.g. autobrowser search "/签到|打卡|抽奖/" --context 2 --limit 20.',
+        'emptyReason:NO_MATCH means no line matched the current mode in the searched scope, not that the page is empty.',
+        'When a literal query contains regex metacharacters and finds nothing on non-empty text, result.hint says it was matched literally and shows the rewrite, e.g. 签到|打卡|抽奖 -> /签到|打卡|抽奖/.',
         'Concise output is bounded to 100 lines and 32768 UTF-8 bytes; detailed retains 200 lines and 100000 UTF-8 bytes.',
         'If truncated and nextStartLine is present, repeat the same query with --start-line <nextStartLine>.',
         'Example: nextStartLine:201 -> autobrowser search "error" --context 3 --start-line 201',
