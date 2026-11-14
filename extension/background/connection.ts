@@ -752,8 +752,24 @@ export function createConnectionRuntime({
   }
 
   function registerChromeListeners(): void {
-    chrome.runtime.onInstalled.addListener(() => {
-      chrome.runtime.openOptionsPage().catch(() => {})
+    chrome.runtime.onInstalled.addListener((details) => {
+      // 只有首次安装且尚未配置 token 时才引导打开设置页；更新、chrome_update、
+      // 解包扩展重载都会走到这里，不能抢用户当前焦点
+      if (details?.reason !== 'install') {
+        return
+      }
+
+      void getToken().then(
+        (token) => {
+          if (token) {
+            return
+          }
+          chrome.runtime.openOptionsPage().catch(() => {})
+        },
+        (error) => {
+          console.warn('failed to read token during install; skip opening options page', error)
+        },
+      )
     })
 
     chrome.runtime.onStartup.addListener(() => {

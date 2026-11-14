@@ -65,6 +65,86 @@ function flushMicrotasks(): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, 0))
 }
 
+type InstalledListener = (details?: { reason?: string }) => void
+
+/** 用真实注册的 onInstalled listener 驱动安装引导逻辑，避免只测抽离后的纯函数。 */
+function createInstalledListenerHarness(options: { token: string; readError?: boolean }) {
+  const originalGlobals = {
+    chrome: globalThis.chrome,
+    WebSocket: globalThis.WebSocket,
+  }
+
+  const installedListeners: InstalledListener[] = []
+  let openOptionsPageCalls = 0
+
+  defineGlobalValue('chrome', {
+    runtime: {
+      id: 'ext-id',
+      getManifest: () => ({ version: '1.2.3' }),
+      lastError: undefined,
+      onInstalled: {
+        addListener: (listener: InstalledListener) => installedListeners.push(listener),
+      },
+      onStartup: { addListener: () => {} },
+      onMessage: { addListener: () => {} },
+      openOptionsPage: async () => {
+        openOptionsPageCalls += 1
+      },
+    },
+    storage: {
+      local: {
+        set: async () => {},
+        get: async () => ({}),
+      },
+      onChanged: { addListener: () => {} },
+    },
+    tabs: { onRemoved: { addListener: () => {} } },
+    debugger: { onEvent: { addListener: () => {} } },
+  })
+  defineGlobalValue('WebSocket', MockWebSocket)
+
+  const runtime = createConnectionRuntime({
+    state: createExtensionState(57978),
+    handleDebuggerDetach: () => {},
+    handlePageNavigation: () => {},
+    network: { handleRequestPaused: async () => {}, handleEvent: async () => {} },
+    listTabs: async () => [],
+    handleCommand: async () => ({ ok: true }),
+    sendDebuggerCommand: async <TResult = unknown>(): Promise<TResult> => ({}) as TResult,
+    storageLocalGet: (async (keys: string | string[] | null) => {
+      if (options.readError) {
+        throw new Error('storage unavailable')
+      }
+
+      if (Array.isArray(keys)) {
+        return Object.fromEntries(
+          keys.map((key) => [key, key === STORAGE_KEY ? options.token : undefined]),
+        )
+      }
+
+      if (typeof keys === 'string') {
+        return { [keys]: keys === STORAGE_KEY ? options.token : undefined }
+      }
+
+      return { [STORAGE_KEY]: options.token }
+    }) as never,
+    storageLocalSet: async () => {},
+    clearTabRuntimeState: () => {},
+    detachDebugger: async () => {},
+    getDialogStatus: () => ({}),
+  })
+  runtime.registerChromeListeners()
+
+  return {
+    listener: installedListeners[0],
+    openOptionsPageCalls: () => openOptionsPageCalls,
+    restore: () => {
+      defineGlobalValue('chrome', originalGlobals.chrome)
+      defineGlobalValue('WebSocket', originalGlobals.WebSocket)
+    },
+  }
+}
+
 describe('extension background connection', () => {
   test('connects with persisted relay port and publishes state only after open', async () => {
     const originalGlobals = {
@@ -478,6 +558,58 @@ describe('extension background connection', () => {
     } finally {
       defineGlobalValue('chrome', originalGlobals.chrome)
       defineGlobalValue('WebSocket', originalGlobals.WebSocket)
+    }
+  })
+
+  test('opens the options page once on initial install without a saved token', async () => {
+    const harness = createInstalledListenerHarness({ token: '' })
+
+    try {
+      harness.listener({ reason: 'install' })
+      await flushMicrotasks()
+
+      expect(harness.openOptionsPageCalls()).toBe(1)
+    } finally {
+      harness.restore()
+    }
+  })
+
+  test('does not open the options page on initial install when a token already exists', async () => {
+    const harness = createInstalledListenerHarness({ token: 'existing-token' })
+
+    try {
+      harness.listener({ reason: 'install' })
+      await flushMicrotasks()
+
+      expect(harness.openOptionsPageCalls()).toBe(0)
+    } finally {
+      harness.restore()
+    }
+  })
+
+  test('does not open the options page when an existing install updates', async () => {
+    const harness = createInstalledListenerHarness({ token: '' })
+
+    try {
+      harness.listener({ reason: 'update' })
+      await flushMicrotasks()
+
+      expect(harness.openOptionsPageCalls()).toBe(0)
+    } finally {
+      harness.restore()
+    }
+  })
+
+  test('swallows token read failures on install instead of opening the options page', async () => {
+    const harness = createInstalledListenerHarness({ token: '', readError: true })
+
+    try {
+      harness.listener({ reason: 'install' })
+      await flushMicrotasks()
+
+      expect(harness.openOptionsPageCalls()).toBe(0)
+    } finally {
+      harness.restore()
     }
   })
 })
