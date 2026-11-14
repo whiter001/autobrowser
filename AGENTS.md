@@ -23,3 +23,13 @@ bun run link:bun
 ```
 
 `link:bun` 会把原生启动器放到全局 PATH 可访问的位置，并链接当前仓库的 `dist/autobrowser.js`；Windows 任意目录使用 `autobrowser.exe`，其他平台使用 `autobrowser`。安装或升级后重启 relay、重载扩展，并用 `version` 与 `extension info` 核对 CLI、扩展和仓库 HEAD 的 commit 一致。
+
+### 升级本机 bun
+
+`bun upgrade --canary` 在国内会长时间挂起：GitHub release 资源被限速到接近 0 字节。改用仓库内脚本，它通过镜像 CDN 下载并用 GitHub release API 的 `asset.digest` 校验（canary 是滚动标签，同标签的 `SHASUMS256.txt` 可能滞后于资产本身，不能作为校验依据）：
+
+```bash
+pwsh -File scripts/upgrade-bun-canary.ps1
+```
+
+常用参数：`-Channel latest` 升到最新稳定版，`-Force` 在已是最新时也强制重装，`-Baseline` 用于不支持 AVX2 的老 CPU。脚本会先备份旧版本到 `~/.bun/bin/bun-<版本>.exe.bak`，安装后回读 `bun --version` 与 `bun --revision` 校验。
