@@ -16,6 +16,7 @@ const extensionInfo = {
 async function runExtension(args: string[]) {
   const homeDir = await mkdtemp(path.join(os.tmpdir(), 'autobrowser-cli-extension-'))
   const previousHome = process.env.AUTOBROWSER_HOME
+  const previousWorkspace = process.env.AUTOBROWSER_WORKSPACE
   const stdout: string[] = []
   const stderr: string[] = []
   const requests: unknown[] = []
@@ -42,6 +43,8 @@ async function runExtension(args: string[]) {
     return true
   })
   process.env.AUTOBROWSER_HOME = homeDir
+  // 直接调 main 的旧行为测试：关闭默认 auto workspace，避免请求里出现动态 ws_ 身份
+  process.env.AUTOBROWSER_WORKSPACE = 'off'
   try {
     const code = await main(
       [
@@ -64,6 +67,8 @@ async function runExtension(args: string[]) {
     stderrSpy.mockRestore()
     if (previousHome === undefined) delete process.env.AUTOBROWSER_HOME
     else process.env.AUTOBROWSER_HOME = previousHome
+    if (previousWorkspace === undefined) delete process.env.AUTOBROWSER_WORKSPACE
+    else process.env.AUTOBROWSER_WORKSPACE = previousWorkspace
     await rm(homeDir, { recursive: true, force: true })
   }
 }

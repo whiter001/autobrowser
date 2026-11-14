@@ -12,6 +12,8 @@ export interface CliFlags {
   server: string
   session: string
   workspace: string | null
+  /** --no-workspace：退回无 workspace 的共享目标模式，优先级高于 AUTOBROWSER_WORKSPACE */
+  noWorkspace: boolean
   /** workspace 模式下是否允许自动认领已有标签页；--no-auto-attach 关闭 */
   autoAttach: boolean
   engine: 'chromium' | 'firefox' | 'webkit'

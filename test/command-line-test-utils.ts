@@ -56,6 +56,8 @@ export interface RunCliOptions {
   ) => DetachedProcessHandle | Promise<DetachedProcessHandle>
   findProcessIdByPort?: (port: number) => Promise<number | null>
   killProcess?: (pid: number, signal?: NodeJS.Signals | number) => boolean
+  /** 为 true 时不改写 AUTOBROWSER_WORKSPACE，用于验证默认 auto 或自定义环境变量 */
+  preserveWorkspaceEnv?: boolean
 }
 
 export interface RunCliResult {
@@ -118,10 +120,15 @@ export async function runCli(
     const openCalls: string[] = []
     const browserCalls: (BrowserLaunchConfig | null)[] = []
     const previousAutobrowserHome = process.env.AUTOBROWSER_HOME
+    const previousAutobrowserWorkspace = process.env.AUTOBROWSER_WORKSPACE
     const homeDir =
       options.homeDir || (await mkdtemp(path.join(os.tmpdir(), 'autobrowser-home-run-')))
 
     process.env.AUTOBROWSER_HOME = homeDir
+    // CLI 默认启用 auto workspace；既有断言大多假设无 workspace，统一用 off 隔离。
+    if (!options.preserveWorkspaceEnv) {
+      process.env.AUTOBROWSER_WORKSPACE = 'off'
+    }
 
     globalThis.fetch = (async (url: RequestInfo | URL, init: RequestInit = {}) => {
       const requestInit = init as CliFetchInit
@@ -197,6 +204,12 @@ export async function runCli(
         delete process.env.AUTOBROWSER_HOME
       } else {
         process.env.AUTOBROWSER_HOME = previousAutobrowserHome
+      }
+
+      if (previousAutobrowserWorkspace === undefined) {
+        delete process.env.AUTOBROWSER_WORKSPACE
+      } else {
+        process.env.AUTOBROWSER_WORKSPACE = previousAutobrowserWorkspace
       }
     }
   })

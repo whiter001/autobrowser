@@ -40,7 +40,8 @@ export const HELP_ROOT: HelpNode = helpNode(
     '--response-format <concise|detailed>  response detail level (default concise)',
     '--server <url>',
     '--session <name>  select a named session (before the command)',
-    '--workspace <id|auto>  isolate caller targets in the shared browser (before the command)',
+    '--workspace <id|auto>  isolate caller targets in the shared browser (default auto, before the command)',
+    '--no-workspace  disable workspace isolation and use the shared browser target',
     '--no-auto-attach  require an explicit tab target instead of claiming a free tab',
     '--engine <chromium|firefox|webkit>  use the extension or WebDriver (before the command)',
     '--webdriver-url <url>  override geckodriver/safaridriver URL',
@@ -220,10 +221,12 @@ export const HELP_ROOT: HelpNode = helpNode(
     ),
     helpNode(
       'workspace',
-      'Isolate an AI caller target while sharing the current browser profile and login state.',
+      'Isolate an AI caller target while sharing the current browser profile and login state (Chromium defaults to an automatic workspace).',
       'autobrowser workspace [current|list|release] [workspace-id]',
       [
-        'Use --workspace <id> or AUTOBROWSER_WORKSPACE=auto once per caller; subsequent commands inherit it.',
+        'Workspace isolation is on by default for Chromium callers; auto derives a stable id per caller. Precedence: --workspace, AUTOBROWSER_WORKSPACE, then auto.',
+        'Disable it with --no-workspace or AUTOBROWSER_WORKSPACE=off (case-insensitive); --no-workspace cannot be combined with --workspace.',
+        'WebDriver engines (--engine firefox|webkit) do not get the default workspace; an explicit --workspace or non-off AUTOBROWSER_WORKSPACE still reports that workspace is Chromium-only.',
         'Without a target, page commands atomically claim a free existing tab (active first, then stable tab order); localhost and other debuggable pages are eligible. The result meta marks autoAttached once.',
         'Use --no-auto-attach to preserve explicit-only targeting. If no free tab exists, open creates one; other commands return WORKSPACE_TARGET_REQUIRED.',
         'release detaches tabs without closing, reloading, or resetting them.',
@@ -1124,6 +1127,7 @@ const ROOT_HELP_FLAGS = [
   '--browser-command <command> browser launch command',
   '--browser-arg <arg> browser launch argument',
   '--auto-connect proactively open the extension connect page when disconnected',
+  '--no-workspace disable workspace isolation and use the shared browser target',
   '--no-auto-attach disable automatic workspace tab claiming',
 ]
 

@@ -31,7 +31,8 @@ async function runCli(argv: string[], replies: unknown[]) {
         ...argv,
       ],
       {
-        env: { ...process.env, AUTOBROWSER_HOME: home },
+        // 真实 CLI 子进程默认启用 auto workspace；旧行为断言显式关闭，保留 goto fallback 语义
+        env: { ...process.env, AUTOBROWSER_HOME: home, AUTOBROWSER_WORKSPACE: 'off' },
         stdout: 'pipe',
         stderr: 'pipe',
       },

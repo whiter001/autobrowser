@@ -120,21 +120,27 @@ autobrowser session delete-data research # 停止 relay 并删除该会话数据
 
 ## 多 AI Workspace 与标签复用
 
-Workspace 用于多个 AI 共享同一个浏览器、profile 和登录态，同时隔离默认目标与标签归属；它不同于会创建独立浏览器环境的 `--session`。未启用 workspace 时保留原来的共享目标行为。
+Workspace 用于多个 AI 共享同一个浏览器、profile 和登录态，同时隔离默认目标与标签归属；它不同于会创建独立浏览器环境的 `--session`。Chromium 下默认启用 auto workspace，不需要先显式声明或设置环境变量。
 
 ```bash
-# 每个 AI 使用固定 ID，或在各自宿主环境中设置一次 AUTOBROWSER_WORKSPACE=auto
+# 默认即为 auto：按调用方身份隔离，命令无需重复携带 workspace
+autobrowser snapshot
+
+# 需要固定身份时显式指定，优先级高于环境变量和默认 auto
 autobrowser --workspace ai-a tab list
 autobrowser --workspace ai-a tab attach t2058764180
-autobrowser --workspace ai-a snapshot
 ```
 
-`auto` 根据可信祖先进程、进程启动时间和终端标识生成稳定 workspace；AI 宿主可用 `AUTOBROWSER_CALLER_ID` 注入更可靠的调用方身份。身份优先级为 `--workspace`、`AUTOBROWSER_WORKSPACE`、MCP 客户端上下文、自动识别。`workspace current` 可确认实际身份；`workspace list` 查看归属，`workspace release [id]` 只解除绑定，不关闭或刷新页面。
+解析优先级为 `--workspace` > 非 `off` 的 `AUTOBROWSER_WORKSPACE` > 默认 `auto`；空环境变量等同于未设置。`AUTOBROWSER_WORKSPACE=off`（大小写不敏感）或全局 `--no-workspace` 关闭 workspace，恢复无 workspace 的共享目标模式；显式 `--workspace` 仍覆盖 `off`，但 `--no-workspace` 与 `--workspace` 同用会在发出请求前报 `CLI_INVALID_ARGUMENT`。
+
+`auto` 根据可信祖先进程、进程启动时间和终端标识生成稳定 workspace；AI 宿主可用 `AUTOBROWSER_CALLER_ID` 注入更可靠的调用方身份。`workspace current` 可确认实际身份；`workspace list` 查看归属，`workspace release [id]` 只解除绑定，不关闭或刷新页面。
+
+默认 `auto` 只适用于 Chromium。`--engine firefox|webkit` 且没有显式 workspace 配置时保持无 workspace，不会因为新默认值报 "only supported by Chromium"；显式 `--workspace` 或非 `off` 的 `AUTOBROWSER_WORKSPACE` 在 WebDriver 下仍按原行为报错。`--no-workspace` 和 `off` 在 WebDriver 下都不报错。
 
 - `tab list` 显示 `workspace`、`attachment` 和 `attachable`；`--response-format detailed` 还显示租约时间。
 - `tab attach <tN>` 原子复用已有页面，保留当前登录、表单和筛选状态；其他 workspace 已持有时返回 `TAB_BUSY`。`--readonly` 只允许观察命令，click/eval/run 等会被拒绝。
 - `tab detach [tN]` 解除归属但不改变页面。每个 workspace 可拥有多个 tab，并只保存自己的默认目标。
-- Workspace 没有目标时，页面命令默认原子认领一个未绑定标签页：优先当前活动页，其余按 tabId 稳定排序；遇到 `TAB_BUSY` 会尝试下一空闲页，不抢占其他 workspace。localhost 等可调试页面均可使用，结果 meta 在首次认领带 `autoAttached:true`。没有空闲页时 `open <url>` 创建并绑定新 tab，其他命令返回 `WORKSPACE_TARGET_REQUIRED`。使用全局 `--no-auto-attach` 可恢复只接受显式目标的行为。
+- Workspace 没有目标时，页面命令默认原子认领一个未绑定标签页：优先当前活动页，其余按 tabId 稳定排序；遇到 `TAB_BUSY` 会尝试下一空闲页，不抢占其他 workspace。localhost 等可调试页面均可使用，结果 meta 在首次认领带 `autoAttached:true`。没有空闲页时 `open <url>` 创建并绑定新 tab，其他命令返回 `WORKSPACE_TARGET_REQUIRED`。使用全局 `--no-auto-attach` 可恢复只接受显式目标的行为；它只关闭自动认领，不等于 `--no-workspace`。
 - 标签归属默认租约 1 小时，命令执行会续约，并保存到 `chrome.storage.local` 供扩展重载后恢复。过期或异常回收只解除归属，不重置页面。
 - Workspace 模式下 `close all` 只关闭当前 workspace 的 owned 标签；`extension reload/reconnect`、`server stop` 等全局管理操作仍会影响所有调用方。
 

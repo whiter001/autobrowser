@@ -951,6 +951,8 @@ describe('search interfaces', () => {
           ),
         ),
         AUTOBROWSER_HOME: home,
+        // 旧的精确 args 断言基于无 workspace；关闭 CLI 默认 auto，MCP 仍会用自己的 mcp_ 身份
+        AUTOBROWSER_WORKSPACE: 'off',
       },
       stderr: 'pipe',
     })
@@ -961,7 +963,7 @@ describe('search interfaces', () => {
         const child = Bun.spawn(
           [process.execPath, cliPath, '--server', serverUrl, 'search', ...rest],
           {
-            env: { ...process.env, AUTOBROWSER_HOME: home },
+            env: { ...process.env, AUTOBROWSER_HOME: home, AUTOBROWSER_WORKSPACE: 'off' },
             stdout: 'pipe',
             stderr: 'pipe',
           },

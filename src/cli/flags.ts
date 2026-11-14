@@ -17,6 +17,7 @@ const SUPPORTED_GLOBAL_FLAGS = [
   '--server',
   '--session',
   '--workspace',
+  '--no-workspace',
   '--no-auto-attach',
   '--engine',
   '--webdriver-url',
@@ -62,6 +63,7 @@ export function parseCli(argv: string[]): ParsedCli {
     server: `http://127.0.0.1:${DEFAULT_IPC_PORT}`,
     session: '',
     workspace: null,
+    noWorkspace: false,
     autoAttach: true,
     engine: 'chromium',
     webdriverUrl: '',
@@ -163,6 +165,11 @@ export function parseCli(argv: string[]): ParsedCli {
     if (value === '--workspace' && args.length === 0) {
       flags.workspace = readFlagValue(argv, index, value)
       index += 1
+      continue
+    }
+
+    if (value === '--no-workspace') {
+      flags.noWorkspace = true
       continue
     }
 

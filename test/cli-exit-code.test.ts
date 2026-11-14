@@ -20,6 +20,7 @@ const success = { ok: true, result: { value: 42 } }
 async function runCli(argv: string[], payload: unknown = success, handler?: CommandHandler) {
   const homeDir = await mkdtemp(path.join(os.tmpdir(), 'autobrowser-cli-exit-'))
   const previousHome = process.env.AUTOBROWSER_HOME
+  const previousWorkspace = process.env.AUTOBROWSER_WORKSPACE
   const stdout: string[] = []
   const stderr: string[] = []
   let requestCount = 0
@@ -36,6 +37,8 @@ async function runCli(argv: string[], payload: unknown = success, handler?: Comm
     return true
   })
   process.env.AUTOBROWSER_HOME = homeDir
+  // 直接调 main 的旧行为测试：关闭默认 auto workspace，避免动态身份和进程树解析
+  process.env.AUTOBROWSER_WORKSPACE = 'off'
   // 注册表是懒加载的，注入测试命令时提供一个直接返回 handler 的加载器
   if (handler) COMMAND_LOADERS['test-exit-code'] = async () => handler
 
@@ -49,6 +52,8 @@ async function runCli(argv: string[], payload: unknown = success, handler?: Comm
     stderrSpy.mockRestore()
     if (previousHome === undefined) delete process.env.AUTOBROWSER_HOME
     else process.env.AUTOBROWSER_HOME = previousHome
+    if (previousWorkspace === undefined) delete process.env.AUTOBROWSER_WORKSPACE
+    else process.env.AUTOBROWSER_WORKSPACE = previousWorkspace
     await rm(homeDir, { recursive: true, force: true })
   }
 }
@@ -81,7 +86,7 @@ describe('CLI response exit codes', () => {
               ...argv,
             ],
             {
-              env: { ...process.env, AUTOBROWSER_HOME: homeDir },
+              env: { ...process.env, AUTOBROWSER_HOME: homeDir, AUTOBROWSER_WORKSPACE: 'off' },
               stdout: 'pipe',
               stderr: 'pipe',
             },

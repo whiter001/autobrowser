@@ -20,7 +20,8 @@ async function runSkill(
   skillDir: string,
 ): Promise<{ code: number; stdout: string; stderr: string }> {
   const child = spawn('bun', [CLI, ...args], {
-    env: { ...process.env, AUTOBROWSER_SKILL_DIR: skillDir },
+    // 每次 sync 都会起子进程；关闭默认 auto workspace，避免真实进程树解析拖慢测试
+    env: { ...process.env, AUTOBROWSER_SKILL_DIR: skillDir, AUTOBROWSER_WORKSPACE: 'off' },
   })
   let stdout = ''
   let stderr = ''

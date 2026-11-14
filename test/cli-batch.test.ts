@@ -20,6 +20,7 @@ describe('cli batch command', () => {
     test(`validates nested snapshot args ${JSON.stringify(args)} through CLI main before dispatch`, async () => {
       const homeDir = await mkdtemp(path.join(os.tmpdir(), 'autobrowser-cli-batch-'))
       const previousHome = process.env.AUTOBROWSER_HOME
+      const previousWorkspace = process.env.AUTOBROWSER_WORKSPACE
       const stdout: string[] = []
       const requests: unknown[] = []
       const fetchSpy = spyOn(globalThis, 'fetch').mockImplementation((async (_url, init) => {
@@ -32,6 +33,8 @@ describe('cli batch command', () => {
       })
       const stderrSpy = spyOn(process.stderr, 'write').mockImplementation(() => true)
       process.env.AUTOBROWSER_HOME = homeDir
+      // 这个入口直接调 main，不走共享测试工具；关闭默认 auto workspace 以保持无 workspace 断言
+      process.env.AUTOBROWSER_WORKSPACE = 'off'
 
       const metadata = {
         id: 'nested-snapshot',
@@ -108,6 +111,11 @@ describe('cli batch command', () => {
           delete process.env.AUTOBROWSER_HOME
         } else {
           process.env.AUTOBROWSER_HOME = previousHome
+        }
+        if (previousWorkspace === undefined) {
+          delete process.env.AUTOBROWSER_WORKSPACE
+        } else {
+          process.env.AUTOBROWSER_WORKSPACE = previousWorkspace
         }
         await rm(homeDir, { recursive: true, force: true })
       }
