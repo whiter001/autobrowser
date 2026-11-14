@@ -269,6 +269,22 @@ describe('cli helpers', () => {
     expect(result.stdout).toContain('split work into smaller browser commands or script steps')
   })
 
+  test('documents eval source routing and a real PowerShell stdin example', async () => {
+    const result = await runCli(['help', 'eval'])
+
+    expect(result.exitCode).toBe(0)
+    expect(result.stdout).toContain('only for simple single-line expressions')
+    expect(result.stdout).toContain(
+      'If the source contains a CSS selector, JSON, regex, template literals, or multiple lines, use --file or --stdin directly',
+    )
+    expect(result.stdout).toContain('One-off scripts go through --stdin')
+    expect(result.stdout).toContain('--base64 is for machine-generated payloads')
+    expect(result.stdout).toContain('PowerShell example')
+    expect(result.stdout).toContain("@'")
+    expect(result.stdout).toContain(`document.querySelectorAll('a[href*="/n/"]')`)
+    expect(result.stdout).toContain("'@ | autobrowser.exe eval --stdin")
+  })
+
   test('routes eval source, timeout and optional result size limit', async () => {
     const script = 'JSON.stringify({ marker: "document", title: document.title })'
     const result = await runCli([

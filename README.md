@@ -52,7 +52,7 @@ npm rebuild -g @whiter001/autobrowser
 
 不支持的平台、缺少预编译文件或非全局安装沿用旧入口；Windows 全局缺少原生文件时仍把 `.cmd` 改名为 `.bat`，优先让 PowerShell 使用 `.ps1`。原生文件存在但复制失败会明确报错，不会静默回退。不要从 PowerShell 显式调用 `.cmd`：它可能使 `& | ^ < >` 等参数被再次解析。
 
-原生启动器也不能撤销调用方 shell 已做的展开（如 cmd.exe 的 `%VARIABLE%`）；复杂 `eval` 仍推荐 `--file`、`--stdin` 或 `--base64`。
+原生启动器也不能撤销调用方 shell 已做的展开（如 cmd.exe 的 `%VARIABLE%`）；复杂 `eval` 按「eval 源码输入与 PowerShell」一节的规则走 `--stdin` 或 `--file`。
 
 **卸载注意**：npm 不登记 Windows postinstall 额外生成的 `.exe`，回退产生的 `.bat` 也不登记。`npm uninstall -g @whiter001/autobrowser` 后，请手动清理 `<prefix>/autobrowser.exe` 和可能存在的 `<prefix>/autobrowser.bat`（`npm prefix -g` 可查 prefix）。POSIX 替换了 npm 原有 symlink，卸载时也请检查并清理残留的 `<prefix>/bin/autobrowser`。
 
@@ -490,6 +490,21 @@ autobrowser tab close t2058764137
 ## 其他命令速查
 
 上面几节覆盖的是主要工作流。下面是其余命令族的最小用法示例；每个命令的完整标志位以 `autobrowser help <命令>` 为准。
+
+### eval 源码输入与 PowerShell
+
+`eval` 的源码输入按形态分流：`--expr '<script>'`（位置参数同理）只用于简单单行表达式。只要源码包含 CSS 选择器、JSON、正则、模板字符串或多行语句，就直接用 `--stdin` 或 `--file`，不要先拼一版内联转义再排错。一次性脚本走 `--stdin`；需要复用的脚本写成 `.js` 用 `--file`；`--base64` 只用于机器生成的传输，不作为人工默认写法。
+
+PowerShell 用单引号 here-string 直通 stdin，`@'` 与结束的 `'@` 都必须独占行首：
+
+```powershell
+@'
+const links = Array.from(document.querySelectorAll('a[href*="/n/"]'), (a) => a.href)
+return links.slice(0, 10)
+'@ | autobrowser.exe eval --stdin
+```
+
+CSS 属性选择器的值本身要按 CSS 语法带引号（`a[href*="/n/"]`），这也是最容易被多层命令行转义吃掉的一类源码；页面报 `not a valid selector` 时，既要考虑引号被吞，也要考虑选择器本身非法，不要一律归因成 shell 引号问题。
 
 ### 浏览器状态模拟
 

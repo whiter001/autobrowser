@@ -234,9 +234,25 @@ autobrowser 是一个面向 Chrome/Edge 的浏览器自动化 CLI，通过本地
 
 ## eval 使用边界
 
+- **按源码形态强制分流，不要先试内联转义**：`eval --expr '<script>'`（位置参数同理）只用于简单单行表达式。只要源码包含 CSS 选择器、JSON、正则、模板字符串或多行语句中的任意一种，就直接选 `--file` 或 `--stdin`，不要先用反斜杠或双引号拼一版内联再试。
+  - 一次性脚本优先 `--stdin`：PowerShell 单引号 here-string 原样进管道，源码不经过任何 shell 转义。
+  - 需要复用或留档的脚本写成 `.js` 文件，用 `--file <path>`。
+  - `--base64` 只用于机器生成的传输（调用方已经持有编码后的字节），不要作为人工手写的默认写法。
 - `eval` 适合执行小段页面上下文 JS，用于只读提取、状态检查或轻量验证。
-- 单行源码可用 `eval --expr '<script>'` 显式传值，也继续支持位置参数。
-- 复杂或多行源码优先通过 `eval --file <path>` 或 `eval --stdin` 传入，避免命令行转义干扰判断；脚本可直接包含顶层 `return` 和 `await`，无需手工包装 async IIFE，多语句脚本用 `return` 返回结果。CSS 属性选择器的值仍需按 CSS 语法加引号，例如 `a[href*="/status/"]`；`not a valid selector` 表示脚本已解析并运行、页面拒绝了 CSS，错误的 `suggestedAction` 会明确区分这种情况与 JavaScript 语法错误。
+- 脚本可直接包含顶层 `return` 和 `await`，无需手工包装 async IIFE，多语句脚本用 `return` 返回结果。
+- CSS 属性选择器的值本身必须按 CSS 语法带引号，例如 `a[href*="/n/"]`——这正是最容易被命令行层层吞掉的一类源码。`not a valid selector` 表示脚本已解析并运行、页面拒绝了 CSS：原因既可能是引号被转义吃掉，也可能是选择器本身非法，不要把所有 selector 错误都归因成命令行引号问题。
+
+PowerShell 一次性脚本的标准写法（`@'` 与结束的 `'@` 都必须独占行首，不能缩进）：
+
+```powershell
+# Windows PowerShell 5.1 默认用 ASCII 编码管道输入，源码含非 ASCII 字符时先切到 UTF-8
+$OutputEncoding = [System.Text.UTF8Encoding]::new()
+@'
+const links = Array.from(document.querySelectorAll('a[href*="/n/"]'), (a) => a.href)
+return links.slice(0, 10)
+'@ | autobrowser.exe eval --stdin
+```
+
 - 页面执行启用 `awaitPromise`，可直接使用顶层 `await` 或返回 async IIFE / Promise 结果，不需要为异步采集手工拆成同步片段；长任务仍需设置合理 `--timeout-ms`。
 - `--timeout-ms <ms>` 只在确认脚本本身是长任务时使用；不要把它作为复杂流程失败后的默认处理。`concise` 默认限制 eval 结果为 32KiB，`detailed` 默认不设结果字节上限；显式 `--max-result-bytes <n>` 会覆盖两者，超限得到 `EVAL_RESULT_TOO_LARGE` 和实际字节数，不会静默截断。搬运 storage 等大状态时在页面侧先过滤 key、聚合或分页，不要默认提高上限；未设置上限且结果超过 256 KiB 时会走 upload，并与命令共享 deadline。
 - 复杂交互优先拆成更小的 autobrowser 命令或脚本步骤，保留原任务目标逐步推进。
@@ -269,11 +285,11 @@ autobrowser 是一个面向 Chrome/Edge 的浏览器自动化 CLI，通过本地
 - 如果页面看起来空白或不对，先确认是不是登录页、验证码页，或者虚拟滚动列表。
 - 如果命令报 `command not found` 或退出码 127，这是链接产物或 PATH 的问题，**不是 autobrowser 不可用**：先确认 `bun` 目录在当前 shell 的 PATH 里；Windows 使用 `autobrowser.exe <子命令>`（Windows 没有无扩展名入口），其他平台使用 `autobrowser <子命令>`。这是 shell 解析问题，修好之后继续用 autobrowser，不要因此换方案。
 - npm 全局安装在 postinstall 中用原生入口替换 npm shim：Windows `<prefix>/autobrowser.exe`，POSIX `<prefix>/bin/autobrowser`，支持 macOS/Linux/Windows x64/arm64。启动器只用参数数组启动 Bun + `dist/autobrowser.js`，不重写业务、不经过 shell；仍需 PATH 中的 Bun >= 1.4.4 或 `AUTOBROWSER_BUN_PATH`，JS 路径可用 `AUTOBROWSER_DIST_ENTRY` 覆盖。源码 `link:bun` 默认用当前 Bun 的 `--compile --aot` 构建并嵌入当前 Bun 与仓库 dist 路径，不需要 Go。AOT 当前不能交叉编译，完整六目标构建的非本机目标自动使用 Go；`build:launcher -- --current` 只构建本机 AOT，强制 Go 备选用 `link:bun -- --go` 或 `build:launcher:go`。
-- 禁用 npm 安装脚本时仍是旧 shim，**不保证存在 exe**；放行脚本后 `npm rebuild -g @whiter001/autobrowser`。缺少预编译文件/不支持平台/非全局才沿用旧修正；原生复制失败会明确报错，不静默回退。不要显式调用 `autobrowser.cmd`，PowerShell → cmd.exe 会破坏引号和 `& | ^` 参数。原生入口也不能还原调用方 shell 的展开，复杂 eval 仍用 `--file`、`--stdin` 或 `--base64`。
+- 禁用 npm 安装脚本时仍是旧 shim，**不保证存在 exe**；放行脚本后 `npm rebuild -g @whiter001/autobrowser`。缺少预编译文件/不支持平台/非全局才沿用旧修正；原生复制失败会明确报错，不静默回退。不要显式调用 `autobrowser.cmd`，PowerShell → cmd.exe 会破坏引号和 `& | ^` 参数。原生入口也不能还原调用方 shell 的展开，复杂 eval 按「eval 使用边界」走 `--stdin` 或 `--file`。
 - 卸载 npm 包后清理 npm 未登记的 Windows `<prefix>/autobrowser.exe`、回退 `.bat`，POSIX 检查 `<prefix>/bin/autobrowser` 是否残留；prefix 可用 `npm prefix -g` 查询。
 - 对于类似 x.com 的 SPA 列表页，优先从 `article` 等可见节点读取内容，不要直接相信 `get text body`。
 - 列表页/详情页的常见选择器落空时，先用 `eval` 从目标文本节点逐级 `parentElement` 打印 DOM 层级链（节点写成 `tagName#id.class`），再按真实层级写选择器；层级只是当前页面的结构，不是工具契约，不要固化成站点专属选择器。
-- 这类探测脚本一长就改用 `eval --file <path>` 或 `eval --stdin` 传入，避免 PowerShell → argv → 页面多层引号被吞。若源码里的 CSS 属性选择器值已按语法加引号、页面仍报 `not a valid selector`，再检查是否为转义吞掉引号，并用 `--file`/`--stdin` 排除；该错误同样可能来自非法 CSS 本身。
+- 这类探测脚本一长就按「eval 使用边界」改用 `--stdin` 或 `--file`，不要继续在命令行上调引号；`not a valid selector` 的归因同样以该节为准。
 - `eval` 超时或页面内异常时保持原任务目标，不要换方案；先用 `status`、`snapshot`、`console`、`errors` 诊断页面状态和脚本问题，再围绕原任务重试。
 
 ## AI 专属原则 (AI-Agent Exclusives)
