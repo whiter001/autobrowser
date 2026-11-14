@@ -1,4 +1,5 @@
 import { isRecord, shouldOpenInNewTab, type CommandResponse } from '../client.js'
+import { CliUsageError } from '../cli-error.js'
 import { parseNumberArg, parsePaginationArgs } from '../parse.js'
 import { optionHintSuffix } from '../option-hints.js'
 import {
@@ -175,6 +176,25 @@ async function handleWorkspace(rest: string[], context: CommandContext): Promise
   if (resolution.kind !== 'action') return context.writeHelp(['workspace'])
   if (resolution.action === 'release' && rest[1]?.startsWith('--')) {
     throw new Error(`unsupported workspace release option: ${rest[1]}`)
+  }
+  if (resolution.action === 'groups') {
+    if (helpRequested(rest[1], context, ['workspace', 'groups'])) return 0
+    // 省略 mode 等同 status：查询是默认行为，切换显式使用 on/off。
+    const mode = rest[1] ?? 'status'
+    if (mode !== 'on' && mode !== 'off' && mode !== 'status') {
+      throw new CliUsageError(`invalid workspace groups mode: ${mode} (expected on|off|status)`, {
+        details: { path: 'workspace groups' },
+      })
+    }
+    if (rest.length > 2) {
+      throw new CliUsageError(`unexpected extra argument for workspace groups: ${rest[2]}`, {
+        details: { path: 'workspace groups' },
+      })
+    }
+    return await runActionCommand(context, 'workspace', {
+      action: 'groups',
+      ...(mode === 'status' ? {} : { enabled: mode === 'on' }),
+    })
   }
   return await runActionCommand(context, 'workspace', {
     action: resolution.action,

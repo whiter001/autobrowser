@@ -10,6 +10,12 @@ import {
 import { createToolError } from '../../src/core/tool-error.js'
 import { storageLocalGet, storageLocalSet, tabsCreate, tabsQuery } from './chrome.js'
 import { resolveTabInput } from './targeting.js'
+import {
+  createChromeWorkspaceGroupApi,
+  createWorkspaceGroupsController,
+  type StoredWorkspaceGroups,
+  type WorkspaceGroupApi,
+} from './workspace-groups.js'
 import type { CommandArgs, ExtensionState, TabInput, TabSummary, TabWithId } from './types.js'
 
 const WORKSPACE_STORAGE_KEY = 'autobrowser.workspaces.v1'
@@ -28,6 +34,8 @@ interface WorkspaceManagerDependencies {
   listTabs?: () => Promise<AutoAttachTab[]>
   storageGet?: (keys: string | string[] | null) => Promise<Record<string, unknown>>
   storageSet?: (items: Record<string, unknown>) => Promise<void>
+  /** 标签组展示层；null 表示浏览器不支持，传 undefined 时探测当前环境 */
+  groupApi?: WorkspaceGroupApi | null
   now?: () => number
   leaseMs?: number
 }
@@ -53,6 +61,8 @@ function autoAttachmentKey(workspaceId: string, tabId: number): string {
 interface StoredWorkspaces {
   workspaces?: WorkspaceRecord[]
   attachments?: WorkspaceAttachment[]
+  /** 标签组展示层状态；旧版本存储没有该字段时按默认关闭处理 */
+  groups?: StoredWorkspaceGroups
 }
 
 function workspaceError(
@@ -72,6 +82,7 @@ export function createWorkspaceManager({
   listTabs = async () => await tabsQuery({}),
   storageGet = storageLocalGet,
   storageSet = storageLocalSet,
+  groupApi = createChromeWorkspaceGroupApi(),
   now = Date.now,
   leaseMs = DEFAULT_WORKSPACE_LEASE_MS,
 }: WorkspaceManagerDependencies) {
@@ -84,9 +95,21 @@ export function createWorkspaceManager({
     const stored: StoredWorkspaces = {
       workspaces: Array.from(state.workspaces.workspaces.values()),
       attachments: Array.from(state.workspaces.attachments.values()),
+      groups: groupsController.serialize(),
     }
     await storageSet({ [WORKSPACE_STORAGE_KEY]: stored }).catch(() => {})
   }
+
+  // 分组展示层只读 attachments 判断归属，写状态时复用同一份持久化
+  const groupsController = createWorkspaceGroupsController({
+    api: groupApi,
+    listAttachments: () =>
+      Array.from(state.workspaces.attachments.values()).map((attachment) => ({
+        tabId: attachment.tabId,
+        workspaceId: attachment.workspaceId,
+      })),
+    persist,
+  })
 
   async function ensureLoaded(): Promise<void> {
     if (!loadPromise) {
@@ -117,6 +140,8 @@ export function createWorkspaceManager({
             state.workspaces.attachments.set(attachment.tabId, attachment)
           }
         }
+        // 恢复展示层开关与 group 缓存；旧 group 失效时下一次同步会重建
+        groupsController.restore(value.groups)
       })().catch(() => {})
     }
     await loadPromise
@@ -124,16 +149,20 @@ export function createWorkspaceManager({
 
   async function pruneExpired(): Promise<boolean> {
     const timestamp = now()
-    let changed = false
+    const expired: WorkspaceAttachment[] = []
     for (const [tabId, attachment] of state.workspaces.attachments) {
       if (Date.parse(attachment.leaseExpiresAt) > timestamp) continue
+      expired.push(attachment)
       state.workspaces.attachments.delete(tabId)
       const workspace = state.workspaces.workspaces.get(attachment.workspaceId)
       if (workspace?.targetTabId === tabId) workspace.targetTabId = null
-      changed = true
     }
-    if (changed) await persist()
-    return changed
+    // 过期等同于 detach：先把仍留在管理组里的 tab 还原到进入前的组
+    for (const attachment of expired) {
+      await groupsController.restoreTab(attachment.tabId, attachment.workspaceId)
+    }
+    if (expired.length > 0) await persist()
+    return expired.length > 0
   }
 
   async function ensureWorkspace(id: string): Promise<WorkspaceRecord> {
@@ -203,6 +232,9 @@ export function createWorkspaceManager({
     }
     state.workspaces.attachments.set(tab.id, attachment)
     workspace.targetTabId = tab.id
+    // autoAttach/createWorkspaceTab 最终都汇聚到这里，展示层失败不影响归属。
+    // 先同步分组再 touch，保证下面这次落盘就带上最新的 group 映射。
+    await groupsController.syncTab(tab.id, workspace.id)
     await touch(workspace, tab.id)
     const [decorated] = await decorateTabs([toWorkspaceTabSummary(state, tab)])
     return { attached: true, workspace: workspace.id, attachment: mode, tab: decorated }
@@ -234,6 +266,7 @@ export function createWorkspaceManager({
           (candidate) => candidate.workspaceId === workspace.id,
         )?.tabId ?? null
     }
+    await groupsController.restoreTab(tabId, workspace.id)
     await touch(workspace)
     return { detached: true, workspace: workspace.id, tabId }
   }
@@ -332,6 +365,8 @@ export function createWorkspaceManager({
     } catch (error) {
       state.workspaces.attachments.delete(tabId)
       if (workspace.targetTabId === tabId) workspace.targetTabId = null
+      // tab 已不存在，分组缓存无需再尝试恢复
+      groupsController.forgetTab(tabId)
       await persist()
       throw error
     }
@@ -422,8 +457,19 @@ export function createWorkspaceManager({
     )
     for (const attachment of attachments) state.workspaces.attachments.delete(attachment.tabId)
     state.workspaces.workspaces.delete(id)
+    await groupsController.releaseWorkspace(
+      id,
+      attachments.map((attachment) => attachment.tabId),
+    )
     await persist()
     return { released: true, workspace: id, detachedTabs: attachments.map((item) => item.tabId) }
+  }
+
+  /** 无参查询展示层状态；true/false 切换全局开关并同步现有 attachments */
+  async function groups(enabled?: boolean): Promise<Record<string, unknown>> {
+    await ensureLoaded()
+    if (enabled === undefined) return groupsController.status()
+    return groupsController.setEnabled(enabled)
   }
 
   return {
@@ -434,6 +480,7 @@ export function createWorkspaceManager({
     current,
     decorateTabs,
     detach,
+    groups,
     list,
     release,
     resolveCommandTab,

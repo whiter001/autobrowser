@@ -32,7 +32,7 @@ autobrowser 是一个面向 Chrome/Edge 的浏览器自动化 CLI，通过本地
 - `back` / `forward` / `reload [--wait-for url <pattern>|selector <sel>]`
 - `tab list` / `tab new <url> [--wait-until <mode>] [--wait-for url <pattern>|selector <css>]` / `tab select <tN>` / `tab close [tN]`
 - `tab attach <tN> [--readonly]` / `tab detach [tN]` — 在 workspace 里复用 / 解除已有页面归属
-- `workspace current` / `workspace list` / `workspace release [workspace-id]`
+- `workspace current` / `workspace list` / `workspace release [workspace-id]` / `workspace groups [on|off|status]`
 - `target show` / `target set <tN>` / `target active` / `target clear`
 - `command list` / `command status <id>` / `command cancel <id>` / `command reset`
 - `window new`
@@ -95,6 +95,10 @@ autobrowser 是一个面向 Chrome/Edge 的浏览器自动化 CLI，通过本地
 - `tab detach [tN]`、`workspace release [id]` 和租约过期只解除归属，不关闭、刷新或重置页面。默认租约 1 小时，命令会续约，归属保存到 `chrome.storage.local`；detailed tab list 可查看租约时间。
 - Workspace 可以拥有多个 tab，但默认目标彼此独立；自动认领一次后目标保持稳定，不会每条命令换页。显式 `--tab` 也不能绕过归属；batch 子步骤继承外层 workspace 和 `--no-auto-attach`，run 会先向扩展校验归属。
 - Workspace 模式下 `close all` 只关闭当前 workspace 的 owned tabs；`extension reload/reconnect`、`server stop` 等全局管理操作仍影响所有调用方。
+- `workspace groups [on|off|status]` 是**整个 profile 的标签组展示开关**，默认关闭，省略参数等同 `status`；它不是 workspace 动作，`--no-workspace workspace groups off` 也能执行。`status` 返回 `enabled`、`available`、`groups` 和 `lastError`。
+- 开启后一个 workspace 对应一个 Chromium 标签组，组标题是截断的短 workspace id，颜色按 workspace 稳定生成；`tab attach`、自动认领、`tab new` 以及开启时已有归属会同步进组。
+- `tab detach`、`workspace release`、租约过期和 `groups off` 会把仍在管理组里的页面恢复到进入前的组（原本未分组则取消分组）；用户手动移到别组的页面保持不动。
+- groupId 只是可失效的缓存，不承担归属身份；分组失败只记录 `lastError`，不影响归属、页面命令或 attach/detach/release。`close all` 仍按 owned tabs 关闭，不按标签组关闭。
 - 每个 MCP 服务实例自动获得独立 workspace，可用 `workspace`、`tab_attach`、`tab_detach` 工具管理和复用页面。
 
 ## 可靠流程

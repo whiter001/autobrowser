@@ -113,6 +113,11 @@ export function createTabsCommandHandler({
     } = scope
     switch (command) {
       case 'workspace': {
+        // groups 是整个 profile 的展示层开关，不属于任何 workspace；必须放在 requireWorkspace
+        // 之前，--no-workspace 下也能查询或关闭分组。
+        if (action === 'groups') {
+          return await workspaceManager.groups(args.enabled as boolean | undefined)
+        }
         const currentWorkspace = requireWorkspace(workspace)
         if (action === 'current') return await workspaceManager.current(currentWorkspace)
         if (action === 'list') return await workspaceManager.list()

@@ -113,6 +113,49 @@ export function tabsCreate(
 }
 
 /**
+ * chrome.tabs.group 的 Promise 封装，返回标签落到的组 id；省略 groupId 时由浏览器新建组。
+ */
+export function tabsGroup(tabIds: number[], groupId?: number): Promise<number> {
+  return runChromeCallback((callback) => {
+    const options: chrome.tabs.GroupOptions = {
+      tabIds: tabIds as [number, ...number[]],
+      ...(groupId === undefined ? {} : { groupId }),
+    }
+    chrome.tabs.group(options, (result) => callback(result))
+  })
+}
+
+/**
+ * chrome.tabs.ungroup 的 Promise 封装。
+ */
+export function tabsUngroup(tabIds: number[]): Promise<void> {
+  return runChromeVoidCallback((callback) => {
+    chrome.tabs.ungroup(tabIds as [number, ...number[]], callback)
+  })
+}
+
+/**
+ * chrome.tabGroups.get 的 Promise 封装；组不存在时由调用方转成缓存失效。
+ */
+export function tabGroupsGet(groupId: number): Promise<chrome.tabGroups.TabGroup> {
+  return runChromeCallback((callback) => {
+    chrome.tabGroups.get(groupId, callback)
+  })
+}
+
+/**
+ * chrome.tabGroups.update 的 Promise 封装。
+ */
+export function tabGroupsUpdate(
+  groupId: number,
+  updateProperties: chrome.tabGroups.UpdateProperties,
+): Promise<chrome.tabGroups.TabGroup | undefined> {
+  return runChromeCallback((callback) => {
+    chrome.tabGroups.update(groupId, updateProperties, callback)
+  })
+}
+
+/**
  * chrome.windows.create 的 Promise 封装。
  */
 export function windowsCreate(

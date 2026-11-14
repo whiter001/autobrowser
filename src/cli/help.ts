@@ -222,7 +222,7 @@ export const HELP_ROOT: HelpNode = helpNode(
     helpNode(
       'workspace',
       'Isolate an AI caller target while sharing the current browser profile and login state (Chromium defaults to an automatic workspace).',
-      'autobrowser workspace [current|list|release] [workspace-id]',
+      'autobrowser workspace [current|list|release|groups] [workspace-id]',
       [
         'Workspace isolation is on by default for Chromium callers; auto derives a stable id per caller. Precedence: --workspace, AUTOBROWSER_WORKSPACE, then auto.',
         'Disable it with --no-workspace or AUTOBROWSER_WORKSPACE=off (case-insensitive); --no-workspace cannot be combined with --workspace.',
@@ -230,6 +230,10 @@ export const HELP_ROOT: HelpNode = helpNode(
         'Without a target, page commands atomically claim a free existing tab (active first, then stable tab order); localhost and other debuggable pages are eligible. The result meta marks autoAttached once.',
         'Use --no-auto-attach to preserve explicit-only targeting. If no free tab exists, open creates one; other commands return WORKSPACE_TARGET_REQUIRED.',
         'release detaches tabs without closing, reloading, or resetting them.',
+        'groups is a profile-wide tab-group display switch (default off), not a workspace action: it never changes ownership and still works with --no-workspace. Reporting includes enabled, available, groups, and lastError.',
+        'While groups is on, each workspace maps to one Chromium tab group with a short title and a stable color; attach, auto-attach, tab new, and existing attachments join it.',
+        'detach, release, lease expiry, and groups off move managed tabs back to the group they were in before autobrowser grouped them. Tabs the user moved elsewhere are left untouched, and groupId is only a cache, never identity.',
+        'Grouping failures only record lastError; ownership and page commands keep working. close all still closes owned tabs rather than closing groups.',
       ],
       [
         helpNode(
@@ -242,6 +246,15 @@ export const HELP_ROOT: HelpNode = helpNode(
           'release',
           'Release a workspace without changing its pages.',
           'autobrowser workspace release [workspace-id]',
+        ),
+        helpNode(
+          'groups',
+          'Query or toggle profile-wide workspace tab grouping without changing workspace ownership.',
+          'autobrowser workspace groups [on|off|status]',
+          [
+            'status is the default and reports enabled, available, groups, and lastError; on/off switch the display for the whole profile.',
+            'Works with --no-workspace because the switch is global, not scoped to one workspace.',
+          ],
         ),
       ],
     ),

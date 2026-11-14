@@ -1147,6 +1147,8 @@ function validateCommandArgsShape(command: string, args: unknown): void {
     case 'workspace':
       readStringField(normalizedArgs, 'action', command)
       readStringField(normalizedArgs, 'workspaceId', command, { required: false })
+      // groups 省略 enabled 表示查询；显式传值必须是布尔，避免 'on'/'off' 这类字符串漏到扩展侧
+      readBooleanField(normalizedArgs, 'enabled', command)
       return
     case 'tab.attach':
       readTabInputField(normalizedArgs, 'handle', command)

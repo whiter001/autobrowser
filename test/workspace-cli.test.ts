@@ -162,3 +162,58 @@ describe('workspace CLI context', () => {
     expect(result.stdout).toContain('invalid workspace id')
   })
 })
+
+describe('workspace groups CLI', () => {
+  test('status is the default mode and sends no enabled flag', async () => {
+    for (const argv of [
+      ['workspace', 'groups'],
+      ['workspace', 'groups', 'status'],
+    ]) {
+      const result = await runCli(argv)
+
+      expect(result.exitCode).toBe(0)
+      expect(result.fetchCalls[0].body).toEqual({
+        command: 'workspace',
+        args: { action: 'groups' },
+      })
+    }
+  })
+
+  test('on and off map to a boolean enabled flag', async () => {
+    const on = await runCli(['workspace', 'groups', 'on'])
+    expect(on.fetchCalls[0].body).toEqual({
+      command: 'workspace',
+      args: { action: 'groups', enabled: true },
+    })
+
+    const off = await runCli(['workspace', 'groups', 'off'])
+    expect(off.fetchCalls[0].body).toEqual({
+      command: 'workspace',
+      args: { action: 'groups', enabled: false },
+    })
+  })
+
+  test('works without a workspace because the switch is profile-wide', async () => {
+    const result = await runCli(['--no-workspace', 'workspace', 'groups', 'off'])
+
+    expect(result.exitCode).toBe(0)
+    expect(result.fetchCalls[0].body).toEqual({
+      command: 'workspace',
+      args: { action: 'groups', enabled: false },
+    })
+  })
+
+  test('rejects an invalid mode or extra arguments before dispatch', async () => {
+    for (const argv of [
+      ['workspace', 'groups', 'maybe'],
+      ['workspace', 'groups', 'on', 'extra'],
+      ['workspace', 'groups', 'status', 'extra'],
+    ]) {
+      const result = await runCli(argv)
+
+      expect(result.exitCode).toBe(1)
+      expect(result.fetchCalls).toHaveLength(0)
+      expect(cliErrorPayload(result.stdout).error.code).toBe('CLI_INVALID_ARGUMENT')
+    }
+  })
+})

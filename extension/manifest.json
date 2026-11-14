@@ -5,6 +5,7 @@
   "description": "Bridge Chrome DevTools Protocol traffic to the local autobrowser daemon.",
   "permissions": [
     "tabs",
+    "tabGroups",
     "debugger",
     "storage",
     "clipboardWrite",

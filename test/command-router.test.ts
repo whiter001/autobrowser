@@ -2282,3 +2282,25 @@ describe('command router snapshot limits', () => {
     expect(snapshotCalls[0]?.options).toMatchObject({ limit: 60, responseFormat: 'concise' })
   })
 })
+
+describe('workspace tab group display control', () => {
+  test('reports group status without requiring a workspace', async () => {
+    const { router } = createMinimalRouter()
+
+    // groups 是 profile 级开关：没有 workspace 上下文（--no-workspace）时也必须可查询
+    const result = await router.handleCommand({
+      command: 'workspace',
+      args: { action: 'groups' },
+    })
+
+    expect(result).toMatchObject({ enabled: false, available: false, groups: [] })
+  })
+
+  test('keeps requiring a workspace for the ownership actions', async () => {
+    const { router } = createMinimalRouter()
+
+    await expect(
+      router.handleCommand({ command: 'workspace', args: { action: 'current' } }),
+    ).rejects.toThrow('requires a workspace')
+  })
+})

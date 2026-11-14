@@ -58,7 +58,7 @@ export const COMMAND_ACTIONS = {
   extension: { actions: ['info', 'reload', 'reconnect'] },
   skill: { actions: ['sync', 'status'] },
   tab: { actions: ['list', 'new', 'attach', 'detach', 'select', 'close'] },
-  workspace: { actions: ['current', 'list', 'release'], defaultAction: 'current' },
+  workspace: { actions: ['current', 'list', 'release', 'groups'], defaultAction: 'current' },
   target: { actions: ['show', 'clear', 'active', 'set'], defaultAction: 'show' },
   command: { actions: ['list', 'status', 'cancel', 'reset'], defaultAction: 'list' },
   session: {

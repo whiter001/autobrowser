@@ -135,6 +135,20 @@ autobrowser --workspace ai-a tab attach t2058764180
 
 `auto` 根据可信祖先进程、进程启动时间和终端标识生成稳定 workspace；AI 宿主可用 `AUTOBROWSER_CALLER_ID` 注入更可靠的调用方身份。`workspace current` 可确认实际身份；`workspace list` 查看归属，`workspace release [id]` 只解除绑定，不关闭或刷新页面。
 
+### 标签组展示
+
+`workspace groups [on|off|status]` 控制整个 profile 的标签组展示，默认关闭；省略参数等同 `status`。它是全局开关而不是某个 workspace 的动作，因此 `--no-workspace workspace groups off` 也能执行。`status` 返回 `enabled`、`available`（浏览器是否支持 tabGroups）、当前 `groups` 与 `lastError`。
+
+```bash
+autobrowser workspace groups          # 查询当前状态
+autobrowser workspace groups on       # 为已有归属建立标签组
+autobrowser workspace groups off      # 关闭展示并恢复原组
+```
+
+- 开启后一个 workspace 对应一个 Chromium 标签组，组标题是截断后的短 workspace id，颜色按 workspace 稳定生成；`tab attach`、自动认领、`tab new` 以及开启时已有的归属都会同步进组。
+- `tab detach`、`workspace release`、租约过期和 `groups off` 会把仍留在管理组里的页面恢复到进入前的组（原来未分组则取消分组）。用户手动移到别组的页面不会被改回。
+- 组 id 只是可失效的缓存，不是归属身份；分组失败只写入 `lastError`，不影响 attach/detach/release、workspace 归属和页面命令。`close all` 仍按 workspace 的 owned tabs 关闭，不通过关闭整个标签组实现。
+
 默认 `auto` 只适用于 Chromium。`--engine firefox|webkit` 且没有显式 workspace 配置时保持无 workspace，不会因为新默认值报 "only supported by Chromium"；显式 `--workspace` 或非 `off` 的 `AUTOBROWSER_WORKSPACE` 在 WebDriver 下仍按原行为报错。`--no-workspace` 和 `off` 在 WebDriver 下都不报错。
 
 - `tab list` 显示 `workspace`、`attachment` 和 `attachable`；`--response-format detailed` 还显示租约时间。

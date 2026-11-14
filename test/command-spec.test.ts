@@ -79,6 +79,23 @@ describe('command specs', () => {
     expect(commandSupportsFrameTarget('tab.close')).toBe(false)
   })
 
+  test('validates the optional workspace groups enabled flag', () => {
+    // 省略 enabled 是 status 查询；显式值只能是布尔，CLI 的 on/off 在本地就翻译好
+    expect(() => validateCommandArgs('workspace', { action: 'groups' })).not.toThrow()
+    expect(() =>
+      validateCommandArgs('workspace', { action: 'groups', enabled: true }),
+    ).not.toThrow()
+    expect(() =>
+      validateCommandArgs('workspace', { action: 'groups', enabled: false }),
+    ).not.toThrow()
+
+    for (const enabled of ['on', 'off', 'true', 1, 0]) {
+      expect(() => validateCommandArgs('workspace', { action: 'groups', enabled })).toThrow(
+        'enabled must be a boolean',
+      )
+    }
+  })
+
   test('validates extension actions without ambient tab or frame targeting', () => {
     expect(commandSupportsTabTarget('extension')).toBe(false)
     expect(commandSupportsFrameTarget('extension')).toBe(false)
