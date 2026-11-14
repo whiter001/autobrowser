@@ -22,7 +22,7 @@ bun run build:chrome
 bun run link:bun
 ```
 
-`link:bun` 会把原生启动器放到全局 PATH 可访问的位置，并链接当前仓库的 `dist/autobrowser.js`；Windows 任意目录使用 `autobrowser.exe`，其他平台使用 `autobrowser`。安装或升级后重启 relay、重载扩展，并用 `version` 与 `extension info` 核对 CLI、扩展和仓库 HEAD 的 commit 一致。
+`link:bun` 会把原生启动器放到全局 PATH 可访问的位置，并链接当前仓库的 `dist/autobrowser.js`；Windows 任意目录使用 `autobrowser.exe`，其他平台使用 `autobrowser`。安装或升级后重启 relay、重载扩展，并用 `autobrowser version` 与 `autobrowser extension info` 核对 CLI、扩展和仓库 HEAD 的 commit 一致（`extension` 是命令组，必须带上子命令，否则会被当成扩展端命令而报 unsupported command）。
 
 ### 升级本机 bun
 
