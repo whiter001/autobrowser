@@ -143,7 +143,7 @@ export const MCP_TOOLS: McpToolDefinition[] = [
   {
     name: 'extension',
     description:
-      'Inspect or control the browser extension: info returns extensionId/version/buildTime/commit plus connection diagnostics; reload reloads code from disk (drops the socket, scripts are re-registered on reattach); reconnect only rebuilds the relay connection.',
+      'Inspect or control the browser extension: info returns extensionId/version/buildTime/commit plus connection diagnostics (version and commit identify the build; status/doctor compare them with the CLI build); reload reloads code from disk (drops the socket, scripts are re-registered on reattach); reconnect only rebuilds the relay connection.',
     command: 'extension',
     inputSchema: {
       type: 'object',

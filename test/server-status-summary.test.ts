@@ -114,4 +114,44 @@ describe('server status summary', () => {
 
     expect(summary).not.toContain('page epochs')
   })
+
+  test('renders version mismatches as an explicit inequality', () => {
+    const summary = formatStatusSummary({
+      relayPort: 57978,
+      ipcPort: 57979,
+      extensionConnected: true,
+      versionSkew: {
+        consistent: false,
+        reason: 'version',
+        cli: '0.1.5',
+        extension: '0.1.1',
+        hint: 'CLI is 0.1.5 but the loaded extension is 0.1.1.',
+      },
+      snapshot: { tabs: [] },
+    })
+
+    expect(summary).toContain('version: CLI 0.1.5 != extension 0.1.1')
+    expect(summary).toContain('warning: CLI is 0.1.5')
+  })
+
+  test('renders same-version commit skew without an identical version inequality', () => {
+    // 同版本不同 commit 时 "0.1.5 != 0.1.5" 看起来像 bug，必须点明差异在 commit
+    const summary = formatStatusSummary({
+      relayPort: 57978,
+      ipcPort: 57979,
+      extensionConnected: true,
+      versionSkew: {
+        consistent: false,
+        reason: 'commit',
+        cli: '0.1.5',
+        extension: '0.1.5',
+        hint: 'CLI and extension are both 0.1.5 but built from different commits (CLI a458338, extension b123456).',
+      },
+      snapshot: { tabs: [] },
+    })
+
+    expect(summary).toContain('version: same 0.1.5, different commits')
+    expect(summary).toContain('CLI a458338, extension b123456')
+    expect(summary).not.toContain('0.1.5 != 0.1.5')
+  })
 })

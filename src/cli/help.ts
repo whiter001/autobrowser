@@ -149,12 +149,12 @@ export const HELP_ROOT: HelpNode = helpNode(
     ),
     helpNode(
       'version',
-      "Show this CLI's build (version/commit/buildTime) and, when the relay is already running, the loaded extension's manifest version. `--version` is shorthand for this command.",
+      "Show this CLI's build (version/commit/buildTime) and the loaded extension's build (version/commit/buildTime; manifest version only when 'extension info' is unavailable). `--version` is shorthand for this command.",
       'autobrowser version [--json]  |  autobrowser --version',
       [
         'Reads dist/build-info.json next to the installed CLI; development runs (bun src/cli.ts) report null fields.',
-        'A version mismatch means the extension is stale or the CLI is old; rebuild/reload the extension or upgrade the CLI before trusting version-specific behavior.',
-        "Commit-level build info for the extension comes from 'extension info'.",
+        'Compares version and commit: a version mismatch or the same version built from different commits means one side is stale; rebuild/reload the extension or upgrade the CLI before trusting version-specific behavior.',
+        'buildTime is informational only and never decides whether the two builds match.',
       ],
     ),
     helpNode(
@@ -169,7 +169,7 @@ export const HELP_ROOT: HelpNode = helpNode(
       [
         helpNode(
           'info',
-          'Show extensionId, version, buildTime, commit and userAgent. Missing or invalid build metadata is null; version always comes from the manifest.',
+          'Show extensionId, version, buildTime, commit and userAgent. Missing or invalid build metadata is null; version always comes from the manifest. `autobrowser version` uses info to compare commits when versions match.',
           'autobrowser extension info',
         ),
         helpNode(

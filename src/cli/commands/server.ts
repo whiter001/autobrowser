@@ -7,7 +7,8 @@ import {
   isPortInUse,
   readJsonFile,
 } from '../../core/protocol.js'
-import { compareVersions, readCliBuildInfo } from '../build-info.js'
+import { compareBuilds, readCliBuildInfo } from '../build-info.js'
+import { readExtensionBuildInfo } from '../extension-build-info.js'
 import { isRecord } from '../client.js'
 import { CLI_ERROR_CODES, CliUsageError } from '../cli-error.js'
 import { getLocalControlBaseUrl, targetsLocalControlServer } from '../connection.js'
@@ -64,7 +65,9 @@ export function formatStatusSummary(status: Record<string, unknown>, brief = fal
   const versionSkew = isRecord(status.versionSkew) ? status.versionSkew : null
   if (versionSkew && versionSkew.consistent === false) {
     lines.push(
-      `version: CLI ${String(versionSkew.cli)} != extension ${String(versionSkew.extension)}`,
+      versionSkew.reason === 'commit'
+        ? `version: same ${String(versionSkew.cli)}, different commits`
+        : `version: CLI ${String(versionSkew.cli)} != extension ${String(versionSkew.extension)}`,
     )
     if (typeof versionSkew.hint === 'string' && versionSkew.hint) {
       lines.push(`warning: ${versionSkew.hint}`)
@@ -406,19 +409,21 @@ async function handleConnect(rest: string[], context: CommandContext): Promise<n
   return 0
 }
 
-/** 在 status 里附带 CLI↔扩展的版本对比；拿不到任一侧版本时原样返回，不制造噪音 */
+/**
+ * 在 status 里附带 CLI↔扩展的构建对比；CLI 自身没有构建信息时原样返回，
+ * 不为一次注定无结论的诊断额外请求扩展。
+ */
 async function attachVersionSkew(
+  context: CommandContext,
   status: Record<string, unknown>,
 ): Promise<Record<string, unknown>> {
   const cli = await readCliBuildInfo()
   if (!cli.version) {
     return status
   }
-  const snapshot = isRecord(status.snapshot) ? status.snapshot : null
-  const extension = snapshot && isRecord(snapshot.extension) ? snapshot.extension : null
-  const extensionVersion =
-    extension && typeof extension.version === 'string' ? extension.version : null
-  const versionSkew = compareVersions(cli.version, extensionVersion)
+  // 读取扩展构建信息内部已吞掉请求失败，诊断不改变 status/doctor 的成败。
+  const extension = await readExtensionBuildInfo(context, status)
+  const versionSkew = compareBuilds(cli, extension)
   return versionSkew.consistent === null ? status : { ...status, versionSkew }
 }
 
@@ -480,7 +485,10 @@ function connectedDoctorChecks(status: Record<string, unknown>): DoctorCheck[] {
     checks.push({
       name: 'version',
       status: 'warn',
-      message: `CLI ${String(versionSkew.cli)} != extension ${String(versionSkew.extension)}`,
+      message:
+        versionSkew.reason === 'commit'
+          ? `same ${String(versionSkew.cli)}, different commits`
+          : `CLI ${String(versionSkew.cli)} != extension ${String(versionSkew.extension)}`,
       ...(typeof versionSkew.hint === 'string' ? { suggestedAction: versionSkew.hint } : {}),
     })
   } else if (versionSkew?.consistent === true) {
@@ -594,7 +602,7 @@ async function handleDoctor(rest: string[], context: CommandContext): Promise<nu
   let status: Record<string, unknown> | null = null
   let statusError: string | null = null
   try {
-    status = await attachVersionSkew(await context.getCommandStatus(context.flags.server))
+    status = await attachVersionSkew(context, await context.getCommandStatus(context.flags.server))
   } catch (error) {
     statusError = error instanceof Error ? error.message : String(error)
   }
@@ -626,7 +634,10 @@ async function handleStatus(rest: string[], context: CommandContext): Promise<nu
     return payload.ok === false ? 1 : 0
   }
 
-  const status = await attachVersionSkew(await context.getCommandStatus(context.flags.server))
+  const status = await attachVersionSkew(
+    context,
+    await context.getCommandStatus(context.flags.server),
+  )
   // status 默认给人读的摘要：json 默认就是 true，只有显式 --json 才输出原始对象，
   // 否则 --raw/--brief 这类「要文本」的用法反而会被默认值吞掉。
   if (!context.flags.json || !context.flags.jsonExplicitlySet) {

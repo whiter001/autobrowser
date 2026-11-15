@@ -59,6 +59,24 @@ describe('doctor', () => {
     expect(result.stdout).toContain('Rebuild and reload the extension.')
   })
 
+  test('reports same-version commit skew without printing an identical version inequality', async () => {
+    const result = await runCli(['doctor'], {
+      ...healthyStatus,
+      versionSkew: {
+        consistent: false,
+        reason: 'commit',
+        cli: '0.1.5',
+        extension: '0.1.5',
+        hint: 'CLI and extension are both 0.1.5 but built from different commits (CLI a458338, extension b123456).',
+      },
+    })
+
+    expect(result.exitCode).toBe(0)
+    expect(result.stdout).toContain('version    warn  same 0.1.5, different commits')
+    expect(result.stdout).toContain('CLI a458338, extension b123456')
+    expect(result.stdout).not.toContain('0.1.5 != 0.1.5')
+  })
+
   test('explains how to repair a disconnected extension and exits non-zero', async () => {
     const result = await runCli(['doctor'], { ...healthyStatus, extensionConnected: false })
 
