@@ -133,7 +133,9 @@ autobrowser --workspace ai-a tab attach t2058764180
 
 解析优先级为 `--workspace` > 非 `off` 的 `AUTOBROWSER_WORKSPACE` > 默认 `auto`；空环境变量等同于未设置。`AUTOBROWSER_WORKSPACE=off`（大小写不敏感）或全局 `--no-workspace` 关闭 workspace，恢复无 workspace 的共享目标模式；显式 `--workspace` 仍覆盖 `off`，但 `--no-workspace` 与 `--workspace` 同用会在发出请求前报 `CLI_INVALID_ARGUMENT`。
 
-`auto` 根据可信祖先进程、进程启动时间和终端标识生成稳定 workspace；AI 宿主可用 `AUTOBROWSER_CALLER_ID` 注入更可靠的调用方身份。`workspace current` 可确认实际身份；`workspace list` 查看归属，`workspace release [id]` 只解除绑定，不关闭或刷新页面。
+`auto` 根据可信祖先进程、进程启动时间和终端标识推断调用方；这些信息会随宿主启动方式、终端复用或进程重启漂移，因此 AI 宿主应在会话开始时显式注入身份：按“启动工作区根目录 + AI 会话 ID”生成一次稳定的 `AUTOBROWSER_CALLER_ID`，并在整个会话内复用。同一 AI 固定、不同 AI 必须不同；不要只按当前目录生成，也不要每条命令随 cwd 重算，否则同一条工作流会分裂成多个 workspace，表现为丢失默认目标或反复 `TAB_BUSY`。显式 `AUTOBROWSER_WORKSPACE` 优先级更高，设置它时不需要另设 caller id。`workspace current` 可确认实际身份；`workspace list` 查看归属，`workspace release [id]` 只解除绑定，不关闭或刷新页面。
+
+多个 AI 共用一个浏览器时应优先保留现场而不是新建页面：先 `tab list` 查看 `workspace`/`attachment`/`attachable`，对合适的 `attachable: true` 现有标签用 `tab attach <tN>` 复用，尤其要保留手动登录、已填表单、筛选条件和正在排查的页面。只有没有可用的空闲标签，或任务确实需要独立环境（隔离 cookie、稳定导航、长时间独占）时才 `tab new`/`open`/`session`；新任务并不等于必须新开标签。不同 AI 不要共用同一个 workspace，也不要通过重试或改参数绕过 `TAB_BUSY`。
 
 ### 标签组展示
 
@@ -156,7 +158,11 @@ autobrowser workspace groups off      # 关闭展示并恢复原组
 - `tab detach [tN]` 解除归属但不改变页面。每个 workspace 可拥有多个 tab，并只保存自己的默认目标。
 - Workspace 没有目标时，页面命令默认原子认领一个未绑定标签页：优先当前活动页，其余按 tabId 稳定排序；遇到 `TAB_BUSY` 会尝试下一空闲页，不抢占其他 workspace。localhost 等可调试页面均可使用，结果 meta 在首次认领带 `autoAttached:true`。没有空闲页时 `open <url>` 创建并绑定新 tab，其他命令返回 `WORKSPACE_TARGET_REQUIRED`。使用全局 `--no-auto-attach` 可恢复只接受显式目标的行为；它只关闭自动认领，不等于 `--no-workspace`。
 - 标签归属默认租约 1 小时，命令执行会续约，并保存到 `chrome.storage.local` 供扩展重载后恢复。过期或异常回收只解除归属，不重置页面。
-- Workspace 模式下 `close all` 只关闭当前 workspace 的 owned 标签；`extension reload/reconnect`、`server stop` 等全局管理操作仍会影响所有调用方。
+- 同一标签的命令按 FIFO 串行执行；不要在一个 tab 上并发堆积多个长等待，条件已变化时先结束或取消上一个等待。写入、提交、点击前用 `get url` / `snapshot` 核对当前页面和元素，避免在多 AI 共用的标签上误操作。
+- 命令超时或结果未知时先 `command status <id>` 再核对页面实际状态。`command list` / `command status` 的历史现在带 `command` 和 `workspace` 字段，可以区分命令名和发出命令的 AI；历史不记录 URL、selector、eval 脚本等参数。确认副作用前不要重放。
+- `extension reload`、`extension reconnect`、`server stop` 是全局操作，会影响所有 AI；执行前先确认其他 workspace 是否正在使用。
+- 后台标签页的定时器可能因浏览器节流延迟当前页面任务，多 AI 切换活动页会间接放大。依赖可见性或定时器结果的验证可 `tab select` 保持前台，或使用独立 `--session`；`set focus on` 只做 CDP 焦点仿真，不能保证消除后台定时器节流。
+- Workspace 模式下 `close all` 只关闭当前 workspace 的 owned 标签；任务结束时用 `tab detach` 或 `workspace release` 释放自己的标签，保留页面给后续复用，不要关闭其他 AI 仍在使用的标签。
 
 每个 MCP 服务实例自动使用独立 workspace，并提供 `workspace`、`tab_attach`、`tab_detach` 工具。Workspace 用于本机误操作隔离，不是跨用户安全认证机制。
 

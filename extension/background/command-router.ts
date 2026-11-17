@@ -557,6 +557,9 @@ export function createCommandRouter({
             },
             {
               ...request,
+              // 只记录命令名和所属 workspace，命令参数可能含 URL/脚本/selector，不能进入历史
+              command,
+              workspace,
               deadlineAt:
                 request?.deadlineAt ??
                 new Date(Date.now() + getCommandRequestBudgetMs(command, args)).toISOString(),

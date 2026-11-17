@@ -26,6 +26,16 @@
 - `snapshot --changed` 包含 checked/disabled 等状态变化与 `removedRefs`；基线按 document/frame 隔离。输出有 200000 UTF-8 字节预算，`truncated` 时用 `--target`/`--role` 收窄或 `--changed` 查看后续变化；只有实际交付的元素进入基线。
 - `find --name` 默认 substring，不是 exact；需要精确匹配用 `--exact`（MCP `exact:true`），`exact-name` 策略恒精确。只读 locate/text 默认取 first；写操作多匹配且未显式 position 时返回 `AMBIGUOUS_TARGET` 和候选。先检查 `--candidates 3`、收窄条件，再明确选择 `--position first|last|nth=N` 或使用确认后的 ref，不盲目重复写操作。
 
+## 多 AI 场景诊断
+
+- `command list` / `command status <id>` 的历史条目现在包含 `command` 和 `workspace`：前者是命令名，后者是发出命令的 workspace（新命令未启用 workspace 时为 `null`；旧持久化记录可能缺省该字段）。多 AI 共用一个浏览器时，用它判断某条 `running`/`queued`/`completed_late` 记录属于哪个 AI；历史不保存 URL、eval 脚本、selector 等参数。
+- 同一标签的命令按 FIFO 串行，前面的长等待会挡住同 tab 后续命令。不要并发堆积多个长等待；条件已变化时用 `command cancel <id>` 或让等待按时结束，再发下一条。
+- 命令超时或结果未知时，先 `command status <id>` 看最终状态，再用 `get url`、`eval document.readyState` 或 `snapshot` 核对页面；确认副作用前不要重发写操作。
+- 写操作（click/fill/type/扣款、提交、删除）前核对 URL 和页面内容，尤其是在复用来的共享标签上；不要假设页面仍停留在上一次操作的状态。
+- `extension reload`、`extension reconnect`、`server stop` 是全局操作，会影响所有 AI；执行前先确认其他 workspace 是否在用。
+- 后台标签页的定时器和轮询可能被浏览器节流，导致当前页面任务延迟；多 AI 切换活动页会间接放大这种漂移。依赖可见性或定时器结果的验证可 `tab select` 保持前台，或改用独立 `--session`；`set focus on` 只做 CDP 焦点仿真，不能保证消除后台定时器节流。
+- 任务结束时用 `tab detach` 或 `workspace release` 释放自己的标签，保留登录、表单等现场；不要关闭或重置其他 AI 仍在使用的页面。
+
 ## 查询无匹配契约
 
 - 查询无匹配不是失败：`empty:true` 配合 `emptyReason:NO_DATA|NO_MATCH|FILTERED_OUT|NOT_ATTACHED|EPOCH_FILTERED`，`ok:true`、退出码 0；按原因调整查询、过滤条件或先等待数据。网络结果为 `EPOCH_FILTERED` 时尝试 `--all-epochs`；`NOT_ATTACHED` 表示早期请求已错过、无法补回，应由 `tab new` 创建受管标签页或提前启动 HAR。`find ... locate` 无匹配也走这一契约，但 `find ... click/fill/type` 缺目标是 `ELEMENT_NOT_FOUND`、退出码 1。

@@ -19,7 +19,7 @@ autobrowser 是面向 Chrome/Edge 的浏览器自动化 CLI，通过本地 relay
 
 - `status` 最快确认扩展连接；`status --json` 的 `snapshot.connectionGeneration`/`snapshot.lastDisconnect` 区分重连代次并给出断开原因、心跳和 close code。`lastError` 是历史错误，结合 `lastSuccessAt` 判断是否已恢复。
 - `version` 给出 CLI version/commit/buildTime；relay 运行时带扩展 manifest 版本与 `versionSkew`。`consistent:false` 说明扩展未重载或 CLI 过旧：先 `bun run build:chrome` + `extension reload`（或升级 CLI）。扩展自身版本/commit 用 `extension info`（含 `diagnostics`、`keepalive`）；`capabilities` 负责能力协商，不要用版本号代替。
-- 扩展在线时 `extension reload` 加载磁盘新代码，`extension reconnect` 只重建 relay 连接。二者均不绑 tab、不进入页面队列，与页面 `reload` 不同，仅用于 Chromium 扩展。
+- 扩展在线时 `extension reload` 加载磁盘新代码，`extension reconnect` 只重建 relay 连接。二者均不绑 tab、不进入页面队列，与页面 `reload` 不同，仅用于 Chromium 扩展；它们和 `server stop` 会影响所有 AI，执行前确认其他 workspace 是否在用。
 - reload/reconnect 回执（`reloading:true` 等）只表示约 50ms 后异步开始，不是恢复完成：稍等后用 `status` 确认，再 `tab list`、`snapshot` 刷新目标和 ref，不要重放原动作。离线时先修复连接；首次升级需手动在 chrome://extensions 重载。
 - 扩展 30 秒 keepalive alarm 会在 service worker 被回收后自愈；`status` 持续 `waiting for extension` 超过 1 分钟再重载扩展或查 relay。
 - `server` 启动 relay 与 IPC；`connect` 打开扩展连接页并保存 token/端口/浏览器配置。平台不注册 `chrome-extension://`，打开扩展页必须显式 `--browser-command`，否则 CLI 报错并改开 `/connect`；连接页自动关闭通常表示成功，用 `status` 确认。
@@ -28,9 +28,11 @@ autobrowser 是面向 Chrome/Edge 的浏览器自动化 CLI，通过本地 relay
 
 - 未指定 `--tab` 使用当前 workspace 目标。Chromium 下 workspace 默认开启：共享 profile/登录态，隔离默认 tab 与操作权限；需要独立 home/profile/端口/token 用 `--session`。
 - 解析优先级：显式 `--workspace` > 非 `off` 的 `AUTOBROWSER_WORKSPACE` > 默认 auto。`--no-workspace` 或 `AUTOBROWSER_WORKSPACE=off` 关闭隔离；`--no-workspace` 与 `--workspace` 同用报 `CLI_INVALID_ARGUMENT`。`--engine firefox|webkit` 且无显式配置时无 workspace。
-- 先 `tab list` 看 `workspace`/`attachment`/`attachable`，再 `tab attach <tN>` 原子复用未占用页面（保留登录/表单/筛选）。被占用是 `TAB_BUSY`，不要强接管；`--readonly` 写操作返回 `WORKSPACE_READONLY`。
+- 会话开始时按“启动工作区根目录 + AI 会话 ID”生成一次固定的 `AUTOBROWSER_CALLER_ID` 并全程复用：不要只按当前目录，也不要每条命令随 cwd 重算，否则同一条工作流会分裂成多个 workspace。显式 `AUTOBROWSER_WORKSPACE` 优先，设置它后无需另设 caller id。不同 AI 不共用 workspace。
+- 先 `tab list` 看 `workspace`/`attachment`/`attachable`，对合适的 `attachable:true` 现有标签用 `tab attach <tN>` 复用，保留登录/表单/筛选和排查现场；只有没有合适空闲标签或确需独立环境才 `tab new`/`open`/`session`。被占用是 `TAB_BUSY`，不要强接管；`--readonly` 写操作返回 `WORKSPACE_READONLY`。
 - 无目标时自动认领空闲 tab（active 优先，其余按 tabId 升序，`TAB_BUSY` 换下一个）；无空闲页时 `open` 创建并绑定，其他命令报 `WORKSPACE_TARGET_REQUIRED`。严格指定页面用 `--no-auto-attach`（batch 继承，不等于 `--no-workspace`）。
-- `tab detach`/`workspace release`/租约过期只解除归属，不关闭或重置页面；默认租约 1 小时并随命令续约。
+- `tab detach`/`workspace release`/租约过期只解除归属，不关闭或重置页面；默认租约 1 小时并随命令续约。任务结束释放自己的标签，不要关闭其他 AI 仍在用的页面。
+- 同一 tab 命令 FIFO 串行，不要并发堆长等待；写操作前核对 URL/页面；超时先 `command status` + 页面状态。`command list/status` 历史带 `command` 与 `workspace`，可按 workspace 判断命令来源（不含 URL/selector/脚本）。
 - 兜底目标跳过 `chrome-extension://`、`chrome://`、`edge://`、`devtools://`、`about:`。`tN` 由 Chrome tabId 派生（如 `t2058764132`），不是短序号；扩展重连、句柄表未重建时仍可用，已关闭 tab 报 `STALE_TAB_HANDLE`，先 `tab list`。
 - 会话清理、标签组、多 MCP workspace、完整租约边界见 [sessions-workspaces.md](references/sessions-workspaces.md)。
 

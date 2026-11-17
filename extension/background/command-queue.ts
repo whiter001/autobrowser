@@ -9,6 +9,10 @@ export type CommandExecutionContext = OperationContext
 interface CommandQueueEntry {
   id: string
   key: string
+  /** 命令名（不含参数），便于多 AI 场景判断历史条目来源；旧持久化记录可能缺失 */
+  command?: string
+  /** 发起命令的 workspace；无 workspace 或旧记录为 null/缺失 */
+  workspace?: string | null
   state:
     | 'queued'
     | 'running'
@@ -31,7 +35,12 @@ export interface CommandQueue {
   enqueue: <TResult>(
     key: string,
     task: (context: CommandExecutionContext) => Promise<TResult>,
-    options?: { id?: string; deadlineAt?: string | null },
+    options?: {
+      id?: string
+      deadlineAt?: string | null
+      command?: string
+      workspace?: string | null
+    },
   ) => Promise<TResult>
   cancel: (id: string) => boolean
   reset: (key: string) => number
@@ -114,6 +123,8 @@ export function createCommandQueue(options: CommandQueueOptions = {}): CommandQu
     const entry: CommandQueueEntry = {
       id: item.id,
       key: item.key,
+      ...(item.command !== undefined ? { command: item.command } : {}),
+      workspace: item.workspace ?? null,
       state,
       enqueuedAt: item.enqueuedAt,
       startedAt: item.startedAt,
@@ -201,7 +212,12 @@ export function createCommandQueue(options: CommandQueueOptions = {}): CommandQu
   function enqueue<TResult>(
     key: string,
     task: (context: CommandExecutionContext) => Promise<TResult>,
-    requestOptions: { id?: string; deadlineAt?: string | null } = {},
+    requestOptions: {
+      id?: string
+      deadlineAt?: string | null
+      command?: string
+      workspace?: string | null
+    } = {},
   ): Promise<TResult> {
     const id = requestOptions.id || crypto.randomUUID()
     return new Promise<TResult>((resolve, reject) => {
@@ -209,6 +225,8 @@ export function createCommandQueue(options: CommandQueueOptions = {}): CommandQu
         const item: QueueItem<TResult> = {
           id,
           key,
+          ...(requestOptions.command !== undefined ? { command: requestOptions.command } : {}),
+          workspace: requestOptions.workspace ?? null,
           state: 'queued',
           enqueuedAt: new Date().toISOString(),
           startedAt: null,

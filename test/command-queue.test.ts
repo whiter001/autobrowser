@@ -165,6 +165,117 @@ describe('command queue', () => {
     ])
   })
 
+  test('keeps command and workspace metadata on active and terminal entries', async () => {
+    const queue = createCommandQueue()
+    let release!: () => void
+    const pending = queue.enqueue(
+      'tab:1',
+      () => new Promise<void>((resolve) => (release = resolve)),
+      {
+        id: 'meta-running',
+        command: 'click',
+        workspace: 'ai-a',
+      },
+    )
+    const queued = queue.enqueue('tab:1', async () => 'next', {
+      id: 'meta-queued',
+      command: 'snapshot',
+    })
+
+    expect(queue.list()).toEqual([
+      expect.objectContaining({
+        id: 'meta-running',
+        state: 'running',
+        command: 'click',
+        workspace: 'ai-a',
+      }),
+      // 未启用 workspace 的命令只记录 command，workspace 归一为 null
+      expect.objectContaining({
+        id: 'meta-queued',
+        state: 'queued',
+        command: 'snapshot',
+        workspace: null,
+      }),
+    ])
+
+    release()
+    await pending
+    await queued
+    expect(queue.list()).toEqual([
+      expect.objectContaining({
+        id: 'meta-running',
+        state: 'completed',
+        command: 'click',
+        workspace: 'ai-a',
+      }),
+      expect.objectContaining({
+        id: 'meta-queued',
+        state: 'completed',
+        command: 'snapshot',
+        workspace: null,
+      }),
+    ])
+  })
+
+  test('persists and restores command and workspace metadata', async () => {
+    const stored: Record<string, unknown> = {}
+    const storage = {
+      get: async () => stored,
+      set: async (items: Record<string, unknown>) => {
+        Object.assign(stored, items)
+      },
+    }
+    const queue = createCommandQueue({ storage })
+    await queue.ready()
+    await queue.enqueue('tab:1', async () => 'done', {
+      id: 'persisted',
+      command: 'fill',
+      workspace: 'ai-b',
+    })
+    await flush(0)
+
+    const restored = createCommandQueue({ storage })
+    await restored.ready()
+    expect(restored.list()).toEqual([
+      expect.objectContaining({
+        id: 'persisted',
+        state: 'completed',
+        command: 'fill',
+        workspace: 'ai-b',
+      }),
+    ])
+  })
+
+  test('restores legacy entries that have no command or workspace metadata', async () => {
+    const legacy: Record<string, unknown> = {
+      'autobrowser.command-history.v1': {
+        commands: [
+          {
+            id: 'legacy',
+            key: 'tab:1',
+            state: 'completed',
+            enqueuedAt: '2026-01-01T00:00:00.000Z',
+            startedAt: '2026-01-01T00:00:00.000Z',
+            deadlineAt: null,
+            finishedAt: '2026-01-01T00:00:01.000Z',
+            error: null,
+          },
+        ],
+      },
+    }
+    const storage = {
+      get: async () => legacy,
+      set: async () => {},
+    }
+    const queue = createCommandQueue({ storage })
+    await queue.ready()
+
+    const entry = queue.list()[0]!
+    expect(entry).toMatchObject({ id: 'legacy', key: 'tab:1', state: 'completed' })
+    expect(entry.command).toBeUndefined()
+    expect(entry.workspace).toBeUndefined()
+  })
+
   test('restores terminal history and marks pre-restart work as interrupted', async () => {
     const stored: Record<string, unknown> = {
       'autobrowser.command-history.v1': {

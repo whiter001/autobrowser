@@ -2304,3 +2304,41 @@ describe('workspace tab group display control', () => {
     ).rejects.toThrow('requires a workspace')
   })
 })
+
+describe('command history metadata', () => {
+  test('records the command name and owning workspace for queued commands', async () => {
+    const { router } = createMinimalRouter()
+    // 先 attach 再入队，避免 workspace 解析失败掩盖元数据断言
+    await router.handleCommand({ command: 'tab.attach', args: { workspace: 'ai-a', tabId: 1 } })
+    await router.handleCommand({
+      command: 'goto',
+      id: 'workspace-goto',
+      args: { workspace: 'ai-a', tabId: 1, url: 'https://example.com/a' },
+    })
+    await router.handleCommand({ command: 'snapshot', id: 'plain-snapshot', args: { tabId: 1 } })
+
+    const result = (await router.handleCommand({
+      command: 'command',
+      args: { action: 'list' },
+    })) as { commands: Array<Record<string, unknown>> }
+
+    expect(result.commands).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: 'workspace-goto',
+          command: 'goto',
+          workspace: 'ai-a',
+          state: 'completed',
+        }),
+        expect.objectContaining({
+          id: 'plain-snapshot',
+          command: 'snapshot',
+          workspace: null,
+          state: 'completed',
+        }),
+      ]),
+    )
+    // 历史只记命令名和 workspace，不落 URL、selector 等参数
+    expect(JSON.stringify(result.commands)).not.toContain('https://example.com/a')
+  })
+})
