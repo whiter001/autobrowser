@@ -179,10 +179,10 @@ describe('cli helpers', () => {
     expect(result.exitCode).toBe(0)
     expect(result.fetchCalls).toHaveLength(0)
     expect(result.stdout).toContain('time <ms>')
-    expect(result.stdout).toContain('fixed duration in milliseconds')
-    expect(result.stdout).toContain('--ms <ms> wait a fixed duration in milliseconds')
-    expect(result.stdout).toContain('--timeout-ms <ms> total timeout in milliseconds')
-    expect(result.stdout).toContain('--timeout is a legacy alias')
+    expect(result.stdout).toContain('固定时长（毫秒）')
+    expect(result.stdout).toContain('--ms <ms> 等待固定时长，单位毫秒')
+    expect(result.stdout).toContain('--timeout-ms <ms> 总超时时间，单位毫秒')
+    expect(result.stdout).toContain('是旧版别名')
   })
 
   test('documents --timeout as an alias while keeping --timeout-ms canonical', async () => {
@@ -197,7 +197,7 @@ describe('cli helpers', () => {
       expect(result.fetchCalls).toHaveLength(0)
       // 正式名仍是 --timeout-ms，--timeout 只作为兼容别名出现在说明里
       expect(result.stdout).toContain('[--timeout-ms <ms>]')
-      expect(result.stdout).toContain('--timeout is accepted as an alias for --timeout-ms')
+      expect(result.stdout).toContain('--timeout 可作为 --timeout-ms 的别名')
     }
   })
 
@@ -234,10 +234,8 @@ describe('cli helpers', () => {
     const getHelp = await runCli(['help', 'get'])
     expect(getHelp.exitCode).toBe(0)
     expect(getHelp.stdout).toContain('autobrowser get <attribute> [selector]')
-    expect(getHelp.stdout).toContain(
-      'title, url, and cdp-url read the current page and ignore selector',
-    )
-    expect(getHelp.stdout).toContain('other attribute names are passed through to the page element')
+    expect(getHelp.stdout).toContain('title、url 和 cdp-url 读取当前页面并忽略选择器')
+    expect(getHelp.stdout).toContain('其他属性名会透传给页面元素')
   })
 
   test('documents search help output', async () => {
@@ -261,27 +259,27 @@ describe('cli helpers', () => {
     )
     expect(result.stdout).toContain('--max-result-bytes <n>')
     expect(result.stdout).toContain('--output <path>')
-    expect(result.stdout).toContain('existing files are overwritten')
+    expect(result.stdout).toContain('已存在的文件会被覆盖')
     expect(result.stdout).toContain('--element <selector>')
     expect(result.stdout).toContain('--expr <script>')
     expect(result.stdout).toContain('--timeout-ms <ms>')
-    expect(result.stdout).toContain('--file <path>  read complex or multiline script source')
-    expect(result.stdout).toContain('--stdin  read complex or multiline script source')
-    expect(result.stdout).toContain('Top-level return and await are supported')
-    expect(result.stdout).toContain('split work into smaller browser commands or script steps')
+    expect(result.stdout).toContain('--file <path>  从文件读取复杂或多行的脚本源码')
+    expect(result.stdout).toContain('--stdin  从 stdin 读取复杂或多行的脚本源码')
+    expect(result.stdout).toContain('支持顶层 return 与 await')
+    expect(result.stdout).toContain('复杂交互请拆成更小的浏览器命令或脚本步骤')
   })
 
   test('documents eval source routing and a real PowerShell stdin example', async () => {
     const result = await runCli(['help', 'eval'])
 
     expect(result.exitCode).toBe(0)
-    expect(result.stdout).toContain('only for simple single-line expressions')
+    expect(result.stdout).toContain('仅适用于简单的单行表达式')
     expect(result.stdout).toContain(
-      'If the source contains a CSS selector, JSON, regex, template literals, or multiple lines, use --file or --stdin directly',
+      '源码包含 CSS 选择器、JSON、正则、模板字符串或多行内容时，请直接使用 --file 或 --stdin',
     )
-    expect(result.stdout).toContain('One-off scripts go through --stdin')
-    expect(result.stdout).toContain('--base64 is for machine-generated payloads')
-    expect(result.stdout).toContain('PowerShell example')
+    expect(result.stdout).toContain('一次性脚本走 --stdin')
+    expect(result.stdout).toContain('--base64 用于机器生成的载荷')
+    expect(result.stdout).toContain('PowerShell 示例')
     expect(result.stdout).toContain("@'")
     expect(result.stdout).toContain(`document.querySelectorAll('a[href*="/n/"]')`)
     expect(result.stdout).toContain("'@ | autobrowser.exe eval --stdin")

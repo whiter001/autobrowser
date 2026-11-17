@@ -95,7 +95,7 @@ describe('cli extension command', () => {
     expect(result.requests).toEqual([{ command: 'extension', args: { action: 'info' } }])
     expect(JSON.parse(result.stdout)).toEqual({ ok: true, result: extensionInfo })
     expect(printHelp(['extension', 'info'])).toContain('buildTime')
-    expect(printHelp(['extension'])).toContain('Capabilities')
+    expect(printHelp(['extension'])).toContain('能力协商')
   })
 
   for (const args of [[], ['restart'], ['reload', 'extra'], ['info', 'extra']]) {
@@ -110,9 +110,9 @@ describe('cli extension command', () => {
   }
 
   test('help explains code reload, relay reconnect and recovery confirmation', () => {
-    expect(printHelp(['extension'])).toContain('asynchronously after acknowledgement')
-    expect(printHelp(['extension', 'reload'])).toContain('Reload extension code')
-    expect(printHelp(['extension', 'reconnect'])).toContain('without reloading code')
+    expect(printHelp(['extension'])).toContain('在收到确认后异步执行')
+    expect(printHelp(['extension', 'reload'])).toContain('重新加载扩展代码')
+    expect(printHelp(['extension', 'reconnect'])).toContain('不重新加载代码')
     expect(printHelp(['extension', 'reload'])).toContain('status')
   })
 })

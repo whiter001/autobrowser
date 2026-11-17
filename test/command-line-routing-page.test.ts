@@ -838,7 +838,7 @@ describe('cli command routing', () => {
     expect(result.fetchCalls).toHaveLength(0)
     expect(result.stdout).toContain('@eN')
     expect(result.stdout).toContain('text=')
-    expect(result.stdout).toContain('not supported')
+    expect(result.stdout).toContain('不支持')
   })
 
   test('rejects Playwright text= selectors before calling the extension', async () => {

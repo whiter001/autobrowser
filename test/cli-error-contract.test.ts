@@ -48,7 +48,7 @@ describe('CLI parse-time error contract', () => {
     expect(result.exitCode).toBe(1)
     expect(result.fetchCalls).toHaveLength(0)
     // 旧行为是打印整页根 help（130 行），调用方无从判断命令名写错了
-    expect(result.stdout).not.toContain('Usage:')
+    expect(result.stdout).not.toContain('用法：')
 
     const payload = cliErrorPayload(result.stdout)
     expect(payload.error.code).toBe('CLI_UNKNOWN_COMMAND')

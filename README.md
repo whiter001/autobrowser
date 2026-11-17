@@ -156,7 +156,7 @@ autobrowser workspace groups off      # 关闭展示并恢复原组
 - `tab list` 显示 `workspace`、`attachment` 和 `attachable`；`--response-format detailed` 还显示租约时间。
 - `tab attach <tN>` 原子复用已有页面，保留当前登录、表单和筛选状态；其他 workspace 已持有时返回 `TAB_BUSY`。`--readonly` 只允许观察命令，click/eval/run 等会被拒绝。
 - `tab detach [tN]` 解除归属但不改变页面。每个 workspace 可拥有多个 tab，并只保存自己的默认目标。
-- Workspace 没有目标时，页面命令默认原子认领一个未绑定标签页：优先当前活动页，其余按 tabId 稳定排序；遇到 `TAB_BUSY` 会尝试下一空闲页，不抢占其他 workspace。localhost 等可调试页面均可使用，结果 meta 在首次认领带 `autoAttached:true`。没有空闲页时 `open <url>` 创建并绑定新 tab，其他命令返回 `WORKSPACE_TARGET_REQUIRED`。使用全局 `--no-auto-attach` 可恢复只接受显式目标的行为；它只关闭自动认领，不等于 `--no-workspace`。
+- Workspace 没有目标时，页面命令默认原子认领一个未绑定标签页：优先当前活动页，其余按 tabId 稳定排序；遇到 `TAB_BUSY` 会尝试下一空闲页，不抢占其他 workspace。localhost 等可调试页面均可使用，结果 meta 在首次认领带 `autoAttached:true`。没有空闲页时 `open <url>` 创建并绑定新 tab，其他命令返回 `WORKSPACE_TARGET_REQUIRED`。使用全局 `--no-auto-attach` 可恢复只接受显式目标的行为；它只关闭自动认领，不等于 `--no-workspace`。独立调研/抓取不要依赖 `open` 自动认领空闲页，优先 `tab new` 或 `--no-auto-attach`，避免导航用户现有页面。
 - 标签归属默认租约 1 小时，命令执行会续约，并保存到 `chrome.storage.local` 供扩展重载后恢复。过期或异常回收只解除归属，不重置页面。
 - 同一标签的命令按 FIFO 串行执行；不要在一个 tab 上并发堆积多个长等待，条件已变化时先结束或取消上一个等待。写入、提交、点击前用 `get url` / `snapshot` 核对当前页面和元素，避免在多 AI 共用的标签上误操作。
 - 命令超时或结果未知时先 `command status <id>` 再核对页面实际状态。`command list` / `command status` 的历史带 `command`、`workspace`、`requestedAt`（relay 发出）、`receivedAt`（扩展收到）、`enqueuedAt`（入队）、`startedAt`（开始执行）和 `finishedAt`，可把 relay→扩展接收→入队→执行→完成逐段拆开定位延迟；历史不记录 URL、selector、eval 脚本等参数。确认副作用前不要重放。
@@ -416,6 +416,18 @@ async (page) => {
 
 桥接只暴露选中的已有 tab，不支持通过 `context.newPage()` 创建新 target；frame 直接使用 `page.frames()` / `page.frameLocator()`，不使用根级 `--frame`。`run` 不能作为 batch 子步骤，目前也不支持 WebDriver/MCP。`page.route()` 在脚本结束后失效，扩展会仅对当前 tab 恢复 autobrowser 自己的网络路由，避免留下无人处理的暂停请求。
 
+### 可执行示例
+
+仓库 `example/` 提供使用当前安装 CLI 和扩展的确定性验证脚本，均会清理自己的临时标签和文件：
+
+```bash
+bun example/verify-cli.mjs              # 基础连接、run、表单与 eval
+bun example/verify-advanced-cli.mjs     # 网络、HAR、iframe、对话框、文件与 CDP
+bun example/verify-element-zoom.mjs     # 元素局部放大与还原
+bun example/verify-target-safety.mjs    # no-auto-attach、detach 与现场保留
+bun example/verify-spa-extraction.mjs   # 动态 SPA、复杂 DOM 与大结果 JSON 导出
+```
+
 ## 面向 Agent 的引用
 
 扩展命令返回对象结果时，会在 `result.meta` 中回显该命令实际操作的标签页上下文：`tabHandle`（Tab Handle）、`tabId`、`frame`（Frame 引用，若为 `top`/`main`/`default` 则归一化为 `null`）、`pageEpoch`、`url` 与 `title`。取不到的字段为 `null`；无页面上下文的对象命令（如 `tab.list`、`script`、`batch`）的 `result.meta` 所有字段均为 `null`。
@@ -505,7 +517,7 @@ autobrowser tab close t2058764137
 
 脚本默认在隔离的函数作用域中执行：顶层 `const`/`let`/`var`/`function` 不会留在页面全局，同一个脚本可原样重复执行，不需要手工包 IIFE；简单表达式仍返回 completion value（最后一个表达式的值）。脚本可直接使用顶层 `return` 和 `await`，多语句脚本用 `return` 返回结果。`--element` 的函数脚本同样隔离，也不影响原有的元素未找到（stale）判断。
 
-结果装不下终端时用 `--output <path>` 落盘：`eval` 把完整结果写成 2 空格缩进的 JSON（末尾换行），stdout 只留 `{ path, format: "json", bytes }` 这个小型摘要（`meta` 等执行上下文保留），不再把正文写进 stdout。相对路径按当前目录解析，同名文件会被覆盖，写文件失败按普通 CLI 错误返回。指定 `--output` 且没有显式 `--response-format` 时按 `detailed` 执行，因此默认不受 concise 的 32KiB 结果上限约束；显式 `--response-format concise` 仍保留 32KiB，显式 `--max-result-bytes <n>` 始终优先。MCP 的 `eval` 工具同样如此：传 `output` 且不传 `response_format` 时按 `detailed` 执行，显式 `response_format: "concise"` 才保留 32KiB 上限。落盘只改变结果的去向，不改变页面脚本的语义。
+结果装不下终端时用 `--output <path>` 落盘：`eval` 把完整结果写成 2 空格缩进的 JSON（末尾换行），stdout 只留 `{ path, format: "json", bytes }` 这个小型摘要（`meta` 等执行上下文保留），不再把正文写进 stdout。输出始终是 JSON，与文件扩展名无关，推荐统一使用 `.json`，不要按 `.txt` 等扩展名猜测内容格式。相对路径按当前目录解析，同名文件会被覆盖，写文件失败按普通 CLI 错误返回。指定 `--output` 且没有显式 `--response-format` 时按 `detailed` 执行，因此默认不受 concise 的 32KiB 结果上限约束；显式 `--response-format concise` 仍保留 32KiB，显式 `--max-result-bytes <n>` 始终优先。MCP 的 `eval` 工具同样如此：传 `output` 且不传 `response_format` 时按 `detailed` 执行，显式 `response_format: "concise"` 才保留 32KiB 上限。落盘只改变结果的去向，不改变页面脚本的语义。
 
 PowerShell 用单引号 here-string 直通 stdin，`@'` 与结束的 `'@` 都必须独占行首：
 

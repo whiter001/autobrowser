@@ -1048,10 +1048,10 @@ describe('search interfaces', () => {
     expect(search.inputSchema.properties?.context).toMatchObject({ maximum: 50 })
     expect(printHelp(['search'])).toContain('--start-line <n>')
     expect(printHelp(['search'])).toContain('nextStartLine:201')
-    expect(printHelp(['search'])).toContain('100000 UTF-8 bytes')
+    expect(printHelp(['search'])).toContain('100000 个 UTF-8 字节')
     expect(printHelp(['find'])).toContain('AMBIGUOUS_TARGET')
     expect(printHelp(['snapshot'])).toContain('removedRefs')
-    expect(printHelp(['batch'])).toContain('NOT an idempotency guarantee')
+    expect(printHelp(['batch'])).toContain('重试不是幂等性保证')
     expect(JSON.stringify(tools.find((tool) => tool.name === 'find'))).toContain(
       'substring by default',
     )
