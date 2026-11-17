@@ -40,11 +40,11 @@ autobrowser 是面向 Chrome/Edge 的浏览器自动化 CLI，通过本地 relay
 
 - 观察：`snapshot`（concise 默认 50 元素/32KiB，`--limit 1..200` 只调元素上限、不提高字节预算；`--changed` 看状态变化与 `removedRefs`）。同一 document 内 ref 不复用；导航或重渲染后先刷新 snapshot。`@eN`/`@fN` 优先于脆弱 CSS。
 - 定位：`find role|text|label|name`；只读 locate/text 默认 first，`find ... locate` 无匹配走 `empty:true`，写操作缺目标为 `ELEMENT_NOT_FOUND`。`--name` 默认 substring，精确匹配用 `--exact`。多匹配写操作未给 position 返回 `AMBIGUOUS_TARGET`，先看 `--candidates 3`，再选 `--position first|last|nth=N` 或确认后的 ref。
-- 交互：`click`/`dblclick`/`fill`/`type`/`press`/`hover`/`focus`/`select`/`check`/`uncheck`/`scroll`/`scrollintoview`/`upload`，目标用 ref 或 CSS。`press` 只接受一个键名（`autobrowser press Enter`），不接受 selector：先 `click`/`focus <selector>` 聚焦目标再发送。受控 `fill` 可能回滚；toggle 控件先查状态，不要在 eval 里 `el.click()` 后又无条件 `click`。
+- 交互：`click`/`dblclick`/`fill`/`type`/`press`/`hover`/`focus`/`select`/`check`/`uncheck`/`scroll`/`scrollintoview`/`upload`，目标用 ref 或 CSS。`press` 只接受一个键名（`autobrowser press Enter`），不接受 selector：先 `click`/`focus <selector>` 聚焦目标再发送。受控 `fill` 可能回滚；DatePicker 文本录入先 `click` 后用 `type` 逐键输入并按 Enter，`fill` 回滚不等于不支持手动输入。toggle 控件先查状态，不要在 eval 里 `el.click()` 后又无条件 `click`。
 - 等待：`wait time 3`、`wait ms 3`、`wait 3` 都是 **3 毫秒**，等 3 秒写 `wait time 3000`。条件等待用 `wait <selector> [--state new|stable]`、`wait --fn`、`wait --text`、`wait --load networkidle`；不要固定 sleep 后断言更新完成。
 - 读取：`get`、`is`、`console`、`errors`、`search`。`search` 普通 query 按字面量，正则写 `/pattern/flags`；`truncated` 时用 `nextStartLine`/`--start-line` 续读。
 - 截图：`screenshot [path]` 截当前视口，`--full` 截整页；`screenshot --element <selector|@eN> [path]` 会先把目标滚到视口中心并短暂等待懒加载图片 decode，不修改视口尺寸，懒加载图片一般无需再单独打开 URL 截图。元素截图超时或 `CDP_DEADLINE_EXCEEDED` 后先 `command status` 看是否 `completed_late`，再核对页面/视口状态，不要重放或手工清 Emulation 覆盖。
-- 脚本：单行表达式用 `eval --expr`；源码含 CSS 选择器、JSON、正则、模板字符串或多行语句时直接用 `--stdin`/`--file`，不要先试内联转义；`--base64` 只用于机器生成。支持顶层 `return`/`await`，大结果先分页/聚合。完整边界见 [eval-and-scripting.md](references/eval-and-scripting.md)。
+- 脚本：单行表达式用 `eval --expr`；源码含 CSS 选择器、JSON、正则、模板字符串或多行语句时直接用 `--stdin`/`--file`，不要先试内联转义；`--base64` 只用于机器生成。支持顶层 `return`/`await`，大结果先分页/聚合。完整边界见 [eval-and-scripting.md](references/eval-and-scripting.md)。随 skill 分发的正则示例脚本可直接跑：[examples/eval-regex.sh](examples/eval-regex.sh)（bash）、[examples/eval-regex.ps1](examples/eval-regex.ps1)（PowerShell），改脚本里的 `patterns` 即可复用。
 - 导航：`open`/`goto` 可加 `--wait-for url <pattern>|selector <css>`；`back`/`forward`/`reload`；`tab new/select/close`；`frame <@fN|selector|top>`；等待阶段 `--wait-until none|commit|domcontentloaded|interactive|load|networkidle|domquiet`。
 
 ## 输出体积控制
@@ -79,3 +79,16 @@ autobrowser 是面向 Chrome/Edge 的浏览器自动化 CLI，通过本地 relay
 - [advanced-automation.md](references/advanced-automation.md) — feed/collect、Playwright `run`、组件交互、拖放、SPA 采集。
 - [diagnostics-and-waiting.md](references/diagnostics-and-waiting.md) — tracing/video/actions、等待语义、search 正则、预算。
 - [troubleshooting.md](references/troubleshooting.md) — connect/空白页、启动器/PATH/npm、问题跟踪、更新约定。
+
+## 随 skill 分发的示例脚本
+
+`examples/` 下的脚本与本文件、`references/` 一起由 `autobrowser skill sync` 同步到 agent 的 skills 目录，可直接按需读取或运行：
+
+- [examples/eval-regex.sh](examples/eval-regex.sh) — bash 版：用 `eval --stdin` 跑多正则匹配页面文本，可选标签页参数。
+- [examples/eval-regex.ps1](examples/eval-regex.ps1) — PowerShell 版：同款正则示例，用单引号 here-string 避免变量展开。
+
+## 技能资产的同步与更新
+
+- 本 skill 的全部资产（`SKILL.md`、`references/`、`examples/`）由 `autobrowser skill sync` 从包内目录同步到 agent 加载位置（默认 `~/.agents/skills/autobrowser/`，可用 `AUTOBROWSER_SKILL_DIR` 覆盖）。
+- sync 只覆盖上述声明范围内的文件，不删除目标目录里的其它内容；内容一致时跳过写入，重复执行是 no-op。
+- `autobrowser skill status` 逐个比较声明范围内的资产，缺失或内容不同都算 out of sync；仓库更新后先 sync，再让 agent 按新指引操作。

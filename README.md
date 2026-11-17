@@ -433,6 +433,10 @@ bun example/verify-media-download.mjs   # MSE 降级、HAR 指引、HLS 与视�
 bun example/verify-youtube-feed.mjs     # YouTube 作者、频道头像、发布时间与适配器
 bun example/verify-bilibili-feed.mjs    # B 站作者、发布时间、广告标记与作者主页
 bun example/verify-checkbox.mjs         # 受控 Checkbox 的 check/uncheck 返回值与实际状态一致
+bun example/verify-datepicker.mjs       # DatePicker 逐键输入日期、Enter 确认并读取结果
+bun example/verify-element-plus-datepicker.mjs # Element Plus 文本输入与可见面板选日期
+bun example/verify-search-regex.mjs     # 复杂正则、引号、反斜杠与 Unicode 搜索
+bun example/verify-eval-shell-regex.mjs # Bash/Pwsh here-doc/here-string 执行复杂 eval 正则
 ```
 
 ## 面向 Agent 的引用
@@ -653,11 +657,11 @@ autobrowser clipboard write "hello"
 autobrowser pdf                              # 导出当前页为 PDF
 autobrowser config                           # 查看已保存的连接配置
 autobrowser replay                           # 重放上一条记录的命令
-autobrowser skill sync                       # 同步包内 SKILL.md 到 ~/.agents/skills/autobrowser/
+autobrowser skill sync                       # 同步包内 skill 资产到 ~/.agents/skills/autobrowser/
 autobrowser skill status                     # 只检查是否与包内一致，不写入
 ```
 
-`replay` 会拒绝含 `[redacted]` 的历史命令，不会拿脱敏占位符当真实参数执行。`skill sync` 是更新 agent 提示词的官方途径，包内 SKILL.md 位于 `.agents/skills/autobrowser/SKILL.md`，可用 `AUTOBROWSER_SKILL_DIR` 覆盖安装位置。
+`replay` 会拒绝含 `[redacted]` 的历史命令，不会拿脱敏占位符当真实参数执行。`skill sync` 是更新 agent 提示词的官方途径：包内 skill 目录 `.agents/skills/autobrowser/` 下的 `SKILL.md`、`references/`、`examples/` 会被同步到 agent 加载位置（默认 `~/.agents/skills/autobrowser/`，可用 `AUTOBROWSER_SKILL_DIR` 覆盖）。sync 只覆盖这些声明范围内的文件，不删除目标目录里的其它内容；内容一致时跳过写入，重复执行是 no-op。`skill status` 会逐个比较这些资产，缺失或内容不同都算 out of sync。
 
 低层输入与拖拽：
 

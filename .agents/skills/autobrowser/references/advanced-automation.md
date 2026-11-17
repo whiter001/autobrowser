@@ -32,7 +32,7 @@
 
 ## 组件交互与异步断言
 
-- `fill` 负责派发真实输入事件，但受控组件可能按自身状态回滚输入值。antd DatePicker 等组件若未接受直接填写，先打开面板再点击具体日期单元格，不要反复 `fill` 或改用 DOM 赋值绕过组件。
+- `fill` 负责派发真实输入事件，但受控组件可能按自身状态回滚输入值。antd DatePicker 支持文本录入时，先 `click` 输入框，再用 `type <selector> <value>` 逐键输入日期并按 `press Enter`，最后用 `get value` 核验；`fill` 不等于逐键输入，不能用它回滚就断言组件不支持手动输入。组件未接受键入或只需面板选择时，再打开面板点击具体日期单元格，不要反复 `fill` 或改用 DOM 赋值绕过组件。
 - `click` 是一次真实点击；对按钮、输入框等 toggle 控件，先用 snapshot/eval 检查面板或弹层当前状态，不要在 eval 里调用 `el.click()` 后又无条件执行一次 `click`，否则第二次可能把刚打开的面板关闭。
 - Vue/React 等框架的状态更新和渲染是异步的，`.click()` 后同步读取 DOM 可能仍是旧值。优先用 `wait <selector>`、`wait --fn '<expression>'` 或 `wait --text <text>` 等条件等待；不要固定 sleep 2~3 秒后就断定所有页面都已完成更新。
 

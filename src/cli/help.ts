@@ -177,17 +177,21 @@ export const HELP_ROOT: HelpNode = helpNode(
     ]),
     helpNode(
       'skill',
-      '同步或查看本包附带的 agent SKILL.md。',
+      '同步或查看本包附带的 agent 技能资产。',
       'autobrowser skill <sync|status>',
       [
-        'sync 把包内的 SKILL.md 复制到 ~/.agents/skills/autobrowser/SKILL.md（可用 AUTOBROWSER_SKILL_DIR 覆盖路径）。',
-        'status 报告已安装的 SKILL.md 是否与包内版本一致，不写入任何文件。',
+        'sync 把包内的 SKILL.md 与 references/、examples/ 复制到 ~/.agents/skills/autobrowser/（可用 AUTOBROWSER_SKILL_DIR 覆盖路径）。',
+        'status 逐个比较已安装的技能资产与包内版本是否一致，不写入任何文件。',
       ],
       [
-        helpNode('sync', '把包内的 SKILL.md 复制到 agent 技能目录。', 'autobrowser skill sync'),
+        helpNode(
+          'sync',
+          '把包内的 SKILL.md 与 references/、examples/ 复制到 agent 技能目录。',
+          'autobrowser skill sync',
+        ),
         helpNode(
           'status',
-          '报告已安装的 SKILL.md 是否与包内版本一致，不写入文件。',
+          '报告已安装的技能资产是否与包内版本一致，不写入文件。',
           'autobrowser skill status',
         ),
       ],
