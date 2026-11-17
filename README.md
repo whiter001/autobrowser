@@ -426,6 +426,7 @@ bun example/verify-advanced-cli.mjs     # 网络、HAR、iframe、对话框、�
 bun example/verify-element-zoom.mjs     # 元素局部放大与还原
 bun example/verify-target-safety.mjs    # no-auto-attach、detach 与现场保留
 bun example/verify-spa-extraction.mjs   # 动态 SPA、复杂 DOM 与大结果 JSON 导出
+bun example/verify-feed-context.mjs     # 数字滚动、正文媒体/头像与转帖上下文
 ```
 
 ## 面向 Agent 的引用
@@ -603,6 +604,11 @@ autobrowser feed collect 'article' --limit 50 --dedupe url
 autobrowser collect run ./spec.json
 autobrowser collect resume ./spec.json     # 从失败页继续，按内容去重
 ```
+
+每条卡片包含 `author`、`handle`、`time`、`text`、`url`、`mediaUrls`、`avatarUrls`、`timelineContext`、`repostBy`：
+
+- `mediaUrls` 只放正文图片/视频；`avatarUrls` 单独放头像（X 的 `/profile_images/` 路径与常见 avatar/profile 语义容器算头像；没有头像语义的普通站点图片仍算正文媒体）。
+- `timelineContext` 是时间线上下文（如 `Hongbo Zhang 已转帖`），没有则为 `null`；`repostBy` 是转帖人，不是转帖或识别不出时为 `null`。转帖不会改写 `author`/`handle`。
 
 `collect` 的 spec 是 JSON：`{name, mode: "feed"|"network", startUrl?, output, maxPages?, feed?, network?}`。`feed` 模式用 `feed.selector/limit/dedupe/maxScrolls/pauseMs/stallRounds/nextSelector/waitTimeoutMs`；`network` 模式用 `network.urlPattern/itemsPath` 和可选的 `nextPath` 跟随真实响应游标。每完成一页就原子更新输出 JSONL 和 checkpoint，失败时按提示 `collect resume`；checkpoint 不含 cookie 或 token。该命令当前只支持 Chromium 扩展通道。
 

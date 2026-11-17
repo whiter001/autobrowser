@@ -60,7 +60,7 @@ const SMOKE_PAGE_HTML = `<!doctype html>
 </html>`
 
 const FEED_FIXTURE_HTML = `<!doctype html><body>
-  <article><div data-testid="User-Name">Ada · @ada</div><time datetime="2026-01-01"></time><div data-testid="tweetText">same text</div><img src="image.png"></article>
+  <article><div data-testid="Tweet-User-Avatar"><img src="/profile_images/ada_avatar.jpg"></div><div data-testid="socialContext">Hongbo Zhang 已转帖</div><div data-testid="User-Name">Ada · @ada</div><time datetime="2026-01-01"></time><div data-testid="tweetText">same text</div><img src="image.png"></article>
   <article><div data-testid="User-Name">Ada · @ada</div><time datetime="2026-01-01"></time><div data-testid="tweetText">same text</div></article>
   <article><div data-testid="User-Name">Bob · @bob</div><div data-testid="tweetText">linked</div><a href="/status/2">link</a></article>
 </body>`
@@ -1083,6 +1083,9 @@ suite('live browser smoke test', () => {
         text: string
         url: string | null
         mediaUrls: string[]
+        avatarUrls: string[]
+        timelineContext: string | null
+        repostBy: string | null
       }>
     }>('feed', { selector: 'article', limit: 3, dedupe: 'url', maxScrolls: 0, pauseMs: 0 })
     expect(result.count).toBe(2)
@@ -1091,8 +1094,15 @@ suite('live browser smoke test', () => {
       handle: '@ada',
       time: '2026-01-01',
       text: 'same text',
+      timelineContext: 'Hongbo Zhang 已转帖',
+      repostBy: 'Hongbo Zhang',
     })
-    expect(result.items[0]?.mediaUrls[0]).toMatch(/\/image\.png$/)
+    // 头像不再混进正文媒体
+    expect(result.items[0]?.mediaUrls).toEqual([expect.stringMatching(/\/image\.png$/)])
+    expect(result.items[0]?.avatarUrls).toEqual([expect.stringContaining('/profile_images/')])
+    // 普通卡片没有转帖上下文
+    expect(result.items[1]?.timelineContext).toBeNull()
+    expect(result.items[1]?.repostBy).toBeNull()
     expect(result.items[1]?.url).toContain('/status/2')
     await checkedCommand('goto', { url: pageUrl })
     await checkedCommand('wait', { selector: '#increment', timeout: 15_000 })

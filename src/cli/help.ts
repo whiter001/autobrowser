@@ -538,7 +538,18 @@ export const HELP_ROOT: HelpNode = helpNode(
     helpNode('select', '选择一个选项。', 'autobrowser select <selector> <value>'),
     helpNode('check', '勾选复选框。', 'autobrowser check <selector>'),
     helpNode('uncheck', '取消勾选复选框。', 'autobrowser uncheck <selector>'),
-    helpNode('scroll', '滚动页面或元素。', 'autobrowser scroll [selector] [deltaX] [deltaY]'),
+    helpNode(
+      'scroll',
+      '滚动页面或元素。',
+      'autobrowser scroll <deltaY> | autobrowser scroll <deltaX> <deltaY> | autobrowser scroll <selector> [deltaX] [deltaY]',
+      [
+        '单数字：页面纵向滚动。scroll 600 等价于 scroll "" 0 600（deltaX=0、deltaY=600）。',
+        '两个数字：页面 XY 滚动，第一个是 deltaX、第二个是 deltaY。scroll 0 1800 表示横向 0、纵向 1800。',
+        '选择器：滚动指定元素。scroll "#main" 0 1800 中第二个参数是 deltaX、第三个是 deltaY。',
+        'scroll "" 0 1800 是空选择器写法，等价于页面纵向滚动 1800。',
+        '滚动距离必须是有限数字，多余的位置参数会被拒绝。',
+      ],
+    ),
     helpNode(
       'scrollintoview',
       '把指定选择器滚动到可视区域。',

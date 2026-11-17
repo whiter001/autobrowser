@@ -2,7 +2,9 @@
 
 ## 信息流与虚拟列表采集
 
-- `feed collect [selector] --limit <n>` 自动滚动并收集卡片，输出 author、handle、time、text、url、mediaUrls；`stopReason` 区分 limit/maxScrolls/stalled。等待新卡片或列表稳定可分别用 `wait <selector> --state new|stable`。
+- `feed collect [selector] --limit <n>` 自动滚动并收集卡片，输出 author、handle、time、text、url、mediaUrls、avatarUrls、timelineContext、repostBy；`stopReason` 区分 limit/maxScrolls/stalled。等待新卡片或列表稳定可分别用 `wait <selector> --state new|stable`。
+- `mediaUrls` 只含正文图片/视频，头像单独放 `avatarUrls`（X 的 `/profile_images/` 路径与常见 avatar/profile 语义容器算头像；没有头像语义的普通站点图片仍算正文媒体）。
+- `timelineContext` 是时间线上下文（如 `Hongbo Zhang 已转帖`），没有则为 `null`；`repostBy` 是转帖人，不是转帖或识别不出时为 `null`。转帖不会改写 author/handle。
 - 默认 `dedupe=url` 优先按链接去重，无链接卡片自动回退到 author/handle/text，避免虚拟列表重复交付；需要强制正文去重或允许重复时显式选 text/none。
 - 采集期间不要导航或刷新。page epoch 变化会返回 `STALE_FEED_STATE` 并丢弃旧结果，应在当前页面重新采集，不要把旧卡片与新页面拼接。
 - 长任务用 `collect run <spec.json>` 将 feed 或 network-first 流程一次执行并输出 JSONL。network spec 需要 `urlPattern/itemsPath`，可选 `nextPath` 跟随真实响应游标；没有匹配数据返回 `NETWORK_DATA_NOT_FOUND`，先检查请求链，不要伪造 DOM 结果。

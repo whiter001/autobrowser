@@ -2,7 +2,7 @@ import { readFile, stat } from 'node:fs/promises'
 import path from 'node:path'
 import { DROP_MAX_FILE_BYTES, DROP_MAX_TOTAL_BYTES } from '../../core/command-spec.js'
 import { CLI_ERROR_CODES, CliUsageError } from '../cli-error.js'
-import { parseFindArgs, parseOptionalNumberArg } from '../parse.js'
+import { parseFindArgs, parseNumberArg, parseOptionalNumberArg } from '../parse.js'
 import { COMMAND_ACTIONS } from './actions.js'
 import {
   createSingleArgRequestCommand,
@@ -100,20 +100,60 @@ const handleUncheck = createSingleArgRequestCommand({
   argName: 'selector',
 })
 
+export interface ScrollArgs {
+  selector: string | null
+  deltaX: number
+  deltaY: number
+}
+
+// 只认十进制字面量：0x10、Infinity 这类串不能被当成数字，否则会被误判成滚动距离。
+const SCROLL_NUMBER_PATTERN = /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$/
+
+/**
+ * scroll 参数解析。
+ *
+ * 数字开头一律按页面滚动理解，避免 "scroll 0 1800" 把 0 当成 CSS 选择器：
+ * - 单个数字是纵向滚动距离（deltaX=0、deltaY=n）；
+ * - 两个数字是页面 XY 滚动（先 deltaX 后 deltaY）。
+ *
+ * 其余按"选择器 + deltaX + deltaY"理解，兼容 scroll '#main' 0 1800 与 scroll '' 0 1800。
+ */
+export function parseScrollArgs(rest: string[]): ScrollArgs {
+  const [first] = rest
+
+  if (first !== undefined && SCROLL_NUMBER_PATTERN.test(first.trim())) {
+    if (rest.length > 2) {
+      throw new Error(`unexpected extra argument for scroll: ${rest[2]}`)
+    }
+    if (rest.length === 1) {
+      return { selector: null, deltaX: 0, deltaY: parseNumberArg(first, 'scroll deltaY') }
+    }
+    return {
+      selector: null,
+      deltaX: parseNumberArg(rest[0]!, 'scroll deltaX'),
+      deltaY: parseNumberArg(rest[1]!, 'scroll deltaY'),
+    }
+  }
+
+  if (rest.length > 3) {
+    throw new Error(`unexpected extra argument for scroll: ${rest[3]}`)
+  }
+
+  return {
+    selector: first || null,
+    deltaX: parseOptionalNumberArg(rest[1], 'scroll deltaX', 0),
+    deltaY: parseOptionalNumberArg(rest[2], 'scroll deltaY', 100),
+  }
+}
+
 async function handleScroll(rest: string[], context: CommandContext): Promise<number | void> {
   if (helpRequested(rest[0], context, ['scroll'])) {
     return 0
   }
 
-  const scrollArgs = parseOrThrow(() => ({
-    deltaX: parseOptionalNumberArg(rest[1], 'scroll deltaX', 0),
-    deltaY: parseOptionalNumberArg(rest[2], 'scroll deltaY', 100),
-  }))
+  const scrollArgs = parseOrThrow(() => parseScrollArgs(rest))
 
-  await requestAndWrite(context, 'scroll', {
-    selector: rest[0] || null,
-    ...scrollArgs,
-  })
+  await requestAndWrite(context, 'scroll', scrollArgs)
   return 0
 }
 

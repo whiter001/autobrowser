@@ -17,6 +17,7 @@ import {
   parseSearchArgs,
   parseWaitArgs,
 } from '../src/cli/parse.js'
+import { parseScrollArgs } from '../src/cli/commands/elements.js'
 import { cliErrorPayload, runCli } from './command-line-test-utils.js'
 
 describe('cli helpers', () => {
@@ -522,6 +523,88 @@ describe('cli helpers', () => {
     expect(cliErrorPayload(invalid.stdout).error.message).toContain(
       'WebMCP args must be a JSON object',
     )
+  })
+
+  test('parses scroll arguments into page scrolling or element scrolling', () => {
+    // 单个数字：页面纵向滚动
+    expect(parseScrollArgs(['600'])).toEqual({ selector: null, deltaX: 0, deltaY: 600 })
+    // 两个数字：页面 XY 滚动，先 deltaX 后 deltaY
+    expect(parseScrollArgs(['0', '1800'])).toEqual({ selector: null, deltaX: 0, deltaY: 1800 })
+    // 选择器模式保持原有语义
+    expect(parseScrollArgs(['#main'])).toEqual({ selector: '#main', deltaX: 0, deltaY: 100 })
+    expect(parseScrollArgs(['#main', '0', '1800'])).toEqual({
+      selector: '#main',
+      deltaX: 0,
+      deltaY: 1800,
+    })
+    expect(parseScrollArgs(['', '0', '1800'])).toEqual({
+      selector: null,
+      deltaX: 0,
+      deltaY: 1800,
+    })
+    expect(() => parseScrollArgs(['0', '1800', 'extra'])).toThrow(
+      'unexpected extra argument for scroll',
+    )
+    expect(() => parseScrollArgs(['#main', '0', '100', 'extra'])).toThrow(
+      'unexpected extra argument for scroll',
+    )
+    expect(() => parseScrollArgs(['600', 'soon'])).toThrow('invalid scroll deltaY')
+  })
+
+  test('routes numeric scroll arguments as page scrolling instead of CSS selectors', async () => {
+    const pageVertical = await runCli(['scroll', '600'])
+    expect(pageVertical.exitCode).toBe(0)
+    expect(pageVertical.fetchCalls[0].body).toEqual({
+      command: 'scroll',
+      args: { selector: null, deltaX: 0, deltaY: 600 },
+    })
+
+    const pageXY = await runCli(['scroll', '0', '1800'])
+    expect(pageXY.exitCode).toBe(0)
+    expect(pageXY.fetchCalls[0].body).toEqual({
+      command: 'scroll',
+      args: { selector: null, deltaX: 0, deltaY: 1800 },
+    })
+
+    const elementScroll = await runCli(['scroll', '#main', '0', '1800'])
+    expect(elementScroll.fetchCalls[0].body).toEqual({
+      command: 'scroll',
+      args: { selector: '#main', deltaX: 0, deltaY: 1800 },
+    })
+
+    const emptySelector = await runCli(['scroll', '', '0', '1800'])
+    expect(emptySelector.fetchCalls[0].body).toEqual({
+      command: 'scroll',
+      args: { selector: null, deltaX: 0, deltaY: 1800 },
+    })
+  })
+
+  test('rejects invalid scroll deltas and extra scroll arguments', async () => {
+    const invalid = await runCli(['scroll', '600', 'soon'])
+    expect(invalid.exitCode).toBe(1)
+    expect(invalid.fetchCalls).toHaveLength(0)
+    expect(cliErrorPayload(invalid.stdout).error.code).toBe('CLI_INVALID_ARGUMENT')
+    expect(cliErrorPayload(invalid.stdout).error.message).toContain('invalid scroll deltaY')
+
+    const extra = await runCli(['scroll', '0', '1800', 'extra'])
+    expect(extra.exitCode).toBe(1)
+    expect(extra.fetchCalls).toHaveLength(0)
+    expect(cliErrorPayload(extra.stdout).error.message).toContain(
+      'unexpected extra argument for scroll',
+    )
+  })
+
+  test('documents the three scroll forms in help output', async () => {
+    const result = await runCli(['help', 'scroll'])
+
+    expect(result.exitCode).toBe(0)
+    expect(result.fetchCalls).toHaveLength(0)
+    expect(result.stdout).toContain('autobrowser scroll <deltaY>')
+    expect(result.stdout).toContain('autobrowser scroll <deltaX> <deltaY>')
+    expect(result.stdout).toContain('autobrowser scroll <selector> [deltaX] [deltaY]')
+    expect(result.stdout).toContain('单数字：页面纵向滚动')
+    expect(result.stdout).toContain('两个数字：页面 XY 滚动')
+    expect(result.stdout).toContain('选择器：滚动指定元素')
   })
 
   test('routes feed collect with virtual-list limits and dedupe options', async () => {
