@@ -432,6 +432,7 @@ bun example/verify-feed-context.mjs     # 数字滚动、正文媒体/头像与�
 bun example/verify-media-download.mjs   # MSE 降级、HAR 指引、HLS 与视频校验（需 FFmpeg）
 bun example/verify-youtube-feed.mjs     # YouTube 作者、频道头像、发布时间与适配器
 bun example/verify-bilibili-feed.mjs    # B 站作者、发布时间、广告标记与作者主页
+bun example/verify-checkbox.mjs         # 受控 Checkbox 的 check/uncheck 返回值与实际状态一致
 ```
 
 ## 面向 Agent 的引用

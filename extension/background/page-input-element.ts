@@ -82,14 +82,30 @@ export function createElementCommands(pageContext: PageInputContext) {
     const { tab, resolvedSelector } = await resolveElementSelectorForTab(tabId, selector)
     const { value: result } = await evaluateInTabContext<ElementActionResult>(
       tab.id,
-      `(() => {
+      `(async () => {
         const node = deepQuerySelector(document, ${JSON.stringify(resolvedSelector)});
         if (!node) return { found: false };
         node.focus();
         node.checked = ${checked};
         node.dispatchEvent(new Event('input', { bubbles: true }));
         node.dispatchEvent(new Event('change', { bubbles: true }));
-        return { found: true, checked: node.checked };
+        // 受控组件（Ant Design Vue / React）在事件回调里会把 checked 同步回滚成模型值，
+        // 真正的状态要等框架下一帧重渲染后才写回 DOM；事件派发后立刻读只会拿到回滚后的旧值。
+        await new Promise((resolve) => {
+          let settled = false;
+          const finish = () => {
+            if (settled) return;
+            settled = true;
+            resolve();
+          };
+          // 后台标签页不会触发 rAF，用定时器兜底，避免命令一直挂到求值超时
+          requestAnimationFrame(finish);
+          setTimeout(finish, 100);
+        });
+        // 重渲染可能替换节点，重新查询拿当前节点的真实状态
+        const current = deepQuerySelector(document, ${JSON.stringify(resolvedSelector)});
+        if (!current) return { found: true, checked: ${checked} };
+        return { found: true, checked: current.checked === true };
       })()`,
       withFrameSelectorOptions(frameSelector),
     )
