@@ -1,7 +1,14 @@
 import { describe, expect, test } from 'bun:test'
 import {
+  bilibiliFeedAdapter,
   getFeedAdapterCandidates,
   isYouTubeAvatarImage,
+  readBilibiliAuthor,
+  readBilibiliAuthorUrl,
+  readBilibiliPromoted,
+  readBilibiliTime,
+  readBilibiliTrackingUrl,
+  readBilibiliUrl,
   readYouTubeAuthor,
   readYouTubeHandle,
   readYouTubeTime,
@@ -87,6 +94,7 @@ function matchesSelector(element: FakeElement, selector: string): boolean {
 }
 
 function matchesSimpleSelector(element: FakeElement, selector: string): boolean {
+  if (selector === '*') return true
   const parsed = selector.match(/^([a-zA-Z][\w-]*)?((?:[.#][\w-]+|\[[^\]]*\])*)$/)
   if (!parsed) return false
   const [, tag, rest = ''] = parsed
@@ -162,6 +170,74 @@ function createYouTubeCard(
   return card
 }
 
+/** 构造一张 B 站风格卡片：标题 + owner（含空头像 SVG）+ 日期 + 封面。 */
+function createBilibiliCard(
+  options: {
+    title?: string
+    author?: string | null
+    authorUrl?: string | null
+    date?: string | null
+    videoUrl?: string | null
+    cover?: string | null
+  } = {},
+): FakeElement {
+  const card = new FakeElement('div', { class: 'bili-video-card' })
+  const info = card.append(new FakeElement('div', { class: 'bili-video-card__info' }))
+  const videoUrl = options.videoUrl ?? 'https://www.bilibili.com/video/BV1xx411c7mD'
+
+  const title = info.append(new FakeElement('h3', { class: 'bili-video-card__info--tit' }))
+  title.append(new FakeElement('a', { href: videoUrl }, options.title ?? '示例视频'))
+
+  const owner = info.append(new FakeElement('div', { class: 'bili-video-card__info--owner' }))
+  // 头像图标是空的 SVG，通用作者逻辑会先命中它。
+  owner.append(new FakeElement('svg', { class: 'author-ico' }))
+  if (options.author !== null) {
+    owner.append(
+      new FakeElement(
+        'a',
+        { href: options.authorUrl ?? 'https://space.bilibili.com/123456' },
+        options.author ?? '老番茄',
+      ),
+    )
+  }
+
+  if (options.date !== null) {
+    info.append(
+      new FakeElement(
+        'span',
+        { class: 'bili-video-card__info--date' },
+        options.date ?? '· 2024-05-01',
+      ),
+    )
+  }
+
+  if (options.cover) {
+    const cover = card.append(new FakeElement('a', { href: videoUrl }))
+    cover.append(new FakeElement('img', { src: options.cover }))
+  }
+
+  return card
+}
+
+/** 构造一张 B 站广告卡：只有 cm.bilibili.com 跟踪链接，没有 BV 视频链接。 */
+function createBilibiliAdCard(): FakeElement {
+  const card = new FakeElement('div', { class: 'bili-video-card' })
+  const info = card.append(new FakeElement('div', { class: 'bili-video-card__info' }))
+
+  const title = info.append(new FakeElement('h3', { class: 'bili-video-card__info--tit' }))
+  title.append(new FakeElement('a', { href: 'https://www.bilibili.com/ad/promo' }, '广告推广标题'))
+
+  const owner = info.append(new FakeElement('div', { class: 'bili-video-card__info--owner' }))
+  owner.append(new FakeElement('span', {}, '某品牌旗舰店'))
+
+  const ad = info.append(new FakeElement('span', { class: 'bili-video-card__info--ad' }))
+  ad.append(
+    new FakeElement('a', { href: 'https://cm.bilibili.com/x/abc123?utm_source=feed' }, '广告'),
+  )
+
+  return card
+}
+
 describe('feed adapter host filtering', () => {
   test('keeps only adapters whose host matches the page URL', () => {
     expect(
@@ -171,6 +247,13 @@ describe('feed adapter host filtering', () => {
     expect(getFeedAdapterCandidates('https://youtu.be/abc').map((a) => a.id)).toEqual(['youtube'])
     expect(getFeedAdapterCandidates('https://x.com/user/status/1').map((a) => a.id)).toEqual(['x'])
     expect(getFeedAdapterCandidates('https://mobile.twitter.com/').map((a) => a.id)).toEqual(['x'])
+    expect(getFeedAdapterCandidates('https://www.bilibili.com/').map((a) => a.id)).toEqual([
+      'bilibili',
+    ])
+    expect(getFeedAdapterCandidates('https://space.bilibili.com/123').map((a) => a.id)).toEqual([
+      'bilibili',
+    ])
+    expect(getFeedAdapterCandidates('https://notbilibili.com/').map((a) => a.id)).toEqual([])
   })
 
   test('falls back to no adapter for unknown hosts', () => {
@@ -198,6 +281,20 @@ describe('feed adapter DOM matching', () => {
     const xPage = createFakeDocument(xBody)
     expect(xFeedAdapter.matches(xPage)).toBe(true)
     expect(xFeedAdapter.matches(nonYoutubePage)).toBe(false)
+  })
+
+  test('requires the bilibili DOM features before enabling the adapter', () => {
+    const cardBody = new FakeElement('body')
+    cardBody.append(new FakeElement('div', { class: 'bili-video-card' }))
+    expect(bilibiliFeedAdapter.matches(createFakeDocument(cardBody))).toBe(true)
+
+    const playerBody = new FakeElement('body')
+    playerBody.append(new FakeElement('div', { class: 'bpx-player-primary-area' }))
+    expect(bilibiliFeedAdapter.matches(createFakeDocument(playerBody))).toBe(true)
+
+    const plainBody = new FakeElement('body')
+    plainBody.append(new FakeElement('article'))
+    expect(bilibiliFeedAdapter.matches(createFakeDocument(plainBody))).toBe(false)
   })
 })
 
@@ -278,7 +375,105 @@ describe('youtube adapter extraction', () => {
   })
 })
 
+describe('bilibili adapter extraction', () => {
+  test('reads the author from the owner area and ignores the empty avatar icon', () => {
+    expect(readBilibiliAuthor(createBilibiliCard())).toBe('老番茄')
+    expect(readBilibiliAuthor(createBilibiliCard({ author: null }))).toBeNull()
+
+    const dateOnlyOwner = new FakeElement('div', { class: 'bili-video-card__info--owner' })
+    dateOnlyOwner.append(new FakeElement('span', {}, '· 2024-05-01'))
+    const dateOnlyCard = new FakeElement('div', { class: 'bili-video-card' })
+    dateOnlyCard.append(dateOnlyOwner)
+    expect(readBilibiliAuthor(dateOnlyCard)).toBeNull()
+  })
+
+  test('reads the publish time from the date area only', () => {
+    expect(readBilibiliTime(createBilibiliCard())).toBe('2024-05-01')
+    expect(readBilibiliTime(createBilibiliCard({ date: '· 8月6日' }))).toBe('8月6日')
+    expect(readBilibiliTime(createBilibiliCard({ date: '· 8-6' }))).toBe('8-6')
+    expect(readBilibiliTime(createBilibiliCard({ date: null }))).toBeNull()
+    expect(readBilibiliTime(createBilibiliCard({ author: '刚刚', date: null }))).toBeNull()
+  })
+
+  test('prefers the BV video link and never uses a tracking link as identity', () => {
+    expect(readBilibiliUrl(createBilibiliCard())).toBe(
+      'https://www.bilibili.com/video/BV1xx411c7mD',
+    )
+    expect(readBilibiliUrl(createBilibiliAdCard())).toBeNull()
+    expect(
+      readBilibiliUrl(
+        createBilibiliCard({
+          videoUrl: 'https://cm.bilibili.com/x?next=https://www.bilibili.com/video/BV1xx411c7mD',
+        }),
+      ),
+    ).toBeNull()
+    expect(
+      readBilibiliUrl(
+        createBilibiliCard({ videoUrl: 'javascript://www.bilibili.com/video/BV1xx411c7mD' }),
+      ),
+    ).toBeNull()
+  })
+
+  test('reports the author space url and the ad tracking url separately', () => {
+    expect(readBilibiliAuthorUrl(createBilibiliCard())).toBe('https://space.bilibili.com/123456')
+    expect(readBilibiliAuthorUrl(createBilibiliAdCard())).toBeNull()
+    expect(readBilibiliTrackingUrl(createBilibiliCard())).toBeNull()
+    expect(readBilibiliTrackingUrl(createBilibiliAdCard())).toBe(
+      'https://cm.bilibili.com/x/abc123?utm_source=feed',
+    )
+    expect(
+      readBilibiliAuthorUrl(
+        createBilibiliCard({ authorUrl: 'https://space.bilibili.com.evil.test/123456' }),
+      ),
+    ).toBeNull()
+    expect(
+      readBilibiliTrackingUrl(
+        createBilibiliCard({ videoUrl: 'https://cm.bilibili.com.evil.test/x/abc' }),
+      ),
+    ).toBeNull()
+    expect(
+      readBilibiliAuthorUrl(
+        createBilibiliCard({ authorUrl: 'javascript://space.bilibili.com/123456' }),
+      ),
+    ).toBeNull()
+    expect(
+      readBilibiliTrackingUrl(createBilibiliCard({ videoUrl: 'javascript://cm.bilibili.com/x' })),
+    ).toBeNull()
+    expect(
+      readBilibiliPromoted(createBilibiliCard({ videoUrl: 'javascript://cm.bilibili.com/x' })),
+    ).toBe(false)
+  })
+
+  test('marks only explicit ad cards as promoted', () => {
+    expect(readBilibiliPromoted(createBilibiliCard())).toBe(false)
+    expect(readBilibiliPromoted(createBilibiliCard({ title: '广告' }))).toBe(false)
+    expect(readBilibiliPromoted(createBilibiliAdCard())).toBe(true)
+  })
+})
+
 describe('feed adapter injection safety', () => {
+  test('the bilibili adapter can be injected without free variables', () => {
+    const source = serializeFeedAdapter(bilibiliFeedAdapter)
+    const build = new Function(`return ${source}`) as () => any
+    const adapter = build()
+
+    expect(adapter.id).toBe('bilibili')
+    expect(adapter.readAuthor(createBilibiliCard())).toBe('老番茄')
+    expect(adapter.readHandle(createBilibiliCard())).toBeNull()
+    expect(adapter.readTime(createBilibiliCard())).toBe('2024-05-01')
+    expect(adapter.readUrl(createBilibiliCard())).toBe(
+      'https://www.bilibili.com/video/BV1xx411c7mD',
+    )
+    expect(adapter.readAuthorUrl(createBilibiliCard())).toBe('https://space.bilibili.com/123456')
+    expect(adapter.readTrackingUrl(createBilibiliCard())).toBeNull()
+    expect(adapter.readPromoted(createBilibiliCard())).toBe(false)
+
+    const adCard = createBilibiliAdCard()
+    expect(adapter.readPromoted(adCard)).toBe(true)
+    expect(adapter.readUrl(adCard)).toBeNull()
+    expect(adapter.readTrackingUrl(adCard)).toBe('https://cm.bilibili.com/x/abc123?utm_source=feed')
+  })
+
   test('serialized adapters are self contained and run without free variables', () => {
     const source = serializeFeedAdapter(youtubeFeedAdapter)
     const card = createYouTubeCard({
@@ -310,6 +505,10 @@ describe('feed adapter injection safety', () => {
     expect(adapter.readAuthor).toBeUndefined()
     expect(adapter.readHandle).toBeUndefined()
     expect(adapter.readTime).toBeUndefined()
+    expect(adapter.readUrl).toBeUndefined()
+    expect(adapter.readAuthorUrl).toBeUndefined()
+    expect(adapter.readTrackingUrl).toBeUndefined()
+    expect(adapter.readPromoted).toBeUndefined()
     expect(adapter.isAvatar).toBeUndefined()
   })
 })

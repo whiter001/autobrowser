@@ -1,6 +1,7 @@
 import { readFile, stat } from 'node:fs/promises'
 import path from 'node:path'
 import { DROP_MAX_FILE_BYTES, DROP_MAX_TOTAL_BYTES } from '../../core/command-spec.js'
+import { isRecord } from '../client.js'
 import { CLI_ERROR_CODES, CliUsageError } from '../cli-error.js'
 import { parseFindArgs, parseNumberArg, parseOptionalNumberArg } from '../parse.js'
 import { COMMAND_ACTIONS } from './actions.js'
@@ -15,11 +16,168 @@ import {
 } from './shared.js'
 import type { CommandContext, CommandRegistry } from './types.js'
 
-const handleClick = createSingleArgRequestCommand({
-  helpPath: ['click'],
-  command: 'click',
-  argName: 'selector',
-})
+/** 显式跟随新标签的开关：默认只报告新标签，不改变当前目标 */
+const FOLLOW_NEW_TAB_FLAG = '--follow-new-tab'
+
+export interface ClickArgs {
+  selector: string
+  followNewTab: boolean
+}
+
+/**
+ * click 参数解析。
+ *
+ * --follow-new-tab 只能出现一次：重复出现说明调用方对"是否跟随"有歧义，
+ * 报错比 last-wins 更安全。`--` 之后的内容按字面量当作选择器。
+ */
+export function parseClickArgs(rest: string[]): ClickArgs {
+  const separatorIndex = rest.indexOf('--')
+  const optionParts = separatorIndex < 0 ? rest : rest.slice(0, separatorIndex)
+  const literalParts = separatorIndex < 0 ? [] : rest.slice(separatorIndex + 1)
+
+  let followNewTab = false
+  const positional: string[] = []
+  for (const part of optionParts) {
+    if (part === FOLLOW_NEW_TAB_FLAG) {
+      if (followNewTab) {
+        throw new CliUsageError(`duplicate click option: ${FOLLOW_NEW_TAB_FLAG}`, {
+          details: { path: 'click' },
+        })
+      }
+      followNewTab = true
+      continue
+    }
+    if (part.startsWith('--')) {
+      throw new CliUsageError(`unexpected extra argument for click: ${part}`, {
+        details: { path: 'click' },
+      })
+    }
+    positional.push(part)
+  }
+
+  if (positional.length > 1) {
+    throw new CliUsageError(`unexpected extra argument for click: ${positional[1]}`, {
+      details: { path: 'click' },
+    })
+  }
+
+  const selector = [...positional, ...literalParts].join(' ').trim()
+  if (!selector) {
+    throw new CliUsageError('missing value for click', {
+      details: { path: 'click' },
+    })
+  }
+
+  return { selector, followNewTab }
+}
+
+/**
+ * 组装跟随后的 meta：目标已经切到新标签，句柄/URL/标题都要换成新标签的。
+ */
+function buildFollowedMeta(
+  clickMeta: unknown,
+  followedTab: Record<string, unknown> | null,
+  followMeta: unknown,
+): Record<string, unknown> {
+  const click = isRecord(clickMeta) ? clickMeta : {}
+  const base = isRecord(followMeta) ? followMeta : {}
+  if (!followedTab) {
+    return base
+  }
+
+  return {
+    ...base,
+    tabHandle: followedTab.handle ?? base.tabHandle ?? null,
+    tabId: followedTab.id ?? base.tabId ?? null,
+    frame: base.frame ?? null,
+    pageEpoch: base.pageEpoch ?? null,
+    url: followedTab.url ?? base.url ?? click.url ?? null,
+    title: followedTab.title ?? base.title ?? click.title ?? null,
+    target: isRecord(base.target)
+      ? base.target
+      : {
+          tabId: followedTab.id ?? null,
+          handle: followedTab.handle ?? null,
+          explicit: true,
+        },
+  }
+}
+
+async function handleClick(rest: string[], context: CommandContext): Promise<number | void> {
+  const separatorIndex = rest.indexOf('--')
+  const firstToken = separatorIndex === 0 ? rest[1] : rest[0]
+  if (helpRequested(firstToken, context, ['click'])) {
+    return 0
+  }
+
+  const parsed = parseOrThrow(() => parseClickArgs(rest))
+  const payload = await context.requestCommand(context.flags.server, 'click', {
+    selector: parsed.selector,
+    ...(parsed.followNewTab ? { followNewTab: true } : {}),
+  })
+
+  if (payload.ok === false || !parsed.followNewTab) {
+    context.writeResult(payload)
+    return payload.ok === false ? 1 : 0
+  }
+
+  const clickResult = isRecord(payload.result) ? payload.result : {}
+  const newTabHandle =
+    typeof clickResult.newTabHandle === 'string' ? clickResult.newTabHandle.trim() : ''
+  if (!newTabHandle) {
+    // 没有新标签就没有可跟随的目标：原样返回点击结果
+    context.writeResult(payload)
+    return 0
+  }
+
+  // 复用现有的 tab attach 命令，不在这里另造一套"接管新标签"的逻辑
+  let followed = await context.requestCommand(context.flags.server, 'tab.attach', {
+    handle: newTabHandle,
+  })
+  let followMode: 'attach' | 'select' = 'attach'
+  if (!followed.ok && followed.error?.code === 'WORKSPACE_REQUIRED') {
+    // 无 workspace 模式（--no-workspace / AUTOBROWSER_WORKSPACE=off）没有归属可挂：
+    // 改用 tab select 切换当前目标，语义等价，也不复制 attach 的实现。
+    followMode = 'select'
+    followed = await context.requestCommand(context.flags.server, 'tab.select', {
+      handle: newTabHandle,
+    })
+  }
+  const attachResult = isRecord(followed.result) ? followed.result : {}
+  const followedTab = isRecord(attachResult.tab) ? attachResult.tab : null
+
+  if (followed.ok === false) {
+    // 跟随失败必须显式冒泡：点击本身成功了，但目标没有切到新标签
+    context.writeResult({
+      ok: false,
+      error: followed.error ?? {
+        message: `failed to attach new tab ${newTabHandle}`,
+      },
+      result: {
+        ...clickResult,
+        followedTab: null,
+        followError: followed.error ?? null,
+      },
+    })
+    return 1
+  }
+
+  context.writeResult({
+    ok: true,
+    result: {
+      ...clickResult,
+      followedTab,
+      follow: {
+        followed: true,
+        mode: followMode,
+        workspace: attachResult.workspace ?? null,
+        attachment: attachResult.attachment ?? null,
+      },
+      meta: buildFollowedMeta(clickResult.meta, followedTab, attachResult.meta),
+    },
+  })
+  return 0
+}
 
 const handleDoubleClick = createSingleArgRequestCommand({
   helpPath: ['dblclick'],

@@ -464,7 +464,11 @@ export const HELP_ROOT: HelpNode = helpNode(
         '页面结果可能包含敏感数据；检查点绝不包含 cookie 或令牌。目前需要 Chromium 扩展。',
       ],
     ),
-    helpNode('click', '点击指定选择器。', 'autobrowser click <selector>'),
+    helpNode('click', '点击指定选择器。', 'autobrowser click <selector> [--follow-new-tab]', [
+      '--follow-new-tab  点击打开了新标签页时，把当前目标切换到该新标签页（内部复用 tab attach）。',
+      '默认只报告新标签页（结果里的 newTabId / newTabHandle），不会改变当前目标；只有显式加 --follow-new-tab 才接管。',
+      '不是所有弹窗都该接管：只有确实要在新标签继续操作时才跟随，否则留在原页面。',
+    ]),
     helpNode('dblclick', '双击指定选择器。', 'autobrowser dblclick <selector>'),
     helpNode('fill', '用文本填充指定选择器。', 'autobrowser fill <selector> <value>'),
     helpNode(

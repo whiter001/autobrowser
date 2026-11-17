@@ -31,6 +31,12 @@ export interface FeedCollectionItem extends Record<string, unknown> {
   repostBy: string | null
   /** 生效的站点适配器 id（如 "youtube"）；未启用适配层时为 null。 */
   adapter: string | null
+  /** 是否是广告推广条目；普通条目为 false。 */
+  promoted: boolean
+  /** 作者主页地址；站点没有作者主页语义时为 null。 */
+  authorUrl: string | null
+  /** 广告跟踪链接；与条目链接分开，避免用跟踪参数当条目身份。 */
+  trackingUrl: string | null
 }
 
 export interface FeedCollectionResult extends Record<string, unknown> {
@@ -103,11 +109,30 @@ export function readFeedItemUrl(node: any): string | null {
 }
 
 export function readFeedItemAuthor(node: any): string {
-  const explicit = node.querySelector(
-    "[data-testid='User-Name'], [itemprop='author'], [rel='author'], [class*='author' i]",
-  )
-  const explicitText = (explicit?.innerText || explicit?.textContent || '').trim()
-  if (explicitText) return explicitText
+  const explicitSelector =
+    "[data-testid='User-Name'], [itemprop='author'], [rel='author'], [class*='author' i]"
+
+  // 一个卡片里可能有多个 author 语义节点（头像图标容器、作者链接、其它装饰），
+  // 只看第一个会把空图标当成作者，所以要按顺序遍历到第一个真正有文本的节点。
+  const candidates: any[] = []
+  const seen = new Set<any>()
+  const push = (candidate: any): void => {
+    if (!candidate || seen.has(candidate)) return
+    seen.add(candidate)
+    candidates.push(candidate)
+  }
+  push(node.querySelector?.(explicitSelector))
+  for (const candidate of Array.from(node.querySelectorAll?.(explicitSelector) || [])) {
+    push(candidate)
+  }
+
+  for (const candidate of candidates) {
+    // SVG 图标和脚本样式永远不是作者名。
+    const tag = String(candidate.tagName || '').toUpperCase()
+    if (tag === 'SVG' || tag === 'SCRIPT' || tag === 'STYLE') continue
+    const text = (candidate.innerText || candidate.textContent || '').replace(/\s+/g, ' ').trim()
+    if (text) return text
+  }
 
   // 部分搜索卡片没有作者链接，只用“粗体作者名 + 冒号”分隔正文。
   const boldAuthor = (Array.from(node.querySelectorAll('b')) as any[]).find((candidate) => {
@@ -450,7 +475,6 @@ ${PAGE_CONTEXT_DEEP_DOM_HELPERS_SOURCE}
             }
 
             const text = readText(node);
-            const url = readUrl(node);
             const authorInfo = parseAuthorHandle(readAuthor(node));
             // 适配器提供对应方法时以它为准：站点语义比通用启发式可靠，
             // 识别不出就留 null，不与通用结果混搭（时间尤其不能回落：通用实现会从整段描述里猜日期）。
@@ -463,6 +487,18 @@ ${PAGE_CONTEXT_DEEP_DOM_HELPERS_SOURCE}
             const hasAdapterTime = Boolean(
               activeFeedAdapter && typeof activeFeedAdapter.readTime === 'function',
             );
+            const hasAdapterUrl = Boolean(
+              activeFeedAdapter && typeof activeFeedAdapter.readUrl === 'function',
+            );
+            const hasAdapterAuthorUrl = Boolean(
+              activeFeedAdapter && typeof activeFeedAdapter.readAuthorUrl === 'function',
+            );
+            const hasAdapterTrackingUrl = Boolean(
+              activeFeedAdapter && typeof activeFeedAdapter.readTrackingUrl === 'function',
+            );
+            const hasAdapterPromoted = Boolean(
+              activeFeedAdapter && typeof activeFeedAdapter.readPromoted === 'function',
+            );
             const author = hasAdapterAuthor
               ? activeFeedAdapter.readAuthor(node)
               : authorInfo.author;
@@ -470,6 +506,12 @@ ${PAGE_CONTEXT_DEEP_DOM_HELPERS_SOURCE}
               ? activeFeedAdapter.readHandle(node)
               : authorInfo.handle;
             const time = hasAdapterTime ? activeFeedAdapter.readTime(node) : readTime(node);
+            // 条目链接同样以适配器为准：广告跟踪链接不能当条目身份，
+            // 只有广告链接没有真实内容链接时 url 为 null，去重回退到作者+正文。
+            const url = hasAdapterUrl ? activeFeedAdapter.readUrl(node) : readUrl(node);
+            const authorUrl = hasAdapterAuthorUrl ? activeFeedAdapter.readAuthorUrl(node) : null;
+            const trackingUrl = hasAdapterTrackingUrl ? activeFeedAdapter.readTrackingUrl(node) : null;
+            const promoted = hasAdapterPromoted ? activeFeedAdapter.readPromoted(node) === true : false;
             const media = readFeedItemMedia(node, adapterIsAvatar);
             const timelineContext = readFeedItemTimelineContext(node);
             const repostBy = parseFeedRepostBy(timelineContext);
@@ -502,6 +544,9 @@ ${PAGE_CONTEXT_DEEP_DOM_HELPERS_SOURCE}
               timelineContext,
               repostBy,
               adapter: activeFeedAdapter ? activeFeedAdapter.id : null,
+              promoted,
+              authorUrl,
+              trackingUrl,
             });
             added += 1;
           }

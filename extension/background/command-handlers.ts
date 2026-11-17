@@ -482,6 +482,8 @@ export function createCommandHandlers({
       scope.frameSelector,
       readNumberArg(scope.args, 'timeoutMs', 10000),
       context,
+      // 调用方打算接管新标签时才愿意为"onCreated 晚到"多等一小段
+      readBooleanArg(scope.args, 'followNewTab', false),
     )
   })
   register(['dblclick'], async ({ scope, context }) => {

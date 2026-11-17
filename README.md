@@ -155,6 +155,7 @@ autobrowser workspace groups off      # 关闭展示并恢复原组
 
 - `tab list` 显示 `workspace`、`attachment` 和 `attachable`；`--response-format detailed` 还显示租约时间。
 - `tab attach <tN>` 原子复用已有页面，保留当前登录、表单和筛选状态；其他 workspace 已持有时返回 `TAB_BUSY`。`--readonly` 只允许观察命令，click/eval/run 等会被拒绝。
+- 点击打开新标签页（`target=_blank` / `window.open`）时结果会带 `newTabId` / `newTabHandle`，但默认只报告，不改当前目标；`click --follow-new-tab` 才显式接管（内部就是 `tab attach`），因此新标签的归属与租约和其它 `tab attach` 完全一致。
 - `tab detach [tN]` 解除归属但不改变页面。每个 workspace 可拥有多个 tab，并只保存自己的默认目标。
 - Workspace 没有目标时，页面命令默认原子认领一个未绑定标签页：优先当前活动页，其余按 tabId 稳定排序；遇到 `TAB_BUSY` 会尝试下一空闲页，不抢占其他 workspace。localhost 等可调试页面均可使用，结果 meta 在首次认领带 `autoAttached:true`。没有空闲页时 `open <url>` 创建并绑定新 tab，其他命令返回 `WORKSPACE_TARGET_REQUIRED`。使用全局 `--no-auto-attach` 可恢复只接受显式目标的行为；它只关闭自动认领，不等于 `--no-workspace`。独立调研/抓取不要依赖 `open` 自动认领空闲页，优先 `tab new` 或 `--no-auto-attach`，避免导航用户现有页面。
 - 标签归属默认租约 1 小时，命令执行会续约，并保存到 `chrome.storage.local` 供扩展重载后恢复。过期或异常回收只解除归属，不重置页面。
@@ -425,10 +426,12 @@ bun example/verify-cli.mjs              # 基础连接、run、表单与 eval
 bun example/verify-advanced-cli.mjs     # 网络、HAR、iframe、对话框、文件与 CDP
 bun example/verify-element-zoom.mjs     # 元素局部放大与还原
 bun example/verify-target-safety.mjs    # no-auto-attach、detach 与现场保留
+bun example/verify-new-tab.mjs          # target=_blank 新标签的报告与显式跟随
 bun example/verify-spa-extraction.mjs   # 动态 SPA、复杂 DOM 与大结果 JSON 导出
 bun example/verify-feed-context.mjs     # 数字滚动、正文媒体/头像与转帖上下文
 bun example/verify-media-download.mjs   # MSE 降级、HAR 指引、HLS 与视频校验（需 FFmpeg）
 bun example/verify-youtube-feed.mjs     # YouTube 作者、频道头像、发布时间与适配器
+bun example/verify-bilibili-feed.mjs    # B 站作者、发布时间、广告标记与作者主页
 ```
 
 ## 面向 Agent 的引用
@@ -473,6 +476,13 @@ autobrowser find text "Delete" --candidates 3
 ```
 
 策略包括 `role`、`text`、`label`、`placeholder`、`alt`、`title`、`test-id`（匹配 `data-testid`）和 `exact-name`（精确匹配 accessible name/文本，恒精确）。`--name` 默认子串匹配，`--exact`（MCP `exact:true`）才要求精确匹配。只读 `locate`/`text` 默认取 first；写操作有多个匹配且未显式 position 时返回 `AMBIGUOUS_TARGET` 与候选。先收窄条件或用 `--candidates <n>` 查看按质量排序的 Top-N 候选（仅支持 locate），再明确选择 `--position <first|last|nth=N>`（1 起算，越界报错）或确认后的 ref，避免盲目重试。
+
+`target=_blank`、`window.open` 这类点击新开标签页时，点击结果会带上 `newTabId` 与 `newTabHandle`（新标签的 `tN` 句柄），但**默认只报告，不改变当前目标**：workspace 的默认目标仍然是原来那个标签页。只有显式加 `--follow-new-tab` 才会接管——内部复用现有的 `tab attach`，结果里多出 `followedTab` 和切换到新标签之后的 `meta`。不是所有弹窗都该接管：只有确实要在新标签继续操作时才跟随，否则留在原页面，避免把正在填写的表单和登录态丢在身后。跟随失败（例如新标签已被别的 workspace 占用，返回 `TAB_BUSY`）会明确报错，不会伪装成成功；无 workspace 模式（`--no-workspace`）没有归属可挂，会退回 `tab select` 切换当前目标。`batch` 步骤里的 `followNewTab` 只是意图标记，实际接管仍在 CLI 层用 `--follow-new-tab`（或拿到 `newTabHandle` 后自己 `tab attach`）。
+
+```bash
+autobrowser click '#new-tab'                    # 只报告 newTabId / newTabHandle，当前目标不变
+autobrowser click '#new-tab' --follow-new-tab   # 显式跟随：把当前目标切到新标签
+```
 
 `search` 命令对页面可见文本做全文检索：按行匹配并返回命中行及上下文窗口，适合“抓取页面数据”而不是定位元素：
 
@@ -607,16 +617,18 @@ autobrowser collect run ./spec.json
 autobrowser collect resume ./spec.json     # 从失败页继续，按内容去重
 ```
 
-每条卡片包含 `author`、`handle`、`time`、`text`、`url`、`mediaUrls`、`avatarUrls`、`timelineContext`、`repostBy`、`adapter`：
+每条卡片包含 `author`、`handle`、`time`、`text`、`url`、`mediaUrls`、`avatarUrls`、`timelineContext`、`repostBy`、`adapter`、`promoted`、`authorUrl`、`trackingUrl`：
 
 - `mediaUrls` 只放正文图片/视频；`avatarUrls` 单独放头像（X 的 `/profile_images/` 路径与常见 avatar/profile 语义容器算头像；没有头像语义的普通站点图片仍算正文媒体）。
 - `timelineContext` 是时间线上下文（如 `Hongbo Zhang 已转帖`），没有则为 `null`；`repostBy` 是转帖人，不是转帖或识别不出时为 `null`。转帖不会改写 `author`/`handle`。
 - `adapter` 是本次生效的可选站点适配层 id（如 `youtube`），没有启用时为 `null`，此时所有字段都来自通用采集逻辑。
+- `promoted` 表示是不是广告推广条目，普通条目为 `false`；`authorUrl` 是作者主页地址；`trackingUrl` 是广告跟踪链接。站点没有对应语义时后两者为 `null`。
 
 可选站点适配层只在 host 与页面 DOM 特征都命中时才启用，不会改变通用采集行为：
 
 - X（`x.com`/`twitter.com`）：确认是推文时间线页面即可，具体字段继续走通用逻辑。
 - YouTube（`youtube.com`/`youtu.be`）：`author` 取频道名、`handle` 取指向 `/@name` 的频道链接、`time` 只从元信息行取可靠的相对时间或明确日期（取不到就是 `null`，不会从描述正文里猜日期），频道链接里的图片算头像、普通的视频缩略图仍算正文媒体。
+- B 站（`bilibili.com` 及其子域，页面存在 `.bili-video-card` 或 `.bpx-player-primary-area` 时启用）：`author` 取 `.bili-video-card__info--owner` 的第一个非空行（空头像图标不算作者），`time` 只从卡片日期区域取（取不到就是 `null`，不会从描述里猜日期），`url` 只认 BV 视频链接，`authorUrl` 是 `space.bilibili.com/<uid>`；B 站没有 handle 概念，`handle` 为 `null`，不会伪造 `@handle`。`cm.bilibili.com` 跟踪链接或明确的“广告”标记会让 `promoted` 为 `true`，跟踪链接只进 `trackingUrl`；只有广告链接没有 BV 时 `url` 为 `null`，去重回退到作者+正文，不会拿超长跟踪 URL 当身份。
 
 `collect` 的 spec 是 JSON：`{name, mode: "feed"|"network", startUrl?, output, maxPages?, feed?, network?}`。`feed` 模式用 `feed.selector/limit/dedupe/maxScrolls/pauseMs/stallRounds/nextSelector/waitTimeoutMs`；`network` 模式用 `network.urlPattern/itemsPath` 和可选的 `nextPath` 跟随真实响应游标。每完成一页就原子更新输出 JSONL 和 checkpoint，失败时按提示 `collect resume`；checkpoint 不含 cookie 或 token。该命令当前只支持 Chromium 扩展通道。
 

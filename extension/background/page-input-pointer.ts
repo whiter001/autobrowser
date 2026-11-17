@@ -1,12 +1,13 @@
 import { resolveAgentFrameSelector } from '../../src/core/agent-handles.js'
 import {
   assertFreshFrameRef,
+  getOrCreateTabHandle,
   getPageEpoch,
   resolveEffectiveFrameSelector,
   withFrameSelectorOptions,
 } from './targeting.js'
 import type { CommandExecutionContext } from './command-queue.js'
-import type { ExtensionState, FrameSelector, TabInput } from './types.js'
+import type { ExtensionState, FrameSelector, NewTabRecord, TabInput } from './types.js'
 import type { ElementActionResult, ElementBox, PageInputContext } from './page-input-context.js'
 import { createElementNotFoundError } from './page-input-helpers.js'
 import { isDeadlineExceeded } from './operation-context.js'
@@ -14,6 +15,80 @@ import type { createNavigationCommands } from './page-input-navigation.js'
 
 // 鼠标相关命令：坐标测量、点击/双击/悬停、拖拽、坐标移动与拖放数据投递。
 // 坐标测量与导航等待都来自共享的 navigation 模块，避免重复实现
+
+/** 新标签记录的时间窗：超过这个时间的记录不再参与"这次点击是否开了新标签"的判断 */
+export const NEW_TAB_WINDOW_MS = 15000
+/** 新标签记录的最大条数，避免长时间运行后无界增长 */
+export const NEW_TAB_MAX_RECORDS = 20
+/** 显式跟随时等待 onCreated 的最长时长 */
+export const NEW_TAB_FOLLOW_WAIT_MS = 1000
+/** 显式跟随时轮询新标签记录的间隔 */
+export const NEW_TAB_FOLLOW_POLL_INTERVAL_MS = 50
+
+/**
+ * 记录一个新建标签页。
+ *
+ * 只保留 id / 打开者 / 创建时间三样东西：既足够判断"这次点击是不是开了新标签"，
+ * 又不会把页面内容或 URL 之类的敏感数据留在内存里。
+ */
+export function recordCreatedTab(
+  state: ExtensionState,
+  tab: { id?: number; openerTabId?: number },
+): void {
+  if (typeof tab.id !== 'number') {
+    return
+  }
+
+  const now = Date.now()
+  pruneRecentlyCreatedTabs(state, now)
+  state.targeting.recentlyCreatedTabs.push({
+    id: tab.id,
+    openerTabId: typeof tab.openerTabId === 'number' ? tab.openerTabId : null,
+    createdAt: now,
+  })
+  // 超出上限时丢最旧的记录：FIFO 有界，内存不会随打开标签次数无限增长
+  while (state.targeting.recentlyCreatedTabs.length > NEW_TAB_MAX_RECORDS) {
+    state.targeting.recentlyCreatedTabs.shift()
+  }
+}
+
+/** 丢弃超出时间窗的旧记录 */
+export function pruneRecentlyCreatedTabs(state: ExtensionState, now = Date.now()): void {
+  const records = state.targeting.recentlyCreatedTabs
+  const cutoff = now - NEW_TAB_WINDOW_MS
+  let expired = 0
+  while (expired < records.length && (records[expired]?.createdAt ?? 0) < cutoff) {
+    expired += 1
+  }
+  if (expired > 0) {
+    records.splice(0, expired)
+  }
+}
+
+/**
+ * 找出由 sourceTabId 打开、且在 since 之后创建的新标签。
+ *
+ * 只认"打开者就是被点击的标签"的新标签：同页自己开的其它标签（用户手动新建、
+ * 页面轮询开窗）不会被算成这次点击的结果。
+ */
+export function findNewTabOpenedBy(
+  state: ExtensionState,
+  sourceTabId: number,
+  since: number,
+  now = Date.now(),
+): number | null {
+  pruneRecentlyCreatedTabs(state, now)
+  let matched: NewTabRecord | null = null
+  for (const record of state.targeting.recentlyCreatedTabs) {
+    if (record.openerTabId !== sourceTabId || record.createdAt < since) {
+      continue
+    }
+    if (!matched || record.createdAt >= matched.createdAt) {
+      matched = record
+    }
+  }
+  return matched ? matched.id : null
+}
 
 function clickDownloadEvidence(
   state: ExtensionState,
@@ -75,6 +150,7 @@ export function createPointerCommands(
     resolveFrameTarget,
     evaluateInTabContext,
     sendDebuggerCommand,
+    sleep,
   } = pageContext
   const mousePositions = new Map<number, { x: number; y: number }>()
 
@@ -251,18 +327,53 @@ export function createPointerCommands(
     return value ?? null
   }
 
+  /**
+   * 找出这次点击打开的新标签。
+   *
+   * 默认只用当前已有的记录：没命中就直接返回，不给普通点击增加等待。
+   * 显式跟随时（followNewTab）才补一段有界等待：chrome.tabs.onCreated 可能晚于
+   * 点击返回到达，错过这一拍调用方就拿不到新标签句柄，跟随也就无从谈起。
+   */
+  async function detectNewTabAfterClick(
+    sourceTabId: number,
+    since: number,
+    followNewTab: boolean,
+    context?: CommandExecutionContext,
+  ): Promise<number | null> {
+    const found = findNewTabOpenedBy(state, sourceTabId, since)
+    if (found !== null || !followNewTab) {
+      return found
+    }
+
+    const deadline = Date.now() + NEW_TAB_FOLLOW_WAIT_MS
+    while (Date.now() < deadline) {
+      context?.throwIfCancelled()
+      await sleep(NEW_TAB_FOLLOW_POLL_INTERVAL_MS)
+      context?.throwIfCancelled()
+      const late = findNewTabOpenedBy(state, sourceTabId, since)
+      if (late !== null) {
+        return late
+      }
+    }
+
+    return null
+  }
+
   async function clickSelector(
     tabId: TabInput,
     selector: string,
     frameSelector: FrameSelector,
     timeoutMs = 10000,
     context?: CommandExecutionContext,
+    followNewTab = false,
   ) {
     const { tab, resolvedSelector } = await resolveElementSelectorForTab(tabId, selector)
     const beforeEpoch = getPageEpoch(state, tab.id)
     const beforeUrl = tab.url
     const previousDownloads = new Set(state.session.downloads.map((item) => item.id))
     const previousRequests = new Set<unknown>(state.network.requests)
+    // 点击开始时间：新标签必须在它之后创建才算这次点击的产物
+    const clickStartedAt = Date.now()
 
     // CDP 优先：先 scrollIntoView 并取元素中心坐标，走 trusted 的 Input.dispatchMouseEvent；
     // 依赖 isTrusted 的页面（表单校验/统计埋点等）必须由真实输入事件触发
@@ -341,6 +452,14 @@ export function createPointerCommands(
           "The clicked link is expected to start a download, but its browser state is unknown. Use 'downloads list' or save it explicitly with 'download <url> <output-path>'; this click does not prove the file was saved.",
       }
     }
+
+    // target=_blank / window.open 打开的新标签：只报告，不动当前目标。
+    // 是否接管新标签由调用方决定（CLI 的 --follow-new-tab 才显式跟随）。
+    const newTabId = await detectNewTabAfterClick(tab.id, clickStartedAt, followNewTab, context)
+    const newTabEvidence =
+      typeof newTabId === 'number'
+        ? { newTabId, newTabHandle: getOrCreateTabHandle(state, newTabId) }
+        : {}
     if (navigated) {
       const settle = await navigation.waitForPageSettled(tab.id, {
         timeoutMs,
@@ -360,6 +479,7 @@ export function createPointerCommands(
         navigatedToUrl: currentUrl,
         settled: settle.settled,
         ...(settle.settled ? {} : { settleReason: settle.settleReason || 'page did not settle' }),
+        ...newTabEvidence,
         ...downloadEvidence,
       }
     }
@@ -367,6 +487,7 @@ export function createPointerCommands(
       found: true,
       selector,
       ...(domFallback ? { domFallback: true } : {}),
+      ...newTabEvidence,
       ...downloadEvidence,
     }
   }

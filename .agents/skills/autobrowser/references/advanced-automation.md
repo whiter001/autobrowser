@@ -2,11 +2,13 @@
 
 ## 信息流与虚拟列表采集
 
-- `feed collect [selector] --limit <n>` 自动滚动并收集卡片，输出 author、handle、time、text、url、mediaUrls、avatarUrls、timelineContext、repostBy、adapter；`stopReason` 区分 limit/maxScrolls/stalled。等待新卡片或列表稳定可分别用 `wait <selector> --state new|stable`。
+- `feed collect [selector] --limit <n>` 自动滚动并收集卡片，输出 author、handle、time、text、url、mediaUrls、avatarUrls、timelineContext、repostBy、adapter、promoted、authorUrl、trackingUrl；`stopReason` 区分 limit/maxScrolls/stalled。等待新卡片或列表稳定可分别用 `wait <selector> --state new|stable`。
 - `mediaUrls` 只含正文图片/视频，头像单独放 `avatarUrls`（X 的 `/profile_images/` 路径与常见 avatar/profile 语义容器算头像；没有头像语义的普通站点图片仍算正文媒体）。
+- `promoted` 表示是不是广告推广条目（普通条目为 `false`），`authorUrl` 是作者主页地址，`trackingUrl` 是广告跟踪链接；站点没有对应语义时后两者为 `null`。
 - `timelineContext` 是时间线上下文（如 `Hongbo Zhang 已转帖`），没有则为 `null`；`repostBy` 是转帖人，不是转帖或识别不出时为 `null`。转帖不会改写 author/handle。
 - `adapter` 是本次生效的可选站点适配层 id（如 `youtube`），没有启用时为 `null`。适配层只有在 host 与页面 DOM 特征都命中时才启用；未启用时所有字段都来自通用采集逻辑，不要因为 `adapter: null` 就认为字段缺失。
 - YouTube 语义（适配层启用时）：`author` 是频道名，`handle` 取自指向 `/@name` 的频道链接，`time` 只从视频元信息行取可靠的相对时间或明确日期（`3 个月前` / `3 months ago` / `Oct 5, 2024`），取不到就是 `null`，不会从描述正文里猜日期；频道链接（`/@`、`/channel/`、`/user/`）里的图片算头像，普通的 `/watch` 视频缩略图仍算正文媒体。X 页面继续走通用逻辑，社交上下文与转帖人识别不受影响。
+- B 站语义（适配层启用时，页面存在 `.bili-video-card` 或 `.bpx-player-primary-area`）：`author` 取 `.bili-video-card__info--owner` 的第一个非空行（作者区域里的空头像图标不算作者），`time` 只从卡片日期区域取并去掉前导 `·` 等分隔符（取不到就是 `null`，不会从描述里猜日期），`url` 只认 BV 视频链接，`authorUrl` 是 `space.bilibili.com/<uid>`；B 站没有 handle 概念，`handle` 为 `null`，不要伪造 `@handle`。`cm.bilibili.com` 跟踪链接或明确的“广告”标记会让 `promoted` 为 `true`，跟踪链接只进 `trackingUrl`；只有广告链接没有 BV 时 `url` 为 `null`，`dedupe=url` 会回退到作者+正文，不会拿超长跟踪 URL 当身份。
 - 默认 `dedupe=url` 优先按链接去重，无链接卡片自动回退到 author/handle/text，避免虚拟列表重复交付；需要强制正文去重或允许重复时显式选 text/none。
 - 采集期间不要导航或刷新。page epoch 变化会返回 `STALE_FEED_STATE` 并丢弃旧结果，应在当前页面重新采集，不要把旧卡片与新页面拼接。
 - 长任务用 `collect run <spec.json>` 将 feed 或 network-first 流程一次执行并输出 JSONL。network spec 需要 `urlPattern/itemsPath`，可选 `nextPath` 跟随真实响应游标；没有匹配数据返回 `NETWORK_DATA_NOT_FOUND`，先检查请求链，不要伪造 DOM 结果。

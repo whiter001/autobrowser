@@ -25,6 +25,7 @@ import { createNetworkDomain } from './background/network.js'
 import { createInitScriptDomain } from './background/init-scripts.js'
 import { createPageEvaluation } from './background/page-evaluation.js'
 import { createPageInputDomain } from './background/page-input.js'
+import { recordCreatedTab } from './background/page-input-pointer.js'
 import { createPageObserveDomain } from './background/page-observe.js'
 import { createPlaywrightCdpBridge } from './background/playwright-cdp.js'
 import { createSessionDomain } from './background/session.js'
@@ -332,3 +333,9 @@ async function resolveElementSelectorForTab(
 connection.registerChromeListeners()
 downloads.registerChromeListeners()
 connection.initialize()
+
+// 新标签记录：target=_blank / window.open 打开的标签会带上 openerTabId，
+// 点击后据此判断"这次点击是不是开了新标签"。记录是有界的，不会无限增长。
+chrome.tabs.onCreated.addListener((tab) => {
+  recordCreatedTab(state, tab)
+})

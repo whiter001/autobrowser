@@ -21,6 +21,14 @@ export interface FeedSiteAdapter {
   readHandle?(node: any): string | null
   /** 站点专属发布时间；提供时以它为准（通用逻辑会从整段描述里猜日期）。 */
   readTime?(node: any): string | null
+  /** 站点专属条目链接；提供时以它为准（广告跟踪链接不能当条目身份）。 */
+  readUrl?(node: any): string | null
+  /** 作者主页地址；没有作者主页语义时返回 null。 */
+  readAuthorUrl?(node: any): string | null
+  /** 广告跟踪链接；与条目链接分开上报。 */
+  readTrackingUrl?(node: any): string | null
+  /** 是否是广告推广条目。 */
+  readPromoted?(node: any): boolean
   /** 站点专属头像判定；与通用 isFeedAvatarImage 取并集。 */
   isAvatar?(image: any): boolean
 }
@@ -139,6 +147,184 @@ export function isYouTubeAvatarImage(image: any): boolean {
 }
 
 /**
+ * B 站作者名：取 .bili-video-card__info--owner 里的第一个非空行。
+ *
+ * owner 容器里常挂着头像 SVG、昵称和分隔符，按行取第一个有文本的行；
+ * 整块都空就返回 null，不从标题或描述里猜作者。
+ */
+export function readBilibiliAuthor(node: any): string | null {
+  const owner = node?.querySelector?.('.bili-video-card__info--owner')
+  if (!owner) return null
+
+  const normalize = (value: unknown) =>
+    String(value ?? '')
+      .replace(/\s+/g, ' ')
+      .trim()
+  const stripSeparator = (value: string) => value.replace(/^[\s·•|,，\-–—]+/, '').trim()
+
+  const raw =
+    owner.innerText !== undefined && owner.innerText !== null
+      ? String(owner.innerText)
+      : String(owner.textContent ?? '')
+  for (const line of raw.split('\n')) {
+    const rawLine = normalize(line)
+    // owner 中日期行以 · 开头，不能把日期当作作者。
+    if (/^[·•|]/.test(rawLine)) continue
+    const text = stripSeparator(rawLine)
+    if (text) return text
+  }
+  return null
+}
+
+/**
+ * B 站发布时间：只从卡片自己的日期区域读取，并去掉前导的 "·" 等分隔符。
+ *
+ * 识别不出就返回 null，绝不从标题或描述里猜日期。
+ */
+export function readBilibiliTime(node: any): string | null {
+  const normalize = (value: unknown) =>
+    String(value ?? '')
+      .replace(/\s+/g, ' ')
+      .trim()
+  const stripSeparator = (value: string) => value.replace(/^[\s·•|,，\-–—]+/, '').trim()
+
+  const pattern =
+    /\d{4}\s*[-/]\s*\d{1,2}\s*[-/]\s*\d{1,2}|\d{4}\s*年\s*\d{1,2}\s*月\s*\d{1,2}\s*日|\d{1,2}\s*月\s*\d{1,2}\s*日|\b\d{1,2}-\d{1,2}\b|\d{1,2}\s*个?月前|\d{1,2}\s*天前|\d{1,2}\s*小时前|\d{1,2}\s*分钟前|\d{1,2}\s*秒前|刚刚/
+
+  const dateNode = node?.querySelector?.('.bili-video-card__info--date')
+  const owner = node?.querySelector?.('.bili-video-card__info--owner')
+  const scopes = [dateNode, owner].filter(Boolean)
+  for (const scope of scopes) {
+    const raw =
+      scope.innerText !== undefined && scope.innerText !== null
+        ? String(scope.innerText)
+        : String(scope.textContent ?? '')
+    for (const line of raw.split('\n')) {
+      const rawLine = normalize(line)
+      // owner 同时含昵称时，只接受带日期分隔符的行，避免把“刚刚”等昵称当时间。
+      if (scope === owner && !/^[·•|]/.test(rawLine)) continue
+      const cleaned = stripSeparator(rawLine)
+      if (!cleaned) continue
+      const match = cleaned.match(pattern)
+      if (match) return match[0].trim()
+    }
+  }
+  return null
+}
+
+/**
+ * B 站条目链接：只认 BV 视频链接，规范成 https://www.bilibili.com/video/<BV>。
+ *
+ * 只有广告跟踪链接时返回 null，让去重回退到作者+正文，
+ * 不能把超长跟踪参数当成条目身份。
+ */
+export function readBilibiliUrl(node: any): string | null {
+  const links = Array.from(node?.querySelectorAll?.('a[href]') || []) as any[]
+  for (const link of links) {
+    const href = String(link?.getAttribute?.('href') ?? link?.href ?? '')
+    let url: URL
+    try {
+      url = new URL(href, 'https://www.bilibili.com')
+    } catch {
+      continue
+    }
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') continue
+    if (url.hostname === 'cm.bilibili.com') continue
+    if (url.hostname !== 'bilibili.com' && url.hostname !== 'www.bilibili.com') continue
+    const match = url.pathname.match(/^\/video\/(BV[0-9A-Za-z]+)/)
+    if (match) return `https://www.bilibili.com/video/${match[1]}`
+  }
+  return null
+}
+
+/**
+ * B 站作者主页：space.bilibili.com/<uid>。
+ *
+ * 先在作者区域里找，找不到再看整张卡片；只取数字 uid，不猜作者昵称当主页。
+ */
+export function readBilibiliAuthorUrl(node: any): string | null {
+  const scopes = [node?.querySelector?.('.bili-video-card__info--owner'), node]
+  for (const scope of scopes) {
+    if (!scope) continue
+    const links = Array.from(scope.querySelectorAll?.('a[href]') || []) as any[]
+    for (const link of links) {
+      const href = String(link?.getAttribute?.('href') ?? link?.href ?? '')
+      let url: URL
+      try {
+        url = new URL(href, 'https://www.bilibili.com')
+      } catch {
+        continue
+      }
+      if (url.protocol !== 'http:' && url.protocol !== 'https:') continue
+      if (url.hostname !== 'space.bilibili.com') continue
+      const match = url.pathname.match(/^\/(\d+)(?:\/|$)/)
+      if (match) return `https://space.bilibili.com/${match[1]}`
+    }
+  }
+  return null
+}
+
+/**
+ * B 站广告跟踪链接：cm.bilibili.com 的跳转地址。
+ *
+ * 它只进 trackingUrl，不作为条目链接。
+ */
+export function readBilibiliTrackingUrl(node: any): string | null {
+  const links = Array.from(node?.querySelectorAll?.('a[href]') || []) as any[]
+  for (const link of links) {
+    const href = String(link?.getAttribute?.('href') ?? link?.href ?? '')
+    let url: URL
+    try {
+      url = new URL(href, 'https://www.bilibili.com')
+    } catch {
+      continue
+    }
+    if (
+      (url.protocol === 'http:' || url.protocol === 'https:') &&
+      url.hostname === 'cm.bilibili.com'
+    )
+      return url.href
+  }
+  return null
+}
+
+/**
+ * B 站广告判定：cm.bilibili.com 跟踪链接或明确的"广告"标记。
+ *
+ * 描述正文里出现"广告"两个字不算，必须是独立标记或广告域名。
+ */
+export function readBilibiliPromoted(node: any): boolean {
+  const links = Array.from(node?.querySelectorAll?.('a[href]') || []) as any[]
+  for (const link of links) {
+    const href = String(link?.getAttribute?.('href') ?? link?.href ?? '')
+    try {
+      const url = new URL(href, 'https://www.bilibili.com')
+      if (
+        (url.protocol === 'http:' || url.protocol === 'https:') &&
+        url.hostname === 'cm.bilibili.com'
+      )
+        return true
+    } catch {
+      // 非法 URL 不参与广告判断。
+    }
+  }
+
+  const elements = Array.from(node?.querySelectorAll?.('*') || []) as any[]
+  for (const element of elements) {
+    const className = String(element?.getAttribute?.('class') || '')
+    const text = String(element?.textContent ?? '')
+      .replace(/\s+/g, ' ')
+      .trim()
+    const isMarkerText = text === '广告' || text === 'AD' || text === 'Ads'
+    const isMarkerClass = /(?:^|[-_ ])(?:ad|ads|advert|advertisement|promoted)(?:[-_ ]|$)/i.test(
+      className,
+    )
+    if (isMarkerText && isMarkerClass) return true
+  }
+  return false
+}
+
+/**
  * X（Twitter）：DOM 特征用于确认确实是推文时间线页面；具体字段继续走通用逻辑。
  */
 export const xFeedAdapter: FeedSiteAdapter = {
@@ -164,13 +350,35 @@ export const youtubeFeedAdapter: FeedSiteAdapter = {
   isAvatar: isYouTubeAvatarImage,
 }
 
-const FEED_ADAPTERS: FeedSiteAdapter[] = [xFeedAdapter, youtubeFeedAdapter]
+/**
+ * B 站：DOM 特征用于确认是推荐流/播放页；作者、时间、链接与广告语义走站点专用逻辑。
+ */
+export const bilibiliFeedAdapter: FeedSiteAdapter = {
+  id: 'bilibili',
+  hosts: ['bilibili.com'],
+  matches: (document: any) =>
+    Boolean(document?.querySelector?.('.bili-video-card, .bpx-player-primary-area')),
+  readAuthor: readBilibiliAuthor,
+  // B 站没有 handle 概念，明确置 null，不让通用逻辑从昵称里伪造 @handle。
+  readHandle: () => null,
+  readTime: readBilibiliTime,
+  readUrl: readBilibiliUrl,
+  readAuthorUrl: readBilibiliAuthorUrl,
+  readTrackingUrl: readBilibiliTrackingUrl,
+  readPromoted: readBilibiliPromoted,
+}
+
+const FEED_ADAPTERS: FeedSiteAdapter[] = [xFeedAdapter, youtubeFeedAdapter, bilibiliFeedAdapter]
 
 const FEED_ADAPTER_METHODS = [
   'matches',
   'readAuthor',
   'readHandle',
   'readTime',
+  'readUrl',
+  'readAuthorUrl',
+  'readTrackingUrl',
+  'readPromoted',
   'isAvatar',
 ] as const
 

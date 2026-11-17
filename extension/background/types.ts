@@ -173,6 +173,14 @@ interface ConnectionState {
   fileUploadSupported: boolean
 }
 
+/** 最近创建的标签页记录：用于识别 target=_blank / window.open 产生的新标签 */
+export interface NewTabRecord {
+  id: number
+  /** 打开者标签页 id；Chrome 未提供 openerTabId 时为 null */
+  openerTabId: number | null
+  createdAt: number
+}
+
 /** Tab/Frame 路由与调试器附加状态 */
 interface TargetingState {
   attachedTabs: Set<number>
@@ -181,6 +189,8 @@ interface TargetingState {
   tabHandles: Map<number, string>
   tabIdsByHandle: Map<string, number>
   pageEpochs: Map<number, number>
+  /** 有界的新标签记录（FIFO + 时间窗），供点击后判断是否开了新标签页 */
+  recentlyCreatedTabs: NewTabRecord[]
 }
 
 /** 单 tab 生效中的仿真覆盖摘要：只记"设置了哪些"，不存完整值（headers 记键名列表） */

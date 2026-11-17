@@ -63,11 +63,53 @@ describe('feed generic field extraction', () => {
     }
     const bold = {
       querySelector: () => null,
-      querySelectorAll: () => [{ innerText: 'Next蔡蔡', nextSibling: { textContent: '：正文' } }],
+      querySelectorAll: (selector: string) =>
+        selector === 'b' ? [{ innerText: 'Next蔡蔡', nextSibling: { textContent: '：正文' } }] : [],
     }
 
     expect(readFeedItemAuthor(semantic)).toBe('codigger')
     expect(readFeedItemAuthor(bold)).toBe('Next蔡蔡')
+  })
+
+  test('skips empty author icons and keeps the first author candidate with text', () => {
+    // B 站卡片里第一个 author 语义节点是空的头像 SVG，作者名在后面的 owner 节点上。
+    const emptyIcon = { tagName: 'svg', innerText: '', textContent: '' }
+    const owner = { tagName: 'a', innerText: '老番茄', textContent: '老番茄' }
+    const node = {
+      querySelector: (selector: string) => (selector.includes('author') ? emptyIcon : null),
+      querySelectorAll: (selector: string) =>
+        selector.includes('author') ? [emptyIcon, owner] : [],
+    }
+
+    expect(readFeedItemAuthor(node)).toBe('老番茄')
+  })
+
+  test('skips script and style candidates before reading the author text', () => {
+    const script = { tagName: 'SCRIPT', innerText: '', textContent: 'console.log(1)' }
+    const style = { tagName: 'STYLE', innerText: '', textContent: '.a{color:red}' }
+    const owner = { tagName: 'span', innerText: '某某UP主', textContent: '某某UP主' }
+    const node = {
+      querySelector: () => script,
+      querySelectorAll: (selector: string) =>
+        selector.includes('author') ? [script, style, owner] : [],
+    }
+
+    expect(readFeedItemAuthor(node)).toBe('某某UP主')
+  })
+
+  test('falls back to the bold author when every explicit candidate is empty', () => {
+    const emptyIcon = { tagName: 'svg', innerText: '', textContent: '' }
+    const node = {
+      querySelector: () => emptyIcon,
+      querySelectorAll: (selector: string) =>
+        selector.includes('author')
+          ? [emptyIcon]
+          : selector === 'b'
+            ? [{ innerText: 'Next蔡蔡', nextSibling: { textContent: '：正文' } }]
+            : [],
+    }
+
+    expect(readFeedItemAuthor(node)).toBe('Next蔡蔡')
   })
 
   test('reads full and short dates from card text when no time element exists', () => {

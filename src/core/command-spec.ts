@@ -537,6 +537,9 @@ function validateCommandArgsShape(command: string, args: unknown): void {
       readStringField(normalizedArgs, 'selector', command)
       if (command === 'click') {
         readOptionalNonNegativeNumberField(normalizedArgs, 'timeoutMs', command)
+        // 显式跟随新标签的意图标记：扩展侧只负责识别并报告新标签，
+        // 真正接管由 CLI 的 --follow-new-tab 完成（复用 tab attach）。
+        readBooleanField(normalizedArgs, 'followNewTab', command)
       }
       return
     case 'scroll':
