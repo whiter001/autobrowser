@@ -244,6 +244,7 @@ export function createTabsCommandHandler({
       }
       case 'command': {
         if (action === 'list' || action === 'status') {
+          await commandQueue.ready()
           const commandId = readOptionalStringArg(args, 'commandId')
           const commands = commandQueue.list()
           const filtered = commandId ? commands.filter((entry) => entry.id === commandId) : commands

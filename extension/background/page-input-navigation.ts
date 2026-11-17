@@ -4,8 +4,15 @@ import { isDeadlineExceeded, withHardDeadline } from './operation-context.js'
 import type { TabInput } from './types.js'
 import type { PageInputContext } from './page-input-context.js'
 
-// 导航类命令（goto/open/back/forward/reload）等待"导航发生 + 页面稳定"的默认总预算
-const DEFAULT_NAVIGATION_WAIT_TIMEOUT_MS = 10000
+// 导航类命令（goto/open/back/forward/reload）的等待分两段，各自独立计时：
+//   commit —— 等导航真正发生（pageEpoch 递增）
+//   settle —— 等新文档 readyState 达标 / 页面稳定
+// 两段不能共用一个倒计时：commit 用满自己的预算时页面往往已经 readyState=complete，
+// 若用"总预算 - 已耗时"去 clamp settle，就会立刻得到 0，把成功的刷新报成
+// settleReason: 'timeout after 0ms'。默认各 10s，加上分发上界 5s 与探测余量 4s，
+// 最坏仍落在 relay 默认 30s 请求预算之内。
+const DEFAULT_NAVIGATION_COMMIT_TIMEOUT_MS = 10000
+const DEFAULT_NAVIGATION_SETTLE_TIMEOUT_MS = 10000
 // 导航指令本身（Page.reload / Page.navigate / navigateToHistoryEntry）的回执上界。
 // 导航会销毁旧 renderer，chrome.debugger 的回调在目标上下文消失后可能永远不触发；
 // 不设上界时扩展侧会一直挂着，relay 只能报 COMMAND_TIMEOUT，页面"其实已刷新"的事实被丢掉。
@@ -13,13 +20,31 @@ const NAVIGATION_DISPATCH_TIMEOUT_MS = 5000
 // document.readyState 探测本身有 2s 的 CDP timeout，但它同样无法中断已经挂起的等待，
 // 因此再加一档硬上界，让探测失败退化成"继续轮询"而不是整条命令卡死。
 const READY_STATE_PROBE_HARD_TIMEOUT_MS = 3000
-// 页内 MutationObserver 探测按剩余预算自兜底，这里只给 CDP 回执留一点额外余量
-const SETTLE_PROBE_ALLOWANCE_MS = 6000
+// 页内 MutationObserver 探测按剩余预算自兜底，这里只给 CDP 回执留一点额外余量。
+// 取 4s 而不是更大值，是为了让"分发 5s + commit 10s + settle 10s + 余量 4s < 30s"。
+const SETTLE_PROBE_ALLOWANCE_MS = 4000
 
 interface WaitForPageSettledOptions {
   timeoutMs?: number
   waitUntil?: string
   domQuietMs?: number
+}
+
+/**
+ * 计算导航的两段预算，二者互不扣减：commit 用掉多少时间都不影响 settle 拿到的额度。
+ * - commitTimeoutMs：显式 timeoutMs 优先，否则默认 10s；同时作为分发回执等待的上界
+ * - settleTimeoutMs：显式 settleTimeoutMs 优先，其次沿用显式 timeoutMs（兼容只给一个
+ *   预算的调用方），最后才是 settle 自己的默认 10s
+ */
+function resolveNavigationBudgets(options: { timeoutMs?: number; settleTimeoutMs?: number }): {
+  commitTimeoutMs: number
+  settleTimeoutMs: number
+} {
+  return {
+    commitTimeoutMs: options.timeoutMs ?? DEFAULT_NAVIGATION_COMMIT_TIMEOUT_MS,
+    settleTimeoutMs:
+      options.settleTimeoutMs ?? options.timeoutMs ?? DEFAULT_NAVIGATION_SETTLE_TIMEOUT_MS,
+  }
 }
 
 // 页面内 MutationObserver 表达式：documentElement 连续 100ms 无变更即 settled。
@@ -76,7 +101,7 @@ export function createNavigationCommands(pageContext: PageInputContext) {
     tabId: number,
     options: WaitForPageSettledOptions & { commandContext?: CommandExecutionContext } = {},
   ): Promise<{ settled: boolean; settleReason?: string; settledInMs?: number }> {
-    const timeoutMs = options.timeoutMs ?? 10000
+    const timeoutMs = options.timeoutMs ?? DEFAULT_NAVIGATION_SETTLE_TIMEOUT_MS
     const waitUntil = options.waitUntil || 'domquiet'
     const domQuietMs = options.domQuietMs ?? 100
     const startedAt = Date.now()
@@ -215,8 +240,16 @@ export function createNavigationCommands(pageContext: PageInputContext) {
   // 导航 commit 由 connection.ts 监听 Page.frameNavigated / navigatedWithinDocument 推进 epoch，
   // 而 Page 域事件必须显式 enable。此前只有 goto/open 会打开 Page 域，reload/back/forward
   // 落在没跑过 goto 的 tab 上就永远等不到 commit，刷新成功也会被报成 partial。
-  async function enablePageEvents(tabId: number): Promise<void> {
-    await sendDebuggerCommand(tabId, 'Page.enable', {})
+  async function enablePageEvents(
+    tabId: number,
+    budgetMs = NAVIGATION_DISPATCH_TIMEOUT_MS,
+  ): Promise<void> {
+    const timeoutMs = Math.min(NAVIGATION_DISPATCH_TIMEOUT_MS, Math.max(1, budgetMs))
+    await withHardDeadline(
+      sendDebuggerCommand(tabId, 'Page.enable', {}, undefined, timeoutMs),
+      timeoutMs,
+      'Page.enable',
+    )
   }
 
   // 返回 true 表示"指令已发出但没有拿到 CDP 回执"：此时导航通常已经发生，
@@ -229,7 +262,13 @@ export function createNavigationCommands(pageContext: PageInputContext) {
   ): Promise<boolean> {
     try {
       await withHardDeadline(
-        sendDebuggerCommand(tabId, method, params),
+        sendDebuggerCommand(
+          tabId,
+          method,
+          params,
+          undefined,
+          Math.min(NAVIGATION_DISPATCH_TIMEOUT_MS, Math.max(1, budgetMs)),
+        ),
         Math.min(NAVIGATION_DISPATCH_TIMEOUT_MS, Math.max(1, budgetMs)),
         method,
       )
@@ -253,7 +292,7 @@ export function createNavigationCommands(pageContext: PageInputContext) {
     fallback?: () => Promise<void>,
   ): Promise<{ dispatchTimedOut: boolean; usedTabsApi: boolean }> {
     try {
-      await enablePageEvents(tabId)
+      await enablePageEvents(tabId, budgetMs)
       const dispatchTimedOut = await dispatchNavigation(tabId, method, params, budgetMs)
       return { dispatchTimedOut, usedTabsApi: false }
     } catch (error) {
@@ -315,13 +354,14 @@ export function createNavigationCommands(pageContext: PageInputContext) {
     // 基线必须在 invalidatePageRefs（已让 epoch +1）之后取：
     // 导航 commit 时 connection.ts 再 +1，轮询 epoch !== 基线即代表导航真正发生
     const baselineEpoch = getPageEpoch(state, tab.id)
-    // 分发上界不能超过命令自身预算，否则短预算的调用会被分发阶段吃掉
-    const timeoutMs = options.timeoutMs ?? DEFAULT_NAVIGATION_WAIT_TIMEOUT_MS
+    // commit / settle 各拿一份独立预算：分发也用 commit 预算封顶，
+    // 短预算的调用不会被分发阶段整段吃掉
+    const { commitTimeoutMs, settleTimeoutMs } = resolveNavigationBudgets(options)
     const dispatch = await dispatchWithTabsApiFallback(
       tab.id,
       'Page.navigate',
       { url },
-      timeoutMs,
+      commitTimeoutMs,
       updateTab
         ? async () => {
             await updateTab(tab.id, url)
@@ -346,11 +386,10 @@ export function createNavigationCommands(pageContext: PageInputContext) {
       }
     }
 
-    const startedAt = Date.now()
     // 先等导航 commit 再判稳定，避免旧 document 存活期间把旧页误判成新页面已加载
     const commit = dispatch.usedTabsApi
-      ? await waitForTabsApiCommit(tab.id, timeoutMs, url, tab.url)
-      : await waitForNavigationCommit(tab.id, baselineEpoch, timeoutMs)
+      ? await waitForTabsApiCommit(tab.id, commitTimeoutMs, url, tab.url)
+      : await waitForNavigationCommit(tab.id, baselineEpoch, commitTimeoutMs)
     if (!commit) {
       const observed = await getTargetTab(tab.id).catch(() => null)
       return {
@@ -394,11 +433,10 @@ export function createNavigationCommands(pageContext: PageInputContext) {
         settled: true,
       }
     }
+    // 已提交的导航必须真正做一次 readyState/settle 探测：settle 拿自己的完整预算，
+    // 不因 commit 用掉多少时间而被削减
     const settle = await waitForPageSettled(tab.id, {
-      timeoutMs: Math.min(
-        options.settleTimeoutMs ?? timeoutMs,
-        Math.max(0, timeoutMs - (Date.now() - startedAt)),
-      ),
+      timeoutMs: settleTimeoutMs,
       waitUntil,
       domQuietMs: options.domQuietMs,
     })
@@ -439,12 +477,11 @@ export function createNavigationCommands(pageContext: PageInputContext) {
         const dispatchTimedOut = await dispatchNavigation(tab.id, 'Page.navigateToHistoryEntry', {
           entryId: targetEntry.id,
         })
-        const startedAt = Date.now()
         // 与 navigateTo 同理：先等导航 commit（epoch 变化）再判稳定，避免旧文档误判
         const commit = await waitForNavigationCommit(
           tab.id,
           baselineEpoch,
-          DEFAULT_NAVIGATION_WAIT_TIMEOUT_MS,
+          DEFAULT_NAVIGATION_COMMIT_TIMEOUT_MS,
         )
         if (!commit) {
           return {
@@ -455,8 +492,9 @@ export function createNavigationCommands(pageContext: PageInputContext) {
             settleReason: 'navigation never committed',
           }
         }
+        // settle 用独立预算，不做"总预算 - commit 已耗时"的扣减，避免已提交导航拿到 0ms
         const settle = await waitForPageSettled(tab.id, {
-          timeoutMs: Math.max(0, DEFAULT_NAVIGATION_WAIT_TIMEOUT_MS - (Date.now() - startedAt)),
+          timeoutMs: DEFAULT_NAVIGATION_SETTLE_TIMEOUT_MS,
         })
         return {
           navigated: true,
@@ -489,12 +527,11 @@ export function createNavigationCommands(pageContext: PageInputContext) {
         const dispatchTimedOut = await dispatchNavigation(tab.id, 'Page.navigateToHistoryEntry', {
           entryId: targetEntry.id,
         })
-        const startedAt = Date.now()
         // 与 navigateTo 同理：先等导航 commit（epoch 变化）再判稳定，避免旧文档误判
         const commit = await waitForNavigationCommit(
           tab.id,
           baselineEpoch,
-          DEFAULT_NAVIGATION_WAIT_TIMEOUT_MS,
+          DEFAULT_NAVIGATION_COMMIT_TIMEOUT_MS,
         )
         if (!commit) {
           return {
@@ -505,8 +542,9 @@ export function createNavigationCommands(pageContext: PageInputContext) {
             settleReason: 'navigation never committed',
           }
         }
+        // settle 用独立预算，不做"总预算 - commit 已耗时"的扣减，避免已提交导航拿到 0ms
         const settle = await waitForPageSettled(tab.id, {
-          timeoutMs: Math.max(0, DEFAULT_NAVIGATION_WAIT_TIMEOUT_MS - (Date.now() - startedAt)),
+          timeoutMs: DEFAULT_NAVIGATION_SETTLE_TIMEOUT_MS,
         })
         return {
           navigated: true,
@@ -527,19 +565,18 @@ export function createNavigationCommands(pageContext: PageInputContext) {
     const tab = await getTargetTab(tabId)
     invalidatePageRefs(state, tab.id)
     const baselineEpoch = getPageEpoch(state, tab.id)
-    const timeoutMs = options.timeoutMs ?? DEFAULT_NAVIGATION_WAIT_TIMEOUT_MS
+    const { commitTimeoutMs, settleTimeoutMs } = resolveNavigationBudgets(options)
     const dispatch = await dispatchWithTabsApiFallback(
       tab.id,
       'Page.reload',
       {},
-      timeoutMs,
+      commitTimeoutMs,
       reloadTab ? async () => await reloadTab(tab.id) : undefined,
     )
     const dispatchNote = {
       ...(dispatch.dispatchTimedOut ? { dispatchTimedOut: true } : {}),
       ...(dispatch.usedTabsApi ? { dispatchChannel: 'tabs' } : {}),
     }
-    const startedAt = Date.now()
     // 与 navigateTo 同理：先等导航 commit（epoch 变化）再判稳定，避免旧文档误判
     const waitUntil = options.waitUntil || 'domquiet'
     if (waitUntil === 'none') {
@@ -551,8 +588,8 @@ export function createNavigationCommands(pageContext: PageInputContext) {
       }
     }
     const commit = dispatch.usedTabsApi
-      ? await waitForTabsApiCommit(tab.id, timeoutMs)
-      : await waitForNavigationCommit(tab.id, baselineEpoch, timeoutMs)
+      ? await waitForTabsApiCommit(tab.id, commitTimeoutMs)
+      : await waitForNavigationCommit(tab.id, baselineEpoch, commitTimeoutMs)
     // 所有分支都回显实际观测到的 URL / epoch：调用方才能回答"刷新到底发生了没有"，
     // 而不是在 partial 之后盲目重发 reload。committed 把"没提交"和"提交了但没稳定"分开。
     const observed = await getTargetTab(tab.id).catch(() => null)
@@ -585,8 +622,10 @@ export function createNavigationCommands(pageContext: PageInputContext) {
         settled: true,
       }
     }
+    // 已提交的刷新必须获得真实的 readyState/settle 探测机会：
+    // settle 用自己的预算，而不是 "timeoutMs - commit 已耗时"（后者可能正好是 0）
     const settle = await waitForPageSettled(tab.id, {
-      timeoutMs: Math.max(0, timeoutMs - (Date.now() - startedAt)),
+      timeoutMs: settleTimeoutMs,
       waitUntil,
     })
     return {

@@ -161,6 +161,72 @@ describe('workspace CLI context', () => {
     expect(result.fetchCalls).toHaveLength(0)
     expect(result.stdout).toContain('invalid workspace id')
   })
+
+  test('help and version paths skip automatic identity resolution', async () => {
+    let resolveCalls = 0
+    const resolveWorkspace = async (): Promise<string> => {
+      resolveCalls += 1
+      return `ws_${'a'.repeat(32)}`
+    }
+
+    // 覆盖根 help、version 速记、命令名 help 与各命令的 --help 旗标
+    for (const argv of [
+      [],
+      ['version'],
+      ['--version'],
+      ['help'],
+      ['--help'],
+      ['snapshot', '--help'],
+      ['workspace', '--help'],
+    ]) {
+      const invocation = await withWorkspaceEnv(undefined, () =>
+        resolveInvocation(argv, { resolveAutomaticWorkspaceId: resolveWorkspace }),
+      )
+
+      expect(invocation.flags.workspace).toBeNull()
+    }
+    expect(resolveCalls).toBe(0)
+
+    // 普通命令的默认 auto 仍然解析身份
+    const page = await withWorkspaceEnv(undefined, () =>
+      resolveInvocation(['snapshot'], { resolveAutomaticWorkspaceId: resolveWorkspace }),
+    )
+    expect(resolveCalls).toBe(1)
+    expect(page.flags.workspace).toBe(`ws_${'a'.repeat(32)}`)
+  })
+
+  test('keeps explicit workspace validation on help and version paths', async () => {
+    let resolveCalls = 0
+    const resolveWorkspace = async (): Promise<string> => {
+      resolveCalls += 1
+      return `ws_${'a'.repeat(32)}`
+    }
+
+    await expect(
+      withWorkspaceEnv(undefined, () =>
+        resolveInvocation(['--no-workspace', '--workspace', 'ai-a', 'version']),
+      ),
+    ).rejects.toThrow('cannot be combined')
+
+    await expect(
+      withWorkspaceEnv(undefined, () => resolveInvocation(['--workspace', 'not valid', 'help'])),
+    ).rejects.toThrow('invalid workspace id')
+
+    await expect(
+      withWorkspaceEnv(undefined, () =>
+        resolveInvocation(['--engine', 'firefox', '--workspace', 'ai-a', 'version']),
+      ),
+    ).rejects.toThrow('only supported by the Chromium extension')
+
+    // 显式 workspace 不走自动解析，但仍要完成规范化
+    const explicit = await withWorkspaceEnv(undefined, () =>
+      resolveInvocation(['--workspace', 'ai-a', 'version'], {
+        resolveAutomaticWorkspaceId: resolveWorkspace,
+      }),
+    )
+    expect(explicit.flags.workspace).toBe('ai-a')
+    expect(resolveCalls).toBe(0)
+  })
 })
 
 describe('workspace groups CLI', () => {

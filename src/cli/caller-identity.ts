@@ -46,7 +46,7 @@ export interface ResolveWorkspaceIdOptions {
   getEnv?: () => NodeJS.ProcessEnv
   /** 覆盖 AUTOBROWSER_CALLER_ID 注入，便于测试 */
   callerId?: string
-  /** 单次查询与整体兜底超时（毫秒），默认 5 秒；Windows 需覆盖 PowerShell 启动成本 */
+  /** 单次查询与整体兜底超时（毫秒）；默认按平台取 defaultIdentityTimeoutMs() */
   timeoutMs?: number
 }
 
@@ -60,12 +60,28 @@ const SHELL_NAMES = new Set([
   'tcsh',
   'csh',
   'elvish',
+  // env 只是每次调用临时经过的包装器，不能比后面的真实宿主优先成为身份
+  'env',
   'cmd',
   'powershell',
   'pwsh',
 ])
 
 const NODE_NAMES = new Set(['node', 'bun'])
+
+// 原生启动器把真正的 bun 进程当作子进程，自身在每次调用中都是新进程。
+// 命名来自 scripts/launcher-go 与 scripts/link-bun：installed 名是 autobrowser(.exe)，
+// 发布产物是 autobrowser-<os>-<arch>(.exe)，两种情况都必须跳过，否则身份会随调用漂移。
+const LAUNCHER_NAME_PATTERN = /^autobrowser(-[a-z0-9]+)*$/
+
+// Windows 枚举 Win32_Process 冷启动常超过 5s，默认预算需要覆盖这段固定成本。
+const POSIX_DEFAULT_TIMEOUT_MS = 5000
+const WINDOWS_DEFAULT_TIMEOUT_MS = 15_000
+
+/** 自动身份解析的默认预算；显式 options.timeoutMs 仍优先。 */
+export function defaultIdentityTimeoutMs(platform: NodeJS.Platform = process.platform): number {
+  return platform === 'win32' ? WINDOWS_DEFAULT_TIMEOUT_MS : POSIX_DEFAULT_TIMEOUT_MS
+}
 
 function normalizeName(name: string): string {
   return name
@@ -79,9 +95,13 @@ function isShellProcess(info: ProcessInfo): boolean {
 }
 
 // autobrowser 本体（含 relay 进程）由 node/bun 拉起，命令里带 autobrowser 字样；
-// 这类进程一律不算调用方，避免把 autobrowser 自己当成 workspace 主人。
+// 原生启动器则是固定名字的独立可执行文件。两类进程都不算调用方，
+// 避免把 autobrowser 自己（或每次新建的启动器）当成 workspace 主人。
 function isAutobrowserProcess(info: ProcessInfo): boolean {
   const name = normalizeName(info.name)
+  if (LAUNCHER_NAME_PATTERN.test(name)) {
+    return true
+  }
   if (!NODE_NAMES.has(name)) {
     return false
   }
@@ -265,7 +285,7 @@ async function withOverallTimeout<T>(promise: Promise<T>, timeoutMs: number): Pr
 export async function resolveAutomaticWorkspaceId(
   options: ResolveWorkspaceIdOptions = {},
 ): Promise<string> {
-  const timeoutMs = options.timeoutMs ?? 5000
+  const timeoutMs = options.timeoutMs ?? defaultIdentityTimeoutMs()
   const env = options.getEnv ? options.getEnv() : process.env
   const explicitCallerId = options.callerId ?? env.AUTOBROWSER_CALLER_ID
 

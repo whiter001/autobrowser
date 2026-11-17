@@ -1,5 +1,9 @@
 import { resolveEffectiveFrameSelector, resolveTabInput } from './targeting.js'
-import { createCommandQueue, type CommandExecutionContext } from './command-queue.js'
+import {
+  createCommandQueue,
+  type CommandExecutionContext,
+  type CommandQueueStorage,
+} from './command-queue.js'
 import { createBatchCommandHandler } from './command-batch.js'
 import { createCommandMetaBuilder } from './command-meta.js'
 import { createDiagnosticsCommandHandler } from './command-router-diagnostics.js'
@@ -95,6 +99,7 @@ interface CommandRouterDependencies {
   listTabs: () => Promise<TabSummary[]>
   getTargetTab: (tabId: TabInput) => Promise<TabWithId>
   createTab?: (url: string) => Promise<chrome.tabs.Tab | undefined>
+  commandQueueStorage?: CommandQueueStorage
   sendDebuggerCommand: <TResult = unknown>(
     tabId: number,
     method: string,
@@ -127,9 +132,10 @@ export function createCommandRouter({
   listTabs,
   getTargetTab,
   createTab,
+  commandQueueStorage,
   sendDebuggerCommand,
 }: CommandRouterDependencies) {
-  const commandQueue = createCommandQueue()
+  const commandQueue = createCommandQueue({ storage: commandQueueStorage })
   const workspaceManager = createWorkspaceManager({ state, getTargetTab, createTab, listTabs })
   const { handleBatchCommand } = createBatchCommandHandler(executeCommand)
   const { buildCommandMeta, attachCommandMeta } = createCommandMetaBuilder({ state, getTargetTab })

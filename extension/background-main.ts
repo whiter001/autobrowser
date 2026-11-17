@@ -61,6 +61,7 @@ const tabSessions = createTabSessionRegistry({
 const { sendDebuggerCommand } = createDebuggerCommandSender({
   ensureDebuggerAttached: tabSessions.ensureAttached,
   sendRawDebuggerCommand,
+  recoverDebugger: tabSessions.detachDebugger,
 })
 
 async function createManagedTab(url: string): Promise<chrome.tabs.Tab | undefined> {
@@ -206,6 +207,7 @@ const commandRouter = createCommandRouter({
   listTabs,
   getTargetTab,
   createTab: createManagedTab,
+  commandQueueStorage: { get: storageLocalGet, set: storageLocalSet },
   sendDebuggerCommand,
   tracing,
   video,

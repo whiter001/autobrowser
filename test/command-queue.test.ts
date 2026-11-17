@@ -164,4 +164,65 @@ describe('command queue', () => {
       }),
     ])
   })
+
+  test('restores terminal history and marks pre-restart work as interrupted', async () => {
+    const stored: Record<string, unknown> = {
+      'autobrowser.command-history.v1': {
+        commands: [
+          {
+            id: 'before-restart',
+            key: 'tab:1',
+            state: 'running',
+            enqueuedAt: '2026-01-01T00:00:00.000Z',
+            startedAt: '2026-01-01T00:00:00.000Z',
+            deadlineAt: null,
+            finishedAt: null,
+            error: null,
+          },
+          {
+            id: 'late-before-restart',
+            key: 'tab:1',
+            state: 'completed_late',
+            enqueuedAt: '2026-01-01T00:00:00.000Z',
+            startedAt: '2026-01-01T00:00:00.000Z',
+            deadlineAt: null,
+            finishedAt: '2026-01-01T00:00:01.000Z',
+            error: null,
+            result: { preserved: true },
+          },
+        ],
+      },
+    }
+    const storage = {
+      get: async () => stored,
+      set: async (items: Record<string, unknown>) => {
+        Object.assign(stored, items)
+      },
+    }
+    const queue = createCommandQueue({ storage })
+    await queue.ready()
+
+    expect(queue.list()).toEqual([
+      expect.objectContaining({ id: 'before-restart', state: 'interrupted' }),
+      expect.objectContaining({
+        id: 'late-before-restart',
+        state: 'completed_late',
+        result: { preserved: true },
+      }),
+    ])
+
+    await expect(queue.enqueue('tab:1', async () => 'done', { id: 'after-restart' })).resolves.toBe(
+      'done',
+    )
+    await queue.ready()
+    await flush(0)
+    const restored = createCommandQueue({ storage })
+    await restored.ready()
+    expect(restored.list()).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: 'before-restart', state: 'interrupted' }),
+        expect.objectContaining({ id: 'after-restart', state: 'completed' }),
+      ]),
+    )
+  })
 })

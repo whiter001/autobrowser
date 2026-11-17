@@ -7,7 +7,9 @@ function createNavigateHarness(
     commit?: boolean
     commitDelayMs?: number
     hangDispatch?: boolean
+    hangEnable?: boolean
     hangEvaluate?: boolean
+    tabQueryDelayMs?: number
     debuggerError?: string
     history?: { entries: Array<{ id: number }>; currentIndex: number }
   } = {},
@@ -26,7 +28,13 @@ function createNavigateHarness(
 
   const pageInput = createPageInputDomain({
     state,
-    getTargetTab: async () => ({ ...currentTab }) as never,
+    getTargetTab: async () => {
+      // 导航进行中 chrome.tabs 查询可能长时间不返回：用延迟模拟 commit 观测跨过整个 commit 预算
+      if (options.tabQueryDelayMs) {
+        await new Promise((resolve) => setTimeout(resolve, options.tabQueryDelayMs))
+      }
+      return { ...currentTab } as never
+    },
     resolveElementSelectorForTab: async () => {
       throw new Error('unused in navigate tests')
     },
@@ -59,6 +67,9 @@ function createNavigateHarness(
       }
       if (method === 'Page.getNavigationHistory') {
         return (options.history || { entries: [{ id: 1 }], currentIndex: 0 }) as never
+      }
+      if (options.hangEnable && method === 'Page.enable') {
+        return await new Promise<never>(() => {})
       }
       // 指令已发出但没有回执：导航销毁 renderer 后 CDP 回调可能永远不来
       if (options.hangDispatch && (method === 'Page.navigate' || method === 'Page.reload')) {
@@ -238,6 +249,16 @@ describe('navigation wait for commit', () => {
     expect(debuggerCalls).toEqual(['Page.enable', 'Page.reload'])
   })
 
+  test('reloadPage bounds Page.enable before entering commit and settle waits', async () => {
+    const { pageInput, debuggerCalls } = createNavigateHarness({ hangEnable: true })
+
+    await expect(pageInput.reloadPage(1, { timeoutMs: 100 })).rejects.toMatchObject({
+      code: 'CDP_DEADLINE_EXCEEDED',
+      message: expect.stringContaining('Page.enable'),
+    })
+    expect(debuggerCalls).toEqual(['Page.enable'])
+  })
+
   test('reloadPage finishes even when the reload command gets no CDP ack', async () => {
     // 现象：导航销毁 renderer 后 Page.reload 的回调可能永远不来。
     // 不能把命令挂死到 relay 超时，也不能假装它没发出去。
@@ -271,6 +292,64 @@ describe('navigation wait for commit', () => {
       settled: false,
     })
     expect(Date.now() - startedAt).toBeLessThan(5000)
+  })
+})
+
+describe('committed navigation keeps an independent settle budget', () => {
+  // 慢 tabs 查询让 commit 的观测跨过了整个 commit 预算（100ms 预算、150ms 才拿到结果）。
+  // 旧实现把 settle 预算算成 max(0, 100 - 已耗时) = 0，于是即使页面 readyState 已经是 complete，
+  // 也直接返回 settleReason: 'timeout after 0ms'，把已经成功的刷新报成 partial。
+  const slowTabQuery = {
+    debuggerError: 'Cannot access a chrome-extension:// URL of different extension',
+    tabQueryDelayMs: 150,
+  }
+
+  test('reloadPage settles when the commit is observed after the commit budget is spent', async () => {
+    const { pageInput, evaluateCalls } = createNavigateHarness(slowTabQuery)
+
+    const result = await pageInput.reloadPage(1, { timeoutMs: 100, waitUntil: 'domcontentloaded' })
+
+    expect(result).toMatchObject({
+      reloaded: true,
+      outcome: 'completed',
+      phase: 'settle',
+      committed: true,
+      settled: true,
+    })
+    // 已提交的导航必须真的探测过 readyState，而不是直接判超时
+    expect(evaluateCalls.some((call) => call.expression.includes('document.readyState'))).toBe(true)
+    expect(result).not.toHaveProperty('settleReason')
+  })
+
+  test('navigateTo settles when the commit is observed after the commit budget is spent', async () => {
+    const { pageInput, evaluateCalls } = createNavigateHarness(slowTabQuery)
+
+    const result = await pageInput.navigateTo(1, 'https://new.example.com', {
+      timeoutMs: 100,
+      waitUntil: 'domcontentloaded',
+    })
+
+    expect(result).toMatchObject({
+      outcome: 'completed',
+      phase: 'settle',
+      settled: true,
+    })
+    expect(evaluateCalls.some((call) => call.expression.includes('document.readyState'))).toBe(true)
+    expect(result).not.toHaveProperty('settleReason')
+  })
+
+  test('an explicit settleTimeoutMs bounds settle without being reduced by the commit wait', async () => {
+    // settleTimeoutMs 单独生效：commit 预算给到 5s 也不会被 settle 借用
+    const { pageInput } = createNavigateHarness()
+
+    const result = await pageInput.navigateTo(1, 'https://new.example.com', {
+      timeoutMs: 5000,
+      settleTimeoutMs: 50,
+      waitUntil: 'networkidle',
+    })
+
+    expect(result).toMatchObject({ outcome: 'partial', phase: 'settle', settled: false })
+    expect(result.settleReason).toBe('network did not become idle within 50ms')
   })
 })
 

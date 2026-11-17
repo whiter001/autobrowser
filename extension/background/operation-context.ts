@@ -53,8 +53,11 @@ export function withHardDeadline<T>(promise: Promise<T>, ms: number, label: stri
     timer = setTimeout(() => {
       const error = new Error(`${label} got no CDP response within ${boundedMs}ms`) as Error & {
         code?: string
+        suggestedAction?: string
       }
       error.code = CDP_DEADLINE_EXCEEDED
+      error.suggestedAction =
+        'Inspect command status and the current page before retrying. The browser operation may still complete late; do not blindly replay clicks, navigation, or other side-effecting commands.'
       reject(error)
     }, boundedMs)
   })

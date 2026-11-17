@@ -9,6 +9,7 @@ import type { CommandExecutionContext } from './command-queue.js'
 import type { ExtensionState, FrameSelector, TabInput } from './types.js'
 import type { ElementActionResult, ElementBox, PageInputContext } from './page-input-context.js'
 import { createElementNotFoundError } from './page-input-helpers.js'
+import { isDeadlineExceeded } from './operation-context.js'
 import type { createNavigationCommands } from './page-input-navigation.js'
 
 // 鼠标相关命令：坐标测量、点击/双击/悬停、拖拽、坐标移动与拖放数据投递。
@@ -148,7 +149,22 @@ export function createPointerCommands(
     clickCount: number,
     context?: CommandExecutionContext,
   ): Promise<void> {
-    // 只在按下前检查：释放是收尾动作，按下已发出就必须补上，否则页面停留在按下状态
+    // 先移动再按下，并显式维护 buttons 位掩码；部分 Chromium 会丢掉没有前置移动或按键状态的点击。
+    context?.throwIfCancelled()
+    await sendDebuggerCommand(
+      tabId,
+      'Input.dispatchMouseEvent',
+      {
+        type: 'mouseMoved',
+        x: box.x,
+        y: box.y,
+        button: 'none',
+        buttons: 0,
+        clickCount: 0,
+        pointerType: 'mouse',
+      },
+      context,
+    )
     context?.throwIfCancelled()
     await sendDebuggerCommand(
       tabId,
@@ -158,7 +174,9 @@ export function createPointerCommands(
         x: box.x,
         y: box.y,
         button: 'left',
+        buttons: 1,
         clickCount,
+        pointerType: 'mouse',
       },
       context,
     )
@@ -167,8 +185,70 @@ export function createPointerCommands(
       x: box.x,
       y: box.y,
       button: 'left',
+      buttons: 0,
       clickCount,
+      pointerType: 'mouse',
     })
+  }
+
+  async function observeClickTarget(
+    tabId: number,
+    selector: string,
+    frameSelector: FrameSelector,
+    context?: CommandExecutionContext,
+  ): Promise<void> {
+    const { value } = await evaluateInTabContext<{ found: boolean }>(
+      tabId,
+      `(() => {
+        const node = deepQuerySelector(document, ${JSON.stringify(selector)});
+        if (!node) return { found: false };
+        const key = Symbol.for('autobrowser.click.observation');
+        const events = [];
+        const types = ['mousedown', 'mouseup', 'click'];
+        const listener = (event) => events.push(event.type);
+        for (const type of types) node.addEventListener(type, listener, true);
+        node[key] = {
+          events,
+          cleanup: () => {
+            for (const type of types) node.removeEventListener(type, listener, true);
+          },
+        };
+        return { found: true };
+      })()`,
+      withFrameSelectorOptions(frameSelector, { commandContext: context }),
+    )
+    if (!value?.found) throw createElementNotFoundError(selector)
+  }
+
+  async function finishObservedClick(
+    tabId: number,
+    selector: string,
+    frameSelector: FrameSelector,
+    context?: CommandExecutionContext,
+  ): Promise<{ found: boolean; events: string[]; domClicked: boolean } | null> {
+    const { value } = await evaluateInTabContext<{
+      found: boolean
+      events: string[]
+      domClicked: boolean
+    }>(
+      tabId,
+      `(() => {
+        const node = deepQuerySelector(document, ${JSON.stringify(selector)});
+        if (!node) return { found: false, events: [], domClicked: false };
+        const key = Symbol.for('autobrowser.click.observation');
+        const observation = node[key];
+        const events = observation ? [...observation.events] : [];
+        if (observation) {
+          observation.cleanup();
+          delete node[key];
+        }
+        if (events.length > 0) return { found: true, events, domClicked: false };
+        node.click();
+        return { found: true, events, domClicked: true };
+      })()`,
+      withFrameSelectorOptions(frameSelector, { commandContext: context }),
+    )
+    return value ?? null
   }
 
   async function clickSelector(
@@ -190,8 +270,26 @@ export function createPointerCommands(
     let downloadHint = boxResult?.downloadHint === true
     let downloadUrl = boxResult?.downloadUrl
 
+    let domFallback = false
     if (boxResult) {
-      await dispatchMouseClick(tab.id, boxResult, 1, context)
+      await observeClickTarget(tab.id, resolvedSelector, frameSelector, context)
+      let cdpError: unknown = null
+      try {
+        await dispatchMouseClick(tab.id, boxResult, 1, context)
+      } catch (error) {
+        if (!isDeadlineExceeded(error)) throw error
+        cdpError = error
+      }
+      let observed
+      try {
+        observed = await finishObservedClick(tab.id, resolvedSelector, frameSelector, context)
+      } catch (error) {
+        if (cdpError) throw cdpError
+        throw error
+      }
+      // 已收到任一鼠标事件就不能再 DOM click；即使 CDP 回执丢失，也只能报告原错误。
+      if (cdpError && (!observed?.found || observed.events.length > 0)) throw cdpError
+      domFallback = observed?.domClicked === true
     } else {
       // 坐标拿不到（display:none 等不可见元素）时回退到页面内 node.click()
       context?.throwIfCancelled()
@@ -258,13 +356,19 @@ export function createPointerCommands(
       return {
         found: true,
         selector,
+        ...(domFallback ? { domFallback: true } : {}),
         navigatedToUrl: currentUrl,
         settled: settle.settled,
         ...(settle.settled ? {} : { settleReason: settle.settleReason || 'page did not settle' }),
         ...downloadEvidence,
       }
     }
-    return { found: true, selector, ...downloadEvidence }
+    return {
+      found: true,
+      selector,
+      ...(domFallback ? { domFallback: true } : {}),
+      ...downloadEvidence,
+    }
   }
 
   async function doubleClickSelector(

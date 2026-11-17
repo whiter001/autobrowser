@@ -56,6 +56,7 @@ export interface PageInputDependencies {
     method: string,
     params?: Record<string, unknown>,
     context?: CommandExecutionContext,
+    timeoutOverrideMs?: number,
   ) => Promise<TResult>
   updateTab?: (tabId: number, url: string) => Promise<unknown>
   reloadTab?: (tabId: number) => Promise<void>
@@ -101,6 +102,7 @@ export interface PageInputContext {
     method: string,
     params?: Record<string, unknown>,
     context?: CommandExecutionContext,
+    timeoutOverrideMs?: number,
   ) => Promise<TResult>
   updateTab?: (tabId: number, url: string) => Promise<unknown>
   reloadTab?: (tabId: number) => Promise<void>

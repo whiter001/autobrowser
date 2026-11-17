@@ -17,6 +17,7 @@ interface CommandQueueEntry {
     | 'failed'
     | 'completed_late'
     | 'failed_late'
+    | 'interrupted'
   enqueuedAt: string
   startedAt: string | null
   deadlineAt: string | null
@@ -35,6 +36,17 @@ export interface CommandQueue {
   cancel: (id: string) => boolean
   reset: (key: string) => number
   list: () => CommandQueueEntry[]
+  ready: () => Promise<void>
+}
+
+export interface CommandQueueStorage {
+  get: (keys: string[]) => Promise<Record<string, unknown>>
+  set: (items: Record<string, unknown>) => Promise<void>
+}
+
+interface CommandQueueOptions {
+  storage?: CommandQueueStorage
+  storageKey?: string
 }
 
 interface QueueItem<TResult = unknown> extends CommandQueueEntry {
@@ -49,10 +61,49 @@ interface QueueItem<TResult = unknown> extends CommandQueueEntry {
  * 同一 tab 的页面命令保持 FIFO。任务有显式 id，relay 超时后可取消排队项；
  * 运行项通过 AbortSignal 通知具体恢复动作，并与队列脱钩，避免后续控制命令无限堆积。
  */
-export function createCommandQueue(): CommandQueue {
+export function createCommandQueue(options: CommandQueueOptions = {}): CommandQueue {
   const queues = new Map<string, QueueItem[]>()
   const itemsById = new Map<string, QueueItem>()
   const history: CommandQueueEntry[] = []
+  const storageKey = options.storageKey || 'autobrowser.command-history.v1'
+  let persistChain: Promise<void> = Promise.resolve()
+
+  function persist(): void {
+    if (!options.storage) return
+    const commands = list()
+    persistChain = persistChain
+      .then(async () => await options.storage!.set({ [storageKey]: { commands } }))
+      .catch(() => {})
+  }
+
+  // storage.local 能跨 MV3 worker 重启保留状态；恢复时尚未结束的 Promise 已随旧 worker 消失，
+  // 必须明确标为 interrupted，不能让 command status 返回空记录或永远 running。
+  const restoration = options.storage
+    ? options.storage
+        .get([storageKey])
+        .then((stored) => {
+          const value = stored[storageKey] as { commands?: unknown } | undefined
+          if (!Array.isArray(value?.commands)) return
+          for (const candidate of value.commands) {
+            if (!candidate || typeof candidate !== 'object') continue
+            const entry = candidate as CommandQueueEntry
+            if (typeof entry.id !== 'string' || typeof entry.key !== 'string') continue
+            const interrupted = entry.state === 'queued' || entry.state === 'running'
+            history.push({
+              ...entry,
+              state: interrupted ? 'interrupted' : entry.state,
+              ...(interrupted
+                ? {
+                    finishedAt: entry.finishedAt || new Date().toISOString(),
+                    error: 'extension restarted before the command result was delivered',
+                  }
+                : {}),
+            })
+          }
+          if (history.length > 100) history.splice(0, history.length - 100)
+        })
+        .catch(() => {})
+    : Promise.resolve()
 
   function recordHistory(
     item: QueueItem,
@@ -75,6 +126,7 @@ export function createCommandQueue(): CommandQueue {
     if (existing >= 0) history[existing] = entry
     else history.push(entry)
     if (history.length > 100) history.splice(0, history.length - 100)
+    persist()
   }
 
   function settleCancelled(item: QueueItem, reason: string): void {
@@ -149,29 +201,34 @@ export function createCommandQueue(): CommandQueue {
   function enqueue<TResult>(
     key: string,
     task: (context: CommandExecutionContext) => Promise<TResult>,
-    options: { id?: string; deadlineAt?: string | null } = {},
+    requestOptions: { id?: string; deadlineAt?: string | null } = {},
   ): Promise<TResult> {
-    const id = options.id || crypto.randomUUID()
+    const id = requestOptions.id || crypto.randomUUID()
     return new Promise<TResult>((resolve, reject) => {
-      const item: QueueItem<TResult> = {
-        id,
-        key,
-        state: 'queued',
-        enqueuedAt: new Date().toISOString(),
-        startedAt: null,
-        deadlineAt: options.deadlineAt || null,
-        finishedAt: null,
-        error: null,
-        task,
-        resolve,
-        reject,
-        settled: false,
+      const enqueueRestored = () => {
+        const item: QueueItem<TResult> = {
+          id,
+          key,
+          state: 'queued',
+          enqueuedAt: new Date().toISOString(),
+          startedAt: null,
+          deadlineAt: requestOptions.deadlineAt || null,
+          finishedAt: null,
+          error: null,
+          task,
+          resolve,
+          reject,
+          settled: false,
+        }
+        const queue = queues.get(key) || []
+        queue.push(item as QueueItem)
+        queues.set(key, queue)
+        itemsById.set(id, item as QueueItem)
+        persist()
+        pump(key)
       }
-      const queue = queues.get(key) || []
-      queue.push(item as QueueItem)
-      queues.set(key, queue)
-      itemsById.set(id, item as QueueItem)
-      pump(key)
+      if (options.storage) void restoration.then(enqueueRestored)
+      else enqueueRestored()
     })
   }
 
@@ -215,5 +272,11 @@ export function createCommandQueue(): CommandQueue {
     return [...active, ...history]
   }
 
-  return { enqueue, cancel, reset, list }
+  return {
+    enqueue,
+    cancel,
+    reset,
+    list,
+    ready: async () => await restoration,
+  }
 }

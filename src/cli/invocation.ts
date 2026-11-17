@@ -4,6 +4,7 @@ import { normalizeWorkspaceId } from '../core/workspaces.js'
 import { resolveAutomaticWorkspaceId } from './caller-identity.js'
 import { CliUsageError } from './cli-error.js'
 import { parseCli } from './flags.js'
+import { isHelpToken } from './help.js'
 import type { CliFlags } from './types.js'
 
 interface Invocation {
@@ -12,9 +13,30 @@ interface Invocation {
   homeDir: string
 }
 
+export interface InvocationDependencies {
+  /** 注入自动 workspace 身份解析，便于测试断言本地帮助路径不做进程枚举 */
+  resolveAutomaticWorkspaceId?: () => Promise<string>
+}
+
+const LOCAL_ONLY_COMMANDS = new Set(['help', '--help', '-h', 'version'])
+
+/**
+ * 纯本地帮助/版本路径：不需要 relay，也就不需要 workspace 身份。
+ * 各命令的 help 旗标同样由 handler 自己识别（`snapshot --help` 只打印帮助），因此一并算本地路径。
+ */
+function isLocalOnlyInvocation(args: string[]): boolean {
+  const [command, ...rest] = args
+  if (!command) return true
+  if (LOCAL_ONLY_COMMANDS.has(command)) return true
+  return isHelpToken(rest[0])
+}
+
 // --session 既支持全局 flag，也支持 `session attach|detach|close-all <name>` 的位置参数写法。
 // 位置参数形式必须提前折叠进 flags.session，否则后面的端口/homeDir 覆写逻辑会漏掉会话。
-export async function resolveInvocation(argv: string[]): Promise<Invocation> {
+export async function resolveInvocation(
+  argv: string[],
+  dependencies: InvocationDependencies = {},
+): Promise<Invocation> {
   const { flags, args } = parseCli(argv)
   const [command, ...rest] = args
 
@@ -72,11 +94,15 @@ export async function resolveInvocation(argv: string[]): Promise<Invocation> {
       if (!workspaceFromDefault) {
         throw new Error('workspace mode is only supported by the Chromium extension')
       }
+    } else if (requestedWorkspace === 'auto') {
+      // 本地 help/version 免解析：显式 --workspace / env 仍按原路径规范化，冲突与非法 id 校验不受影响。
+      if (!isLocalOnlyInvocation(args)) {
+        const resolveWorkspaceId =
+          dependencies.resolveAutomaticWorkspaceId ?? resolveAutomaticWorkspaceId
+        flags.workspace = await resolveWorkspaceId()
+      }
     } else {
-      flags.workspace =
-        requestedWorkspace === 'auto'
-          ? await resolveAutomaticWorkspaceId()
-          : normalizeWorkspaceId(requestedWorkspace)
+      flags.workspace = normalizeWorkspaceId(requestedWorkspace)
     }
   }
 

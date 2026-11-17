@@ -898,6 +898,8 @@ describe('page input click CDP-first priority', () => {
     fileResponse?: boolean
     delayedFileResponse?: boolean
     browserDownload?: boolean
+    observedEvents?: string[]
+    cdpError?: Error
   }
 
   function createClickHarness(options: ClickHarnessOptions) {
@@ -922,10 +924,25 @@ describe('page input click CDP-first priority', () => {
       evaluateInTabContext: async (_tabId: unknown, expression: string) => {
         evaluateCalls.push(expression)
         // 模拟页面内 node.click() 触发的导航 commit（connection.ts 的 frameNavigated 递增 epoch）
-        if (options.navigates && expression.includes('node.click()')) {
+        const observedDomClick =
+          expression.includes('observation.events') && options.observedEvents?.length === 0
+        const ordinaryDomClick =
+          expression.includes('node.click()') && !expression.includes('observation.events')
+        if (options.navigates && (observedDomClick || ordinaryDomClick)) {
           state.targeting.pageEpochs.set(1, (state.targeting.pageEpochs.get(1) || 0) + 1)
         }
-        const value = remainingValues.shift()
+        let value: unknown
+        if (expression.includes("Symbol.for('autobrowser.click.observation')")) {
+          value = expression.includes('observation.events')
+            ? {
+                found: true,
+                events: options.observedEvents ?? ['mousedown', 'mouseup', 'click'],
+                domClicked: options.observedEvents?.length === 0,
+              }
+            : { found: true }
+        } else {
+          value = remainingValues.shift()
+        }
         return { tab: { id: 1 } as never, response: { result: undefined }, value } as never
       },
       sendDebuggerCommand: async (
@@ -934,6 +951,7 @@ describe('page input click CDP-first priority', () => {
         params?: Record<string, unknown>,
       ) => {
         debuggerCalls.push({ method, params })
+        if (options.cdpError && params?.type === 'mousePressed') throw options.cdpError
         if (options.fileResponse && method === 'Input.dispatchMouseEvent') {
           state.network.requests.push({
             tabId: 1,
@@ -992,22 +1010,79 @@ describe('page input click CDP-first priority', () => {
     const result = await pageInput.clickSelector(1, '#btn', null, 1000)
 
     expect(result).toEqual({ found: true, selector: '#btn' })
-    // 只做了一次坐标查询，没有走到 node.click() 回退
-    expect(evaluateCalls).toHaveLength(1)
-    expect(evaluateCalls[0]).not.toContain('node.click()')
+    // 坐标查询外，还在点击前后观测目标事件；正常 CDP 点击不走 node.click() 回退
+    expect(evaluateCalls).toHaveLength(3)
+    expect(evaluateCalls[1]).toContain('addEventListener')
     expect(() => new Function(evaluateCalls[0]!)).not.toThrow()
     const mouseEvents = debuggerCalls.filter((call) => call.method === 'Input.dispatchMouseEvent')
-    // evaluate 返回的 box 已含中心点坐标，CDP 直接在中心按下/释放
+    // evaluate 返回的 box 已含中心点坐标；先建立指针位置，再带按键状态按下/释放
     expect(mouseEvents).toEqual([
       {
         method: 'Input.dispatchMouseEvent',
-        params: { type: 'mousePressed', x: 10, y: 20, button: 'left', clickCount: 1 },
+        params: {
+          type: 'mouseMoved',
+          x: 10,
+          y: 20,
+          button: 'none',
+          buttons: 0,
+          clickCount: 0,
+          pointerType: 'mouse',
+        },
       },
       {
         method: 'Input.dispatchMouseEvent',
-        params: { type: 'mouseReleased', x: 10, y: 20, button: 'left', clickCount: 1 },
+        params: {
+          type: 'mousePressed',
+          x: 10,
+          y: 20,
+          button: 'left',
+          buttons: 1,
+          clickCount: 1,
+          pointerType: 'mouse',
+        },
+      },
+      {
+        method: 'Input.dispatchMouseEvent',
+        params: {
+          type: 'mouseReleased',
+          x: 10,
+          y: 20,
+          button: 'left',
+          buttons: 0,
+          clickCount: 1,
+          pointerType: 'mouse',
+        },
       },
     ])
+  })
+
+  test('uses DOM fallback only when CDP times out without delivering mouse events', async () => {
+    const cdpError = new Error('input timed out') as Error & { code: string }
+    cdpError.code = 'CDP_DEADLINE_EXCEEDED'
+    const { pageInput, evaluateCalls } = createClickHarness({
+      evaluateValues: [{ x: 10, y: 20, width: 100, height: 50 }],
+      cdpError,
+      observedEvents: [],
+    })
+
+    await expect(pageInput.clickSelector(1, '#btn', null, 1000)).resolves.toEqual({
+      found: true,
+      selector: '#btn',
+      domFallback: true,
+    })
+    expect(evaluateCalls[2]).toContain('node.click()')
+  })
+
+  test('does not replay through DOM when a timed out CDP click already delivered an event', async () => {
+    const cdpError = new Error('input timed out') as Error & { code: string }
+    cdpError.code = 'CDP_DEADLINE_EXCEEDED'
+    const { pageInput } = createClickHarness({
+      evaluateValues: [{ x: 10, y: 20, width: 100, height: 50 }],
+      cdpError,
+      observedEvents: ['mousedown'],
+    })
+
+    await expect(pageInput.clickSelector(1, '#btn', null, 1000)).rejects.toBe(cdpError)
   })
 
   test('falls back to node.click() when the box cannot be measured', async () => {
@@ -1146,8 +1221,8 @@ describe('page input click CDP-first priority', () => {
     const result = await pageInput.clickSelector(1, '#btn', null, 1000)
 
     expect(result).toEqual({ found: true, selector: '#btn' })
-    // 无导航时不进 waitForPageSettled，没有多余的页面判定
-    expect(evaluateCalls).toHaveLength(1)
+    // 无导航时不进 waitForPageSettled；三次 evaluate 分别是坐标、安装观测、读取并清理观测
+    expect(evaluateCalls).toHaveLength(3)
   })
 })
 
@@ -1193,6 +1268,9 @@ function createExpressionInputHarness() {
     matches: (selector: string) => selector === '#btn',
     hasAttribute: () => false,
     ownerDocument: { defaultView: {} },
+    addEventListener: () => {},
+    removeEventListener: () => {},
+    click: () => jsEvents.push({ type: 'click' }),
     scrollIntoView() {
       trace.push('child-scroll')
       Object.assign(childRect, { x: 10, left: 10, y: 20, top: 20 })
@@ -1298,7 +1376,7 @@ describe('page input frame coordinates with executed expressions', () => {
         expect(h.mouseEvents[0]).toMatchObject(
           action === 'drag' ? { x: 128, y: 230 } : { x: 123, y: 225 },
         )
-        if (action === 'doubleclick') expect(h.mouseEvents[0]?.clickCount).toBe(2)
+        if (action === 'doubleclick') expect(h.mouseEvents[1]?.clickCount).toBe(2)
         if (action === 'drag') {
           expect(h.mouseEvents).toHaveLength(12)
           expect(h.mouseEvents.at(-1)).toMatchObject({ type: 'mouseReleased', x: 163, y: 275 })
@@ -1324,7 +1402,7 @@ describe('page input frame coordinates with executed expressions', () => {
       await h.pageInput.dragElement(1, '#btn', '', frame)
       expect(h.trace).toEqual(['top-scroll'])
       expect(h.mouseEvents[0]).toMatchObject({ x: 15, y: 11 })
-      expect(h.mouseEvents[2]).toMatchObject({ x: 15, y: 11, clickCount: 2 })
+      expect(h.mouseEvents[5]).toMatchObject({ x: 15, y: 11, clickCount: 2 })
       expect(h.mouseEvents[4]).toMatchObject({ x: 15, y: 11 })
       expect(h.mouseEvents.at(-1)).toMatchObject({ x: 15, y: 111 })
       if (frame) expect(h.state.targeting.selectedFrames.get(1)).toBe('#frame')
