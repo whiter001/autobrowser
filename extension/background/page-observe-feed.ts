@@ -1,3 +1,4 @@
+import { getFeedAdapterCandidates, serializeFeedAdapters } from './feed-adapters.js'
 import type { PageObserveDependencies } from './page-observe-context.js'
 import {
   normalizeFeedCount,
@@ -28,6 +29,8 @@ export interface FeedCollectionItem extends Record<string, unknown> {
   timelineContext: string | null
   /** 转帖人；不是转帖或识别不出时为 null，作者字段不受影响。 */
   repostBy: string | null
+  /** 生效的站点适配器 id（如 "youtube"）；未启用适配层时为 null。 */
+  adapter: string | null
 }
 
 export interface FeedCollectionResult extends Record<string, unknown> {
@@ -202,8 +205,13 @@ export function isFeedAvatarImage(image: any): boolean {
  *
  * mediaUrls 只保留正文图片/视频，头像单独进 avatarUrls；没有头像语义的普通站点图片
  * 一律回退为正文媒体，不能因为识别不出头像就整张丢弃。
+ *
+ * isAvatarImage 是站点适配层可选的头像判定；不传时行为与之前完全一致。
  */
-export function readFeedItemMedia(node: any): { mediaUrls: string[]; avatarUrls: string[] } {
+export function readFeedItemMedia(
+  node: any,
+  isAvatarImage?: (image: any) => boolean,
+): { mediaUrls: string[]; avatarUrls: string[] } {
   const mediaUrls: string[] = []
   const avatarUrls: string[] = []
 
@@ -219,7 +227,7 @@ export function readFeedItemMedia(node: any): { mediaUrls: string[]; avatarUrls:
   const images = Array.from(node.querySelectorAll?.('img[src]') || []) as any[]
   for (const image of images) {
     const source = image.currentSrc || image.src || image.getAttribute?.('src')
-    if (isFeedAvatarImage(image)) {
+    if ((isAvatarImage && isAvatarImage(image)) || isFeedAvatarImage(image)) {
       push(avatarUrls, source)
       continue
     }
@@ -355,6 +363,8 @@ export function createFeedFeature({
     const pauseMs = normalizeFeedCount(options.pauseMs, 900)
     const stallRounds = normalizeFeedCount(options.stallRounds, 3)
     const dedupe = options.dedupe
+    // 先按 host 粗筛候选；真正启用还要看页面 DOM 是否命中适配器特征。
+    const adapterCandidates = getFeedAdapterCandidates(tab.url)
 
     const { value } = await evaluateInTabContext<FeedCollectionResult>(
       tab.id,
@@ -366,6 +376,7 @@ export function createFeedFeature({
         const stallRounds = ${stallRounds};
         const dedupe = ${JSON.stringify(dedupe)};
         const pageEpoch = ${pageEpoch};
+        const feedAdapterCandidates = ${serializeFeedAdapters(adapterCandidates)};
 
 ${PAGE_CONTEXT_TEXT_HELPERS_SOURCE}
 ${PAGE_CONTEXT_DEEP_DOM_HELPERS_SOURCE}
@@ -403,6 +414,25 @@ ${PAGE_CONTEXT_DEEP_DOM_HELPERS_SOURCE}
 
         const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
+        // host 命中的候选还要再过一遍 DOM 特征，host 与 DOM 都命中才启用适配层。
+        const pickFeedAdapter = () => {
+          for (const candidate of feedAdapterCandidates) {
+            try {
+              if (typeof candidate.matches === 'function' && candidate.matches(document)) {
+                return candidate;
+              }
+            } catch (error) {
+              // 单个适配器判定失败不应影响通用采集
+            }
+          }
+          return null;
+        };
+
+        const activeFeedAdapter = pickFeedAdapter();
+        const adapterIsAvatar = activeFeedAdapter && typeof activeFeedAdapter.isAvatar === 'function'
+          ? (image) => activeFeedAdapter.isAvatar(image)
+          : undefined;
+
         const items = [];
         const seen = new Set();
         let stopReason = 'limit';
@@ -422,13 +452,31 @@ ${PAGE_CONTEXT_DEEP_DOM_HELPERS_SOURCE}
             const text = readText(node);
             const url = readUrl(node);
             const authorInfo = parseAuthorHandle(readAuthor(node));
-            const media = readFeedItemMedia(node);
+            // 适配器提供对应方法时以它为准：站点语义比通用启发式可靠，
+            // 识别不出就留 null，不与通用结果混搭（时间尤其不能回落：通用实现会从整段描述里猜日期）。
+            const hasAdapterAuthor = Boolean(
+              activeFeedAdapter && typeof activeFeedAdapter.readAuthor === 'function',
+            );
+            const hasAdapterHandle = Boolean(
+              activeFeedAdapter && typeof activeFeedAdapter.readHandle === 'function',
+            );
+            const hasAdapterTime = Boolean(
+              activeFeedAdapter && typeof activeFeedAdapter.readTime === 'function',
+            );
+            const author = hasAdapterAuthor
+              ? activeFeedAdapter.readAuthor(node)
+              : authorInfo.author;
+            const handle = hasAdapterHandle
+              ? activeFeedAdapter.readHandle(node)
+              : authorInfo.handle;
+            const time = hasAdapterTime ? activeFeedAdapter.readTime(node) : readTime(node);
+            const media = readFeedItemMedia(node, adapterIsAvatar);
             const timelineContext = readFeedItemTimelineContext(node);
             const repostBy = parseFeedRepostBy(timelineContext);
             const dedupeKey = normalize(feedItemDedupeKey(dedupe, {
               url,
-              author: authorInfo.author,
-              handle: authorInfo.handle,
+              author,
+              handle,
               text
             }) || '');
 
@@ -444,15 +492,16 @@ ${PAGE_CONTEXT_DEEP_DOM_HELPERS_SOURCE}
               index: items.length + 1,
               pageEpoch,
               selector,
-              author: authorInfo.author,
-              handle: authorInfo.handle,
-              time: readTime(node),
+              author,
+              handle,
+              time,
               text: text.slice(0, 2400),
               url,
               mediaUrls: media.mediaUrls,
               avatarUrls: media.avatarUrls,
               timelineContext,
               repostBy,
+              adapter: activeFeedAdapter ? activeFeedAdapter.id : null,
             });
             added += 1;
           }

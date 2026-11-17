@@ -1086,6 +1086,7 @@ suite('live browser smoke test', () => {
         avatarUrls: string[]
         timelineContext: string | null
         repostBy: string | null
+        adapter?: string | null
       }>
     }>('feed', { selector: 'article', limit: 3, dedupe: 'url', maxScrolls: 0, pauseMs: 0 })
     expect(result.count).toBe(2)

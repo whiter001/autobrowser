@@ -243,7 +243,7 @@ export const MCP_TOOLS: McpToolDefinition[] = [
   {
     name: 'feed',
     description:
-      'Collect structured cards from a virtual list with scrolling and dedupe. Returns author, handle, time, text, url, mediaUrls, avatarUrls, timelineContext and repostBy. mediaUrls holds body images/videos only; avatars are reported separately in avatarUrls. timelineContext is the timeline/social context text (for example, a repost banner such as "Hongbo Zhang 已转帖") and repostBy is the account that reposted (null when no repost author can be identified). URL dedupe falls back to author/handle/text for cards without links; STALE_FEED_STATE means the page navigated and results were discarded.',
+      'Collect structured cards from a virtual list with scrolling and dedupe. Returns author, handle, time, text, url, mediaUrls, avatarUrls, timelineContext, repostBy and adapter. mediaUrls holds body images/videos only; avatars are reported separately in avatarUrls. timelineContext is the timeline/social context text (for example, a repost banner such as "Hongbo Zhang 已转帖") and repostBy is the account that reposted (null when no repost author can be identified). URL dedupe falls back to author/handle/text for cards without links; STALE_FEED_STATE means the page navigated and results were discarded. adapter names the optional site adapter that was enabled (for example "youtube"); it is null when the page matched no adapter and the generic extraction was used. On YouTube the adapter reads the channel name as author, the /@handle link as handle, the publish time only from the metadata line (null when there is no reliable time) and treats images inside channel links as avatars.',
     command: 'feed',
     inputSchema: {
       type: 'object',
