@@ -40,9 +40,10 @@ autobrowser 是面向 Chrome/Edge 的浏览器自动化 CLI，通过本地 relay
 
 - 观察：`snapshot`（concise 默认 50 元素/32KiB，`--limit 1..200` 只调元素上限、不提高字节预算；`--changed` 看状态变化与 `removedRefs`）。同一 document 内 ref 不复用；导航或重渲染后先刷新 snapshot。`@eN`/`@fN` 优先于脆弱 CSS。
 - 定位：`find role|text|label|name`；只读 locate/text 默认 first，`find ... locate` 无匹配走 `empty:true`，写操作缺目标为 `ELEMENT_NOT_FOUND`。`--name` 默认 substring，精确匹配用 `--exact`。多匹配写操作未给 position 返回 `AMBIGUOUS_TARGET`，先看 `--candidates 3`，再选 `--position first|last|nth=N` 或确认后的 ref。
-- 交互：`click`/`dblclick`/`fill`/`type`/`press`/`hover`/`focus`/`select`/`check`/`uncheck`/`scroll`/`scrollintoview`/`upload`，目标用 ref 或 CSS。受控 `fill` 可能回滚；toggle 控件先查状态，不要在 eval 里 `el.click()` 后又无条件 `click`。
+- 交互：`click`/`dblclick`/`fill`/`type`/`press`/`hover`/`focus`/`select`/`check`/`uncheck`/`scroll`/`scrollintoview`/`upload`，目标用 ref 或 CSS。`press` 只接受一个键名（`autobrowser press Enter`），不接受 selector：先 `click`/`focus <selector>` 聚焦目标再发送。受控 `fill` 可能回滚；toggle 控件先查状态，不要在 eval 里 `el.click()` 后又无条件 `click`。
 - 等待：`wait time 3`、`wait ms 3`、`wait 3` 都是 **3 毫秒**，等 3 秒写 `wait time 3000`。条件等待用 `wait <selector> [--state new|stable]`、`wait --fn`、`wait --text`、`wait --load networkidle`；不要固定 sleep 后断言更新完成。
 - 读取：`get`、`is`、`console`、`errors`、`search`。`search` 普通 query 按字面量，正则写 `/pattern/flags`；`truncated` 时用 `nextStartLine`/`--start-line` 续读。
+- 截图：`screenshot [path]` 截当前视口，`--full` 截整页；`screenshot --element <selector|@eN> [path]` 会先把目标滚到视口中心并短暂等待懒加载图片 decode，不修改视口尺寸，懒加载图片一般无需再单独打开 URL 截图。元素截图超时或 `CDP_DEADLINE_EXCEEDED` 后先 `command status` 看是否 `completed_late`，再核对页面/视口状态，不要重放或手工清 Emulation 覆盖。
 - 脚本：单行表达式用 `eval --expr`；源码含 CSS 选择器、JSON、正则、模板字符串或多行语句时直接用 `--stdin`/`--file`，不要先试内联转义；`--base64` 只用于机器生成。支持顶层 `return`/`await`，大结果先分页/聚合。完整边界见 [eval-and-scripting.md](references/eval-and-scripting.md)。
 - 导航：`open`/`goto` 可加 `--wait-for url <pattern>|selector <css>`；`back`/`forward`/`reload`；`tab new/select/close`；`frame <@fN|selector|top>`；等待阶段 `--wait-until none|commit|domcontentloaded|interactive|load|networkidle|domquiet`。
 
@@ -52,7 +53,7 @@ autobrowser 是面向 Chrome/Edge 的浏览器自动化 CLI，通过本地 relay
 - MCP 默认 `AUTOBROWSER_MCP_RESPONSE_MODE=text`：结果只写 `content` 文本，不再重复 `structuredContent`。需要结构化字段用 `structured`（普通 object 只写 `structuredContent`，数组/原始值回退文本），需要同时保留两份才用 `both`。截图/视频/tracing 的媒体结果不受影响。
 - MCP 默认 `AUTOBROWSER_MCP_TOOLSET=core`，`tools/list` 只返回 19 个核心工具（navigate/reload/snapshot/search/find/click/fill/type/press/get/wait/eval/tab_*/workspace），schema 约 16KB。需要让客户端看到全部 54 个工具时设 `all`；未列出的工具仍可直接调用，不要因为列表里没有就断定不可用。
 - network/console/errors/actions/downloads/command 默认 20 条，`--limit` 最大 100；tab/route 默认 50。更多结果用 `pagination.nextCursor` + `--cursor`，过滤/排序不变。旧 `--page/--page-size` 仅兼容。
-- network 列表优先 `rN` 短引用再 `network request rN`，不要首选长 CDP ID；concise 详情已去掉重复 summary/HAR，body >16KiB 会标记截断。
+- network 合法 action 只有 `route|unroute|requests|request|export|har`：列请求用 `network requests`，`network list` 不存在（会报 `CLI_INVALID_ARGUMENT`）。列表优先用 `rN` 短引用再 `network request rN`，不要首选长 CDP ID；concise 详情已去掉重复 summary/HAR，body >16KiB 会标记截断。
 - `snapshot` 32KiB、`search` 默认 10 窗口/100 行/32KiB、`eval` 默认 32KiB。截断时用 `nextCursor`、`nextStartLine`、`--target/--role`、`--changed` 续读/收窄，不要改用无界输出。
 
 ## 导航、断连与结果未知（核心恢复）

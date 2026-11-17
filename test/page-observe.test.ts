@@ -100,6 +100,13 @@ export function createObserveForScreenshot(
     method: string
     params?: Record<string, unknown>
   }>,
+  expressions: string[] = [],
+  options: {
+    rejectScreenshot?: boolean
+    mainScroll?: { x: number; y: number }
+    frameTarget?: { left: number; top: number; width: number; height: number }
+    evaluateOptions?: Array<Record<string, unknown> | undefined>
+  } = {},
 ) {
   return createPageObserveDomain({
     state: createObserveState(),
@@ -107,31 +114,79 @@ export function createObserveForScreenshot(
     resolveElementSelectorForTab: async (_tabId: unknown, selector: string) =>
       ({ tab: { id: 1 }, pageEpoch: 1, resolvedSelector: selector }) as never,
     resolveFrameTarget: async () => {
-      throw new Error('not used')
+      if (!options.frameTarget) throw new Error('not used')
+      return { tab: { id: 1 }, ...options.frameTarget } as never
     },
-    evaluateInTabContext: async () =>
-      ({
+    evaluateInTabContext: async (
+      _tabId: unknown,
+      expression: string,
+      evaluateOptions?: Record<string, unknown>,
+    ) => {
+      expressions.push(expression)
+      options.evaluateOptions?.push(evaluateOptions)
+      // 元素 rect 与主页面滚动是两次独立求值；分开返回才能验证非零滚动确实被叠加。
+      const value = expression.includes('window.scrollX')
+        ? (options.mainScroll ?? { x: 0, y: 0 })
+        : evaluateValue
+      return {
         tab: { id: 1 },
         response: { result: {} },
-        value: evaluateValue,
-      }) as never,
+        value,
+      } as never
+    },
     sendDebuggerCommand: async (
       _tabId: unknown,
       method: string,
       params?: Record<string, unknown>,
     ) => {
       debuggerCalls.push({ method, params })
+      if (options.rejectScreenshot && method === 'Page.captureScreenshot') {
+        throw new Error('CDP_DEADLINE_EXCEEDED')
+      }
       return { data: 'aGk=' } as never
     },
   } as never)
 }
 
 describe('page observe element screenshot', () => {
-  test('captures an element clip derived from the element rect', async () => {
+  test('scrolls, waits for frames and lazy images before measuring the element rect', async () => {
+    const debuggerCalls: Array<{ method: string; params?: Record<string, unknown> }> = []
+    const expressions: string[] = []
+    const pageObserve = createObserveForScreenshot(
+      { x: 10.4, y: 20.2, width: 100, height: 50 },
+      debuggerCalls,
+      expressions,
+    )
+
+    await pageObserve.captureScreenshot(1, { element: '#card' }, null)
+
+    // 第二次求值读取主页面滚动偏移，只影响 clip，不应混入懒加载表达式
+    expect(expressions).toHaveLength(2)
+    expect(expressions[1]).toContain('window.scrollX')
+    const expression = expressions.find((entry) => entry.includes('scrollIntoView'))!
+    // 必须先滚动到视口中心，再等两帧让懒加载内容完成布局和绘制
+    expect(expression).toContain('(async () =>')
+    expect(expression).toContain(
+      "node.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' })",
+    )
+    expect(expression).toContain('requestAnimationFrame(done)')
+    expect(expression.match(/await nextFrame\(\)/g)).toHaveLength(2)
+    // 目标自身与后代 img 都要等 decode；异常忽略且有 1 秒超时兜底
+    expect(expression).toContain("node.tagName === 'IMG'")
+    expect(expression).toContain("node.querySelectorAll('img')")
+    expect(expression).toContain('image.decode?.()')
+    expect(expression).toContain('.catch(() => undefined)')
+    expect(expression).toContain('Promise.race([')
+    expect(expression).toContain('setTimeout(resolve, 1000)')
+  })
+
+  test('captures an element clip in document coordinates after scrolling', async () => {
     const debuggerCalls: Array<{ method: string; params?: Record<string, unknown> }> = []
     const pageObserve = createObserveForScreenshot(
       { x: 10.4, y: 20.2, width: 100, height: 50 },
       debuggerCalls,
+      [],
+      { mainScroll: { x: 12, y: 1646 } },
     )
 
     const result = (await pageObserve.captureScreenshot(1, { element: '#card' }, null)) as {
@@ -139,10 +194,103 @@ describe('page observe element screenshot', () => {
     }
 
     const captureCall = debuggerCalls.find((call) => call.method === 'Page.captureScreenshot')
-    expect(captureCall?.params).toMatchObject({
-      clip: { x: 10.4, y: 20.2, width: 100, height: 50, scale: 1 },
-    })
+    const params = captureCall!.params as {
+      clip: Record<string, number>
+      captureBeyondViewport?: boolean
+    }
+    // clip 走主页面文档坐标：视口坐标的 rect 必须补上 scrollIntoView 后的滚动偏移
+    expect(params.captureBeyondViewport).toBe(false)
+    expect(params.clip.scale).toBe(1)
+    expect(params.clip.width).toBe(100)
+    expect(params.clip.height).toBe(50)
+    expect(params.clip.x).toBeCloseTo(22.4)
+    expect(params.clip.y).toBeCloseTo(1666.2)
     expect(result.element).toBe('#card')
+  })
+
+  test('adds the main page scroll only once for an element inside a frame', async () => {
+    const debuggerCalls: Array<{ method: string; params?: Record<string, unknown> }> = []
+    const evaluateOptions: Array<Record<string, unknown> | undefined> = []
+    const pageObserve = createObserveForScreenshot(
+      { x: 10.4, y: 20.2, width: 100, height: 50 },
+      debuggerCalls,
+      [],
+      {
+        mainScroll: { x: 7, y: 1646 },
+        frameTarget: { left: 40, top: 120, width: 300, height: 200 },
+        evaluateOptions,
+      },
+    )
+
+    await pageObserve.captureScreenshot(1, { element: '#card' }, '#panel')
+
+    // 滚动偏移必须在主 frame 读取，不能沿用元素所在的 frame（否则读到 frame 内部滚动）
+    expect(evaluateOptions[1]?.frameSelector).toBe('top')
+    const captureCall = debuggerCalls.find((call) => call.method === 'Page.captureScreenshot')
+    const clip = (captureCall!.params as { clip: Record<string, number> }).clip
+    // frame 内部滚动已体现在元素 rect 中，这里只补 frame 偏移和一次主页面滚动
+    expect(clip.width).toBe(100)
+    expect(clip.height).toBe(50)
+    expect(clip.x).toBeCloseTo(57.4)
+    expect(clip.y).toBeCloseTo(1786.2)
+  })
+
+  test('adds the main page scroll to a frame clip', async () => {
+    const debuggerCalls: Array<{ method: string; params?: Record<string, unknown> }> = []
+    const pageObserve = createObserveForScreenshot(null, debuggerCalls, [], {
+      mainScroll: { x: 5, y: 900 },
+      frameTarget: { left: 40, top: 120, width: 300, height: 200 },
+    })
+
+    await pageObserve.captureScreenshot(1, {}, '#panel')
+
+    const captureCall = debuggerCalls.find((call) => call.method === 'Page.captureScreenshot')
+    const clip = (captureCall!.params as { clip: Record<string, number> }).clip
+    expect(clip.width).toBe(300)
+    expect(clip.height).toBe(200)
+    expect(clip.x).toBeCloseTo(45)
+    expect(clip.y).toBeCloseTo(1020)
+  })
+
+  test('never overrides the device metrics on the screenshot path', async () => {
+    const debuggerCalls: Array<{ method: string; params?: Record<string, unknown> }> = []
+    const pageObserve = createObserveForScreenshot(
+      { x: 0, y: 0, width: 10, height: 10 },
+      debuggerCalls,
+    )
+
+    await pageObserve.captureScreenshot(1, { element: '#card' }, null)
+
+    const emulationCalls = debuggerCalls.filter((call) => call.method.startsWith('Emulation.'))
+    expect(emulationCalls).toHaveLength(0)
+    expect(debuggerCalls.map((call) => call.method)).not.toContain(
+      'Emulation.setDeviceMetricsOverride',
+    )
+    expect(debuggerCalls.map((call) => call.method)).not.toContain(
+      'Emulation.clearDeviceMetricsOverride',
+    )
+  })
+
+  test('does not clean up device metrics when CDP screenshot rejects', async () => {
+    const debuggerCalls: Array<{ method: string; params?: Record<string, unknown> }> = []
+    const pageObserve = createObserveForScreenshot(
+      { x: 0, y: 0, width: 10, height: 10 },
+      debuggerCalls,
+      [],
+      { rejectScreenshot: true },
+    )
+
+    await expect(pageObserve.captureScreenshot(1, { element: '#card' }, null)).rejects.toThrow(
+      'CDP_DEADLINE_EXCEEDED',
+    )
+
+    // 截图本就没有临时视口覆盖，失败路径也不能去清用户显式设置的 viewport/device
+    expect(debuggerCalls.map((call) => call.method)).not.toContain(
+      'Emulation.clearDeviceMetricsOverride',
+    )
+    expect(debuggerCalls.map((call) => call.method)).not.toContain(
+      'Emulation.setDeviceMetricsOverride',
+    )
   })
 
   test('rejects element capture combined with --full', async () => {

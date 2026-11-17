@@ -520,7 +520,10 @@ export const HELP_ROOT: HelpNode = helpNode(
         'Enter does not guarantee a submit: components often ignore it, so confirm the outcome with wait --text/--url or click the submit button.',
       ],
     ),
-    helpNode('press', 'Press a keyboard key.', 'autobrowser press <key>'),
+    helpNode('press', 'Press a keyboard key on the focused element.', 'autobrowser press <key>', [
+      'Usage: autobrowser press <key>, e.g. autobrowser press Enter.',
+      'press takes no selector: click or focus <selector> first, then send the key to that element.',
+    ]),
     helpNode(
       'keyboard',
       'Send keyboard input.',
@@ -1079,7 +1082,7 @@ export const HELP_ROOT: HelpNode = helpNode(
       'autobrowser screenshot [path] [--element <selector|@eN>] [--full] [--annotate] [--screenshot-dir <dir>] [--screenshot-format png|jpeg] [--screenshot-quality <n>]',
       [
         'path  output file as a positional argument; use screenshot ./shot.png, not screenshot --path ./shot.png',
-        '--element <selector|@eN>  capture only this element; an @eN ref positional also works, cannot be combined with --full',
+        '--element <selector|@eN>  capture only this element; it is scrolled to the viewport center and lazy images get a short decode wait. The viewport is never resized or emulated; an @eN ref positional also works, cannot be combined with --full',
         '--full',
         '--annotate',
         '--screenshot-dir <dir>',

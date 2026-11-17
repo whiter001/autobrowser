@@ -6,6 +6,8 @@ import type { FrameSelector, ScreenshotCaptureOptions, TabInput } from './types.
 
 const SCREENSHOT_ANNOTATION_OVERLAY_ID = 'autobrowser-screenshot-annotations'
 const SCREENSHOT_ANNOTATION_MAX_ELEMENTS = 200
+/** 元素截图等待图片 decode 的上限：decode 卡住时截图命令必须还能返回。 */
+const ELEMENT_SCREENSHOT_DECODE_TIMEOUT_MS = 1000
 
 interface ScreenshotAnnotationResult {
   count?: number
@@ -157,6 +159,21 @@ ${PAGE_CONTEXT_DEEP_DOM_HELPERS_SOURCE}
     return Number(value?.count || 0)
   }
 
+  /**
+   * Page.captureScreenshot 的 clip 用主页面文档坐标，而 getBoundingClientRect 与 frame 位置都是
+   * 视口坐标；必须补一次主页面滚动偏移，否则页面滚动后截图区域会整体错位。
+   * frame 内部滚动已体现在元素 rect 里，不再重复叠加，所以固定显式读 top，
+   * 不能沿用当前选中的 frame。
+   */
+  async function readMainFrameScroll(tabId: TabInput) {
+    const { value } = await evaluateInTabContext<{ x: number; y: number }>(
+      tabId,
+      '(() => ({ x: window.scrollX, y: window.scrollY }))()',
+      { frameSelector: 'top' },
+    )
+    return { x: Number(value?.x) || 0, y: Number(value?.y) || 0 }
+  }
+
   async function captureScreenshot(
     tabId: TabInput,
     options: ScreenshotCaptureOptions = {},
@@ -197,11 +214,45 @@ ${PAGE_CONTEXT_DEEP_DOM_HELPERS_SOURCE}
           height: number
         }>(
           tab.id,
-          `(() => {
+          `(async () => {
 ${PAGE_CONTEXT_DEEP_DOM_HELPERS_SOURCE}
 
             const node = deepQuerySelector(document, ${JSON.stringify(resolvedSelector)});
             if (!node) return null;
+
+            // 懒加载图片和虚拟列表要先进入视口才绘制；直接量首次 rect 会截到空白。
+            node.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
+
+            // 后台标签页不派发 requestAnimationFrame，用定时器兜底，避免 awaitPromise 永久挂起。
+            const nextFrame = () => new Promise((resolve) => {
+              if (document.hidden) {
+                resolve();
+                return;
+              }
+              let settled = false;
+              const done = () => {
+                if (settled) return;
+                settled = true;
+                resolve();
+              };
+              requestAnimationFrame(done);
+              setTimeout(done, 50);
+            });
+
+            // decode 失败（坏图/跨域）只影响绘制质量，不阻断截图；超时兜底防止 decode 永不 settle。
+            const decodeImage = (image) => Promise.race([
+              Promise.resolve(image.decode?.()).catch(() => undefined),
+              new Promise((resolve) => setTimeout(resolve, ${ELEMENT_SCREENSHOT_DECODE_TIMEOUT_MS})),
+            ]);
+
+            await nextFrame();
+            await nextFrame();
+
+            const images = node.tagName === 'IMG'
+              ? [node, ...node.querySelectorAll('img')]
+              : [...node.querySelectorAll('img')];
+            await Promise.all(images.map(decodeImage));
+
             const rect = node.getBoundingClientRect();
             return { x: rect.x, y: rect.y, width: rect.width, height: rect.height };
           })()`,
@@ -221,10 +272,15 @@ ${PAGE_CONTEXT_DEEP_DOM_HELPERS_SOURCE}
           frameOffsetY = frame.top
         }
 
+        // 页面表达式里的 scrollIntoView 已经改变主页面滚动位置，必须在滚动之后读取
+        const mainScroll = await readMainFrameScroll(tab.id)
+
         Object.assign(captureOptions, {
+          // 只截当前视口内可见部分：不临时改设备度量，避免截图后把用户视口留在错误尺寸。
+          captureBeyondViewport: false,
           clip: {
-            x: Math.max(0, elementRect.x + frameOffsetX),
-            y: Math.max(0, elementRect.y + frameOffsetY),
+            x: Math.max(0, elementRect.x + frameOffsetX + mainScroll.x),
+            y: Math.max(0, elementRect.y + frameOffsetY + mainScroll.y),
             width: Math.max(1, elementRect.width),
             height: Math.max(1, elementRect.height),
             // scale 取 1：输出像素 = CSS 尺寸 × devicePixelRatio，与 frame clip 的既有行为一致
@@ -233,10 +289,11 @@ ${PAGE_CONTEXT_DEEP_DOM_HELPERS_SOURCE}
         })
       } else if (effectiveFrameSelector) {
         const frame = await resolveFrameTarget(tab.id, effectiveFrameSelector)
+        const mainScroll = await readMainFrameScroll(tab.id)
         Object.assign(captureOptions, {
           clip: {
-            x: Math.max(0, frame.left),
-            y: Math.max(0, frame.top),
+            x: Math.max(0, frame.left + mainScroll.x),
+            y: Math.max(0, frame.top + mainScroll.y),
             width: Math.max(1, frame.width),
             height: Math.max(1, frame.height),
             scale: 1,

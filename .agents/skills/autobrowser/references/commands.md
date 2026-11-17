@@ -19,13 +19,14 @@
 - `window new`
 - `frame <@fN|selector|top>`
 - `click` / `dblclick` / `fill` / `find` / `type` / `press` / `keyboard` / `hover` / `focus` / `select` / `check` / `uncheck` / `scroll` / `scrollintoview` / `drag` / `drop` / `upload`
+- `press <key>` 只接受一个键名（例如 Enter），不接受 selector 位置参数；先 `click` / `focus <selector>` 聚焦目标，否则按键发给当前焦点元素
 - `mousemove` / `mousedown` / `mouseup` / `mousewheel`
 - `locator` / `highlight`
 - `is`
 - `get`
 - `wait`
 - `snapshot`
-- `screenshot`
+- `screenshot [path] [--element <selector|@eN>] [--full]` — `--element` 会先把目标滚到视口中心并短暂等待懒加载图片 decode，不修改视口尺寸；超时后先用 `command status` 核验，不要重放
 - `eval`
 - `run <file.js>`
 - `cdp`
@@ -43,7 +44,7 @@
 - `downloads list` / `downloads clear`
 - `download <url|--media <index>> [output-path]`
 - `media list [--resolve] [--selector <css>] [--include-background]`
-- `network route` / `network unroute` / `network requests` / `network request` / `network har start` / `network har stop` / `network har status` / `network har recover`
+- `network route` / `network unroute` / `network requests` / `network request` / `network har start` / `network har stop` / `network har status` / `network har recover`（合法 action 仅 route|unroute|requests|request|export|har；network list 不存在，列请求用 `network requests`）
 - `script add [--stdin|--file <path>|--base64] <source>` / `script list` / `script remove <id|--all>`
 
 ## CLI 参数与回放
