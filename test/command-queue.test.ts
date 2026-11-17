@@ -217,6 +217,221 @@ describe('command queue', () => {
     ])
   })
 
+  test('keeps more than 100 commands for multi-agent status queries', async () => {
+    const queue = createCommandQueue()
+    for (let index = 0; index < 101; index += 1) {
+      await queue.enqueue('tab:1', async () => index, { id: `cmd-${index}` })
+    }
+
+    const ids = queue.list().map((entry) => entry.id)
+    // 多 AI 共用一个扩展时，101 条以内的记录都还必须能按 id 查询
+    expect(ids).toHaveLength(101)
+    expect(ids[0]).toBe('cmd-0')
+    expect(queue.wasEvicted('cmd-0')).toBe(false)
+    expect(queue.diagnostics()).toMatchObject({
+      historyLimit: 500,
+      lateResultLimit: 25,
+      restoredCount: 0,
+      evictedCount: 0,
+      lastPersistError: null,
+    })
+  })
+
+  test('evicts the oldest metadata beyond 500 entries and reports it', async () => {
+    const stored: Record<string, unknown> = {}
+    const storage = {
+      get: async () => stored,
+      set: async (items: Record<string, unknown>) => {
+        Object.assign(stored, items)
+      },
+    }
+    const queue = createCommandQueue({ storage })
+    await queue.ready()
+    for (let index = 0; index < 505; index += 1) {
+      await queue.enqueue('tab:1', async () => index, { id: `cmd-${index}`, command: 'snapshot' })
+    }
+    await flush(0)
+
+    const entries = queue.list()
+    expect(entries).toHaveLength(500)
+    expect(entries[0]).toMatchObject({ id: 'cmd-5', state: 'completed' })
+    expect(queue.wasEvicted('cmd-0')).toBe(true)
+    expect(queue.wasEvicted('cmd-4')).toBe(true)
+    expect(queue.wasEvicted('cmd-5')).toBe(false)
+    expect(queue.diagnostics()).toMatchObject({ evictedCount: 5, restoredCount: 0 })
+
+    // 淘汰清单和累计计数随历史一起持久化，重启后仍能区分“已淘汰”和“未知 id”
+    const restored = createCommandQueue({ storage })
+    await restored.ready()
+    expect(restored.list()).toHaveLength(500)
+    expect(restored.wasEvicted('cmd-4')).toBe(true)
+    expect(restored.wasEvicted('cmd-5')).toBe(false)
+    expect(restored.diagnostics()).toMatchObject({ evictedCount: 5, restoredCount: 500 })
+  })
+
+  test('keeps only the newest 25 late results and marks older ones as evicted', async () => {
+    const queue = createCommandQueue()
+    for (let index = 0; index < 30; index += 1) {
+      const id = `late-${index}`
+      const pending = queue.enqueue(
+        'tab:1',
+        () =>
+          new Promise<unknown>((resolve) => {
+            setTimeout(() => resolve({ index }), 0)
+          }),
+        { id },
+      )
+      expect(queue.cancel(id)).toBe(true)
+      await pending.catch(() => {})
+      await flush(5)
+    }
+    await flush(10)
+
+    const entries = queue.list()
+    const evicted = entries.filter((entry) => entry.resultEvicted)
+    const kept = entries.filter((entry) => entry.result !== undefined)
+    expect(evicted).toHaveLength(5)
+    expect(kept).toHaveLength(25)
+    // 最早的 5 份结果被裁掉，但记录本身（id/state/时间戳）保留
+    expect(evicted.map((entry) => entry.id)).toEqual([
+      'late-0',
+      'late-1',
+      'late-2',
+      'late-3',
+      'late-4',
+    ])
+    expect(evicted[0]).toMatchObject({ state: 'completed_late' })
+    expect(evicted[0]).not.toHaveProperty('result')
+    expect(evicted[0]?.finishedAt).toBeString()
+    expect(kept.map((entry) => entry.id)).toEqual(
+      Array.from({ length: 25 }, (_, index) => `late-${index + 5}`),
+    )
+    // 最新一份结果原样保留，且没有被误标为已裁
+    expect(kept.at(-1)).toMatchObject({ id: 'late-29', result: { index: 29 } })
+    expect(kept.at(-1)?.resultEvicted).toBeUndefined()
+    expect(queue.diagnostics().lateResultLimit).toBe(25)
+  })
+
+  test('preserves requestedAt and receivedAt across active, terminal, persist and restore', async () => {
+    const stored: Record<string, unknown> = {}
+    const storage = {
+      get: async () => stored,
+      set: async (items: Record<string, unknown>) => {
+        Object.assign(stored, items)
+      },
+    }
+    const queue = createCommandQueue({ storage })
+    await queue.ready()
+    let release!: () => void
+    const pending = queue.enqueue(
+      'tab:1',
+      () => new Promise<void>((resolve) => (release = resolve)),
+      {
+        id: 'timed',
+        requestedAt: '2026-11-17T07:24:24.893Z',
+        receivedAt: '2026-11-17T07:24:24.900Z',
+      },
+    )
+    // storage 模式下入队要等恢复完成，先 ready 再看 running 条目
+    await queue.ready()
+    await flush(0)
+    expect(queue.list()[0]).toMatchObject({
+      id: 'timed',
+      requestedAt: '2026-11-17T07:24:24.893Z',
+      receivedAt: '2026-11-17T07:24:24.900Z',
+    })
+
+    release()
+    await pending
+    await flush(0)
+    expect(queue.list()[0]).toMatchObject({
+      id: 'timed',
+      state: 'completed',
+      requestedAt: '2026-11-17T07:24:24.893Z',
+      receivedAt: '2026-11-17T07:24:24.900Z',
+    })
+
+    const restored = createCommandQueue({ storage })
+    await restored.ready()
+    expect(restored.list()[0]).toMatchObject({
+      id: 'timed',
+      requestedAt: '2026-11-17T07:24:24.893Z',
+      receivedAt: '2026-11-17T07:24:24.900Z',
+    })
+  })
+
+  test('records persist failures without breaking command outcomes', async () => {
+    const storage = {
+      get: async () => ({}),
+      set: async () => {
+        throw new Error('quota exceeded')
+      },
+    }
+    const queue = createCommandQueue({ storage })
+    await queue.ready()
+
+    await expect(queue.enqueue('tab:1', async () => 'done', { id: 'write-fails' })).resolves.toBe(
+      'done',
+    )
+    await flush(0)
+    expect(queue.diagnostics()).toMatchObject({ lastPersistError: 'quota exceeded' })
+    expect(queue.list()).toEqual([
+      expect.objectContaining({ id: 'write-fails', state: 'completed' }),
+    ])
+  })
+
+  test('records restore failures without breaking the queue', async () => {
+    const storage = {
+      get: async () => {
+        throw new Error('storage unavailable')
+      },
+      set: async () => {},
+    }
+    const queue = createCommandQueue({ storage })
+    await queue.ready()
+
+    // 读取历史失败要留下诊断，但队列本身仍要可用
+    expect(queue.diagnostics().lastRestoreError).toBe('storage unavailable')
+    await expect(queue.enqueue('tab:1', async () => 'done', { id: 'restore-fails' })).resolves.toBe(
+      'done',
+    )
+    expect(queue.list()).toEqual([
+      expect.objectContaining({ id: 'restore-fails', state: 'completed' }),
+    ])
+    expect(queue.diagnostics().lastRestoreError).toBe('storage unavailable')
+  })
+
+  test('restores history written before evictedIds and resultEvicted existed', async () => {
+    const legacy: Record<string, unknown> = {
+      'autobrowser.command-history.v1': {
+        commands: Array.from({ length: 3 }, (_, index) => ({
+          id: `old-${index}`,
+          key: 'tab:1',
+          state: 'completed',
+          enqueuedAt: '2026-01-01T00:00:00.000Z',
+          startedAt: '2026-01-01T00:00:00.000Z',
+          deadlineAt: null,
+          finishedAt: '2026-01-01T00:00:01.000Z',
+          error: null,
+        })),
+      },
+    }
+    const storage = {
+      get: async () => legacy,
+      set: async () => {},
+    }
+    const queue = createCommandQueue({ storage })
+    await queue.ready()
+
+    expect(queue.list().map((entry) => entry.id)).toEqual(['old-0', 'old-1', 'old-2'])
+    expect(queue.wasEvicted('old-0')).toBe(false)
+    expect(queue.diagnostics()).toMatchObject({
+      evictedCount: 0,
+      restoredCount: 3,
+      lastRestoreError: null,
+    })
+  })
+
   test('persists and restores command and workspace metadata', async () => {
     const stored: Record<string, unknown> = {}
     const storage = {

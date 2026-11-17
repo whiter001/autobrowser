@@ -254,7 +254,18 @@ export function createTabsCommandHandler({
             queryKey: { commandId },
             getKey: (item) => String(item.id),
           })
-          return { commands: items, total: filtered.length, pagination }
+          return {
+            commands: items,
+            total: filtered.length,
+            pagination,
+            // diagnostics 里带 lastRestoreError：恢复失败时历史为空不代表没有历史
+            diagnostics: commandQueue.diagnostics(),
+            // status 未命中时区分“明确被上限淘汰”和“当前历史与有界淘汰清单均未命中”；
+            // 后者不能证明扩展从未收到该 id（旧版本记录、淘汰清单有界、恢复失败都可能未命中）
+            ...(action === 'status' && commandId
+              ? { evicted: commandQueue.wasEvicted(commandId) }
+              : {}),
+          }
         }
         if (action === 'cancel') {
           const commandId = readStringArg(args, 'commandId')

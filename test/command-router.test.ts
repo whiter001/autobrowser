@@ -79,6 +79,10 @@ export function createMinimalRouter(overrides?: {
     method: string,
     params?: Record<string, unknown>,
   ) => Promise<unknown>
+  commandQueueStorage?: {
+    get: (keys: string[]) => Promise<Record<string, unknown>>
+    set: (items: Record<string, unknown>) => Promise<void>
+  }
 }) {
   const cdpCalls: Array<{ tabId: number; method: string; params?: Record<string, unknown> }> = []
   const snapshotCalls: Array<{ tabId: unknown; frameSelector: unknown; options?: unknown }> = []
@@ -467,6 +471,7 @@ export function createMinimalRouter(overrides?: {
     listTabs: (overrides?.listTabs ?? (async () => [])) as never,
     getTargetTab: (overrides?.getTargetTab ?? (async () => ({ id: 1 }))) as never,
     createTab: overrides?.createTab,
+    commandQueueStorage: overrides?.commandQueueStorage,
     sendDebuggerCommand: async (
       tabId: number,
       method: string,
@@ -2302,6 +2307,90 @@ describe('workspace tab group display control', () => {
     await expect(
       router.handleCommand({ command: 'workspace', args: { action: 'current' } }),
     ).rejects.toThrow('requires a workspace')
+  })
+})
+
+describe('command history diagnostics', () => {
+  test('forwards requestedAt and receivedAt into the recorded history', async () => {
+    const { router } = createMinimalRouter()
+    const requestedAt = '2026-11-17T07:24:24.893Z'
+    await router.handleCommand({
+      command: 'snapshot',
+      id: 'timed-router',
+      requestedAt,
+      args: { tabId: 1 },
+    })
+
+    const status = (await router.handleCommand({
+      command: 'command',
+      args: { action: 'status', commandId: 'timed-router' },
+    })) as { commands: Array<Record<string, unknown>> }
+
+    expect(status.commands[0]).toMatchObject({ id: 'timed-router', requestedAt })
+    // receivedAt 由扩展收到命令时生成；只断言存在且可解析，不依赖它与 requestedAt 的时钟大小关系
+    const receivedAt = status.commands[0]?.receivedAt
+    expect(receivedAt).toBeString()
+    expect(Number.isNaN(Date.parse(receivedAt as string))).toBe(false)
+  })
+
+  test('distinguishes an evicted command id from an unknown id', async () => {
+    const now = '2026-01-01T00:00:00.000Z'
+    const commands = Array.from({ length: 501 }, (_, index) => ({
+      id: `hist-${index}`,
+      key: 'tab:1',
+      command: 'snapshot',
+      workspace: null,
+      state: 'completed',
+      enqueuedAt: now,
+      startedAt: now,
+      deadlineAt: null,
+      finishedAt: now,
+      error: null,
+    }))
+    const storage = {
+      get: async () => ({ 'autobrowser.command-history.v1': { commands } }),
+      set: async () => {},
+    }
+    const { router } = createMinimalRouter({ commandQueueStorage: storage })
+
+    const evicted = (await router.handleCommand({
+      command: 'command',
+      args: { action: 'status', commandId: 'hist-0' },
+    })) as Record<string, unknown>
+    expect(evicted).toMatchObject({
+      commands: [],
+      total: 0,
+      evicted: true,
+      diagnostics: {
+        historyLimit: 500,
+        lateResultLimit: 25,
+        evictedCount: 1,
+        lastRestoreError: null,
+      },
+    })
+    expect(evicted.pagination).toBeDefined()
+
+    const kept = (await router.handleCommand({
+      command: 'command',
+      args: { action: 'status', commandId: 'hist-1' },
+    })) as Record<string, unknown>
+    expect(kept).toMatchObject({ total: 1, evicted: false })
+
+    const unknown = (await router.handleCommand({
+      command: 'command',
+      args: { action: 'status', commandId: 'never-seen' },
+    })) as Record<string, unknown>
+    expect(unknown).toMatchObject({ total: 0, evicted: false })
+
+    const list = (await router.handleCommand({
+      command: 'command',
+      args: { action: 'list' },
+    })) as { commands: unknown[]; total: number; diagnostics: Record<string, unknown> }
+    // list 仍保持原来的 commands/total 契约，只额外附带诊断
+    expect(list.total).toBe(500)
+    expect(list.commands.length).toBeGreaterThan(0)
+    expect(list.commands.length).toBeLessThanOrEqual(500)
+    expect(list.diagnostics).toMatchObject({ restoredCount: 500, evictedCount: 1 })
   })
 })
 

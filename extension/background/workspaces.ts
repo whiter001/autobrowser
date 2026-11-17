@@ -90,14 +90,24 @@ export function createWorkspaceManager({
   let loadPromise: Promise<void> | null = null
   /** 自动认领只标记一次：由 command-router 在首次 resolve 后消费 */
   const autoAttachments = new Set<string>()
+  /** 串行化 storage 写，避免后台续租与生命周期操作并发写同一份状态 */
+  let persistChain: Promise<void> = Promise.resolve()
 
-  async function persist(): Promise<void> {
-    const stored: StoredWorkspaces = {
+  function serialize(): StoredWorkspaces {
+    return {
       workspaces: Array.from(state.workspaces.workspaces.values()),
       attachments: Array.from(state.workspaces.attachments.values()),
       groups: groupsController.serialize(),
     }
-    await storageSet({ [WORKSPACE_STORAGE_KEY]: stored }).catch(() => {})
+  }
+
+  function persist(): Promise<void> {
+    // 写入时再取快照：即便前面排队了多次续租，落盘的也是最新状态
+    const write = persistChain.then(async () => {
+      await storageSet({ [WORKSPACE_STORAGE_KEY]: serialize() }).catch(() => {})
+    })
+    persistChain = write
+    return write
   }
 
   // 分组展示层只读 attachments 判断归属，写状态时复用同一份持久化
@@ -183,7 +193,7 @@ export function createWorkspaceManager({
     return workspace
   }
 
-  async function touch(workspace: WorkspaceRecord, tabId?: number): Promise<void> {
+  function applyTouch(workspace: WorkspaceRecord, tabId?: number): void {
     const timestamp = now()
     workspace.lastActiveAt = new Date(timestamp).toISOString()
     if (tabId !== undefined) {
@@ -193,7 +203,18 @@ export function createWorkspaceManager({
         attachment.leaseExpiresAt = new Date(timestamp + leaseMs).toISOString()
       }
     }
+  }
+
+  /** 生命周期操作：等本次变更真正落盘 */
+  async function touch(workspace: WorkspaceRecord, tabId?: number): Promise<void> {
+    applyTouch(workspace, tabId)
     await persist()
+  }
+
+  /** 命令解析时的续租：内存立即生效，落盘转入后台串行队列，不能拖慢入队 */
+  function renewLease(workspace: WorkspaceRecord, tabId?: number): void {
+    applyTouch(workspace, tabId)
+    void persist()
   }
 
   function busyError(attachment: WorkspaceAttachment, tabId: number) {
@@ -380,7 +401,7 @@ export function createWorkspaceManager({
       throw error
     }
     workspace.targetTabId = tabId
-    await touch(workspace, tabId)
+    renewLease(workspace, tabId)
     return tabId
   }
 

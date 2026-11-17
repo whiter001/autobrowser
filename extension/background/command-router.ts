@@ -110,7 +110,7 @@ interface CommandRouterDependencies {
 
 interface CommandExecutionOptions {
   skipQueue?: boolean
-  request?: { id?: string; deadlineAt?: string }
+  request?: { id?: string; deadlineAt?: string; requestedAt?: string; receivedAt?: string }
   context?: CommandExecutionContext
 }
 
@@ -592,11 +592,16 @@ export function createCommandRouter({
     }
   }
 
-  async function handleCommand(message: CommandMessage) {
+  async function handleCommand(message: CommandMessage & { requestedAt?: unknown }) {
+    // receivedAt 在这里生成：它与 requestedAt/deadlineAt/enqueuedAt/startedAt 一起
+    // 把 relay→扩展接收→入队→执行→完成拆成可分别度量的区段。
+    const requestedAt = typeof message.requestedAt === 'string' ? message.requestedAt : undefined
     return await executeCommand(String(message.command || ''), message.args || {}, {
       request: {
         ...(typeof message.id === 'string' ? { id: message.id } : {}),
         ...(typeof message.deadlineAt === 'string' ? { deadlineAt: message.deadlineAt } : {}),
+        ...(requestedAt ? { requestedAt } : {}),
+        receivedAt: new Date().toISOString(),
       },
     })
   }

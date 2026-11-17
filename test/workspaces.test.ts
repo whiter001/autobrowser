@@ -241,6 +241,47 @@ describe('workspace target isolation', () => {
 })
 
 describe('workspace lease lifecycle', () => {
+  test('lease renewal resolves without waiting for a blocked storage write', async () => {
+    const storage = new Map<string, unknown>()
+    let blocked = false
+    let releaseWrite!: () => void
+    const writeGate = new Promise<void>((resolve) => {
+      releaseWrite = resolve
+    })
+    let blockedWriteStarted!: () => void
+    const blockedWriteEntered = new Promise<void>((resolve) => {
+      blockedWriteStarted = resolve
+    })
+    const manager = createWorkspaceManager({
+      state: createExtensionState(1),
+      getTargetTab: async (input) => ({ id: tabIdFromInput(input) }) as never,
+      storageGet: async () => ({}),
+      storageSet: async (items: Record<string, unknown>) => {
+        if (blocked) {
+          blockedWriteStarted()
+          await writeGate
+        }
+        for (const [key, value] of Object.entries(items)) storage.set(key, value)
+      },
+    })
+    await manager.attach('ai-a', 1)
+
+    // attach 之后让续租落盘卡住：resolveCommandTab 必须在写入完成前返回
+    blocked = true
+    const renewal = manager.resolveCommandTab('ai-a', 'snapshot', {})
+    const outcome = await Promise.race([
+      renewal.then(() => 'resolved'),
+      new Promise<string>((resolve) => setTimeout(() => resolve('blocked'), 150)),
+    ])
+    expect(outcome).toBe('resolved')
+    // 续租确实发起了后台写，只是不阻塞调用方
+    await blockedWriteEntered
+    await expect(renewal).resolves.toBe(1)
+
+    blocked = false
+    releaseWrite()
+  })
+
   test('expiry releases ownership without closing or reloading the page', async () => {
     let timestamp = 1_000
     const state = createExtensionState(1)

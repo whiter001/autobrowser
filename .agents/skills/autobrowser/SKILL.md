@@ -32,7 +32,7 @@ autobrowser 是面向 Chrome/Edge 的浏览器自动化 CLI，通过本地 relay
 - 先 `tab list` 看 `workspace`/`attachment`/`attachable`，对合适的 `attachable:true` 现有标签用 `tab attach <tN>` 复用，保留登录/表单/筛选和排查现场；只有没有合适空闲标签或确需独立环境才 `tab new`/`open`/`session`。被占用是 `TAB_BUSY`，不要强接管；`--readonly` 写操作返回 `WORKSPACE_READONLY`。
 - 无目标时自动认领空闲 tab（active 优先，其余按 tabId 升序，`TAB_BUSY` 换下一个）；无空闲页时 `open` 创建并绑定，其他命令报 `WORKSPACE_TARGET_REQUIRED`。严格指定页面用 `--no-auto-attach`（batch 继承，不等于 `--no-workspace`）。
 - `tab detach`/`workspace release`/租约过期只解除归属，不关闭或重置页面；默认租约 1 小时并随命令续约。任务结束释放自己的标签，不要关闭其他 AI 仍在用的页面。
-- 同一 tab 命令 FIFO 串行，不要并发堆长等待；写操作前核对 URL/页面；超时先 `command status` + 页面状态。`command list/status` 历史带 `command` 与 `workspace`，可按 workspace 判断命令来源（不含 URL/selector/脚本）。
+- 同一 tab 命令 FIFO 串行，不要并发堆长等待；写操作前核对 URL/页面；超时先 `command status` + 页面状态。`command list/status` 历史带 `command`、`workspace` 和 `requestedAt`/`receivedAt`/`enqueuedAt`/`startedAt`，可分段定位 relay→接收→入队→执行耗时；`diagnostics` 与 `evicted` 用于区分淘汰和当前未命中（`evicted:false` 且无记录不等于从未收到；`lastRestoreError` 非空说明历史读取失败）（不含 URL/selector/脚本）。
 - 兜底目标跳过 `chrome-extension://`、`chrome://`、`edge://`、`devtools://`、`about:`。`tN` 由 Chrome tabId 派生（如 `t2058764132`），不是短序号；扩展重连、句柄表未重建时仍可用，已关闭 tab 报 `STALE_TAB_HANDLE`，先 `tab list`。
 - 会话清理、标签组、多 MCP workspace、完整租约边界见 [sessions-workspaces.md](references/sessions-workspaces.md)。
 

@@ -6,6 +6,13 @@ import {
 
 export type CommandExecutionContext = OperationContext
 
+/** 历史元数据上限：多 AI 共用一个扩展时，500 条以内都必须能按 id 查状态 */
+const HISTORY_LIMIT = 500
+/** 迟到结果通常是大快照，只保留最新若干份，旧条目仍保留状态与时间戳 */
+const LATE_RESULT_LIMIT = 25
+/** 淘汰 id 只用于区分“明确淘汰”和“未知 id”，有界保留避免存储无限增长 */
+const EVICTED_ID_LIMIT = 1000
+
 interface CommandQueueEntry {
   id: string
   key: string
@@ -22,6 +29,10 @@ interface CommandQueueEntry {
     | 'completed_late'
     | 'failed_late'
     | 'interrupted'
+  /** relay 侧生成请求的时间，用于拆解 relay→扩展的时间差；旧记录缺失 */
+  requestedAt?: string
+  /** 扩展收到命令的时间；与 requestedAt/enqueuedAt/startedAt 组合才能拆出接收前、入队前和同 tab 等待；旧记录缺失 */
+  receivedAt?: string
   enqueuedAt: string
   startedAt: string | null
   deadlineAt: string | null
@@ -29,6 +40,21 @@ interface CommandQueueEntry {
   error: string | null
   /** 仅迟到完成时保留结果，避免正常历史额外持有大快照 */
   result?: unknown
+  /** 迟到结果因超出保留上限被裁掉；条目本身仍可查询 */
+  resultEvicted?: boolean
+}
+
+export interface CommandQueueDiagnostics {
+  historyLimit: number
+  lateResultLimit: number
+  /** 本次扩展启动时从存储恢复的条目数（已按当前上限裁剪） */
+  restoredCount: number
+  /** 累计被上限淘汰的条目数，包含恢复时裁剪的部分 */
+  evictedCount: number
+  lastPersistError: string | null
+  lastPersistedAt: string | null
+  /** 本次启动读取历史失败时的错误信息；非空说明历史为空可能源于恢复失败，而不是没有历史 */
+  lastRestoreError: string | null
 }
 
 export interface CommandQueue {
@@ -40,11 +66,15 @@ export interface CommandQueue {
       deadlineAt?: string | null
       command?: string
       workspace?: string | null
+      requestedAt?: string | null
+      receivedAt?: string | null
     },
   ) => Promise<TResult>
   cancel: (id: string) => boolean
   reset: (key: string) => number
   list: () => CommandQueueEntry[]
+  diagnostics: () => CommandQueueDiagnostics
+  wasEvicted: (id: string) => boolean
   ready: () => Promise<void>
 }
 
@@ -56,6 +86,13 @@ export interface CommandQueueStorage {
 interface CommandQueueOptions {
   storage?: CommandQueueStorage
   storageKey?: string
+}
+
+interface PersistedCommandHistory {
+  commands?: unknown
+  /** 旧版本存储没有这两个字段；缺失时按空清单处理 */
+  evictedIds?: unknown
+  evictedCount?: unknown
 }
 
 interface QueueItem<TResult = unknown> extends CommandQueueEntry {
@@ -74,25 +111,96 @@ export function createCommandQueue(options: CommandQueueOptions = {}): CommandQu
   const queues = new Map<string, QueueItem[]>()
   const itemsById = new Map<string, QueueItem>()
   const history: CommandQueueEntry[] = []
+  const evictedIds: string[] = []
   const storageKey = options.storageKey || 'autobrowser.command-history.v1'
+  const storage = options.storage
   let persistChain: Promise<void> = Promise.resolve()
+  let restoredCount = 0
+  let evictedCount = 0
+  let lastPersistError: string | null = null
+  let lastPersistedAt: string | null = null
+  let lastRestoreError: string | null = null
+
+  function recordEviction(id: string): void {
+    evictedCount += 1
+    const existing = evictedIds.indexOf(id)
+    if (existing >= 0) evictedIds.splice(existing, 1)
+    evictedIds.push(id)
+    if (evictedIds.length > EVICTED_ID_LIMIT) {
+      evictedIds.splice(0, evictedIds.length - EVICTED_ID_LIMIT)
+    }
+  }
+
+  /** 恢复新记录与恢复旧存储共用同一套裁剪，保证上限只有一处定义 */
+  function trimHistory(): void {
+    while (history.length > HISTORY_LIMIT) {
+      const oldest = history.shift()
+      if (oldest) recordEviction(oldest.id)
+    }
+    const withResult = history.filter((entry) => entry.result !== undefined)
+    for (let index = 0; index < withResult.length - LATE_RESULT_LIMIT; index += 1) {
+      const entry = withResult[index]!
+      delete entry.result
+      entry.resultEvicted = true
+    }
+  }
+
+  function diagnostics(): CommandQueueDiagnostics {
+    return {
+      historyLimit: HISTORY_LIMIT,
+      lateResultLimit: LATE_RESULT_LIMIT,
+      restoredCount,
+      evictedCount,
+      lastPersistError,
+      lastPersistedAt,
+      lastRestoreError,
+    }
+  }
+
+  function wasEvicted(id: string): boolean {
+    return evictedIds.includes(id)
+  }
 
   function persist(): void {
-    if (!options.storage) return
-    const commands = list()
-    persistChain = persistChain
-      .then(async () => await options.storage!.set({ [storageKey]: { commands } }))
-      .catch(() => {})
+    if (!storage) return
+    persistChain = persistChain.then(async () => {
+      try {
+        await storage.set({
+          [storageKey]: { commands: list(), evictedIds: [...evictedIds], evictedCount },
+        })
+        lastPersistError = null
+        lastPersistedAt = new Date().toISOString()
+      } catch (error) {
+        // 存储失败只进入诊断，已完成的命令和后续命令都不能因此失败
+        lastPersistError = error instanceof Error ? error.message : String(error)
+      }
+    })
   }
 
   // storage.local 能跨 MV3 worker 重启保留状态；恢复时尚未结束的 Promise 已随旧 worker 消失，
   // 必须明确标为 interrupted，不能让 command status 返回空记录或永远 running。
-  const restoration = options.storage
-    ? options.storage
-        .get([storageKey])
+  const restoration = storage
+    ? Promise.resolve()
+        // storage.get 既可能返回 rejected promise，也可能同步抛错，都要落到诊断而不是中断队列
+        .then(async () => await storage.get([storageKey]))
         .then((stored) => {
-          const value = stored[storageKey] as { commands?: unknown } | undefined
+          lastRestoreError = null
+          const value = stored[storageKey] as PersistedCommandHistory | undefined
           if (!Array.isArray(value?.commands)) return
+          if (Array.isArray(value.evictedIds)) {
+            for (const id of value.evictedIds) {
+              if (typeof id === 'string') evictedIds.push(id)
+            }
+            if (evictedIds.length > EVICTED_ID_LIMIT) {
+              evictedIds.splice(0, evictedIds.length - EVICTED_ID_LIMIT)
+            }
+          }
+          // 旧版本没有累计计数：先以可查到的淘汰 id 数量兜底
+          const storedCount = value.evictedCount
+          evictedCount =
+            typeof storedCount === 'number' && Number.isFinite(storedCount) && storedCount >= 0
+              ? Math.max(storedCount, evictedIds.length)
+              : evictedIds.length
           for (const candidate of value.commands) {
             if (!candidate || typeof candidate !== 'object') continue
             const entry = candidate as CommandQueueEntry
@@ -109,9 +217,14 @@ export function createCommandQueue(options: CommandQueueOptions = {}): CommandQu
                 : {}),
             })
           }
-          if (history.length > 100) history.splice(0, history.length - 100)
+          // 旧版本按 100 条裁剪过；这里统一按当前上限补齐，并将被裁的 id 计入淘汰清单
+          trimHistory()
+          restoredCount = history.length
         })
-        .catch(() => {})
+        // 恢复失败只进诊断，不能让整个队列不可用：后续 enqueue 仍要能执行
+        .catch((error: unknown) => {
+          lastRestoreError = error instanceof Error ? error.message : String(error)
+        })
     : Promise.resolve()
 
   function recordHistory(
@@ -125,18 +238,20 @@ export function createCommandQueue(options: CommandQueueOptions = {}): CommandQu
       key: item.key,
       ...(item.command !== undefined ? { command: item.command } : {}),
       workspace: item.workspace ?? null,
+      ...(item.requestedAt !== undefined ? { requestedAt: item.requestedAt } : {}),
+      ...(item.receivedAt !== undefined ? { receivedAt: item.receivedAt } : {}),
       state,
       enqueuedAt: item.enqueuedAt,
       startedAt: item.startedAt,
       deadlineAt: item.deadlineAt,
       finishedAt: new Date().toISOString(),
       error,
-      ...(state === 'completed_late' ? { result } : {}),
+      ...(state === 'completed_late' && result !== undefined ? { result } : {}),
     }
     const existing = history.findIndex((candidate) => candidate.id === item.id)
     if (existing >= 0) history[existing] = entry
     else history.push(entry)
-    if (history.length > 100) history.splice(0, history.length - 100)
+    trimHistory()
     persist()
   }
 
@@ -217,6 +332,8 @@ export function createCommandQueue(options: CommandQueueOptions = {}): CommandQu
       deadlineAt?: string | null
       command?: string
       workspace?: string | null
+      requestedAt?: string | null
+      receivedAt?: string | null
     } = {},
   ): Promise<TResult> {
     const id = requestOptions.id || crypto.randomUUID()
@@ -227,6 +344,10 @@ export function createCommandQueue(options: CommandQueueOptions = {}): CommandQu
           key,
           ...(requestOptions.command !== undefined ? { command: requestOptions.command } : {}),
           workspace: requestOptions.workspace ?? null,
+          ...(requestOptions.requestedAt != null
+            ? { requestedAt: requestOptions.requestedAt }
+            : {}),
+          ...(requestOptions.receivedAt != null ? { receivedAt: requestOptions.receivedAt } : {}),
           state: 'queued',
           enqueuedAt: new Date().toISOString(),
           startedAt: null,
@@ -245,7 +366,7 @@ export function createCommandQueue(options: CommandQueueOptions = {}): CommandQu
         persist()
         pump(key)
       }
-      if (options.storage) void restoration.then(enqueueRestored)
+      if (storage) void restoration.then(enqueueRestored)
       else enqueueRestored()
     })
   }
@@ -295,6 +416,8 @@ export function createCommandQueue(options: CommandQueueOptions = {}): CommandQu
     cancel,
     reset,
     list,
+    diagnostics,
+    wasEvicted,
     ready: async () => await restoration,
   }
 }
