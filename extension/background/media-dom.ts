@@ -8,8 +8,15 @@
 /** 播放探测脚本的标记，测试用它识别"是否触发了播放" */
 export const MEDIA_PLAY_PROBE_MARKER = 'autobrowser:media-resolve-play'
 
-/** 播放探测里每个视频的最长播放时长（毫秒），总计不超过约 1 秒 */
+/** 播放探测里每个视频的最长播放时长（毫秒） */
 const MEDIA_PLAY_PROBE_MS = 600
+
+/**
+ * 播放启动超时（毫秒）。
+ * MSE 视频的 play() Promise 可能长期 pending（不 reject 也不 resolve），
+ * 没有上限时探测会一直挂住，因此给一个有限的启动预算。
+ */
+export const MEDIA_PLAY_START_TIMEOUT_MS = 2000
 
 /** 采集作用域的描述：既能表达用户限定的容器，也能如实表达默认作用域 */
 export interface MediaScope {
@@ -303,13 +310,23 @@ function mediaElementRegistry(doc: Document) {
 }
 
 /**
- * 播放探测脚本：静音短播 → 等待 → pause → 还原 muted/播放状态。
+ * 播放探测脚本：
+ * - 已经在播放（!paused）：不再调用 play()，直接视为播放成功，也不 pause/resume 或改写 muted，
+ *   只让上层短暂观察网络。MSE 视频重复 play() 可能长期 pending。
+ * - 原本暂停：静音短播 → 等待 → pause → 还原 muted。
+ * play() 的启动有有限超时，超时按失败上报，避免探测无限等待。
  * 只调用 play/pause，不做任何导航、跳转或刷新；只播放 token 验证的作用域内原元素。
  */
 export function buildMediaPlayProbeScript(options: {
   selector: string | null
   probeKey?: string
+  /** 播放启动超时（毫秒）；仅测试注入，生产使用 MEDIA_PLAY_START_TIMEOUT_MS */
+  startTimeoutMs?: number
 }): string {
+  const startTimeoutMs =
+    typeof options.startTimeoutMs === 'number' && Number.isFinite(options.startTimeoutMs)
+      ? Math.max(0, Math.floor(options.startTimeoutMs))
+      : MEDIA_PLAY_START_TIMEOUT_MS
   return `/* ${MEDIA_PLAY_PROBE_MARKER} */
 (async () => {
 ${buildMediaDomHelpersSource()}
@@ -327,36 +344,77 @@ ${buildMediaDomHelpersSource()}
   }
   const errors = [];
   let played = false;
+  let timedOut = false;
   const previousMuted = video.muted;
   const wasPlaying = !video.paused;
-  let started = false;
   try {
-    video.muted = true;
-    const promise = video.play();
-    if (promise && typeof promise.then === 'function') await promise;
-    started = true;
-    played = true;
+    if (wasPlaying) {
+      // 已经在播放：不调用 play/pause，也不改写 muted，只让上层观察已有流量。
+      played = true;
+    } else {
+      video.muted = true;
+      const promise = video.play();
+      if (promise && typeof promise.then === 'function') {
+        // 迟到的成功会真的开始播放，探测结束后必须立刻 pause，避免留下播放副作用。
+        promise.then(
+          () => {
+            if (!timedOut) return;
+            try { video.muted = true; } catch (error) { /* ignore */ }
+            try { video.pause(); } catch (error) { /* ignore */ }
+            try { video.muted = previousMuted; } catch (error) { /* ignore */ }
+          },
+          () => { /* ignore */ }
+        );
+        let settled = false;
+        await new Promise((resolve, reject) => {
+          const timer = setTimeout(() => {
+            if (settled) return;
+            settled = true;
+            timedOut = true;
+            resolve(null);
+          }, ${startTimeoutMs});
+          promise.then(
+            (value) => {
+              if (settled) return;
+              settled = true;
+              clearTimeout(timer);
+              resolve(value);
+            },
+            (error) => {
+              if (settled) return;
+              settled = true;
+              clearTimeout(timer);
+              reject(error);
+            }
+          );
+        });
+      }
+      if (!timedOut) {
+        played = true;
+      }
+    }
   } catch (error) {
     errors.push(error && error.message ? String(error.message) : String(error));
   }
-  if (started) {
+  if (played && !wasPlaying) {
     try {
       await new Promise((resolve) => setTimeout(resolve, ${MEDIA_PLAY_PROBE_MS}));
     } catch (error) { /* ignore */ }
     try { video.pause(); } catch (error) { /* ignore */ }
   }
-  try { video.muted = previousMuted; } catch (error) { /* ignore */ }
-  if (wasPlaying) {
-    try { await video.play(); } catch (error) { /* ignore */ }
+  if (!wasPlaying) {
+    try { video.muted = previousMuted; } catch (error) { /* ignore */ }
   }
   return {
     attempted: true,
     played: played,
     error: played
       ? null
-      : errors.length > 0
-        ? errors.join('; ')
-        : 'the browser refused to start playback'
+      : timedOut
+        ? 'playback start timed out'
+        : errors.length > 0
+          ? errors.join('; ')
+          : 'the browser refused to start playback'
   };
 })()`
 }

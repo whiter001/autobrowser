@@ -9,8 +9,9 @@
 ## 页面媒体采集与下载
 
 - 页面媒体：先 `autobrowser --tab t1 --frame top media list --selector 'article' --include-background --resolve`。确认有可信 HTTP(S) `sources/url` 后，假设返回 `pageEpoch=7`，使用 `autobrowser --tab t1 --frame top download --media 0 --selector 'article' --include-background --media-epoch 7 ./out.mp4`。index 是本次整个 scope 内按 DOM 顺序生成的编号，不是单个 article 内的编号；多容器命中时先结合 `scopeRoot`/`permalink` 和 `primarySource` 确认目标，再用于 `download --media`。index 仅在相同 tab/frame/scope/epoch 内有效，重新采集必须沿用 selector 和 include-background；epoch 不一致会失败，DOM 重排后应重新确认 index。
-- 媒体作用域：`--selector <css>` 把 DOM 采集和播放探测限定到匹配容器，未命中时连背景图也返回空，不回退整页。每条媒体的 `scopeRoot` 标明所属容器的下标、标签、id、data-testid 和 permalink，多容器命中时据此筛选，不必猜测媒体归属。`--include-background` 额外采集作用域内 CSS 背景图。`media list --wait-for <css> --timeout-ms <ms>` 在扩展内对同一已解析 tab/frame 先等待再采集，失败不继续。旧扩展缺少 scope、背景支持或 wait 回显时 CLI 拒绝 scoped 成功。
+- 媒体作用域：`--selector <css>` 把 DOM 采集和播放探测限定到匹配容器，未命中时连背景图也返回空，不回退整页。每条媒体的 `scopeRoot` 标明所属容器的下标、标签、id、data-testid 和 permalink，多容器命中时据此筛选，不必猜测媒体归属。`--include-background` 额外采集作用域内 CSS 背景图。`media list --wait-for <css> --timeout-ms <ms>` 在扩展内对同一已解析 tab/frame 先等待再采集，失败不继续。`--timeout-ms` 必须与 `--wait-for` 一起使用，单独使用会被 CLI 拒绝。旧扩展缺少 scope、背景支持或 wait 回显时 CLI 拒绝 scoped 成功。
 - 媒体溯源：返回 `observedAt/pageEpoch/pageUrl/scope/includeBackground` 及条目 `permalink/scopeRoot/primarySource`（dom/none）。仅 DOM currentSrc/source 和图片/CSS 及其已知高分辨率变体是可信源；X 图片缩略图会派生 `name=large` 到 `highResolutionCandidates`，`url/sources` 优先使用高分辨率地址，`currentSrc` 保留原值并由 `resolutionHint` 提示。历史 tab-wide 网络候选从不认领。`--resolve` 用 document 内稳定 token 验证原元素 connected 且仍属 scope 后静音短播；只有实际 played 才可记录播放期间新增候选到 `observedSources`（`unverified:true`）。并发流量不能证明归属，observedSources 不进入 sources/url，也不可用于下载；只有诊断候选时仍 complete=false 并有 warning。失败或身份不符诊断为空。采集/探测中 epoch 改变报 `STALE_MEDIA_STATE`，重新采集，不拼接旧结果。
+- 播放探测的副作用边界：已经在播放的视频（`!video.paused`）不再调用 `play()`（MSE 视频的 `play()` 可能长期 pending），直接视为播放成功，不调用 `pause()`，也不改写 `muted`；原本暂停的视频静音短播约 600ms 后 `pause()`，并还原 `muted` 与暂停状态。`play()` 的启动有 2 秒有限超时，超时报 `playback start timed out`（`item.error` 里带这句），不会无限等待；迟到的成功会被立刻 `pause()`，不会留下播放副作用。
 
 ## MSE `blob:` 视频
 
@@ -24,6 +25,8 @@
   # 从返回 URL 或 HAR 中选择 master m3u8，而不是某个分片
   autobrowser --tab t1 download '<master.m3u8>' out.mp4 --quality best --concurrency 4
   ```
+
+  没有可信 DOM 源的条目，其 `suggestedAction` 无论探测是否播放成功都会给出这条 `network har start` → reload/replay → `network har stop --include-urls` → 下载 master m3u8 的恢复路径；同一作用域里有多个无源视频时，先用 `--selector` 缩小范围再抓包，避免把流量算到别的视频头上。
 
   HLS 合并需要本机安装 `ffmpeg` 和 `ffprobe`。`observedSources` 为空只表示探测期间没有新增候选，不代表页面没有媒体请求。
 

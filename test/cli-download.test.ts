@@ -553,6 +553,32 @@ describe('cli download command', () => {
     })
   })
 
+  test('media list requires --wait-for when --timeout-ms is given', async () => {
+    const { context, requestCalls } = await createContext()
+    const { code, message } = await captureFailure(
+      async () => await mediaCommandRegistry.media!(['list', '--timeout-ms', '100'], context),
+    )
+    expect(code).toBe(1)
+    expect(message).toContain('--timeout-ms requires --wait-for')
+    expect(requestCalls).toHaveLength(0)
+
+    const withWait = await createContext({
+      mediaResult: { wait: { completed: true, selector: 'article' } },
+    })
+    expect(
+      await mediaCommandRegistry.media!(
+        ['list', '--wait-for', 'article', '--timeout-ms', '100'],
+        withWait.context,
+      ),
+    ).toBe(0)
+    expect(withWait.requestCalls[0]!.args).toEqual({
+      action: 'list',
+      resolve: false,
+      waitFor: 'article',
+      timeoutMs: 100,
+    })
+  })
+
   test('media list rejects duplicated options and a missing selector value', async () => {
     const { context, requestCalls } = await createContext()
     const duplicated = await captureFailure(

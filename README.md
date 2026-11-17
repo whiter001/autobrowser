@@ -312,7 +312,7 @@ autobrowser --tab t1 --frame top media list --selector 'article[data-role="tweet
 autobrowser --tab t1 --frame top download --media 0 --selector 'article[data-role="tweet"]' --include-background --media-epoch 7 ./out/video.mp4 --quality best
 ```
 
-`media list` 读取当前 frame 的 DOM 媒体源；`--resolve` 允许对没有真实源的视频静音短播以记录未验证网络诊断，不承诺解析出可下载流。后台播放可能受浏览器限制。`download --media` 会以相同 scope 重新采集，只下载可信 HTTP(S) `sources/url`，不会使用 `observedSources`。
+`media list` 读取当前 frame 的 DOM 媒体源；`--resolve` 允许对没有真实源的视频静音短播以记录未验证网络诊断，不承诺解析出可下载流。后台播放可能受浏览器限制。播放探测对已经在播放的视频不再调用 `play()`（MSE 视频的 `play()` 可能长期 pending），直接按播放成功处理且不打断其播放；对原本暂停的视频，`play()` 的启动有 2 秒有限超时，超时按 `playback start timed out` 失败，不会无限等待。`download --media` 会以相同 scope 重新采集，只下载可信 HTTP(S) `sources/url`，不会使用 `observedSources`。
 
 `media list` 的作用域：
 
@@ -320,7 +320,7 @@ autobrowser --tab t1 --frame top download --media 0 --selector 'article[data-rol
 - 不带 `--selector` 时沿用默认作用域：优先页面 `article` 容器内的可见媒体，其次 `article` 内的媒体，最后整页可见媒体。
 - `--include-background` 额外采集作用域内元素的 CSS `background-image`（优先 computed style，其次内联 style），同样以 `image` 条目返回。只返回 URL 和元数据，不读取也不执行页面内容。
 
-采集前可用 `media list --wait-for 'article[data-role="tweet"]' --selector 'article[data-role="tweet"]' --timeout-ms 15000` 等待目标选择器可见。等待与采集在扩展同一次 media 请求中对同一已解析 tab/frame 执行，不会因 ambient target 切换而漂移；等待失败不继续采集。`--wait-for` 与 `--selector` 独立，`--timeout-ms` 仅设置等待阶段预算（默认 30 秒），不限制后续发现/播放探测。
+采集前可用 `media list --wait-for 'article[data-role="tweet"]' --selector 'article[data-role="tweet"]' --timeout-ms 15000` 等待目标选择器可见。等待与采集在扩展同一次 media 请求中对同一已解析 tab/frame 执行，不会因 ambient target 切换而漂移；等待失败不继续采集。`--wait-for` 与 `--selector` 独立，`--timeout-ms` 必须与 `--wait-for` 一起使用（单独使用会被 CLI 拒绝），仅设置等待阶段预算（默认 30 秒），不限制后续发现/播放探测。
 
 导航也支持条件等待：`goto/open <url> --wait-for url <pattern>|selector <css> --timeout-ms <ms>`。超时预算也可写成 `--timeout <ms>`（`--timeout-ms` 的兼容别名，二者不可同时或重复出现）。导航与附加条件等待各使用该预算；URL 条件不会覆盖导航地址。只改变 hash 时是同文档导航，提交后回执带 `navigationType:"same-document"` 和 `documentReloaded:false`；`outcome:"completed"` 不代表 SPA 目标路由已经渲染，应使用 `--wait-for selector` 等待目标路由独有元素，应用需要整页初始化时再显式 `reload`。`tab new <url> --wait-until domcontentloaded` 支持与导航一致的等待阶段，也可用 `--wait-for selector <css> --timeout-ms <ms>` 等待最终条件；始终等待返回的新 tab handle，而不是活动标签页，超时仍在错误响应的 `result.tab` 中保留新 tab 信息。受管标签页会在初始导航前 attach，以保留早期网络请求。不带等待选项时输出不变。
 
@@ -332,9 +332,9 @@ autobrowser --tab t1 --frame top download --media 0 --selector 'article[data-rol
 
 网络归属采用严格保守契约：默认模式与 selector 模式都不认领历史 tab-wide 候选。即使播放期间新增请求，也可能来自 scope 外并发流量；只有实际 played 的探测才将新增候选放入 `observedSources`（每条 `unverified:true`），仅供诊断，绝不进入可下载的 `sources/url`，`download --media` 不使用它。失败或元素身份不符时诊断为空。只有 observedSources 而无可信 DOM 源仍为 `complete=false` 并给 warning，宁可 unresolved，不猜测下载。
 
-X 等站点的 MSE `blob:` 视频没有可信 DOM 源时，先执行 `network har start --include-pattern video.twimg.com`，刷新或重新播放目标视频后用 `network har stop --include-urls` 获取播放请求，再选择 master m3u8 执行 `download '<master.m3u8>' out.mp4 --quality best --concurrency 4`。HLS 合并需要本机安装 FFmpeg/FFprobe；`observedSources` 为空不代表 HAR 中也没有媒体请求。
+X 等站点的 MSE `blob:` 视频没有可信 DOM 源时，不要反复 `--resolve`：这类视频在 DOM 上永远拿不到可下载地址，`--resolve` 只会给出未验证诊断。此时改用 fresh HAR——`network har start --include-pattern video.twimg.com`，刷新或重新播放目标视频后用 `network har stop --include-urls` 获取播放请求，再选择 master m3u8 执行 `download '<master.m3u8>' out.mp4 --quality best --concurrency 4`。没有可信 DOM 源的条目（无论探测是否播放成功）的 `suggestedAction` 都会给出这条恢复路径；同一作用域里有多个无源视频时先提示用 `--selector` 缩小范围。HLS 合并需要本机安装 FFmpeg/FFprobe；`observedSources` 为空不代表 HAR 中也没有媒体请求。
 
-探测通过同一 document 内的稳定元素 token 找回原元素，并验证 connected 且仍属 scope；空 src、相同 src、删除、重排和替换不会让探测播放别的元素。采集开始记录 pageEpoch，采集/探测后或返回前 epoch 改变时报 `STALE_MEDIA_STATE`，必须重新采集。index 是本次整个 scope 内按 DOM 顺序生成的编号，不是单个 article 内的编号；多容器命中时先结合 `scopeRoot`/`permalink` 和 `primarySource` 确认目标。index 仅在相同 tab/frame/scope/epoch 内有效；`download --media` 重新 list 时须传相同 `--selector`/`--include-background`，并用 `--media-epoch <n>` 要求返回 epoch 完全一致，否则失败。epoch 不代表 DOM 不变，重排后应重新确认 index。CLI 对显式 scope、includeBackground 支持及 wait 完成要求响应明确回显，旧扩展缺少证明时拒绝成功。
+探测通过同一 document 内的稳定元素 token 找回原元素，并验证 connected 且仍属 scope；空 src、相同 src、删除、重排和替换不会让探测播放别的元素。探测只对原本暂停的视频调用 `play()`/`pause()`，静音短播约 600ms 后还原暂停与 muted 状态；已经在播放的视频不调用 `play()`/`pause()`，也不改写 muted。`play()` 的启动超过 2 秒仍未成功即报 `playback start timed out`，迟到的成功会被立刻 `pause()`，不会留下播放副作用。采集开始记录 pageEpoch，采集/探测后或返回前 epoch 改变时报 `STALE_MEDIA_STATE`，必须重新采集。index 是本次整个 scope 内按 DOM 顺序生成的编号，不是单个 article 内的编号；多容器命中时先结合 `scopeRoot`/`permalink` 和 `primarySource` 确认目标。index 仅在相同 tab/frame/scope/epoch 内有效；`download --media` 重新 list 时须传相同 `--selector`/`--include-background`，并用 `--media-epoch <n>` 要求返回 epoch 完全一致，否则失败。epoch 不代表 DOM 不变，重排后应重新确认 index。CLI 对显式 scope、includeBackground 支持及 wait 完成要求响应明确回显，旧扩展缺少证明时拒绝成功。
 
 下载行为：
 
@@ -427,6 +427,7 @@ bun example/verify-element-zoom.mjs     # 元素局部放大与还原
 bun example/verify-target-safety.mjs    # no-auto-attach、detach 与现场保留
 bun example/verify-spa-extraction.mjs   # 动态 SPA、复杂 DOM 与大结果 JSON 导出
 bun example/verify-feed-context.mjs     # 数字滚动、正文媒体/头像与转帖上下文
+bun example/verify-media-download.mjs   # MSE 降级、HAR 指引、HLS 与视频校验（需 FFmpeg）
 ```
 
 ## 面向 Agent 的引用

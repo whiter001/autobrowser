@@ -3,6 +3,7 @@ import {
   buildMediaCollectScript,
   buildMediaPlayProbeScript,
   MEDIA_PLAY_PROBE_MARKER,
+  MEDIA_PLAY_START_TIMEOUT_MS,
 } from '../extension/background/media-dom.js'
 
 /**
@@ -31,8 +32,21 @@ class FakeElement {
   computed: Record<string, string>
   played = 0
   paused = true
-  muted = false
+  mutedAssignments = 0
+  private _muted = false
+  get muted(): boolean {
+    return this._muted
+  }
+  set muted(value: boolean) {
+    this._muted = value
+    this.mutedAssignments += 1
+  }
   playError: string | null = null
+  /** play() 永不 settle，模拟 MSE 视频长期 pending 的 Promise */
+  playPending = false
+  /** pause() 的调用次数，用于验证探测没有留下播放副作用 */
+  pauseCalls = 0
+  private pendingPlay: (() => void) | null = null
 
   constructor(options: {
     tag: string
@@ -42,6 +56,9 @@ class FakeElement {
     duration?: number | null
     style?: Record<string, string>
     playError?: string | null
+    playPending?: boolean
+    playing?: boolean
+    muted?: boolean
   }) {
     this.tagName = options.tag.toUpperCase()
     this.attributes = options.attrs ?? {}
@@ -55,6 +72,9 @@ class FakeElement {
       ...options.style,
     }
     this.playError = options.playError ?? null
+    this.playPending = options.playPending ?? false
+    this.paused = options.playing !== true
+    this.muted = options.muted ?? false
     for (const child of options.children ?? []) this.append(child)
   }
 
@@ -93,13 +113,31 @@ class FakeElement {
     return found
   }
 
-  async play(): Promise<void> {
+  play(): Promise<void> {
     this.played += 1
-    if (this.playError) throw new Error(this.playError)
+    if (this.playPending) {
+      return new Promise<void>((resolve) => {
+        this.pendingPlay = () => {
+          this.paused = false
+          resolve()
+        }
+      })
+    }
+    if (this.playError) return Promise.reject(new Error(this.playError))
+    this.paused = false
+    return Promise.resolve()
   }
 
   pause(): void {
+    this.pauseCalls += 1
     this.paused = true
+  }
+
+  /** 让 pending 的 play() 迟到成功，用于验证探测不留播放副作用 */
+  resolvePendingPlay(): void {
+    const resolve = this.pendingPlay
+    this.pendingPlay = null
+    resolve?.()
   }
 }
 
@@ -190,10 +228,12 @@ function runProbeScript(options: {
   selector: string | null
   document: FakeDocument
   probeKey?: string
+  startTimeoutMs?: number
 }): Promise<{ attempted: boolean; played: boolean; error: string | null }> {
   const script = buildMediaPlayProbeScript({
     selector: options.selector,
     ...(options.probeKey ? { probeKey: options.probeKey } : {}),
+    ...(options.startTimeoutMs !== undefined ? { startTimeoutMs: options.startTimeoutMs } : {}),
   })
   expect(script).toContain(MEDIA_PLAY_PROBE_MARKER)
   const runner = new Function(
@@ -567,5 +607,103 @@ describe('media page script', () => {
     expect(result.played).toBe(true)
     expect(scopedVideo.played).toBe(1)
     expect(outsideVideo.played).toBe(0)
+  })
+
+  test('probe does not replay or pause a video that is already playing', async () => {
+    const article = new FakeElement({ tag: 'article' })
+    const video = article.append(
+      new FakeElement({
+        tag: 'video',
+        currentSrc: 'blob:https://example.com/playing',
+        playing: true,
+      }),
+    )
+    const root = new FakeElement({ tag: 'body' })
+    root.append(article)
+    const document = new FakeDocument(root)
+
+    const collected = runCollectScript({ selector: 'article', includeBackground: false, document })
+    video.mutedAssignments = 0
+    const result = await runProbeScript({
+      selector: 'article',
+      document,
+      probeKey: collected.items[0]!.probeKey as string,
+    })
+
+    expect(result.played).toBe(true)
+    expect(result.error).toBeNull()
+    // 已经在播放：不调用 play/pause，也不改写 muted 或播放状态
+    expect(video.played).toBe(0)
+    expect(video.pauseCalls).toBe(0)
+    expect(video.mutedAssignments).toBe(0)
+    expect(video.paused).toBe(false)
+    expect(video.muted).toBe(false)
+  })
+
+  test('probe plays a paused video briefly and restores the paused state', async () => {
+    const article = new FakeElement({ tag: 'article' })
+    const video = article.append(
+      new FakeElement({ tag: 'video', currentSrc: 'blob:https://example.com/paused' }),
+    )
+    const root = new FakeElement({ tag: 'body' })
+    root.append(article)
+    const document = new FakeDocument(root)
+
+    const collected = runCollectScript({ selector: 'article', includeBackground: false, document })
+    const result = await runProbeScript({
+      selector: 'article',
+      document,
+      probeKey: collected.items[0]!.probeKey as string,
+    })
+
+    expect(result.played).toBe(true)
+    expect(result.error).toBeNull()
+    expect(video.played).toBe(1)
+    expect(video.pauseCalls).toBe(1)
+    // 探测结束恢复原状态：仍然暂停、muted 还原
+    expect(video.paused).toBe(true)
+    expect(video.muted).toBe(false)
+  })
+
+  test('a pending play() times out and leaves no late playback side effect', async () => {
+    const article = new FakeElement({ tag: 'article' })
+    const video = article.append(
+      new FakeElement({
+        tag: 'video',
+        currentSrc: 'blob:https://example.com/mse',
+        playPending: true,
+      }),
+    )
+    const root = new FakeElement({ tag: 'body' })
+    root.append(article)
+    const document = new FakeDocument(root)
+
+    const collected = runCollectScript({ selector: 'article', includeBackground: false, document })
+    const result = await runProbeScript({
+      selector: 'article',
+      document,
+      probeKey: collected.items[0]!.probeKey as string,
+      startTimeoutMs: 50,
+    })
+
+    expect(result.played).toBe(false)
+    expect(result.error).toBe('playback start timed out')
+    expect(video.played).toBe(1)
+    expect(video.pauseCalls).toBe(0)
+    expect(video.muted).toBe(false)
+
+    // 迟到的成功必须被立刻 pause，否则探测结束后视频会自己播起来
+    video.resolvePendingPlay()
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(video.pauseCalls).toBe(1)
+    expect(video.paused).toBe(true)
+    expect(video.muted).toBe(false)
+  })
+
+  test('the default play start timeout is finite', () => {
+    expect(MEDIA_PLAY_START_TIMEOUT_MS).toBe(2000)
+    expect(buildMediaPlayProbeScript({ selector: null })).toContain(
+      `}, ${MEDIA_PLAY_START_TIMEOUT_MS})`,
+    )
   })
 })

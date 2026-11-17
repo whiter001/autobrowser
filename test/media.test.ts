@@ -118,6 +118,7 @@ describe('media domain completeness', () => {
     const { domain } = createHarness({ page: { items: [BLOB_VIDEO] } })
     const result = await domain.list(1, 'top')
     expect(result.media[0]?.error).toBeNull()
+    expect(result.media[0]?.suggestedAction).toContain('network har start')
     expect(result.complete).toBe(false)
     expect(result.warnings[0]).toContain('no resolved HTTP(S) source')
   })
@@ -202,6 +203,63 @@ describe('media domain completeness', () => {
     expect(result.media[0]?.error).not.toContain('observed network candidates are unverified')
     expect(result.media[0]?.suggestedAction).toContain('network har start')
     expect(result.media[0]?.suggestedAction).toContain('--include-urls')
+    expect(result.media[0]?.suggestedAction).toContain('master m3u8')
+  })
+
+  test('a blocked probe still points at the fresh HAR recovery path', async () => {
+    const { domain } = createHarness({
+      page: { items: [BLOB_VIDEO] },
+      probe: { played: false, error: 'playback start timed out' },
+    })
+    const result = await domain.list(1, 'top', { resolve: true })
+    const item = result.media[0]!
+    expect(item.error).toContain('playback start timed out')
+    expect(item.suggestedAction).toContain('network har start')
+    expect(item.suggestedAction).toContain('--include-urls')
+    expect(item.suggestedAction).toContain('master m3u8')
+  })
+
+  test('a video that was never probed still points at the fresh HAR recovery path', async () => {
+    const { domain } = createHarness({
+      page: { items: [{ ...BLOB_VIDEO, probeIndex: null }] },
+      probe: { played: true },
+    })
+    const result = await domain.list(1, 'top', { resolve: true })
+    const item = result.media[0]!
+    expect(item.error).toContain('not probed')
+    expect(item.suggestedAction).toContain('network har start')
+    expect(item.suggestedAction).toContain('--include-urls')
+  })
+
+  test('scoped and ambiguous guidance also mention the fresh HAR recovery path', async () => {
+    const scoped = await createHarness({ page: { items: [BLOB_VIDEO] } }).domain.list(1, 'top', {
+      selector: 'article',
+    })
+    expect(scoped.media[0]!.suggestedAction).toContain('network har start')
+    expect(scoped.media[0]!.suggestedAction).toContain('--include-urls')
+
+    const ambiguous = await createHarness({
+      page: { items: [BLOB_VIDEO, { ...BLOB_VIDEO, index: 1, probeIndex: 1 }] },
+    }).domain.list(1, 'top')
+    // 多视频时先提示缩小 scope，再给出抓包恢复路径
+    const ambiguousAction = ambiguous.media[0]!.suggestedAction!
+    expect(ambiguousAction).toContain('--selector')
+    expect(ambiguousAction).toContain('network har start')
+    expect(ambiguousAction.indexOf('--selector')).toBeLessThan(
+      ambiguousAction.indexOf('network har start'),
+    )
+  })
+
+  test('multiple unresolved videos narrow the scope before the fresh HAR path', async () => {
+    const { domain } = createHarness({
+      page: { items: [BLOB_VIDEO, { ...BLOB_VIDEO, index: 1, probeIndex: 1 }] },
+      probe: { played: true },
+    })
+    const result = await domain.list(1, 'top', { resolve: true })
+    const action = result.media[0]!.suggestedAction!
+    expect(action).toContain('--selector')
+    expect(action).toContain('network har start')
+    expect(action.indexOf('--selector')).toBeLessThan(action.indexOf('network har start'))
   })
 
   test('resolve count limit is reported and excess videos remain unresolved', async () => {

@@ -25,7 +25,8 @@ import type {
  * 安全边界：
  * - 不读取也不执行任何网络响应正文（不 fetch、不 eval 远端文本）；
  * - 页面与网络返回的一切都只当数据看，绝不当指令执行；
- * - 唯一的副作用是 resolve 模式下的一次静音短播放（随后 pause），不导航、不刷新。
+ * - 唯一的副作用是 resolve 模式下对暂停视频的一次静音短播放（随后 pause），不导航、不刷新；
+ *   已经在播放的视频不调用 play()/pause()，也不改写 muted。
  */
 
 /** 播放后等待新网络请求出现的时间上限（毫秒） */
@@ -37,14 +38,23 @@ const MEDIA_RESOLVE_MAX_VIDEOS = 3
 const MEDIA_AMBIGUOUS_SOURCES_ERROR =
   'multiple videos in scope have no fetchable source, so the observed network candidates cannot be attributed to one of them'
 
-const MEDIA_AMBIGUOUS_SOURCES_SUGGESTED_ACTION =
-  'Narrow the scope with --selector or expose a direct DOM source manually. --resolve only provides unverified network diagnostics.'
+/**
+ * 没有可信 DOM 源（blob/MSE）时的统一恢复路径。
+ * 播放探测拿不到可下载源，反复 --resolve 也不会有结果，必须改用 fresh HAR 抓真实请求。
+ */
+const MEDIA_FRESH_HAR_ACTION =
+  'Capture a fresh HAR with network har start, reload or replay the video, then use network har stop --include-urls and download the master m3u8 or another verified HTTP(S) media URL directly.'
+
+/** 作用域里有多个无源视频时，先缩小范围再谈抓包，避免把流量算到别的视频头上 */
+const MEDIA_NARROW_SCOPE_ACTION =
+  'Narrow the scope with --selector so that only one video is in scope.'
+
+const MEDIA_AMBIGUOUS_SOURCES_SUGGESTED_ACTION = `${MEDIA_NARROW_SCOPE_ACTION} Or expose a direct DOM source manually. --resolve only provides unverified network diagnostics. ${MEDIA_FRESH_HAR_ACTION}`
 
 const MEDIA_SCOPED_SOURCE_ERROR =
   'this video has no direct source, and the network requests observed on this tab may belong to media outside the selected scope'
 
-const MEDIA_SCOPED_SOURCE_SUGGESTED_ACTION =
-  'Expose a direct DOM source manually; --resolve only provides unverified network diagnostics, not downloadable sources.'
+const MEDIA_SCOPED_SOURCE_SUGGESTED_ACTION = `Expose a direct DOM source manually; --resolve only provides unverified network diagnostics, not downloadable sources. ${MEDIA_FRESH_HAR_ACTION}`
 
 type MediaKind = 'image' | 'hls' | 'hls-variant' | 'mp4' | 'dash' | 'segment' | 'audio' | 'unknown'
 
@@ -825,14 +835,18 @@ export function createMediaDomain({ state, evaluateInTabContext }: MediaDomainDe
               : 'no verified DOM source; playback produced no new network candidates'
             : `unable to resolve the media stream: ${outcome.probe.error || 'playback was blocked'}`
         item.suggestedAction = outcome?.probe.played
-          ? 'Capture a fresh HAR with network har start, reload or replay the video, then use network har stop --include-urls and download a verified HTTP(S) playlist or media URL directly.'
-          : 'Narrow the scope with --selector, or expose a direct DOM source manually and collect again.'
+          ? ambiguous
+            ? `${MEDIA_NARROW_SCOPE_ACTION} ${MEDIA_FRESH_HAR_ACTION}`
+            : MEDIA_FRESH_HAR_ACTION
+          : `Narrow the scope with --selector, or expose a direct DOM source manually and collect again. ${MEDIA_FRESH_HAR_ACTION}`
       } else if (ambiguous) {
         item.error = MEDIA_AMBIGUOUS_SOURCES_ERROR
         item.suggestedAction = MEDIA_AMBIGUOUS_SOURCES_SUGGESTED_ACTION
       } else if (scopedBySelector) {
         item.error = MEDIA_SCOPED_SOURCE_ERROR
         item.suggestedAction = MEDIA_SCOPED_SOURCE_SUGGESTED_ACTION
+      } else {
+        item.suggestedAction = MEDIA_FRESH_HAR_ACTION
       }
     }
 
