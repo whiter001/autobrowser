@@ -571,6 +571,78 @@ export function parsePaginationArgs(rest: string[]): {
   return result
 }
 
+// 命令历史由所有 AI 共用一份，默认按最旧优先，翻页才能看到最近的记录；
+// --sort newest 把最近的排到前面，--for-tab 只看某个标签页的命令
+const COMMAND_LIST_OPTIONS = [
+  '--cursor',
+  '--for-tab',
+  '--limit',
+  '--page',
+  '--page-idx',
+  '--page-size',
+  '--sort',
+] as const
+
+export interface CommandListArgs {
+  pageIdx?: number
+  pageSize?: number
+  limit?: number
+  cursor?: string
+  sort?: 'oldest' | 'newest'
+  /** 只保留该标签页的命令；接受 tN 句柄或裸 tabId */
+  forTab?: string
+}
+
+export function parseCommandListArgs(rest: string[]): CommandListArgs {
+  const result: CommandListArgs = {}
+  for (let index = 0; index < rest.length; index += 1) {
+    const value = rest[index]
+    if (value === '--sort') {
+      const sortValue = rest[index + 1]
+      if (sortValue === undefined) throw new Error('missing sort value')
+      if (sortValue !== 'oldest' && sortValue !== 'newest') {
+        throw new Error(`unsupported command list sort: ${sortValue} (expected oldest|newest)`)
+      }
+      result.sort = sortValue
+      index += 1
+      continue
+    }
+    if (value === '--for-tab') {
+      const tabValue = rest[index + 1]
+      if (!tabValue) throw new Error('missing value for --for-tab')
+      result.forTab = tabValue
+      index += 1
+      continue
+    }
+    if (value === '--page' || value === '--page-idx') {
+      result.pageIdx = parseNumberArg(rest[++index], 'page idx', { min: 0, integer: true })
+      continue
+    }
+    if (value === '--page-size' || value === '--limit') {
+      const size = parseNumberArg(rest[++index], value === '--limit' ? 'limit' : 'page size', {
+        min: 1,
+        max: value === '--limit' ? 100 : 200,
+        integer: true,
+      })
+      if (value === '--limit') result.limit = size
+      else result.pageSize = size
+      continue
+    }
+    if (value === '--cursor') {
+      result.cursor = rest[++index]
+      if (!result.cursor) throw new Error('missing cursor value')
+      continue
+    }
+    if (value.startsWith('--')) {
+      throw new Error(
+        `unsupported command list option: ${value}${optionHintSuffix(value, COMMAND_LIST_OPTIONS)}`,
+      )
+    }
+    throw new Error(`unexpected extra command list argument: ${value}`)
+  }
+  return result
+}
+
 export function parseWaitArgs(rest: string[]): WaitArgs {
   const waitArgs: WaitArgs = {
     timeout: 30000,

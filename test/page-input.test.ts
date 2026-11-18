@@ -217,6 +217,36 @@ describe('evaluateScript top-level function body compatibility', () => {
   // 间接 eval 在全局作用域执行，连续两次即可复现页面里的"重复声明"现场
   // oxlint-disable-next-line no-eval -- 只有间接 eval 能模拟页面全局执行
   const runInPageScope = (expression: string) => globalThis.eval(expression)
+  // 编译检查桩：compiles=false 模拟脚本含顶层 await/return，classic script 编译不过
+  const compileMock = (compiles: boolean) => ({
+    getFrameExecutionContext: async () => ({ tab: { id: 1 }, executionContextId: null }),
+    sendDebuggerCommand: async () => (compiles ? {} : { exceptionDetails: {} }),
+  })
+  // 解析失败没有运行期调用栈（hasRuntimeStack=false），运行期异常有栈（=true）
+  const parseError = (message: string) =>
+    Object.assign(new Error(`page evaluation failed: SyntaxError: ${message}`), {
+      hasRuntimeStack: false,
+    })
+  const runtimeError = (message: string) =>
+    Object.assign(new Error(`page evaluation failed: SyntaxError: ${message}`), {
+      hasRuntimeStack: true,
+    })
+  // 求值桩：calls 按顺序记录每次求值的表达式与选项，evaluate 按调用序号决定行为
+  const evalHarness = (
+    calls: Array<{ expression: string; options?: Record<string, unknown> }>,
+    evaluate: (callIndex: number) => unknown,
+    compilesAsClassic: boolean,
+  ) => ({
+    evaluateInTabContext: async (
+      _tabId: unknown,
+      expression: string,
+      options?: Record<string, unknown>,
+    ) => {
+      calls.push({ expression, options })
+      return await evaluate(calls.length - 1)
+    },
+    ...compileMock(compilesAsClassic),
+  })
 
   test('returns the completion value of a simple expression through the isolated wrapper', async () => {
     let expression = ''
@@ -251,44 +281,193 @@ describe('evaluateScript top-level function body compatibility', () => {
   })
 
   test('retries an illegal top-level return as an async IIFE', async () => {
-    const expressions: string[] = []
+    const calls: Array<{ expression: string; options?: Record<string, unknown> }> = []
+    const script = 'return { ok: true }'
     const pageInput = createPageInputDomain({
-      evaluateInTabContext: async (_tabId: unknown, expression: string) => {
-        expressions.push(expression)
-        if (expressions.length === 1) {
-          throw new Error('page evaluation failed: SyntaxError: Illegal return statement')
-        }
-        return { value: { ok: true } }
-      },
+      ...evalHarness(
+        calls,
+        (callIndex) => {
+          if (callIndex <= 1) throw parseError('Illegal return statement')
+          return { value: { ok: true } }
+        },
+        false,
+      ),
     } as never)
 
-    await expect(pageInput.evaluateScript(1, 'return { ok: true }', null)).resolves.toEqual({
-      ok: true,
-    })
-    expect(expressions).toHaveLength(2)
-    expect(expressions[0]?.endsWith(isolated('return { ok: true }'))).toBe(true)
-    expect(expressions[1]?.endsWith('(async () => {\nreturn { ok: true }\n})()')).toBe(true)
+    await expect(pageInput.evaluateScript(1, script, null)).resolves.toEqual({ ok: true })
+    // direct eval → replMode（同样不接受顶层 return）→ async IIFE
+    expect(calls).toHaveLength(3)
+    expect(calls[0]?.expression.endsWith(isolated(script))).toBe(true)
+    expect(calls[1]?.options?.replMode).toBe(true)
+    expect(calls[2]?.expression.endsWith(`(async () => {\n${script}\n})()`)).toBe(true)
   })
 
-  test('retries top-level await as an async IIFE', async () => {
-    const expressions: string[] = []
+  test('falls back to async IIFE when a script mixes top-level await and return', async () => {
+    const calls: Array<{ expression: string; options?: Record<string, unknown> }> = []
     const script = 'const result = await Promise.resolve(42);\nreturn result'
     const pageInput = createPageInputDomain({
-      evaluateInTabContext: async (_tabId: unknown, expression: string) => {
-        expressions.push(expression)
-        if (expressions.length === 1) {
-          throw new Error(
-            'page evaluation failed: SyntaxError: await is only valid in async functions and the top level bodies of modules',
-          )
-        }
-        return { value: 42 }
-      },
+      ...evalHarness(
+        calls,
+        (callIndex) => {
+          if (callIndex === 0) throw parseError('await is only valid in async functions')
+          if (callIndex === 1) throw parseError('Illegal return statement')
+          return { value: 42 }
+        },
+        false,
+      ),
     } as never)
 
     await expect(pageInput.evaluateScript(1, script, null)).resolves.toBe(42)
-    expect(expressions).toHaveLength(2)
-    expect(expressions[0]?.endsWith(isolated(script))).toBe(true)
-    expect(expressions[1]?.endsWith(`(async () => {\n${script}\n})()`)).toBe(true)
+    expect(calls).toHaveLength(3)
+    expect(calls[2]?.expression.endsWith(`(async () => {\n${script}\n})()`)).toBe(true)
+  })
+
+  test('retries top-level await as a replMode evaluation that keeps the completion value', async () => {
+    const calls: Array<{ expression: string; options?: Record<string, unknown> }> = []
+    const script = 'const result = await Promise.resolve(42);\nresult'
+    const pageInput = createPageInputDomain({
+      ...evalHarness(
+        calls,
+        (callIndex) => {
+          if (callIndex === 0) throw parseError('await is only valid in async functions')
+          return { value: 42 }
+        },
+        false,
+      ),
+    } as never)
+
+    await expect(pageInput.evaluateScript(1, script, null)).resolves.toBe(42)
+    expect(calls).toHaveLength(2)
+    expect(calls[0]?.expression.endsWith(isolated(script))).toBe(true)
+    // replMode 直接送原始脚本：顶层 await 由 CDP 解析，完成值不再被 async IIFE 吃掉
+    expect(calls[1]?.expression.endsWith(script)).toBe(true)
+    expect(calls[1]?.expression).not.toContain('eval(')
+    expect(calls[1]?.options?.replMode).toBe(true)
+  })
+
+  test('falls back to replMode when a nested top-level await breaks the direct eval parse', async () => {
+    const calls: Array<{ expression: string; options?: Record<string, unknown> }> = []
+    const script = 'const body = await (await fetch("/api")).text();\nbody'
+    const pageInput = createPageInputDomain({
+      ...evalHarness(
+        calls,
+        (callIndex) => {
+          if (callIndex === 0) throw parseError('missing ) after argument list')
+          return { value: 'ok' }
+        },
+        false,
+      ),
+    } as never)
+
+    await expect(pageInput.evaluateScript(1, script, null)).resolves.toBe('ok')
+    expect(calls).toHaveLength(2)
+    expect(calls[1]?.expression.endsWith(script)).toBe(true)
+    expect(calls[1]?.expression).not.toContain('eval(')
+  })
+
+  test('does not fall back to async IIFE after a replMode runtime error', async () => {
+    const calls: Array<{ expression: string; options?: Record<string, unknown> }> = []
+    const script =
+      'const r = await Promise.resolve(1);\nthrow new SyntaxError("Illegal return statement")'
+    const pageInput = createPageInputDomain({
+      ...evalHarness(
+        calls,
+        (callIndex) => {
+          if (callIndex === 0) throw parseError('await is only valid in async functions')
+          // replMode 编译通过，但脚本运行期抛出与解析器同款的 SyntaxError
+          throw runtimeError('Illegal return statement')
+        },
+        false,
+      ),
+    } as never)
+
+    await expect(pageInput.evaluateScript(1, script, null)).rejects.toThrow(
+      'Illegal return statement',
+    )
+    // direct + replMode 执行，共 2 次；不再进入 async IIFE 重放脚本
+    expect(calls).toHaveLength(2)
+    expect(calls[1]?.options?.replMode).toBe(true)
+  })
+
+  test('uses executionContextId for the compile check in an isolated world', async () => {
+    const compileParams: Array<Record<string, unknown>> = []
+    const pageInput = createPageInputDomain({
+      evaluateInTabContext: async () => {
+        throw parseError('await is only valid in async functions')
+      },
+      getFrameExecutionContext: async () => ({ tab: { id: 1 }, executionContextId: 9 }),
+      sendDebuggerCommand: async (
+        _tabId: unknown,
+        _method: string,
+        params: Record<string, unknown>,
+      ) => {
+        compileParams.push(params)
+        return { exceptionDetails: {} }
+      },
+    } as never)
+
+    await expect(pageInput.evaluateScript(1, 'await Promise.resolve(1)', null)).rejects.toThrow()
+    // Runtime.compileScript 的上下文参数是 executionContextId，不是 Runtime.evaluate 的 contextId
+    expect(compileParams).toHaveLength(1)
+    expect(compileParams[0]).toMatchObject({ executionContextId: 9, persistScript: false })
+    expect(compileParams[0]).not.toHaveProperty('contextId')
+  })
+
+  test('does not retry scripts after a runtime SyntaxError', async () => {
+    const expressions: string[] = []
+    const pageInput = createPageInputDomain({
+      evaluateInTabContext: async (_tabId: unknown, expression: string) => {
+        expressions.push(expression)
+        throw new Error(
+          'page evaluation failed: SyntaxError: Unexpected token i in JSON at position 0',
+        )
+      },
+      ...compileMock(true),
+    } as never)
+
+    await expect(pageInput.evaluateScript(1, 'JSON.parse("{")', null)).rejects.toThrow(
+      'Unexpected token i in JSON',
+    )
+    // 运行期错误说明脚本已经执行过，重放会带来副作用
+    expect(expressions).toHaveLength(1)
+  })
+
+  test('does not retry a script that throws a parser-looking SyntaxError at runtime', async () => {
+    const expressions: string[] = []
+    const pageInput = createPageInputDomain({
+      evaluateInTabContext: async (_tabId: unknown, expression: string) => {
+        expressions.push(expression)
+        // 脚本运行期主动抛出与解析器同款的 SyntaxError 文案
+        throw new Error('page evaluation failed: SyntaxError: missing ) after argument list')
+      },
+      ...compileMock(true),
+    } as never)
+
+    // 脚本能编译成 classic script，说明 direct eval 的失败发生在运行期，脚本已执行过
+    await expect(
+      pageInput.evaluateScript(1, 'throw new SyntaxError("missing ) after argument list")', null),
+    ).rejects.toThrow('missing ) after argument list')
+    expect(expressions).toHaveLength(1)
+  })
+
+  test('does not retry when the compile check itself fails', async () => {
+    const expressions: string[] = []
+    const pageInput = createPageInputDomain({
+      evaluateInTabContext: async (_tabId: unknown, expression: string) => {
+        expressions.push(expression)
+        throw new Error(
+          'page evaluation failed: SyntaxError: await is only valid in async functions and the top level bodies of modules',
+        )
+      },
+      getFrameExecutionContext: async () => {
+        throw new Error('tab is gone')
+      },
+    } as never)
+
+    await expect(pageInput.evaluateScript(1, 'await Promise.resolve(1)', null)).rejects.toThrow(
+      'await is only valid in async functions',
+    )
+    expect(expressions).toHaveLength(1)
   })
 
   test('does not retry scripts after other evaluation errors', async () => {
@@ -298,6 +477,7 @@ describe('evaluateScript top-level function body compatibility', () => {
         expressions.push(expression)
         throw new Error('page evaluation failed: ReferenceError: missing is not defined')
       },
+      ...compileMock(true),
     } as never)
 
     await expect(pageInput.evaluateScript(1, 'missing', null)).rejects.toThrow(

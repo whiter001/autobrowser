@@ -1,6 +1,6 @@
 import { isRecord, shouldOpenInNewTab, type CommandResponse } from '../client.js'
 import { CliUsageError } from '../cli-error.js'
-import { parseNumberArg, parsePaginationArgs } from '../parse.js'
+import { parseCommandListArgs, parseNumberArg } from '../parse.js'
 import { optionHintSuffix } from '../option-hints.js'
 import {
   helpRequested,
@@ -239,7 +239,7 @@ async function handleCommandControl(
   // switch 分支集合就是 command 的实现面，测试会拿它和 action 表核对。
   switch (commandAction) {
     case 'list': {
-      const pagination = parseOrThrow(() => parsePaginationArgs(rest.slice(1)))
+      const pagination = parseOrThrow(() => parseCommandListArgs(rest.slice(1)))
       return await runActionCommand(context, 'command', { action: 'list', ...pagination })
     }
     case 'status': {

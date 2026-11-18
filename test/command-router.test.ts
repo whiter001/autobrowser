@@ -2394,6 +2394,92 @@ describe('command history diagnostics', () => {
   })
 })
 
+describe('command list ordering and tab scope', () => {
+  test('sorts newest first and scopes the list to one tab', async () => {
+    const { router } = createMinimalRouter()
+    await router.handleCommand({ command: 'snapshot', id: 'cmd-tab1-a', args: { tabId: 1 } })
+    await Bun.sleep(2)
+    await router.handleCommand({ command: 'snapshot', id: 'cmd-tab2-a', args: { tabId: 2 } })
+    await Bun.sleep(2)
+    await router.handleCommand({ command: 'snapshot', id: 'cmd-tab1-b', args: { tabId: 1 } })
+
+    const newest = (await router.handleCommand({
+      command: 'command',
+      args: { action: 'list', sort: 'newest' },
+    })) as { commands: Array<{ id: string }>; total: number }
+
+    expect(newest.total).toBe(3)
+    expect(newest.commands.map((entry) => entry.id)).toEqual([
+      'cmd-tab1-b',
+      'cmd-tab2-a',
+      'cmd-tab1-a',
+    ])
+
+    const scoped = (await router.handleCommand({
+      command: 'command',
+      args: { action: 'list', forTab: 't2' },
+    })) as { commands: Array<{ id: string }>; total: number }
+
+    expect(scoped.total).toBe(1)
+    expect(scoped.commands[0]?.id).toBe('cmd-tab2-a')
+
+    // 裸 tabId 与 tN 句柄等价
+    const byId = (await router.handleCommand({
+      command: 'command',
+      args: { action: 'list', forTab: '2' },
+    })) as { total: number }
+    expect(byId.total).toBe(1)
+  })
+
+  test('keeps the oldest-first order by default', async () => {
+    const { router } = createMinimalRouter()
+    await router.handleCommand({ command: 'snapshot', id: 'cmd-oldest-a', args: { tabId: 1 } })
+    await Bun.sleep(2)
+    await router.handleCommand({ command: 'snapshot', id: 'cmd-oldest-b', args: { tabId: 1 } })
+
+    const list = (await router.handleCommand({
+      command: 'command',
+      args: { action: 'list' },
+    })) as { commands: Array<{ id: string }> }
+
+    expect(list.commands.map((entry) => entry.id)).toEqual(['cmd-oldest-a', 'cmd-oldest-b'])
+  })
+
+  test('paginates a newest-first list and rejects cursors from a different filter', async () => {
+    const { router } = createMinimalRouter()
+    for (let index = 0; index < 3; index += 1) {
+      await router.handleCommand({
+        command: 'snapshot',
+        id: `cmd-page-${index}`,
+        args: { tabId: 1 },
+      })
+      await Bun.sleep(2)
+    }
+
+    const first = (await router.handleCommand({
+      command: 'command',
+      args: { action: 'list', sort: 'newest', limit: 2 },
+    })) as { commands: Array<{ id: string }>; pagination: { nextCursor?: string } }
+
+    expect(first.commands.map((entry) => entry.id)).toEqual(['cmd-page-2', 'cmd-page-1'])
+    expect(first.pagination.nextCursor).toBeString()
+
+    const second = (await router.handleCommand({
+      command: 'command',
+      args: { action: 'list', sort: 'newest', limit: 2, cursor: first.pagination.nextCursor },
+    })) as { commands: Array<{ id: string }> }
+    expect(second.commands.map((entry) => entry.id)).toEqual(['cmd-page-0'])
+
+    // 筛选条件进入 cursor 指纹，跨条件复用会被拒绝
+    await expect(
+      router.handleCommand({
+        command: 'command',
+        args: { action: 'list', forTab: 't1', cursor: first.pagination.nextCursor },
+      }),
+    ).rejects.toMatchObject({ code: 'INVALID_CURSOR' })
+  })
+})
+
 describe('command history metadata', () => {
   test('records the command name and owning workspace for queued commands', async () => {
     const { router } = createMinimalRouter()

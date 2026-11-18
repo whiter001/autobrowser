@@ -461,10 +461,16 @@ describe('AutobrowserMcpServer.callTool', () => {
 
     await server.callTool('target', { action: 'clear' })
     await server.callTool('command_control', { action: 'cancel', commandId: 'cmd_1' })
+    await server.callTool('command_control', {
+      action: 'list',
+      sort: 'newest',
+      forTab: 't2',
+    })
 
     expect(mock.calls).toEqual([
       { command: 'target', args: { action: 'clear' } },
       { command: 'command', args: { action: 'cancel', commandId: 'cmd_1' } },
+      { command: 'command', args: { action: 'list', sort: 'newest', forTab: 't2' } },
     ])
   })
 

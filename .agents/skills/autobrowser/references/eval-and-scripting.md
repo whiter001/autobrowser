@@ -7,7 +7,7 @@
   - 需要复用或留档的脚本写成 `.js` 文件，用 `--file <path>`。
   - `--base64` 只用于机器生成的传输（调用方已经持有编码后的字节），不要作为人工手写的默认写法。
 - `eval` 适合执行小段页面上下文 JS，用于只读提取、状态检查或轻量验证。
-- 脚本默认在隔离的函数作用域里执行：顶层 `const`/`let`/`var`/`function` 不会写进页面全局，同一个脚本可以原样重复执行，不需要手工包 IIFE。单个表达式仍返回 completion value（最后一个表达式的值），多语句脚本可直接包含顶层 `return` 和 `await`，无需手工包装 async IIFE，用 `return` 返回结果。
+- 脚本默认在隔离的函数作用域里执行：顶层 `const`/`let`/`var`/`function` 不会写进页面全局，同一个脚本可以原样重复执行，不需要手工包 IIFE。单个表达式仍返回 completion value（最后一个表达式的值）。多语句脚本可以直接写顶层 `await`（按 REPL 条目求值，顶层 await 合法且保留完成值）和顶层 `return`（按 async 函数体求值，结果由 `return` 给出），都不需要手工包装 async IIFE；两种混用时以 `return` 为准。注意顶层 `await` 的 REPL 路径下 `var` 与 `function` 声明会落到页面全局，需要严格隔离时自己包一层 async IIFE。
 - CSS 属性选择器的值本身必须按 CSS 语法带引号，例如 `a[href*="/n/"]`——这正是最容易被命令行层层吞掉的一类源码。`not a valid selector` 表示脚本已解析并运行、页面拒绝了 CSS：原因既可能是引号被转义吃掉，也可能是选择器本身非法，不要把所有 selector 错误都归因成命令行引号问题。
 - PowerShell 用双引号包内联脚本会静默改写源码：`$USERPROFILE` 这类 `$` 变量会被插值（常见结果是空串且不报错），嵌套的 `"` 会被吃掉，`document.querySelector(".ant-tabs-tab")` 到达页面时变成不带引号的选择器并抛 `PAGE_EVALUATION_EXCEPTION`。凡是多行、含引号或含 `$` 的脚本一律走 `--stdin`/`--file`；结果"看起来没有数据"时先核对脚本实际传入的内容，不要先怀疑页面。
 
@@ -23,6 +23,7 @@ return links.slice(0, 10)
 ```
 
 - 页面执行启用 `awaitPromise`，可直接使用顶层 `await` 或返回 async IIFE / Promise 结果，不需要为异步采集手工拆成同步片段；长任务仍需设置合理 `--timeout-ms`。
+- 顶层 `await` 的脚本按 REPL 条目求值，返回值是最后一条表达式语句的值；如果最后一句返回的是 Promise 而没有 `await`，这个 Promise 不会被自动等待（结果是 `null`），需要显式写成 `await r.text()`。
 - 返回值必须可 JSON 序列化：`undefined`、DOM 节点、函数和循环引用都拿不到有效结果。提取时返回字符串、数字或普通对象（`el.textContent`、`Array.from(nodes).map((n) => n.textContent)`），不要把节点本身当返回值，否则看起来像"没取到数据"。
 - 脚本内抛异常返回 `PAGE_EVALUATION_EXCEPTION`（退出码 1，选择器没命中就取属性最常见），与参数错误 `CLI_INVALID_ARGUMENT` 不同：前者要修脚本里的判空和选择器，按参数问题重试只会重复失败。
 - `--timeout-ms <ms>` 只在确认脚本本身是长任务时使用；不要把它作为复杂流程失败后的默认处理。`concise` 默认限制 eval 结果为 32KiB，`detailed` 默认不设结果字节上限；显式 `--max-result-bytes <n>` 会覆盖两者，超限得到 `EVAL_RESULT_TOO_LARGE` 和实际字节数，不会静默截断。搬运 storage 等大状态时在页面侧先过滤 key、聚合或分页，不要默认提高上限；未设置上限且结果超过 256 KiB 时会走 upload，并与命令共享 deadline。

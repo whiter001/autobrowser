@@ -74,7 +74,7 @@ autobrowser 是面向 Chrome/Edge 的浏览器自动化 CLI，通过本地 relay
 - [commands.md](references/commands.md) — 全量命令、参数互斥/`--`、`replay`、MCP 映射。
 - [sessions-workspaces.md](references/sessions-workspaces.md) — 命名会话清理、workspace 优先级/标签组/租约、`TAB_BUSY`。
 - [network-and-har.md](references/network-and-har.md) — 请求 epoch/分页、HAR 限额/body/传输/recover。
-- [media-download.md](references/media-download.md) — download/HLS、媒体作用域与溯源、MSE `blob:` 流程、传输上限。
+- [media-download.md](references/media-download.md) — download/HLS、媒体作用域与溯源、MSE `blob:` 流程、X 视频选源与时长判据、传输上限。
 - [engines-and-webmcp.md](references/engines-and-webmcp.md) — WebDriver 能力边界、媒体仿真/设备预设、WebMCP。
 - [eval-and-scripting.md](references/eval-and-scripting.md) — eval 分流/PowerShell、`--element`、CDP、DOM 探测。
 - [advanced-automation.md](references/advanced-automation.md) — feed/collect、Playwright `run`、组件交互、拖放、SPA 采集。

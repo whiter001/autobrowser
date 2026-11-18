@@ -45,9 +45,15 @@ function createEvaluationTimeoutError(timeoutMs: number): ErrorWithCode {
   return error
 }
 
-function createPageEvaluationExceptionError(description: string): ErrorWithCode {
+function createPageEvaluationExceptionError(
+  description: string,
+  exceptionDetails?: { stackTrace?: { callFrames?: unknown[] } },
+): ErrorWithCode {
   const error = new Error(`page evaluation failed: ${description}`) as ErrorWithCode
   error.code = 'PAGE_EVALUATION_EXCEPTION'
+  // 解析失败发生在任何执行之前，没有运行期调用栈；有栈说明脚本已经开始执行。
+  // eval 的求值路径回退用这个区分"可以换求值方式"和"绝不能重放"。
+  error.hasRuntimeStack = Boolean(exceptionDetails?.stackTrace?.callFrames?.length)
   const invalidCssSelector =
     /failed to execute ['"](?:querySelector|querySelectorAll|matches|closest)['"]/i.test(
       description,
@@ -105,6 +111,7 @@ export function createPageEvaluation({
         exceptionDetails?: {
           text?: string
           exception?: { description?: string }
+          stackTrace?: { callFrames?: unknown[] }
         }
       }>(
         tab.id,
@@ -151,7 +158,7 @@ export function createPageEvaluation({
       const details = response.exceptionDetails
       const description = details.exception?.description || details.text || 'unknown error'
       if (isEvaluationTimeoutError(description)) throw createEvaluationTimeoutError(timeoutMs)
-      throw createPageEvaluationExceptionError(description)
+      throw createPageEvaluationExceptionError(description, details)
     }
     return {
       tab,

@@ -24,6 +24,8 @@ export interface ErrorWithCode extends Error {
   ref?: string
   expectedPageEpoch?: number
   currentPageEpoch?: number
+  /** 页面求值异常是否带运行期调用栈；false 表示脚本在编译期就被拒绝，尚未执行 */
+  hasRuntimeStack?: boolean
 }
 
 export interface DialogState {
@@ -355,6 +357,11 @@ export interface EvaluateInTabContextOptions extends Record<string, unknown> {
   frameSelector?: string
   /** Runtime.evaluate 的执行超时（毫秒），缺省 25000（小于 server 的命令超时 30s） */
   timeoutMs?: number
+  /**
+   * Runtime.evaluate 的 replMode：按 REPL 条目求值，原生支持顶层 await，
+   * 且顶层 const/let 不会泄漏到页面全局（重复执行不会 "already declared"）。
+   */
+  replMode?: boolean
 }
 
 export interface FrameExecutionContext {

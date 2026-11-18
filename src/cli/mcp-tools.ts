@@ -584,10 +584,22 @@ export const MCP_TOOLS: McpToolDefinition[] = [
         action: { type: 'string', enum: ['list', 'status', 'cancel', 'reset'] },
         commandId: { type: 'string', description: 'Command id required by cancel.' },
         handle: { type: 'string', description: 'Target queue handle for reset.' },
+        sort: {
+          type: 'string',
+          enum: ['oldest', 'newest'],
+          description: 'List order; newest puts the most recent commands first.',
+        },
+        forTab: {
+          type: 'string',
+          description: 'Only list commands of this tab handle (tN) or tab id.',
+        },
       },
       required: ['action'],
     },
-    toArgs: (args) => ({ action: args.action, ...onlyDefined(args, ['commandId', 'handle']) }),
+    toArgs: (args) => ({
+      action: args.action,
+      ...onlyDefined(args, ['commandId', 'handle', 'sort', 'forTab']),
+    }),
   },
   {
     name: 'tab_new',

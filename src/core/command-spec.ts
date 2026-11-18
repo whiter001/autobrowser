@@ -1194,6 +1194,16 @@ function validateCommandArgsShape(command: string, args: unknown): void {
       readStringField(normalizedArgs, 'commandId', command, { required: false })
       readStringField(normalizedArgs, 'queueKey', command, { required: false })
       readTabInputField(normalizedArgs, 'handle', command)
+      {
+        const sort = readStringField(normalizedArgs, 'sort', command, { required: false })
+        if (sort !== undefined && sort !== 'oldest' && sort !== 'newest') {
+          throw createCommandArgsValidationError(command, 'sort must be oldest or newest', {
+            field: 'sort',
+            value: sort,
+          })
+        }
+        readStringField(normalizedArgs, 'forTab', command, { required: false })
+      }
       return
     case 'pdf':
     case 'back':

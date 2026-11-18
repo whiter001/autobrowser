@@ -13,6 +13,12 @@ import type { createWorkspaceManager } from './workspaces.js'
 import type { ExtensionState, TabInput, TabSummary, TabWithId } from './types.js'
 import { createToolError } from '../../src/core/tool-error.js'
 
+/** 命令历史的队列 key 形如 tab:<tabId>；--for-tab 接受 tN 句柄或裸 tabId */
+function resolveHistoryTabKey(forTab: string): string {
+  const trimmed = forTab.trim()
+  return `tab:${trimmed.startsWith('t') ? trimmed.slice(1) : trimmed}`
+}
+
 interface TabsCommandDependencies {
   state: ExtensionState
   extensionControl: ExtensionControlDomain
@@ -248,15 +254,27 @@ export function createTabsCommandHandler({
           const commandId = readOptionalStringArg(args, 'commandId')
           const commands = commandQueue.list()
           const filtered = commandId ? commands.filter((entry) => entry.id === commandId) : commands
-          const { items, pagination } = paginateList(filtered, pageIdx, pageSize, {
+          // 历史是所有 AI 共用的一份：--for-tab 只看某个标签页，--sort newest 把最近的排前面
+          const forTab = readOptionalStringArg(args, 'forTab')
+          const scoped = forTab
+            ? filtered.filter((entry) => entry.key === resolveHistoryTabKey(forTab))
+            : filtered
+          const sort = readOptionalStringArg(args, 'sort')
+          const ordered =
+            sort === 'newest'
+              ? [...scoped].sort(
+                  (left, right) => Date.parse(right.enqueuedAt) - Date.parse(left.enqueuedAt),
+                )
+              : scoped
+          const { items, pagination } = paginateList(ordered, pageIdx, pageSize, {
             limit: readOptionalNumberArg(args, 'limit'),
             cursor: readStringArg(args, 'cursor'),
-            queryKey: { commandId },
+            queryKey: { commandId, forTab, sort },
             getKey: (item) => String(item.id),
           })
           return {
             commands: items,
-            total: filtered.length,
+            total: ordered.length,
             pagination,
             // diagnostics 里带 lastRestoreError：恢复失败时历史为空不代表没有历史
             diagnostics: commandQueue.diagnostics(),

@@ -30,6 +30,15 @@
 
   HLS 合并需要本机安装 `ffmpeg` 和 `ffprobe`。`observedSources` 为空只表示探测期间没有新增候选，不代表页面没有媒体请求。
 
+## X (Twitter) 视频抓取（实测结论）
+
+- 选源：`pl/<pl_id>.m3u8`（master）**直接返回已封装好的 progressive MP4**，而且就是最高档 rendition；带不带 `variant_version=1` 结果完全相同，它不是清晰度开关。真正的 HLS 播放列表是 `pl/avc1/<宽>x<高>/<id>.m3u8`（分片合并）和 `pl/mp4a/<码率>/<id>.m3u8`（音频）。要最快最完整就下 master。
+- 时长**不能跨路径比较**：master 相对页面只会偏长、从不偏短（实测 0 / +41ms / +48ms），variant 合并可能丢尾段（实测 -52ms）。页面 `<video>.duration` 走的是 MSE 的 variant 流，与 master 是两份独立封装，容器尾帧记账方式不同。判断完整性只以**同路径**为基准，不要拿 master 比页面、也不要拿 variant 比 master，否则会误判成残缺。
+- 与路径无关的完整性判据：`ffmpeg -v error -i <f> -f null -` 无输出；分辨率与页面 `<video>` 的 `videoWidth/videoHeight` 一致（X 的分辨率不固定，见过 720x1280 / 480x852 / 1078x1750，一律以页面为准）；文件 sha256 与该 URL 的 CDN 输出一致；时长与同路径基准相差 < 100ms。
+- HAR URL 解析：master 是 `amplify_video/<vid>/pl/<pl_id>.m3u8`，variant 是 `amplify_video/<vid>/pl/avc1/<res>/<id>.m3u8`，音频取 `amplify_video/<vid>/pl/mp4a/128000/<id>.m3u8`，分片是 `amplify_video/<vid>/vid/avc1/.../<id>.m4s`（视频）与 `.../aud/mp4a/.../<id>.m4s`（音频）。`<vid>`（媒体 id）与推文 status id **不是同一个数**，别拿 status id 拼 URL。
+- 纯视频推文的 `play()` 可能抛 `AbortError: ... video-only background media was paused to save power`，属于瞬时状态，**重试即可**（实测第 2~3 次成功）：每次间隔 ~2s，给 3~8 次；重试期间保持 `v.muted = true`，否则可能被自动播放策略拒绝。页面刚 reload 完时还可能报 `no target video`（video 节点尚未插入），同样靠重试解决。
+- `media list` 对 blob/MSE 视频打印 `no verified DOM source` 属正常：blob 本来就没有可信 DOM 源，`observedSources` 是未验证候选、不能下载，走上面的 HAR 路径。对纯视频推文返回 0 张图也属正常（该推文确实没有图）。
+
 ## HLS 与传输边界
 
 - HLS：`download <master.m3u8> <output.mp4> --quality best|worst|720|720p --concurrency 4`。自动下载最佳音视频轨并本地合并，FFmpeg/FFprobe 只读本地文件，不直接访问 CDN；本机需安装这两个工具。

@@ -533,7 +533,7 @@ autobrowser tab close t2058764137
 
 `eval` 的源码输入按形态分流：`--expr '<script>'`（位置参数同理）只用于简单单行表达式。只要源码包含 CSS 选择器、JSON、正则、模板字符串或多行语句，就直接用 `--stdin` 或 `--file`，不要先拼一版内联转义再排错。一次性脚本走 `--stdin`；需要复用的脚本写成 `.js` 用 `--file`；`--base64` 只用于机器生成的传输，不作为人工默认写法。
 
-脚本默认在隔离的函数作用域中执行：顶层 `const`/`let`/`var`/`function` 不会留在页面全局，同一个脚本可原样重复执行，不需要手工包 IIFE；简单表达式仍返回 completion value（最后一个表达式的值）。脚本可直接使用顶层 `return` 和 `await`，多语句脚本用 `return` 返回结果。`--element` 的函数脚本同样隔离，也不影响原有的元素未找到（stale）判断。
+脚本默认在隔离的函数作用域中执行：顶层 `const`/`let`/`var`/`function` 不会留在页面全局，同一个脚本可原样重复执行，不需要手工包 IIFE；简单表达式仍返回 completion value（最后一个表达式的值）。脚本可直接使用顶层 `await`（按 REPL 条目求值，顶层 await 合法且保留完成值）和顶层 `return`（按 async 函数体求值，结果由 `return` 给出），不需要手工包 async IIFE；两者混用时以 `return` 为准。顶层 `await` 的 REPL 路径下 `var`/`function` 声明会落到页面全局，需要严格隔离时可自行包一层 async IIFE。`--element` 的函数脚本同样隔离，也不影响原有的元素未找到（stale）判断。
 
 结果装不下终端时用 `--output <path>` 落盘：`eval` 把完整结果写成 2 空格缩进的 JSON（末尾换行），stdout 只留 `{ path, format: "json", bytes }` 这个小型摘要（`meta` 等执行上下文保留），不再把正文写进 stdout。输出始终是 JSON，与文件扩展名无关，推荐统一使用 `.json`，不要按 `.txt` 等扩展名猜测内容格式。相对路径按当前目录解析，同名文件会被覆盖，写文件失败按普通 CLI 错误返回。指定 `--output` 且没有显式 `--response-format` 时按 `detailed` 执行，因此默认不受 concise 的 32KiB 结果上限约束；显式 `--response-format concise` 仍保留 32KiB，显式 `--max-result-bytes <n>` 始终优先。MCP 的 `eval` 工具同样如此：传 `output` 且不传 `response_format` 时按 `detailed` 执行，显式 `response_format: "concise"` 才保留 32KiB 上限。落盘只改变结果的去向，不改变页面脚本的语义。
 
@@ -585,6 +585,8 @@ autobrowser target active                  # 改用浏览器活动标签页
 autobrowser target clear                   # 清除持久化目标
 
 autobrowser command list                   # 排队中与执行中的命令
+autobrowser command list --sort newest     # 最近的命令排最前
+autobrowser command list --for-tab t2      # 只看某个标签页的命令
 autobrowser command status <id>            # 查看单个命令
 autobrowser command cancel <id>            # 按 id 取消
 autobrowser command reset --tab t2         # 重置目标队列
@@ -592,7 +594,7 @@ autobrowser command reset --tab t2         # 重置目标队列
 
 命令超时或页面卡死时，先用 `status` 和 `command list` 判断现场，再决定重试还是恢复，不要连续重放。
 
-历史元数据保留最近 500 条；超过上限的条目会进入有界淘汰清单，`command status <id>` 返回 `evicted:true` 表示“曾被记录但已淘汰”；`evicted:false` 且 `commands` 为空只表示“当前扩展历史与有界淘汰清单均未命中”，不能绝对证明扩展从未收到该 id（旧版本记录、淘汰清单有界、恢复失败都可能未命中）。迟到结果只保留最新 25 份，被裁掉的条目仍保留 `id`、状态和时间戳，并带 `resultEvicted:true`。`command list/status` 同时返回 `diagnostics`（上限、恢复条数、累计淘汰数、最近一次持久化时间与错误、最近一次历史恢复错误）；`lastPersistError` 非空只说明历史落盘失败，不影响命令本身，`lastRestoreError` 非空说明本次启动读取历史失败，此时查不到历史不代表没有历史。
+历史元数据保留最近 500 条；超过上限的条目会进入有界淘汰清单，`command status <id>` 返回 `evicted:true` 表示“曾被记录但已淘汰”；`evicted:false` 且 `commands` 为空只表示“当前扩展历史与有界淘汰清单均未命中”，不能绝对证明扩展从未收到该 id（旧版本记录、淘汰清单有界、恢复失败都可能未命中）。迟到结果只保留最新 25 份，被裁掉的条目仍保留 `id`、状态和时间戳，并带 `resultEvicted:true`。`command list/status` 同时返回 `diagnostics`（上限、恢复条数、累计淘汰数、最近一次持久化时间与错误、最近一次历史恢复错误）；`lastPersistError` 非空只说明历史落盘失败，不影响命令本身，`lastRestoreError` 非空说明本次启动读取历史失败，此时查不到历史不代表没有历史。历史由所有 AI 共用，默认按最旧优先返回，用 `--sort newest` 看最近的命令、`--for-tab <tN>` 只看某个标签页。
 
 ### 诊断与录制
 

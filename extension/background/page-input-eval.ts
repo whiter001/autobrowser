@@ -1,5 +1,5 @@
 import { withFrameSelectorOptions } from './targeting.js'
-import type { FrameSelector, TabInput } from './types.js'
+import type { ErrorWithCode, FrameSelector, TabInput } from './types.js'
 import type { PageInputContext } from './page-input-context.js'
 import { assertEvalResultWithinLimit, createElementNotFoundError } from './page-input-helpers.js'
 
@@ -10,7 +10,38 @@ import { assertEvalResultWithinLimit, createElementNotFoundError } from './page-
  * 创建脚本执行命令：eval 与相关的注入执行入口。
  */
 export function createEvalCommands(pageContext: PageInputContext) {
-  const { resolveElementSelectorForTab, evaluateInTabContext } = pageContext
+  const {
+    resolveElementSelectorForTab,
+    evaluateInTabContext,
+    getFrameExecutionContext,
+    sendDebuggerCommand,
+  } = pageContext
+
+  /**
+   * 脚本能否按 classic script 编译通过。用 Runtime.compileScript 做纯编译检查（不执行），
+   * 用来区分 direct eval 的失败发生在编译期还是运行期：
+   * - 编译通过 → direct eval 的异常是运行期抛出的，脚本已经执行过，不能再换求值方式重试；
+   * - 编译失败 → 脚本一行都没跑（顶层 await / 顶层 return / 真实语法错误），换路径不会重复副作用。
+   */
+  async function compilesAsClassicScript(
+    tabId: TabInput,
+    script: string,
+    frameSelector: FrameSelector,
+  ): Promise<boolean> {
+    const { tab, executionContextId } = await getFrameExecutionContext(tabId, frameSelector)
+    const result = await sendDebuggerCommand<{ exceptionDetails?: unknown }>(
+      tab.id,
+      'Runtime.compileScript',
+      {
+        expression: script,
+        sourceURL: '',
+        persistScript: false,
+        // 注意 compileScript 的上下文参数名是 executionContextId，与 Runtime.evaluate 的 contextId 不同
+        ...(executionContextId ? { executionContextId } : {}),
+      },
+    )
+    return !result.exceptionDetails
+  }
 
   async function evaluateScript(
     tabId: TabInput,
@@ -33,15 +64,7 @@ export function createEvalCommands(pageContext: PageInputContext) {
         return (${script})(el);
       })()`
     }
-    try {
-      // 直接以全局脚本执行会把顶层 const/let 留在页面词法环境，第二次运行同一脚本即报
-      // "already declared"。包进函数作用域的 direct eval：仍返回 completion value（简单
-      // 表达式的值不变），声明与函数只在 wrapper 内可见，用户可以原样重复执行。
-      const { value } = await evaluateInTabContext(
-        tabId,
-        `(() => eval(${JSON.stringify(effectiveScript)}))()`,
-        options,
-      )
+    const finish = (value: unknown): unknown => {
       if (
         elementSelector &&
         value &&
@@ -51,25 +74,52 @@ export function createEvalCommands(pageContext: PageInputContext) {
         throw createElementNotFoundError(elementSelector)
       assertEvalResultWithinLimit(value, maxResultBytes)
       return value
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error)
-      if (
-        !/SyntaxError:\s*(?:Illegal return statement|await is only valid in async functions)/i.test(
-          message,
-        )
-      ) {
-        throw error
-      }
-      // 表达式必须保留直接求值语义；仅编译期确认存在顶层 return/await 时才按 async 函数体重试，
-      // async IIFE 同样是函数作用域，声明不会泄漏；其他错误直接抛出，不让脚本重复执行。
+    }
+
+    // 第一级：direct eval。直接以全局脚本执行会把顶层 const/let 留在页面词法环境，
+    // 第二次运行同一脚本即报 "already declared"。包进函数作用域的 direct eval：仍返回
+    // completion value（简单表达式的值不变），声明与函数只在 wrapper 内可见，可原样重复执行。
+    try {
       const { value } = await evaluateInTabContext(
         tabId,
-        `(async () => {\n${effectiveScript}\n})()`,
+        `(() => eval(${JSON.stringify(effectiveScript)}))()`,
         options,
       )
-      assertEvalResultWithinLimit(value, maxResultBytes)
-      return value
+      return finish(value)
+    } catch (error) {
+      // 编译检查失败时按"已执行过"处理，宁可不重试也不能重放副作用
+      let compiled = true
+      try {
+        compiled = await compilesAsClassicScript(tabId, effectiveScript, frameSelector)
+      } catch {
+        compiled = true
+      }
+      if (compiled) throw error
     }
+
+    // 第二级：replMode。direct eval 的求值上下文不是 async，顶层 await 会解析失败；
+    // Runtime.evaluate 的 replMode 原生支持顶层 await，并保留脚本的完成值，
+    // 同时顶层 const/let 不泄漏到页面全局。
+    try {
+      const { value } = await evaluateInTabContext(tabId, effectiveScript, {
+        ...options,
+        replMode: true,
+      })
+      return finish(value)
+    } catch (error) {
+      // 编译期失败没有运行期调用栈；有栈说明脚本已经开始执行，不能再换路径重放。
+      // 缺字段时按有栈处理，宁可不重试。
+      if ((error as ErrorWithCode).hasRuntimeStack !== false) throw error
+    }
+
+    // 第三级：async IIFE。replMode 同样不接受顶层 return（"Illegal return statement"），
+    // 这类脚本必须自己带 return，因此完成值由脚本的 return 给出，不会像顶层 await 那样丢值。
+    const { value } = await evaluateInTabContext(
+      tabId,
+      `(async () => {\n${effectiveScript}\n})()`,
+      options,
+    )
+    return finish(value)
   }
 
   async function generateLocator(tabId: TabInput, selector: string, frameSelector: FrameSelector) {
