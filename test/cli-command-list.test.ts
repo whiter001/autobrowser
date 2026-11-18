@@ -9,7 +9,10 @@ interface CapturedRequest {
   args: Record<string, unknown>
 }
 
-async function runCommandList(argv: string[]): Promise<{
+async function runCommandList(
+  argv: string[],
+  options: { envWorkspace?: string | null } = {},
+): Promise<{
   exitCode: number | void
   requests: CapturedRequest[]
   stdout: string
@@ -29,7 +32,9 @@ async function runCommandList(argv: string[]): Promise<{
   })
   const stderrSpy = spyOn(process.stderr, 'write').mockImplementation(() => true)
   process.env.AUTOBROWSER_HOME = homeDir
-  process.env.AUTOBROWSER_WORKSPACE = 'off'
+  const envWorkspace = options.envWorkspace === undefined ? 'off' : options.envWorkspace
+  if (envWorkspace === null) delete process.env.AUTOBROWSER_WORKSPACE
+  else process.env.AUTOBROWSER_WORKSPACE = envWorkspace
 
   try {
     const exitCode = await main(['--json', '--server', 'http://127.0.0.1:3000', ...argv], {
@@ -70,11 +75,65 @@ describe('cli command list options', () => {
     ])
   })
 
+  test('forwards an explicit for-workspace filter', async () => {
+    const { exitCode, requests } = await runCommandList([
+      'command',
+      'list',
+      '--for-workspace',
+      'ws-b',
+    ])
+
+    expect(exitCode).toBe(0)
+    expect(requests).toEqual([
+      { command: 'command', args: { action: 'list', forWorkspace: 'ws-b' } },
+    ])
+  })
+
+  test('scopes the list to an explicitly selected global workspace', async () => {
+    const { exitCode, requests } = await runCommandList(['--workspace', 'ws-a', 'command', 'list'])
+
+    expect(exitCode).toBe(0)
+    expect(requests).toEqual([
+      {
+        command: 'command',
+        args: { action: 'list', workspace: 'ws-a', forWorkspace: 'ws-a' },
+      },
+    ])
+  })
+
   test('keeps the default oldest-first list unchanged', async () => {
     const { exitCode, requests } = await runCommandList(['command', 'list'])
 
     expect(exitCode).toBe(0)
     expect(requests).toEqual([{ command: 'command', args: { action: 'list' } }])
+  })
+
+  test('does not filter by the default automatic workspace', async () => {
+    const { exitCode, requests } = await runCommandList(['command', 'list'], {
+      envWorkspace: null,
+    })
+
+    expect(exitCode).toBe(0)
+    expect(requests).toHaveLength(1)
+    expect(requests[0]?.command).toBe('command')
+    expect(requests[0]?.args.action).toBe('list')
+    // auto 仍会注入 workspace 供目标隔离，但不能因此收窄历史
+    expect(requests[0]?.args.workspace).toBeString()
+    expect(requests[0]?.args).not.toHaveProperty('forWorkspace')
+  })
+
+  test('filters by an explicitly configured workspace environment variable', async () => {
+    const { exitCode, requests } = await runCommandList(['command', 'list'], {
+      envWorkspace: 'ws-env',
+    })
+
+    expect(exitCode).toBe(0)
+    expect(requests).toEqual([
+      {
+        command: 'command',
+        args: { action: 'list', workspace: 'ws-env', forWorkspace: 'ws-env' },
+      },
+    ])
   })
 
   test('rejects an unsupported sort value before contacting the extension', async () => {

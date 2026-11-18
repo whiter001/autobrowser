@@ -45,6 +45,24 @@ function createEvaluationTimeoutError(timeoutMs: number): ErrorWithCode {
   return error
 }
 
+// 导航或关标签会销毁执行上下文；这是可预期的中断，不应混在通用扩展错误里
+function isEvaluationContextDestroyedError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error)
+  return /inspected target navigated or closed|cannot find context with specified id|execution context (?:was )?destroyed/i.test(
+    message,
+  )
+}
+
+function createEvaluationContextDestroyedError(): ErrorWithCode {
+  const error = new Error(
+    'page evaluation context was destroyed by navigation or tab closure',
+  ) as ErrorWithCode
+  error.code = 'EVAL_CONTEXT_DESTROYED'
+  error.suggestedAction =
+    "The page navigated or the tab closed, so this eval's execution context no longer exists. Run 'get url' and wait for the new page ('wait --load ...' or 'wait <selector>'), then rerun eval. Do not replay a script that may have side effects before the navigation."
+  return error
+}
+
 function createPageEvaluationExceptionError(
   description: string,
   exceptionDetails?: { stackTrace?: { callFrames?: unknown[] } },
@@ -142,15 +160,28 @@ export function createPageEvaluation({
       if (isEvaluationTimeoutError(error) || internalErrorAtDeadline) {
         throw createEvaluationTimeoutError(timeoutMs)
       }
-      if (!context.worldFromCache || !context.worldCacheKey || !isStaleWorldContextError(error)) {
+      const canRetryStaleWorld = Boolean(
+        context.worldFromCache && context.worldCacheKey && isStaleWorldContextError(error),
+      )
+      if (!canRetryStaleWorld) {
+        if (isEvaluationContextDestroyedError(error)) {
+          throw createEvaluationContextDestroyedError()
+        }
         throw error
       }
-      clearWorldContext(context.worldCacheKey)
+      clearWorldContext(context.worldCacheKey as string)
       const retryContext = await getFrameExecutionContext(tabId, frameSelector)
       commandContext?.throwIfCancelled()
       tab = retryContext.tab
       executionContextId = retryContext.executionContextId
-      response = await evaluate(executionContextId)
+      try {
+        response = await evaluate(executionContextId)
+      } catch (retryError) {
+        if (isEvaluationContextDestroyedError(retryError)) {
+          throw createEvaluationContextDestroyedError()
+        }
+        throw retryError
+      }
     }
     // 页面内表达式抛异常时 CDP 不返回 value，必须把真实异常原因抛给调用方，
     // 否则 description 字符串会被当成正常结果继续传递

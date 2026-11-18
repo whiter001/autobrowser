@@ -191,6 +191,93 @@ describe('production evaluate and debugger dispatch cancellation gates', () => {
     })
   })
 
+  test('maps navigation-destroyed evaluation contexts to a dedicated error', async () => {
+    const evaluateWithTransportError = async (message: string) => {
+      const { evaluateInTabContext } = createPageEvaluation({
+        getFrameExecutionContext: async () =>
+          ({
+            tab: { id: 1 },
+            executionContextId: null,
+            worldFromCache: false,
+            worldCacheKey: null,
+          }) as never,
+        sendDebuggerCommand: async () => {
+          throw new Error(message)
+        },
+        clearWorldContext: () => {},
+      })
+      return evaluateInTabContext(1, '1 + 1')
+    }
+
+    for (const message of [
+      '{"code":-32000,"message":"Inspected target navigated or closed"}',
+      'Cannot find context with specified id',
+    ]) {
+      await expect(evaluateWithTransportError(message)).rejects.toMatchObject({
+        code: 'EVAL_CONTEXT_DESTROYED',
+        suggestedAction: expect.stringContaining('then rerun eval'),
+      })
+      await expect(evaluateWithTransportError(message)).rejects.toThrow(
+        'page evaluation context was destroyed by navigation or tab closure',
+      )
+    }
+  })
+
+  test('stale isolated world retries before mapping context destruction', async () => {
+    const calls: Array<{ expression: string; contextId?: number }> = []
+    const cleared: string[] = []
+    let lookups = 0
+    const { evaluateInTabContext } = createPageEvaluation({
+      getFrameExecutionContext: async () => {
+        lookups++
+        return {
+          tab: { id: 1 },
+          executionContextId: lookups,
+          worldFromCache: lookups === 1,
+          worldCacheKey: '1:frame',
+        } as never
+      },
+      sendDebuggerCommand: async (_tabId, _method, params) => {
+        calls.push({
+          expression: String((params as { expression?: string }).expression),
+          contextId: (params as { contextId?: number }).contextId,
+        })
+        if (calls.length === 1) throw new Error('Cannot find context with specified id')
+        return { result: { value: 42 } } as never
+      },
+      clearWorldContext: (key) => cleared.push(key),
+    })
+
+    await expect(evaluateInTabContext(1, '6 * 7', { frameSelector: '#f' })).resolves.toMatchObject({
+      value: 42,
+    })
+    expect(calls.map((call) => call.contextId)).toEqual([1, 2])
+    expect(cleared).toEqual(['1:frame'])
+  })
+
+  test('maps a repeated stale isolated world failure after the retry', async () => {
+    let calls = 0
+    const { evaluateInTabContext } = createPageEvaluation({
+      getFrameExecutionContext: async () =>
+        ({
+          tab: { id: 1 },
+          executionContextId: 1,
+          worldFromCache: true,
+          worldCacheKey: '1:frame',
+        }) as never,
+      sendDebuggerCommand: async () => {
+        calls++
+        throw new Error('Cannot find context with specified id')
+      },
+      clearWorldContext: () => {},
+    })
+
+    await expect(evaluateInTabContext(1, '1 + 1')).rejects.toMatchObject({
+      code: 'EVAL_CONTEXT_DESTROYED',
+    })
+    expect(calls).toBe(2)
+  })
+
   for (const stage of ['key-cleanup', 'mouse-cleanup']) {
     test(`${stage} still reaches production dispatch after cancellation`, async () => {
       const { context, cancel } = createCancellableContext()

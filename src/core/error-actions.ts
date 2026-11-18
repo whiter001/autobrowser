@@ -87,6 +87,11 @@ export const ERROR_ACTIONS: Record<string, ErrorAction> = {
     retryable: false,
     action: "Set '--max-result-bytes', or narrow the script so it returns less data.",
   },
+  EVAL_CONTEXT_DESTROYED: {
+    retryable: false,
+    action:
+      "The page navigated or the tab closed. Confirm the new page with 'get url' and 'wait', then rerun eval; do not replay scripts with side effects.",
+  },
   EXTENSION_DISCONNECTED: {
     retryable: true,
     action:

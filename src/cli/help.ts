@@ -303,8 +303,8 @@ export const HELP_ROOT: HelpNode = helpNode(
       [
         helpNode(
           'list',
-          '列出排队中、执行中和最近的命令。历史由所有 AI 共用，--sort newest 优先列出最近的命令，--for-tab 只看某个标签页。',
-          'autobrowser command list [--limit <n>] [--cursor <token>] [--sort oldest|newest] [--for-tab <tN>]',
+          '列出排队中、执行中和最近的命令。历史由所有 AI 共用；显式 --workspace 或 --for-workspace 只看该 workspace，--sort newest 优先列出最近的命令，--for-tab 只看某个标签页。',
+          'autobrowser command list [--limit <n>] [--cursor <token>] [--sort oldest|newest] [--for-tab <tN>] [--for-workspace <id>]',
         ),
         helpNode(
           'status',

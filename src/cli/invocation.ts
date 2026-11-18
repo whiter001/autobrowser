@@ -90,6 +90,8 @@ export async function resolveInvocation(
   }
 
   if (requestedWorkspace) {
+    // 默认 auto 不算显式指定；显式 --workspace / env 才允许收窄 command list 历史
+    flags.workspaceExplicitlySet = !workspaceFromDefault
     if (flags.engine !== 'chromium') {
       if (!workspaceFromDefault) {
         throw new Error('workspace mode is only supported by the Chromium extension')

@@ -576,6 +576,7 @@ export function parsePaginationArgs(rest: string[]): {
 const COMMAND_LIST_OPTIONS = [
   '--cursor',
   '--for-tab',
+  '--for-workspace',
   '--limit',
   '--page',
   '--page-idx',
@@ -591,6 +592,8 @@ export interface CommandListArgs {
   sort?: 'oldest' | 'newest'
   /** 只保留该标签页的命令；接受 tN 句柄或裸 tabId */
   forTab?: string
+  /** 只保留该 workspace 的命令 */
+  forWorkspace?: string
 }
 
 export function parseCommandListArgs(rest: string[]): CommandListArgs {
@@ -611,6 +614,13 @@ export function parseCommandListArgs(rest: string[]): CommandListArgs {
       const tabValue = rest[index + 1]
       if (!tabValue) throw new Error('missing value for --for-tab')
       result.forTab = tabValue
+      index += 1
+      continue
+    }
+    if (value === '--for-workspace') {
+      const workspaceValue = rest[index + 1]
+      if (!workspaceValue) throw new Error('missing value for --for-workspace')
+      result.forWorkspace = workspaceValue
       index += 1
       continue
     }

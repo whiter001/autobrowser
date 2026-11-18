@@ -30,7 +30,7 @@
 
 - `command list` / `command status <id>` 的历史条目包含 `command`、`workspace`、`requestedAt`（relay 发出请求）、`receivedAt`（扩展收到）、`enqueuedAt`（进入队列）、`startedAt`（开始执行）、`deadlineAt` 和 `finishedAt`。多 AI 共用一个浏览器时，用这些字段把延迟拆成四段：`receivedAt - requestedAt` 是传输与扩展接收开销，`enqueuedAt - receivedAt` 包含 workspace 解析和目标固定，`startedAt - enqueuedAt` 是同 tab 排队等待，`finishedAt - startedAt` 是实际执行。它们也可与 `deadlineAt` 对比，判断超时发生在入队前还是执行中。历史不保存 URL、eval 脚本、selector 等参数。
 - 历史元数据上限 500 条，迟到结果只保留最新 25 份。较旧的 `completed_late` 会删除 `result` 并标 `resultEvicted:true`，但 `id`、状态和时间戳仍在，仍可用于判断命令是否执行。`command list/status` 返回 `diagnostics`（`historyLimit`、`lateResultLimit`、`restoredCount`、`evictedCount`、`lastPersistError`、`lastPersistedAt`、`lastRestoreError`）；`command status <id>` 的 `evicted:true` 表示该 id 曾被记录但已被上限淘汰，`evicted:false` 且 `commands` 为空只表示“当前扩展历史与有界淘汰清单均未命中”，不能绝对证明扩展从未收到该 id（旧版本记录、淘汰清单有界、恢复失败都可能未命中）。`lastPersistError` 非空只说明最近一次历史落盘失败，不代表命令失败；`lastRestoreError` 非空说明本次启动读取历史失败，此时查不到历史不代表没有历史。
-- 历史是所有 AI 共用的一份，默认按最旧优先返回，第一页往往不是刚跑过的命令。找自己的最近命令用 `command list --sort newest`（最近的排前面），只看某个标签页用 `command list --for-tab <tN>`（接受 `tN` 句柄或裸 tabId），两者可同时使用；筛选条件不同导致的 cursor 不可混用。
+- 历史是所有 AI 共用的一份，默认按最旧优先返回，第一页往往不是刚跑过的命令。找自己的最近命令用 `command list --sort newest`（最近的排前面），只看某个标签页用 `command list --for-tab <tN>`（接受 `tN` 句柄或裸 tabId），只看某个 workspace 用 `command list --for-workspace <id>`；显式指定全局 `--workspace <id>` 时也会自动按该 workspace 过滤，默认 auto workspace 不改变全局视图。这些条件可同时使用，筛选条件不同导致的 cursor 不可混用。
 - 同一标签的命令按 FIFO 串行，前面的长等待会挡住同 tab 后续命令。不要并发堆积多个长等待；条件已变化时用 `command cancel <id>` 或让等待按时结束，再发下一条。
 - 命令超时或结果未知时，先 `command status <id>` 看最终状态，再用 `get url`、`eval document.readyState` 或 `snapshot` 核对页面；确认副作用前不要重发写操作。
 - 写操作（click/fill/type/扣款、提交、删除）前核对 URL 和页面内容，尤其是在复用来的共享标签上；不要假设页面仍停留在上一次操作的状态。

@@ -26,6 +26,7 @@ return links.slice(0, 10)
 - 顶层 `await` 的脚本按 REPL 条目求值，返回值是最后一条表达式语句的值；如果最后一句返回的是 Promise 而没有 `await`，这个 Promise 不会被自动等待（结果是 `null`），需要显式写成 `await r.text()`。
 - 返回值必须可 JSON 序列化：`undefined`、DOM 节点、函数和循环引用都拿不到有效结果。提取时返回字符串、数字或普通对象（`el.textContent`、`Array.from(nodes).map((n) => n.textContent)`），不要把节点本身当返回值，否则看起来像"没取到数据"。
 - 脚本内抛异常返回 `PAGE_EVALUATION_EXCEPTION`（退出码 1，选择器没命中就取属性最常见），与参数错误 `CLI_INVALID_ARGUMENT` 不同：前者要修脚本里的判空和选择器，按参数问题重试只会重复失败。
+- 如果 eval 内触发导航或关闭标签页，执行上下文被销毁会返回 `EVAL_CONTEXT_DESTROYED`：先用 `get url` 和 `wait` 确认新页面，再重新执行 eval。不要把导航和结果提取混在同一个脚本里，也不要自动重放导航前可能有副作用的脚本。
 - `--timeout-ms <ms>` 只在确认脚本本身是长任务时使用；不要把它作为复杂流程失败后的默认处理。`concise` 默认限制 eval 结果为 32KiB，`detailed` 默认不设结果字节上限；显式 `--max-result-bytes <n>` 会覆盖两者，超限得到 `EVAL_RESULT_TOO_LARGE` 和实际字节数，不会静默截断。搬运 storage 等大状态时在页面侧先过滤 key、聚合或分页，不要默认提高上限；未设置上限且结果超过 256 KiB 时会走 upload，并与命令共享 deadline。
 - 结果确实要一次拿全（整篇正文、成批明细）就用 `--output <path>` 落盘：完整结果写成 2 空格缩进的 JSON（末尾换行），stdout 只回 `{ path, format: "json", bytes }` 这个小型摘要（保留 meta），正文不再进终端。输出始终是 JSON，与文件扩展名无关，推荐统一使用 `.json`，不要按 `.txt` 等扩展名猜测内容格式。相对路径按当前目录解析，同名文件直接覆盖，写文件失败按普通 CLI 错误返回。指定 `--output` 且未显式写 `--response-format` 时按 `detailed` 执行，所以一次 67KiB 的正文只加 `--output` 即可；显式 `concise` 仍保留 32KiB 上限，显式 `--max-result-bytes` 始终优先。落盘后再用本地文件工具解析，不要为了看内容把文件整个 cat 回上下文。
 - 复杂交互优先拆成更小的 autobrowser 命令或脚本步骤，保留原任务目标逐步推进。

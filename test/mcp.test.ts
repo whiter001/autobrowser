@@ -465,12 +465,16 @@ describe('AutobrowserMcpServer.callTool', () => {
       action: 'list',
       sort: 'newest',
       forTab: 't2',
+      forWorkspace: 'ws-a',
     })
 
     expect(mock.calls).toEqual([
       { command: 'target', args: { action: 'clear' } },
       { command: 'command', args: { action: 'cancel', commandId: 'cmd_1' } },
-      { command: 'command', args: { action: 'list', sort: 'newest', forTab: 't2' } },
+      {
+        command: 'command',
+        args: { action: 'list', sort: 'newest', forTab: 't2', forWorkspace: 'ws-a' },
+      },
     ])
   })
 

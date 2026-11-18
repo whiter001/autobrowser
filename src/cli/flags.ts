@@ -63,6 +63,7 @@ export function parseCli(argv: string[]): ParsedCli {
     server: `http://127.0.0.1:${DEFAULT_IPC_PORT}`,
     session: '',
     workspace: null,
+    workspaceExplicitlySet: false,
     noWorkspace: false,
     autoAttach: true,
     engine: 'chromium',

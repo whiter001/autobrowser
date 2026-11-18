@@ -587,6 +587,7 @@ autobrowser target clear                   # 清除持久化目标
 autobrowser command list                   # 排队中与执行中的命令
 autobrowser command list --sort newest     # 最近的命令排最前
 autobrowser command list --for-tab t2      # 只看某个标签页的命令
+autobrowser command list --for-workspace ws-a  # 只看某个 workspace 的命令
 autobrowser command status <id>            # 查看单个命令
 autobrowser command cancel <id>            # 按 id 取消
 autobrowser command reset --tab t2         # 重置目标队列
@@ -594,7 +595,7 @@ autobrowser command reset --tab t2         # 重置目标队列
 
 命令超时或页面卡死时，先用 `status` 和 `command list` 判断现场，再决定重试还是恢复，不要连续重放。
 
-历史元数据保留最近 500 条；超过上限的条目会进入有界淘汰清单，`command status <id>` 返回 `evicted:true` 表示“曾被记录但已淘汰”；`evicted:false` 且 `commands` 为空只表示“当前扩展历史与有界淘汰清单均未命中”，不能绝对证明扩展从未收到该 id（旧版本记录、淘汰清单有界、恢复失败都可能未命中）。迟到结果只保留最新 25 份，被裁掉的条目仍保留 `id`、状态和时间戳，并带 `resultEvicted:true`。`command list/status` 同时返回 `diagnostics`（上限、恢复条数、累计淘汰数、最近一次持久化时间与错误、最近一次历史恢复错误）；`lastPersistError` 非空只说明历史落盘失败，不影响命令本身，`lastRestoreError` 非空说明本次启动读取历史失败，此时查不到历史不代表没有历史。历史由所有 AI 共用，默认按最旧优先返回，用 `--sort newest` 看最近的命令、`--for-tab <tN>` 只看某个标签页。
+历史元数据保留最近 500 条；超过上限的条目会进入有界淘汰清单，`command status <id>` 返回 `evicted:true` 表示“曾被记录但已淘汰”；`evicted:false` 且 `commands` 为空只表示“当前扩展历史与有界淘汰清单均未命中”，不能绝对证明扩展从未收到该 id（旧版本记录、淘汰清单有界、恢复失败都可能未命中）。迟到结果只保留最新 25 份，被裁掉的条目仍保留 `id`、状态和时间戳，并带 `resultEvicted:true`。`command list/status` 同时返回 `diagnostics`（上限、恢复条数、累计淘汰数、最近一次持久化时间与错误、最近一次历史恢复错误）；`lastPersistError` 非空只说明历史落盘失败，不影响命令本身，`lastRestoreError` 非空说明本次启动读取历史失败，此时查不到历史不代表没有历史。历史由所有 AI 共用，默认按最旧优先返回，用 `--sort newest` 看最近的命令、`--for-tab <tN>` 只看某个标签页；显式指定 `--workspace <id>` 或用 `--for-workspace <id>` 时只看该 workspace，默认 auto workspace 不改变全局视图。
 
 ### 诊断与录制
 

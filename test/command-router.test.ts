@@ -2445,6 +2445,42 @@ describe('command list ordering and tab scope', () => {
     expect(list.commands.map((entry) => entry.id)).toEqual(['cmd-oldest-a', 'cmd-oldest-b'])
   })
 
+  test('scopes the command list to one workspace', async () => {
+    const now = '2026-01-01T00:00:00.000Z'
+    const commands = ['ai-a', 'ai-b'].map((workspace, index) => ({
+      id: `cmd-workspace-${workspace}`,
+      key: `tab:${index + 1}`,
+      command: 'snapshot',
+      workspace,
+      state: 'completed',
+      enqueuedAt: now,
+      startedAt: now,
+      deadlineAt: null,
+      finishedAt: now,
+      error: null,
+    }))
+    const storage = {
+      get: async () => ({ 'autobrowser.command-history.v1': { commands } }),
+      set: async () => {},
+    }
+    const { router } = createMinimalRouter({ commandQueueStorage: storage })
+
+    const scoped = (await router.handleCommand({
+      command: 'command',
+      args: { action: 'list', forWorkspace: 'ai-a' },
+    })) as { commands: Array<{ id: string }>; total: number }
+
+    expect(scoped.total).toBe(1)
+    expect(scoped.commands[0]?.id).toBe('cmd-workspace-ai-a')
+
+    const newest = (await router.handleCommand({
+      command: 'command',
+      args: { action: 'list', forWorkspace: 'ai-b', sort: 'newest' },
+    })) as { commands: Array<{ id: string }>; total: number }
+    expect(newest.total).toBe(1)
+    expect(newest.commands[0]?.id).toBe('cmd-workspace-ai-b')
+  })
+
   test('paginates a newest-first list and rejects cursors from a different filter', async () => {
     const { router } = createMinimalRouter()
     for (let index = 0; index < 3; index += 1) {
@@ -2475,6 +2511,12 @@ describe('command list ordering and tab scope', () => {
       router.handleCommand({
         command: 'command',
         args: { action: 'list', forTab: 't1', cursor: first.pagination.nextCursor },
+      }),
+    ).rejects.toMatchObject({ code: 'INVALID_CURSOR' })
+    await expect(
+      router.handleCommand({
+        command: 'command',
+        args: { action: 'list', forWorkspace: 'ai-a', cursor: first.pagination.nextCursor },
       }),
     ).rejects.toMatchObject({ code: 'INVALID_CURSOR' })
   })

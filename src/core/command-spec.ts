@@ -1203,6 +1203,7 @@ function validateCommandArgsShape(command: string, args: unknown): void {
           })
         }
         readStringField(normalizedArgs, 'forTab', command, { required: false })
+        readStringField(normalizedArgs, 'forWorkspace', command, { required: false })
       }
       return
     case 'pdf':

@@ -254,11 +254,14 @@ export function createTabsCommandHandler({
           const commandId = readOptionalStringArg(args, 'commandId')
           const commands = commandQueue.list()
           const filtered = commandId ? commands.filter((entry) => entry.id === commandId) : commands
-          // 历史是所有 AI 共用的一份：--for-tab 只看某个标签页，--sort newest 把最近的排前面
+          // 历史是所有 AI 共用的一份：--for-tab/--for-workspace 收窄范围，--sort newest 把最近的排前面
           const forTab = readOptionalStringArg(args, 'forTab')
-          const scoped = forTab
-            ? filtered.filter((entry) => entry.key === resolveHistoryTabKey(forTab))
-            : filtered
+          const forWorkspace = readOptionalStringArg(args, 'forWorkspace')
+          const scoped = filtered.filter(
+            (entry) =>
+              (!forTab || entry.key === resolveHistoryTabKey(forTab)) &&
+              (!forWorkspace || entry.workspace === forWorkspace),
+          )
           const sort = readOptionalStringArg(args, 'sort')
           const ordered =
             sort === 'newest'
@@ -269,7 +272,7 @@ export function createTabsCommandHandler({
           const { items, pagination } = paginateList(ordered, pageIdx, pageSize, {
             limit: readOptionalNumberArg(args, 'limit'),
             cursor: readStringArg(args, 'cursor'),
-            queryKey: { commandId, forTab, sort },
+            queryKey: { commandId, forTab, forWorkspace, sort },
             getKey: (item) => String(item.id),
           })
           return {

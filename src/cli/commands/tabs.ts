@@ -240,6 +240,14 @@ async function handleCommandControl(
   switch (commandAction) {
     case 'list': {
       const pagination = parseOrThrow(() => parseCommandListArgs(rest.slice(1)))
+      // 只有用户显式选择 workspace 时才收窄历史；默认 auto workspace 不改变原有全局视图
+      if (
+        pagination.forWorkspace === undefined &&
+        context.flags.workspaceExplicitlySet &&
+        context.flags.workspace
+      ) {
+        pagination.forWorkspace = context.flags.workspace
+      }
       return await runActionCommand(context, 'command', { action: 'list', ...pagination })
     }
     case 'status': {

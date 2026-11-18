@@ -593,12 +593,16 @@ export const MCP_TOOLS: McpToolDefinition[] = [
           type: 'string',
           description: 'Only list commands of this tab handle (tN) or tab id.',
         },
+        forWorkspace: {
+          type: 'string',
+          description: 'Only list commands owned by this workspace id.',
+        },
       },
       required: ['action'],
     },
     toArgs: (args) => ({
       action: args.action,
-      ...onlyDefined(args, ['commandId', 'handle', 'sort', 'forTab']),
+      ...onlyDefined(args, ['commandId', 'handle', 'sort', 'forTab', 'forWorkspace']),
     }),
   },
   {
