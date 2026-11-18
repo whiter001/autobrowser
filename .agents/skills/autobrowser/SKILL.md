@@ -34,13 +34,14 @@ autobrowser 是面向 Chrome/Edge 的浏览器自动化 CLI，通过本地 relay
 - `tab detach`/`workspace release`/租约过期只解除归属，不关闭或重置页面；默认租约 1 小时并随命令续约。任务结束释放自己的标签，不要关闭其他 AI 仍在用的页面。
 - 同一 tab 命令 FIFO 串行，不要并发堆长等待；写操作前核对 URL/页面；超时先 `command status` + 页面状态。`command list/status` 历史带 `command`、`workspace` 和 `requestedAt`/`receivedAt`/`enqueuedAt`/`startedAt`，可分段定位 relay→接收→入队→执行耗时；`diagnostics` 与 `evicted` 用于区分淘汰和当前未命中（`evicted:false` 且无记录不等于从未收到；`lastRestoreError` 非空说明历史读取失败）（不含 URL/selector/脚本）。
 - 兜底目标跳过 `chrome-extension://`、`chrome://`、`edge://`、`devtools://`、`about:`。`tN` 由 Chrome tabId 派生（如 `t2058764132`），不是短序号；扩展重连、句柄表未重建时仍可用，已关闭 tab 报 `STALE_TAB_HANDLE`，先 `tab list`。
+- `tab new`/`open` 建出的标签可能先停在 `about:blank`，此时首份 `snapshot` 为空不算失败：稍等后用 `tab list` 核对实际 `tN` 与最终 URL，句柄对不上就 `tab attach <tN>` 再重新 `snapshot`。新建或重连后立即操作报 `STALE_TAB_HANDLE`/`TAB_NOT_ATTACHED` 也走这条路径，不要复用旧句柄或改用别的方案重开。
 - 会话清理、标签组、多 MCP workspace、完整租约边界见 [sessions-workspaces.md](references/sessions-workspaces.md)。
 
 ## 常用操作路由
 
 - 观察：`snapshot`（concise 默认 50 元素/32KiB，`--limit 1..200` 只调元素上限、不提高字节预算；`--changed` 看状态变化与 `removedRefs`）。同一 document 内 ref 不复用；导航或重渲染后先刷新 snapshot。`@eN`/`@fN` 优先于脆弱 CSS。
-- 定位：`find role|text|label|name`；只读 locate/text 默认 first，`find ... locate` 无匹配走 `empty:true`，写操作缺目标为 `ELEMENT_NOT_FOUND`。`--name` 默认 substring，精确匹配用 `--exact`。多匹配写操作未给 position 返回 `AMBIGUOUS_TARGET`，先看 `--candidates 3`，再选 `--position first|last|nth=N` 或确认后的 ref。
-- 交互：`click`/`dblclick`/`fill`/`type`/`press`/`hover`/`focus`/`select`/`check`/`uncheck`/`scroll`/`scrollintoview`/`upload`，目标用 ref 或 CSS。`press` 只接受一个键名（`autobrowser press Enter`），不接受 selector：先 `click`/`focus <selector>` 聚焦目标再发送。受控 `fill` 可能回滚；DatePicker 文本录入先 `click` 后用 `type` 逐键输入并按 Enter，`fill` 回滚不等于不支持手动输入。toggle 控件先查状态，不要在 eval 里 `el.click()` 后又无条件 `click`。
+- 定位：`find role|text|label|name`；只读 locate/text 默认 first，`find ... locate` 无匹配走 `empty:true`，写操作缺目标为 `ELEMENT_NOT_FOUND`。策略后的动作词（`locate`/`click`/`fill` 等）是位置参数，写成 `find --locate` 会被当成策略名并报 `CLI_INVALID_ARGUMENT`。`--name` 默认 substring，精确匹配用 `--exact`。多匹配写操作未给 position 返回 `AMBIGUOUS_TARGET`，先看 `--candidates 3`，再选 `--position first|last|nth=N` 或确认后的 ref。
+- 交互：`click`/`dblclick`/`fill`/`type`/`press`/`hover`/`focus`/`select`/`check`/`uncheck`/`scroll`/`scrollintoview`/`upload`，目标用 ref 或 CSS。`click` 不支持 `--role` 这类定位选项：按 role 定位先 `find role <role> <name>` 或 `snapshot` 取 ref，再 `click <ref>`。`press` 只接受一个键名（`autobrowser press Enter`），不接受 selector：先 `click`/`focus <selector>` 聚焦目标再发送。受控 `fill` 可能回滚；DatePicker 文本录入先 `click` 后用 `type` 逐键输入并按 Enter，`fill` 回滚不等于不支持手动输入。toggle 控件先查状态，不要在 eval 里 `el.click()` 后又无条件 `click`。
 - 等待：`wait time 3`、`wait ms 3`、`wait 3` 都是 **3 毫秒**，等 3 秒写 `wait time 3000`。条件等待用 `wait <selector> [--state new|stable]`、`wait --fn`、`wait --text`、`wait --load networkidle`；不要固定 sleep 后断言更新完成。
 - 读取：`get`、`is`、`console`、`errors`、`search`。`search` 普通 query 按字面量，正则写 `/pattern/flags`；`truncated` 时用 `nextStartLine`/`--start-line` 续读。
 - 截图：`screenshot [path]` 截当前视口，`--full` 截整页；`screenshot --element <selector|@eN> [path]` 会先把目标滚到视口中心并短暂等待懒加载图片 decode，不修改视口尺寸，懒加载图片一般无需再单独打开 URL 截图。元素截图超时或 `CDP_DEADLINE_EXCEEDED` 后先 `command status` 看是否 `completed_late`，再核对页面/视口状态，不要重放或手工清 Emulation 覆盖。

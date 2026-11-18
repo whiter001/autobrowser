@@ -9,6 +9,7 @@
 - `eval` 适合执行小段页面上下文 JS，用于只读提取、状态检查或轻量验证。
 - 脚本默认在隔离的函数作用域里执行：顶层 `const`/`let`/`var`/`function` 不会写进页面全局，同一个脚本可以原样重复执行，不需要手工包 IIFE。单个表达式仍返回 completion value（最后一个表达式的值），多语句脚本可直接包含顶层 `return` 和 `await`，无需手工包装 async IIFE，用 `return` 返回结果。
 - CSS 属性选择器的值本身必须按 CSS 语法带引号，例如 `a[href*="/n/"]`——这正是最容易被命令行层层吞掉的一类源码。`not a valid selector` 表示脚本已解析并运行、页面拒绝了 CSS：原因既可能是引号被转义吃掉，也可能是选择器本身非法，不要把所有 selector 错误都归因成命令行引号问题。
+- PowerShell 用双引号包内联脚本会静默改写源码：`$USERPROFILE` 这类 `$` 变量会被插值（常见结果是空串且不报错），嵌套的 `"` 会被吃掉，`document.querySelector(".ant-tabs-tab")` 到达页面时变成不带引号的选择器并抛 `PAGE_EVALUATION_EXCEPTION`。凡是多行、含引号或含 `$` 的脚本一律走 `--stdin`/`--file`；结果"看起来没有数据"时先核对脚本实际传入的内容，不要先怀疑页面。
 
 PowerShell 一次性脚本的标准写法（`@'` 与结束的 `'@` 都必须独占行首，不能缩进）：
 
@@ -22,6 +23,8 @@ return links.slice(0, 10)
 ```
 
 - 页面执行启用 `awaitPromise`，可直接使用顶层 `await` 或返回 async IIFE / Promise 结果，不需要为异步采集手工拆成同步片段；长任务仍需设置合理 `--timeout-ms`。
+- 返回值必须可 JSON 序列化：`undefined`、DOM 节点、函数和循环引用都拿不到有效结果。提取时返回字符串、数字或普通对象（`el.textContent`、`Array.from(nodes).map((n) => n.textContent)`），不要把节点本身当返回值，否则看起来像"没取到数据"。
+- 脚本内抛异常返回 `PAGE_EVALUATION_EXCEPTION`（退出码 1，选择器没命中就取属性最常见），与参数错误 `CLI_INVALID_ARGUMENT` 不同：前者要修脚本里的判空和选择器，按参数问题重试只会重复失败。
 - `--timeout-ms <ms>` 只在确认脚本本身是长任务时使用；不要把它作为复杂流程失败后的默认处理。`concise` 默认限制 eval 结果为 32KiB，`detailed` 默认不设结果字节上限；显式 `--max-result-bytes <n>` 会覆盖两者，超限得到 `EVAL_RESULT_TOO_LARGE` 和实际字节数，不会静默截断。搬运 storage 等大状态时在页面侧先过滤 key、聚合或分页，不要默认提高上限；未设置上限且结果超过 256 KiB 时会走 upload，并与命令共享 deadline。
 - 结果确实要一次拿全（整篇正文、成批明细）就用 `--output <path>` 落盘：完整结果写成 2 空格缩进的 JSON（末尾换行），stdout 只回 `{ path, format: "json", bytes }` 这个小型摘要（保留 meta），正文不再进终端。输出始终是 JSON，与文件扩展名无关，推荐统一使用 `.json`，不要按 `.txt` 等扩展名猜测内容格式。相对路径按当前目录解析，同名文件直接覆盖，写文件失败按普通 CLI 错误返回。指定 `--output` 且未显式写 `--response-format` 时按 `detailed` 执行，所以一次 67KiB 的正文只加 `--output` 即可；显式 `concise` 仍保留 32KiB 上限，显式 `--max-result-bytes` 始终优先。落盘后再用本地文件工具解析，不要为了看内容把文件整个 cat 回上下文。
 - 复杂交互优先拆成更小的 autobrowser 命令或脚本步骤，保留原任务目标逐步推进。
@@ -36,4 +39,8 @@ return links.slice(0, 10)
 
 - 列表页/详情页的常见选择器落空时，先用 `eval` 从目标文本节点逐级 `parentElement` 打印 DOM 层级链（节点写成 `tagName#id.class`），再按真实层级写选择器；层级只是当前页面的结构，不是工具契约，不要固化成站点专属选择器。
 - 这类探测脚本一长就按「eval 使用边界」改用 `--stdin` 或 `--file`，不要继续在命令行上调引号；`not a valid selector` 的归因同样以该节为准。
+- 先锚定目标容器再查子节点：标签页、表格这类组件在外层页面往往也存在同名结构，`document.querySelector('.x')` 容易命中外层高度为 0 的节点，测出全 0/空值，看起来像"组件没渲染"。从弹窗/面板根节点开始向下查，不要直接在整个 `document` 上取第一个匹配。
+- 容器的 `querySelector` 只匹配后代、不含容器自身：判断容器本身是否带某个类要用 `el.matches(...)`；在容器里再查它自己的类名会得到 `null`，随后取属性直接抛错。
+- 每个 `querySelector`/`querySelectorAll` 结果先判空或检查 `length` 再取值：一个 `null` 就会中断整个测量脚本，得到的是 `PAGE_EVALUATION_EXCEPTION`，并不等于页面没有数据。
+- 反查某元素的生效样式时，不要先按 `rule.selectorText` 里的关键字过滤：真正命中该元素的规则可能根本不含你按组件类名猜测的关键字（例如命中的是一条通用属性选择器）。应遍历所有包含目标声明（如 `style.display`）的规则，再用 `el.matches(rule.selectorText)` 逐个验证命中。`document.styleSheets` 之外还要检查 `document.adoptedStyleSheets`，样式注入方式随构建工具/组件库不同而变；伪元素选择器上的 `matches` 会抛错，跳过即可。
 - `eval` 超时或页面内异常时保持原任务目标，不要换方案；先用 `status`、`snapshot`、`console`、`errors` 诊断页面状态和脚本问题，再围绕原任务重试。
