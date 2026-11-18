@@ -339,10 +339,15 @@ export const MCP_TOOLS: McpToolDefinition[] = [
           description: 'A CSS selector or an @eN element ref from snapshot.',
         },
         value: { type: 'string', description: 'The text to enter.' },
+        expectedValue: {
+          type: 'string',
+          description:
+            'Optional final value to read back after UI updates; a mismatch is reported, not retried.',
+        },
       },
       required: ['selector', 'value'],
     },
-    toArgs: (args) => ({ selector: args.selector, value: args.value }),
+    toArgs: (args) => onlyDefined(args, ['selector', 'value', 'expectedValue']),
   },
   {
     name: 'type',
@@ -362,10 +367,15 @@ export const MCP_TOOLS: McpToolDefinition[] = [
           description:
             'Press Enter after typing. The reply tells you whether a navigation was observed.',
         },
+        expectedValue: {
+          type: 'string',
+          description:
+            'Optional full field value expected after typing; a mismatch is reported, not retried.',
+        },
       },
       required: ['selector', 'value'],
     },
-    toArgs: (args) => onlyDefined(args, ['selector', 'value', 'submit']),
+    toArgs: (args) => onlyDefined(args, ['selector', 'value', 'submit', 'expectedValue']),
   },
   {
     name: 'press',

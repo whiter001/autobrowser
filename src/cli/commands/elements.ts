@@ -193,11 +193,21 @@ async function handleFill(rest: string[], context: CommandContext): Promise<numb
   if (rest.length < 2) {
     return throwCommandError('missing value for fill')
   }
-  const value = rest.slice(1).join(' ')
+  const optionIndex = rest.indexOf('--expect-value', 1)
+  if (
+    optionIndex >= 0 &&
+    (optionIndex !== rest.length - 2 || rest[optionIndex + 1] === undefined)
+  ) {
+    return throwCommandError('fill --expect-value requires one final expected value')
+  }
+  const valueParts = rest.slice(1, optionIndex < 0 ? undefined : optionIndex)
+  if (valueParts.length === 0) return throwCommandError('missing value for fill')
+  const value = valueParts.join(' ')
 
   await requestAndWrite(context, 'fill', {
     selector,
     value,
+    ...(optionIndex < 0 ? {} : { expectedValue: rest[optionIndex + 1] }),
   })
   return 0
 }
@@ -354,16 +364,21 @@ async function handleType(rest: string[], context: CommandContext): Promise<numb
   const optionParts = rest.slice(1, separatorIndex < 0 ? undefined : separatorIndex)
   const literalParts = separatorIndex < 0 ? [] : rest.slice(separatorIndex + 1)
   let submit = false
-  const valueParts = [
-    ...optionParts.filter((part) => {
-      if (part === '--submit') {
-        submit = true
-        return false
-      }
-      return true
-    }),
-    ...literalParts,
-  ]
+  let expectedValue: string | undefined
+  const valueParts: string[] = []
+  for (let index = 0; index < optionParts.length; index += 1) {
+    const part = optionParts[index]!
+    if (part === '--submit') {
+      submit = true
+    } else if (part === '--expect-value') {
+      expectedValue = optionParts[++index]
+      if (expectedValue === undefined)
+        return throwCommandError('type --expect-value requires a value')
+    } else {
+      valueParts.push(part)
+    }
+  }
+  valueParts.push(...literalParts)
   if (valueParts.length === 0) {
     return throwCommandError('missing value for type')
   }
@@ -373,6 +388,7 @@ async function handleType(rest: string[], context: CommandContext): Promise<numb
     selector,
     value,
     ...(submit ? { submit: true } : {}),
+    ...(expectedValue === undefined ? {} : { expectedValue }),
   })
   return 0
 }

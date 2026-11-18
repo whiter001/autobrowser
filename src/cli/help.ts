@@ -474,7 +474,15 @@ export const HELP_ROOT: HelpNode = helpNode(
       '不是所有弹窗都该接管：只有确实要在新标签继续操作时才跟随，否则留在原页面。',
     ]),
     helpNode('dblclick', '双击指定选择器。', 'autobrowser dblclick <selector>'),
-    helpNode('fill', '用文本填充指定选择器。', 'autobrowser fill <selector> <value>'),
+    helpNode(
+      'fill',
+      '用文本填充指定选择器。',
+      'autobrowser fill <selector> <value> [--expect-value <最终值>]',
+      [
+        '--expect-value <最终值>  等待组件更新后读回控件值；普通输入不一致时最多回退一次键盘覆盖。',
+        'Monaco 使用编辑器键盘覆盖；若标签没有焦点，先用 tab select 或 set focus on。不能确认完整模型时返回 readBack.matched=false。',
+      ],
+    ),
     helpNode(
       'fillform',
       '一次调用填充多个表单字段；单个字段失败不会中断其余字段。',
@@ -495,10 +503,16 @@ export const HELP_ROOT: HelpNode = helpNode(
         '可通过缩小查询范围、使用 --exact、查看 --candidates，或明确设置 --position 来消除歧义。',
       ],
     ),
-    helpNode('type', '在指定选择器中输入文本。', 'autobrowser type <selector> <value> [--submit]', [
-      '--submit  输入后按下 Enter；回复会报告 submitted（Enter 已发送）与 navigationDetected（页面确实离开了）',
-      'Enter 不保证触发了提交：组件往往会忽略它，请用 wait --text/--url 确认结果，或点击提交按钮。',
-    ]),
+    helpNode(
+      'type',
+      '在指定选择器中输入文本。',
+      'autobrowser type <selector> <value> [--submit] [--expect-value <完整值>]',
+      [
+        '--submit  输入后按下 Enter；回复会报告 submitted（Enter 已发送）与 navigationDetected（页面确实离开了）',
+        '--expect-value <完整值>  读回输入后的完整字段值；与预期不符仅报告 readBack.matched=false，不自动重试。Monaco 读回后光标移至模型末尾。',
+        'Enter 不保证触发了提交：组件往往会忽略它，请用 wait --text/--url 确认结果，或点击提交按钮。',
+      ],
+    ),
     helpNode('press', '在聚焦的元素上按下一个键盘按键。', 'autobrowser press <key>', [
       '用法：autobrowser press <key>，例如 autobrowser press Enter。',
       'press 不接受选择器：请先 click 或 focus <selector>，再把按键发送给该元素。',

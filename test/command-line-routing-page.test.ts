@@ -398,6 +398,26 @@ describe('cli command routing', () => {
     })
   })
 
+  test('routes fill read-back expectation to the extension', async () => {
+    const result = await runCli(['fill', '#date', '2026-11-07', '--expect-value', '2026-11-07'])
+
+    expect(result.exitCode).toBe(0)
+    expect(result.fetchCalls[0].body).toEqual({
+      command: 'fill',
+      args: { selector: '#date', value: '2026-11-07', expectedValue: '2026-11-07' },
+    })
+  })
+
+  test('routes type read-back expectation to the extension', async () => {
+    const result = await runCli(['type', '#q', 'new', '--expect-value', 'oldnew'])
+
+    expect(result.exitCode).toBe(0)
+    expect(result.fetchCalls[0].body).toEqual({
+      command: 'type',
+      args: { selector: '#q', value: 'new', expectedValue: 'oldnew' },
+    })
+  })
+
   test('routes type --submit to the extension', async () => {
     const result = await runCli(['type', '#q', 'hello', '--submit'])
 

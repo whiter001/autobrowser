@@ -501,6 +501,7 @@ export function createCommandHandlers({
       readStringArg(scope.args, 'value'),
       scope.frameSelector,
       context,
+      typeof scope.args.expectedValue === 'string' ? scope.args.expectedValue : undefined,
     )
   })
   register(['fillform'], async ({ scope, context }) => {
@@ -522,6 +523,7 @@ export function createCommandHandlers({
       scope.frameSelector,
       readBooleanArg(scope.args, 'submit'),
       context,
+      typeof scope.args.expectedValue === 'string' ? scope.args.expectedValue : undefined,
     )
   })
   register(['hover'], async ({ scope, context }) => {

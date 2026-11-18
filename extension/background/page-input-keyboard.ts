@@ -194,17 +194,46 @@ export function createKeyboardCommands(
     frameSelector: FrameSelector,
     submit = false,
     context?: CommandExecutionContext,
+    expectedValue?: string,
   ) {
-    await element.focusElement(tabId, selector, frameSelector, context)
+    const focus = await element.focusElement(tabId, selector, frameSelector, context)
+    const inputSource = focus.monaco === true ? 'monaco' : undefined
+    if (inputSource) element.requireMonacoFocus(focus, selector)
     context?.throwIfCancelled()
-    const typed = await insertTextSequentially(tabId, value, context)
+    // Monaco 把 insertText 交给编辑器处理；整段发送可以保留换行和 Unicode 字符边界。
+    const typed = inputSource
+      ? { typed: true, text: (await dispatchInsertText(tabId, value, context)).text }
+      : await insertTextSequentially(tabId, value, context)
     if (!submit) {
       return {
         found: true,
         selector,
         ...typed,
+        ...(expectedValue === undefined
+          ? {}
+          : {
+              readBack: await element.readBackValue(
+                tabId,
+                selector,
+                expectedValue,
+                frameSelector,
+                context,
+                inputSource,
+              ),
+            }),
       }
     }
+    const readBack =
+      expectedValue === undefined
+        ? undefined
+        : await element.readBackValue(
+            tabId,
+            selector,
+            expectedValue,
+            frameSelector,
+            context,
+            inputSource,
+          )
     context?.throwIfCancelled()
     const before = await readFrameLocation(tabId, frameSelector)
     await pressKey(tabId, 'Enter', context)
@@ -216,6 +245,7 @@ export function createKeyboardCommands(
       // submitted 只表示 Enter 已经发出；navigationDetected 才是"页面确实离开了"
       submitted: true,
       navigationDetected,
+      ...(readBack === undefined ? {} : { readBack }),
       ...(navigationDetected
         ? {}
         : {

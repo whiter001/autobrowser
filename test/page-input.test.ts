@@ -525,6 +525,284 @@ describe('page input type with submit', () => {
   })
 })
 
+describe('optional input read-back', () => {
+  function controlledInput(mode: 'fill' | 'fill-fallback' | 'type') {
+    const node = {
+      tagName: 'INPUT',
+      type: 'text',
+      value: 'old',
+      focus: () => undefined,
+      matches: (selector: string) => selector === '#field',
+      dispatchEvent: () => {
+        if (mode === 'fill' || mode === 'fill-fallback')
+          setTimeout(() => {
+            node.value = 'old'
+          }, 0)
+        return true
+      },
+    }
+    let reads = 0
+    const pageInput = createPageInputDomain({
+      state: createExtensionState(1),
+      getTargetTab: async () => ({ id: 1 }) as never,
+      resolveElementSelectorForTab: async () =>
+        ({ tab: { id: 1 }, resolvedSelector: '#field' }) as never,
+      resolveFrameTarget: async () => ({}) as never,
+      getFrameExecutionContext: async () => ({}) as never,
+      evaluateInTabContext: async (_tabId: unknown, expression: string) => {
+        if (expression.includes('observedValue')) reads += 1
+        const result = executePageExpression(expression, { querySelectorAll: () => [node] })
+        return { tab: { id: 1 }, value: await result } as never
+      },
+      sendDebuggerCommand: async (_tabId: unknown, method: string) => {
+        if (mode === 'type' && method === 'Input.insertText') {
+          node.value = 'oldnew'
+          setTimeout(() => {
+            node.value = 'old'
+          }, 0)
+        }
+        if (mode === 'fill-fallback' && method === 'Input.insertText') {
+          node.value = 'new'
+        }
+        return undefined as never
+      },
+    } as never)
+    return { pageInput, getReads: () => reads }
+  }
+
+  test('fill retries once with keyboard replacement after a read-back mismatch', async () => {
+    const { pageInput, getReads } = controlledInput('fill-fallback')
+    const result = await pageInput.fillSelector(1, '#field', 'new', null, undefined, 'new')
+    expect(result).toMatchObject({
+      found: true,
+      readBack: { expectedValue: 'new', observedValue: 'new', matched: true },
+    })
+    expect(getReads()).toBeGreaterThan(1)
+  })
+
+  test('fill reports a controlled input rollback when keyboard fallback also fails', async () => {
+    const { pageInput, getReads } = controlledInput('fill')
+    const result = await pageInput.fillSelector(1, '#field', 'new', null, undefined, 'new')
+    expect(result).toMatchObject({
+      found: true,
+      readBack: { expectedValue: 'new', observedValue: 'old', matched: false },
+    })
+    expect(getReads()).toBeGreaterThan(1)
+  })
+
+  test('fill confirms a stable controlled input value', async () => {
+    const { pageInput } = controlledInput('type')
+    const result = await pageInput.fillSelector(1, '#field', 'new', null, undefined, 'new')
+    expect(result).toMatchObject({
+      readBack: { expectedValue: 'new', observedValue: 'new', matched: true },
+    })
+  })
+
+  test('type reports a controlled input rollback against the full expected value', async () => {
+    const { pageInput, getReads } = controlledInput('type')
+    const result = await pageInput.typeIntoSelector(
+      1,
+      '#field',
+      'new',
+      null,
+      false,
+      undefined,
+      'oldnew',
+    )
+    expect(result).toMatchObject({
+      typed: true,
+      readBack: { expectedValue: 'oldnew', observedValue: 'old', matched: false },
+    })
+    expect(getReads()).toBeGreaterThan(0)
+  })
+
+  test('omitting read-back preserves the original response and skips observation', async () => {
+    const { pageInput, getReads } = controlledInput('fill')
+    const result = await pageInput.fillSelector(1, '#field', 'new', null)
+    expect(result).not.toHaveProperty('readBack')
+    expect(getReads()).toBe(0)
+  })
+})
+
+describe('Monaco page input', () => {
+  function monacoInput({ focused = true, supportsCopy = true, isMac = false } = {}) {
+    let model = 'old\nquery'
+    let selected = false
+    const keys: string[] = []
+    const inserts: string[] = []
+    const doc = {
+      hasFocus: () => focused,
+      defaultView: { navigator: { platform: isMac ? 'MacIntel' : 'Win32' } },
+      activeElement: null as unknown,
+      querySelectorAll: () => [editor, input],
+    }
+    const editor = {
+      matches: (selector: string) => selector === '.monaco-editor',
+      closest: () => editor,
+      querySelector: () => input,
+    }
+    const input = {
+      matches: (selector: string) => selector === 'textarea.inputarea',
+      closest: () => editor,
+      ownerDocument: doc,
+      value: 'proxy value',
+      focus: () => {
+        doc.activeElement = input
+      },
+      getAttribute: () => null,
+      dispatchEvent: ({ clipboardData }: { clipboardData: Data }) => {
+        if (!supportsCopy) return
+        clipboardData.setData(
+          'text/plain',
+          selected && model ? model.replaceAll('\n', '\r\n') : 'current line\n',
+        )
+        clipboardData.setData(
+          'vscode-editor-data',
+          JSON.stringify({ isFromEmptySelection: !selected || !model }),
+        )
+      },
+    }
+    class Data extends Map<string, string> {
+      get types() {
+        return [...this.keys()]
+      }
+      getData(type: string) {
+        return this.get(type) ?? ''
+      }
+      setData(type: string, value: string) {
+        this.set(type, value)
+      }
+    }
+    const pageInput = createPageInputDomain({
+      state: createExtensionState(1),
+      getTargetTab: async () => ({ id: 1 }),
+      resolveElementSelectorForTab: async (_tab: unknown, selector: string) => ({
+        tab: { id: 1 },
+        resolvedSelector: selector,
+      }),
+      evaluateInTabContext: async (_tab: unknown, expression: string) => ({
+        value: new Function(
+          'document',
+          'DataTransfer',
+          'ClipboardEvent',
+          'expression',
+          'return eval(expression)',
+        )(
+          doc,
+          Data,
+          class {
+            constructor(_type: string, options: object) {
+              Object.assign(this, options)
+            }
+          },
+          expression,
+        ),
+      }),
+      sendDebuggerCommand: async (
+        _tab: unknown,
+        method: string,
+        params: Record<string, unknown>,
+      ) => {
+        if (method === 'Input.dispatchKeyEvent' && params.type === 'keyDown') {
+          keys.push(`${params.modifiers}:${params.key}`)
+          if (params.key === 'a' && params.modifiers === (isMac ? 4 : 2)) selected = true
+          if (params.key === 'Backspace' && selected) model = ''
+          if (params.key === 'ArrowRight') selected = false
+        }
+        if (method === 'Input.insertText' && doc.activeElement === input) {
+          inserts.push(String(params.text))
+          model = (selected ? '' : model) + String(params.text)
+          selected = false
+        }
+      },
+    } as never)
+    return { pageInput, keys, inserts, input, getModel: () => model }
+  }
+
+  test('fill replaces the model once, with model read-back instead of the textarea value', async () => {
+    const { pageInput, keys, inserts, input, getModel } = monacoInput({ isMac: true })
+    const text = 'new\n查询'
+    expect(
+      await pageInput.fillSelector(1, 'textarea.inputarea', text, null, undefined, text),
+    ).toMatchObject({
+      readBack: { source: 'monaco', observedValue: 'new\r\n查询', matched: true },
+    })
+    expect(getModel()).toBe(text)
+    expect(input.value).toBe('proxy value')
+    expect(keys).toEqual(['4:a', '4:a', '0:ArrowRight'])
+    expect(inserts).toEqual([text])
+  })
+
+  test('type focuses the editor proxy and two checked calls do not overwrite prior text', async () => {
+    const { pageInput, getModel } = monacoInput()
+    const first = await pageInput.typeIntoSelector(
+      1,
+      '.monaco-editor',
+      'A',
+      null,
+      false,
+      undefined,
+      'old\nqueryA',
+    )
+    const second = await pageInput.typeIntoSelector(
+      1,
+      '.monaco-editor',
+      'B',
+      null,
+      false,
+      undefined,
+      'old\nqueryAB',
+    )
+    expect(first).toMatchObject({ readBack: { matched: true } })
+    expect(second).toMatchObject({ readBack: { matched: true } })
+    expect(getModel()).toBe('old\nqueryAB')
+  })
+
+  test('reports unavailable model read-back without retrying or trusting the textarea', async () => {
+    const { pageInput, inserts, getModel } = monacoInput({ supportsCopy: false })
+    expect(
+      await pageInput.fillSelector(
+        1,
+        'textarea.inputarea',
+        'proxy value',
+        null,
+        undefined,
+        'proxy value',
+      ),
+    ).toMatchObject({
+      readBack: {
+        source: 'monaco',
+        observedValue: null,
+        matched: false,
+        reason: 'monaco-model-unavailable',
+      },
+    })
+    expect(inserts).toEqual(['proxy value'])
+    await pageInput.typeIntoSelector(1, '.monaco-editor', ' + suffix', null)
+    expect(getModel()).toBe('proxy value + suffix')
+  })
+
+  test('does not send keyboard events when the editor lacks document focus', async () => {
+    const { pageInput, keys, inserts } = monacoInput({ focused: false })
+    await expect(pageInput.fillSelector(1, '.monaco-editor', 'new', null)).rejects.toThrow(
+      'focus its tab',
+    )
+    await expect(pageInput.typeIntoSelector(1, '.monaco-editor', 'new', null)).rejects.toThrow(
+      'focus its tab',
+    )
+    expect(keys).toEqual([])
+    expect(inserts).toEqual([])
+  })
+
+  test('clears the editor with Backspace rather than inserting empty text', async () => {
+    const { pageInput, keys, inserts, getModel } = monacoInput()
+    await pageInput.fillSelector(1, '.monaco-editor', '', null)
+    expect(getModel()).toBe('')
+    expect(keys).toEqual(['2:a', '0:Backspace'])
+    expect(inserts).toEqual([])
+  })
+})
+
 describe('page input insertText chunking', () => {
   function createDebuggerInput() {
     const debuggerCalls: Array<{ method: string; params?: Record<string, unknown> }> = []

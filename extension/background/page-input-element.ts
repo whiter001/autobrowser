@@ -5,6 +5,7 @@ import type { FrameSelector, TabInput } from './types.js'
 import type { ElementActionResult, FillFormField, PageInputContext } from './page-input-context.js'
 import { createElementNotFoundError, FILL_VALUE_HELPER_SOURCE } from './page-input-helpers.js'
 import { PAGE_CONTEXT_DEEP_DOM_HELPERS_SOURCE } from './page-input-context.js'
+import { MONACO_INPUT_HELPER_SOURCE } from './page-input-monaco.js'
 
 // 元素读取与填写：属性读取、状态判定、焦点/选中/勾选、填充与滚动
 
@@ -31,8 +32,11 @@ export function createElementCommands(pageContext: PageInputContext) {
     const { value } = await evaluateInTabContext<ElementActionResult>(
       tab.id,
       `(() => {
+        ${MONACO_INPUT_HELPER_SOURCE}
         const node = deepQuerySelector(document, ${JSON.stringify(resolvedSelector)});
         if (!node) return { found: false };
+        const monaco = findMonacoInput(node);
+        if (monaco) return { found: true, monaco: true, ...focusMonacoInput(monaco) };
         node.focus();
         return { found: true, focused: isDeepActiveElement(document, node) };
       })()`,
@@ -328,10 +332,13 @@ export function createElementCommands(pageContext: PageInputContext) {
       tab.id,
       `(() => {
         ${FILL_VALUE_HELPER_SOURCE}
+        ${MONACO_INPUT_HELPER_SOURCE}
         const node = deepQuerySelector(document, ${JSON.stringify(resolvedSelector)});
         if (!node) {
           return { found: false };
         }
+        const monaco = findMonacoInput(node);
+        if (monaco) return { found: true, monaco: true, ...focusMonacoInput(monaco) };
 
         const result = applyFillValue(node, ${JSON.stringify(value)});
         return { ...result, selector: ${JSON.stringify(selector)} };
@@ -340,6 +347,17 @@ export function createElementCommands(pageContext: PageInputContext) {
     )
 
     if (result?.found) {
+      if (result.monaco === true) {
+        requireMonacoFocus(result, selector)
+        await dispatchInputKey(tab.id, 'a', 'KeyA', 65, result.isMac ? 4 : 2, context)
+        if (value === '') {
+          await dispatchInputKey(tab.id, 'Backspace', 'Backspace', 8, 0, context)
+        } else {
+          context?.throwIfCancelled()
+          await sendDebuggerCommand(tab.id, 'Input.insertText', { text: value }, context)
+        }
+        return { found: true, selector, inputSource: 'monaco' }
+      }
       return result
     }
 
@@ -350,14 +368,198 @@ export function createElementCommands(pageContext: PageInputContext) {
     throw createElementNotFoundError(selector)
   }
 
-  async function fillSelector(
+  function requireMonacoFocus(result: ElementActionResult, selector: string) {
+    if (!result.focused) {
+      throw new Error(
+        `cannot input into Monaco ${selector}: focus its tab with tab select or set focus on`,
+      )
+    }
+    if (result.readOnly)
+      throw new Error(`cannot input into Monaco ${selector}: editor is read-only`)
+  }
+
+  async function dispatchInputKey(
+    tabId: number,
+    key: string,
+    code: string,
+    keyCode: number,
+    modifiers: number,
+    context?: CommandExecutionContext,
+  ) {
+    const params = {
+      key,
+      code,
+      modifiers,
+      windowsVirtualKeyCode: keyCode,
+      nativeVirtualKeyCode: keyCode,
+    }
+    context?.throwIfCancelled()
+    try {
+      await sendDebuggerCommand(
+        tabId,
+        'Input.dispatchKeyEvent',
+        { ...params, type: 'keyDown' },
+        context,
+      )
+    } finally {
+      await sendDebuggerCommand(tabId, 'Input.dispatchKeyEvent', { ...params, type: 'keyUp' })
+    }
+  }
+
+  async function readBackMonaco(
+    tabId: number,
+    selector: string,
+    expectedValue: string,
+    frameSelector: FrameSelector,
+    context?: CommandExecutionContext,
+  ) {
+    let observedValue: string | null = null
+    const focus = await focusElement(tabId, selector, frameSelector, context)
+    if (focus.monaco === true && focus.focused) {
+      const { resolvedSelector } = await resolveElementSelectorForTab(tabId, selector)
+      await dispatchInputKey(tabId, 'a', 'KeyA', 65, focus.isMac ? 4 : 2, context)
+      const { value } = await evaluateInTabContext<{ text: string | null; focused: boolean }>(
+        tabId,
+        `(() => {
+          ${MONACO_INPUT_HELPER_SOURCE}
+          const node = deepQuerySelector(document, ${JSON.stringify(resolvedSelector)});
+          const monaco = node && findMonacoInput(node);
+          const focused = hasMonacoInputFocus(monaco?.input);
+          return { focused, text: focused ? copyMonacoSelection(monaco.input) : null };
+        })()`,
+        withFrameSelectorOptions(frameSelector, { commandContext: context }),
+      )
+      observedValue = value?.text ?? null
+      // 读回不可用时也不能把全选留给下一次 type；焦点已转移时不要向其他控件发按键。
+      if (value?.focused) await dispatchInputKey(tabId, 'ArrowRight', 'ArrowRight', 39, 0, context)
+    }
+    return {
+      expectedValue,
+      observedValue,
+      matched:
+        observedValue !== null &&
+        observedValue.replace(/\r\n/g, '\n') === expectedValue.replace(/\r\n/g, '\n'),
+      source: 'monaco',
+      ...(observedValue === null ? { reason: 'monaco-model-unavailable' } : {}),
+    }
+  }
+
+  const READ_BACK_TIMEOUT_MS = 500
+  const READ_BACK_INTERVAL_MS = 50
+
+  async function readBackValue(
+    tabId: TabInput,
+    selector: string,
+    expected: string,
+    frameSelector: FrameSelector,
+    context?: CommandExecutionContext,
+    inputSource?: unknown,
+  ) {
+    const { tab, resolvedSelector } = await resolveElementSelectorForTab(tabId, selector)
+    if (inputSource === 'monaco') {
+      return await readBackMonaco(tab.id, selector, expected, frameSelector, context)
+    }
+    let observedValue: string | null = null
+    // 先让受控组件完成当前事件循环，避免读到尚未回滚的中间 DOM 值。
+    await new Promise((resolve) => setTimeout(resolve, READ_BACK_INTERVAL_MS))
+    for (
+      let elapsed = READ_BACK_INTERVAL_MS;
+      elapsed <= READ_BACK_TIMEOUT_MS;
+      elapsed += READ_BACK_INTERVAL_MS
+    ) {
+      context?.throwIfCancelled()
+      const { value } = await evaluateInTabContext<{ observedValue: string | null }>(
+        tab.id,
+        `(() => {
+          const node = deepQuerySelector(document, ${JSON.stringify(resolvedSelector)});
+          if (!node) return { observedValue: null };
+          const current = node.type === 'checkbox' || node.type === 'radio'
+            ? String(node.checked)
+            : node.isContentEditable && !('value' in node)
+              ? node.textContent ?? ''
+              : node.value ?? '';
+          return { observedValue: String(current) };
+        })()`,
+        withFrameSelectorOptions(frameSelector, { commandContext: context }),
+      )
+      observedValue = value?.observedValue ?? null
+      if (observedValue === expected) {
+        return { expectedValue: expected, observedValue, matched: true }
+      }
+      if (elapsed < READ_BACK_TIMEOUT_MS)
+        await new Promise((resolve) => setTimeout(resolve, READ_BACK_INTERVAL_MS))
+    }
+    return { expectedValue: expected, observedValue, matched: false }
+  }
+
+  async function replaceValueWithKeyboard(
     tabId: TabInput,
     selector: string,
     value: string,
     frameSelector: FrameSelector,
     context?: CommandExecutionContext,
   ) {
-    return await fillElement(tabId, selector, value, frameSelector, context)
+    const { tab, resolvedSelector } = await resolveElementSelectorForTab(tabId, selector)
+    context?.throwIfCancelled()
+    await evaluateInTabContext(
+      tab.id,
+      `(() => {
+        const node = deepQuerySelector(document, ${JSON.stringify(resolvedSelector)});
+        if (!node) return { found: false };
+        node.focus();
+        return { found: true };
+      })()`,
+      withFrameSelectorOptions(frameSelector, { commandContext: context }),
+    )
+    await sendDebuggerCommand(
+      tab.id,
+      'Input.dispatchKeyEvent',
+      {
+        type: 'keyDown',
+        key: 'a',
+        code: 'KeyA',
+        modifiers: 2,
+        windowsVirtualKeyCode: 65,
+        nativeVirtualKeyCode: 65,
+      },
+      context,
+    )
+    await sendDebuggerCommand(tab.id, 'Input.dispatchKeyEvent', {
+      type: 'keyUp',
+      key: 'a',
+      code: 'KeyA',
+      modifiers: 2,
+      windowsVirtualKeyCode: 65,
+      nativeVirtualKeyCode: 65,
+    })
+    await sendDebuggerCommand(tab.id, 'Input.insertText', { text: value }, context)
+  }
+
+  async function fillSelector(
+    tabId: TabInput,
+    selector: string,
+    value: string,
+    frameSelector: FrameSelector,
+    context?: CommandExecutionContext,
+    expectedValue?: string,
+  ) {
+    const result = await fillElement(tabId, selector, value, frameSelector, context)
+    if (expectedValue === undefined) return result
+
+    let readBack = await readBackValue(
+      tabId,
+      selector,
+      expectedValue,
+      frameSelector,
+      context,
+      result.inputSource,
+    )
+    if (!readBack.matched && result.inputSource !== 'monaco') {
+      // 受控日期/文本组件可能拒绝脚本赋值；只补一次真实键盘覆盖，避免重复提交或无限重试。
+      await replaceValueWithKeyboard(tabId, selector, value, frameSelector, context)
+      readBack = await readBackValue(tabId, selector, expectedValue, frameSelector, context)
+    }
+    return { ...result, readBack }
   }
 
   /** 批量填表：逐 field 串行执行 fillElement，单个失败不中断（语义同 batch 的
@@ -503,9 +705,11 @@ export function createElementCommands(pageContext: PageInputContext) {
     checkElement,
     checkIsState,
     fillElement,
+    readBackValue,
     fillFields,
     fillSelector,
     focusElement,
+    requireMonacoFocus,
     getAttribute,
     scrollElement,
     scrollIntoViewSelector,
