@@ -1,15 +1,5 @@
 import { afterEach, describe, expect, test } from 'bun:test'
-import {
-  chmod,
-  mkdir,
-  mkdtemp,
-  readFile,
-  readdir,
-  rm,
-  stat,
-  symlink,
-  writeFile,
-} from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { spawn } from 'node:child_process'
@@ -310,21 +300,12 @@ describe('skill asset enumeration', () => {
     expect(assets.map((asset) => asset.relPath)).toEqual(['SKILL.md', 'references/commands.md'])
   })
 
-  test('collectSkillAssets rejects an unreadable references/ instead of reporting it as empty', async () => {
-    // root 会绕过权限检查，这种环境无法构造 EACCES
-    if (typeof process.getuid === 'function' && process.getuid() === 0) return
-
+  test('collectSkillAssets rejects a non-directory references/ instead of reporting it as empty', async () => {
     const dir = await makeTempDir()
-    const refs = path.join(dir, 'references')
-    await mkdir(refs, { recursive: true })
-    await writeFile(path.join(refs, 'commands.md'), '# x\n', 'utf8')
-    await chmod(refs, 0o000)
-    try {
-      await expect(collectSkillAssets(dir)).rejects.toThrow(
-        /failed to read package skill directory/,
-      )
-    } finally {
-      await chmod(refs, 0o755)
-    }
+    await writeFile(path.join(dir, 'SKILL.md'), '# x\n', 'utf8')
+    // references 是普通文件：readdir 会抛 ENOTDIR，与权限不足同样属于"读不到"，不能被当成空目录
+    await writeFile(path.join(dir, 'references'), '# not a directory\n', 'utf8')
+
+    await expect(collectSkillAssets(dir)).rejects.toThrow(/failed to read package skill directory/)
   })
 })
