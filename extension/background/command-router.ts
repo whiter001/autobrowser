@@ -1,4 +1,10 @@
-import { resolveEffectiveFrameSelector, resolveTabInput } from './targeting.js'
+import {
+  recordElementRefFrame,
+  resolveEffectiveFrameSelector,
+  resolveElementRefFrameForRefs,
+  resolveTabInput,
+} from './targeting.js'
+import { isAgentElementRef } from '../../src/core/agent-selectors.js'
 import {
   createCommandQueue,
   type CommandExecutionContext,
@@ -114,6 +120,68 @@ interface CommandExecutionOptions {
   context?: CommandExecutionContext
 }
 
+// 结果遍历必须有界：快照/查找正常只有数百个节点，但异常时不能因为深层结构或循环引用卡住命令。
+const ELEMENT_REF_SCAN_NODE_LIMIT = 5000
+const ELEMENT_REF_SCAN_DEPTH_LIMIT = 8
+
+/** 命令参数里可能携带 @e 引用的字段；fields 只取前 100 项，避免超长表单拖慢路由。 */
+function collectElementRefsFromArgs(args: CommandArgs): string[] {
+  const refs: string[] = []
+  for (const key of ['selector', 'element', 'start', 'end']) {
+    const value = args[key]
+    if (typeof value === 'string') refs.push(value)
+  }
+  if (Array.isArray(args.fields)) {
+    for (const field of args.fields.slice(0, 100)) {
+      if (field && typeof field === 'object' && !Array.isArray(field)) {
+        const selector = (field as Record<string, unknown>).selector
+        if (typeof selector === 'string') refs.push(selector)
+      }
+    }
+  }
+  return refs
+}
+
+/** 收集结果对象中任意层级的元素 ref；只认 ref 字段，网络短引用 rN / frame ref 不会误入。 */
+function collectElementRefsFromResult(value: unknown): string[] {
+  const refs = new Set<string>()
+  const stack: Array<{ value: unknown; depth: number }> = [{ value, depth: 0 }]
+  const seen = new Set<object>()
+  let visited = 0
+
+  while (stack.length > 0 && visited < ELEMENT_REF_SCAN_NODE_LIMIT) {
+    const current = stack.pop()!
+    visited += 1
+    const node = current.value
+    if (!node || typeof node !== 'object') continue
+    if (seen.has(node)) continue
+    seen.add(node)
+    if (current.depth >= ELEMENT_REF_SCAN_DEPTH_LIMIT) continue
+
+    if (Array.isArray(node)) {
+      for (const item of node) {
+        if (item && typeof item === 'object' && stack.length < ELEMENT_REF_SCAN_NODE_LIMIT) {
+          stack.push({ value: item, depth: current.depth + 1 })
+        }
+      }
+      continue
+    }
+
+    for (const [key, item] of Object.entries(node)) {
+      if (key === 'ref' && typeof item === 'string') {
+        const ref = item.trim()
+        if (isAgentElementRef(ref)) refs.add(ref)
+        continue
+      }
+      if (item && typeof item === 'object' && stack.length < ELEMENT_REF_SCAN_NODE_LIMIT) {
+        stack.push({ value: item, depth: current.depth + 1 })
+      }
+    }
+  }
+
+  return [...refs]
+}
+
 /** 命令执行管线：校验、目标固定、对话框检查、队列、取消、meta 和动作日志。 */
 export function createCommandRouter({
   state,
@@ -199,6 +267,44 @@ export function createCommandRouter({
 
   function readFrameSelectorArg(args: CommandArgs, key: string): FrameSelector {
     return typeof args[key] === 'string' ? (args[key] as string) : null
+  }
+
+  /**
+   * 显式 --frame 永远优先；没有显式 frame 时，已登记的 @e 引用按它被观察到的文档路由，
+   * 不再沿用 selectedFrames（切换 frame 后同号 ref 可能来自另一个文档）。
+   * 主框架必须传 'top'：null/空串会被下游回退成 selectedFrames。
+   * 多个 ref 指向不同文档时 fail closed：执行前抛错，绝不退回当前 frame 误操作。
+   */
+  function resolveCommandFrameSelector(
+    tabId: number | null,
+    args: CommandArgs,
+    frameSelector: FrameSelector,
+  ): FrameSelector {
+    if (typeof frameSelector === 'string' && frameSelector.trim()) return frameSelector
+    if (typeof tabId !== 'number') return frameSelector
+    const resolution = resolveElementRefFrameForRefs(state, tabId, collectElementRefsFromArgs(args))
+    if (resolution.kind === 'conflict') {
+      const error = new Error(
+        'element refs in this command were observed in different frames; one command cannot act across frames',
+      ) as ErrorWithCode
+      error.code = 'INVALID_COMMAND_ARGS'
+      error.suggestedAction =
+        'Run the action one frame at a time, pass an explicit --frame for each step, then snapshot again before retrying.'
+      error.details = { field: 'frame', reason: 'element refs resolve to different frames' }
+      throw error
+    }
+    return resolution.kind === 'frame' ? (resolution.frame ?? 'top') : frameSelector
+  }
+
+  /** 把 snapshot/find 结果里出现的 ref 记到实际执行 frame，供后续命令按来源路由 */
+  function indexResultElementRefs(
+    tabId: number,
+    frameSelector: FrameSelector,
+    value: unknown,
+  ): void {
+    for (const ref of collectElementRefsFromResult(value)) {
+      recordElementRefFrame(state, tabId, ref, frameSelector)
+    }
   }
 
   function resolveDialogTabId(tabTarget: TabInput): number | null {
@@ -445,6 +551,7 @@ export function createCommandRouter({
 
     await assertNoOpenDialog(command, tabId)
 
+    // 入队时的 raw frame 只作为缺省值；真正的来源解析推迟到 runWithMeta（队列内、执行前）。
     const scope: CommandRunScope = {
       command,
       args,
@@ -462,6 +569,8 @@ export function createCommandRouter({
       limit,
       cursor,
     }
+    // 供 actionLog 使用：记录本次实际执行解析出的 frame，中途抛错则保持 raw 值
+    let executedFrameSelector: FrameSelector = frameSelector
 
     async function runWithMeta() {
       context?.throwIfCancelled()
@@ -469,10 +578,14 @@ export function createCommandRouter({
         await workspaceManager.resolveCommandTab(workspace, command, args, pinnedTabId)
       }
       await assertNoOpenDialog(command, tabId)
+      // 同 tab 的 snapshot/find 可能就在本命令排队等待期间更新了 ref 来源，必须此时再解析一次。
+      const routedFrameSelector = resolveCommandFrameSelector(pinnedTabId, args, frameSelector)
+      executedFrameSelector = routedFrameSelector
+      const effectiveScope: CommandRunScope = { ...scope, frameSelector: routedFrameSelector }
       const executionFrame =
         pinnedTabId === null
-          ? frameSelector
-          : resolveEffectiveFrameSelector(state, { id: pinnedTabId }, frameSelector) || 'top'
+          ? routedFrameSelector
+          : resolveEffectiveFrameSelector(state, { id: pinnedTabId }, routedFrameSelector) || 'top'
 
       const evalTabId = command === 'eval' ? pinnedTabId : null
       const terminateEval = () => {
@@ -489,7 +602,12 @@ export function createCommandRouter({
           : () => {}
       let result: unknown
       try {
-        result = await commandHandlers.handle({ scope, executionFrame, context, request })
+        result = await commandHandlers.handle({
+          scope: effectiveScope,
+          executionFrame,
+          context,
+          request,
+        })
         if (workspace && command === 'close' && args.all === true && isRecord(result)) {
           if (Array.isArray(result.tabIds)) {
             for (const id of result.tabIds) {
@@ -506,12 +624,21 @@ export function createCommandRouter({
         if (evalTabId !== null) context?.signal?.removeEventListener('abort', terminateEval)
       }
 
+      // 观察结果里的 ref 只有登记了来源，后续 click/fill/get 才能在 selectedFrames 漂移后回到正确文档。
+      if (typeof pinnedTabId === 'number' && (command === 'snapshot' || command === 'find')) {
+        indexResultElementRefs(pinnedTabId, executionFrame, result)
+      }
+
       if (state.session.autoSnapshot && AUTO_SNAPSHOT_COMMANDS.has(command) && isRecord(result)) {
         const actionResult = result
         try {
+          const snapshot = await pageObserve.snapshotTab(tabId, executionFrame)
+          if (typeof pinnedTabId === 'number') {
+            indexResultElementRefs(pinnedTabId, executionFrame, snapshot)
+          }
           result = {
             ...result,
-            snapshot: await pageObserve.snapshotTab(tabId, executionFrame),
+            snapshot,
           }
         } catch (error) {
           result = {
@@ -523,7 +650,7 @@ export function createCommandRouter({
       const metaFrame =
         command === 'frame' && typeof tabId === 'number'
           ? resolveEffectiveFrameSelector(state, { id: tabId }, null)
-          : frameSelector
+          : routedFrameSelector
       const meta = await buildCommandMeta(command, args, tabId, metaFrame, {
         pinnedTabId,
         targetTabIdBeforeCommand,
@@ -570,7 +697,7 @@ export function createCommandRouter({
         command,
         request,
         queryTargetTabId,
-        frameSelector || null,
+        executedFrameSelector || null,
         selector,
         actionStartedAt,
         true,
@@ -582,7 +709,7 @@ export function createCommandRouter({
         command,
         request,
         queryTargetTabId,
-        frameSelector || null,
+        executedFrameSelector || null,
         selector,
         actionStartedAt,
         false,

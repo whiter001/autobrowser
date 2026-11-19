@@ -191,6 +191,12 @@ interface TargetingState {
   tabHandles: Map<number, string>
   tabIdsByHandle: Map<string, number>
   pageEpochs: Map<number, number>
+  /**
+   * 有界的元素引用来源 frame：key 为 `${tabId}|@eN#pM`，值为 null（主框架）或子 frame selector。
+   * 用于在 selectedFrames 已切换到别的文档后，仍把同号 ref 路由回它实际被观察到的文档。
+   * 测试里手工构造的 state 可能没有该字段，helper 会懒初始化。
+   */
+  elementRefFrames?: Map<string, string | null>
   /** 有界的新标签记录（FIFO + 时间窗），供点击后判断是否开了新标签页 */
   recentlyCreatedTabs: NewTabRecord[]
 }

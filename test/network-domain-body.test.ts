@@ -191,14 +191,54 @@ describe('network body scheduler', () => {
     expect(calls).toHaveLength(1)
   })
 
-  test('historical pages, unfinished requests and CDP failures explain missing bodies', async () => {
+  test('SPA epoch changes do not drop a still-live body; CDP decides availability', async () => {
     const { state, network, calls, request } = harness()
     await request('old')
+    // 页面 epoch 前进了，但 requestMap 里的请求身份仍然存活，不能预拒绝
     state.targeting.pageEpochs.set(1, 2)
-    expect((await network.getRequestDetail('old')).request).toMatchObject({
-      responseBodyError: expect.stringContaining('historical page epoch'),
-    })
-    expect(calls).toHaveLength(0)
+
+    const detail = network.getRequestDetail('old')
+    expect(calls).toHaveLength(1)
+    calls[0]!.resolve({ body: 'still live' })
+
+    const stored = (await detail).request as { responseBody?: string; responseBodyError?: string }
+    expect(stored).toMatchObject({ responseBody: 'still live' })
+    expect(stored.responseBodyError).toBeUndefined()
+  })
+
+  test('a queued body fetch still runs after the epoch advances', async () => {
+    const { state, network, calls, request, flush } = harness()
+    await network.startHar(1, { maxRequests: null })
+    for (let index = 0; index < 6; index += 1) await request(`queued-${index}`)
+    // 4 个已占用 CDP 槽，后 2 个在队列里；此时发生 SPA epoch 跳变
+    expect(calls.map((call) => call.requestId)).toEqual([
+      'queued-0',
+      'queued-1',
+      'queued-2',
+      'queued-3',
+    ])
+    state.targeting.pageEpochs.set(1, 2)
+
+    for (let round = 0; round < 4; round += 1) {
+      for (const call of calls) call.resolve({ body: 'body' })
+      await flush()
+    }
+
+    expect(calls.map((call) => call.requestId)).toEqual([
+      'queued-0',
+      'queued-1',
+      'queued-2',
+      'queued-3',
+      'queued-4',
+      'queued-5',
+    ])
+    expect(state.network.requestMap.get('1:queued-4')?.responseBody).toBe('body')
+    expect(state.network.requestMap.get('1:queued-5')?.responseBody).toBe('body')
+    expect(await network.stopHar()).toMatchObject({ requestCount: 6 })
+  })
+
+  test('unfinished requests and real CDP failures still explain missing bodies', async () => {
+    const { network, calls, request } = harness()
     await request('loading', 1, false)
     expect((await network.getRequestDetail('loading')).request).toMatchObject({
       responseBodyError: expect.stringContaining('not finished'),

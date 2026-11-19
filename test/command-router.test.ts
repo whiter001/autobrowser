@@ -1,7 +1,11 @@
 import { describe, expect, test } from 'bun:test'
 import { createCommandRouter } from '../extension/background/command-router.js'
-import { createStaleTabHandleError } from '../extension/background/targeting.js'
-import type { DialogState } from '../extension/background/types.js'
+import {
+  createStaleTabHandleError,
+  invalidatePageRefs,
+  recordElementRefFrame,
+} from '../extension/background/targeting.js'
+import type { DialogState, ExtensionState } from '../extension/background/types.js'
 
 // tab-target 命令的元数据：mock getTargetTab 返回 { id: 1 }，无 url/title
 const TAB_META = {
@@ -71,7 +75,8 @@ export function createMinimalRouter(overrides?: {
   waitSelector?: (tabId: unknown, frame: unknown) => Promise<void>
   getRequestDetail?: () => Promise<unknown>
   stopHar?: (options?: { captureId?: string; includeUrls?: boolean }) => Promise<unknown>
-  clickSelector?: (tabId: unknown, selector: unknown) => Promise<unknown>
+  clickSelector?: (tabId: unknown, selector: unknown, frame?: unknown) => Promise<unknown>
+  fillFields?: (tabId: unknown, fields: unknown) => Promise<unknown>
   typeIntoSelector?: (tabId: unknown, selector: unknown) => Promise<unknown>
   evaluateScript?: (tabId: unknown, script: unknown) => Promise<unknown>
   sendDebuggerCommand?: (
@@ -102,6 +107,7 @@ export function createMinimalRouter(overrides?: {
   const evalCalls: Array<{ tabId: unknown; script: unknown; maxResultBytes?: number }> = []
   const cookieGetCalls: Array<{ tabId: unknown; filters: unknown }> = []
   const clickCalls: Array<{ tabId: unknown; selector: unknown }> = []
+  const fillFieldsCalls: Array<{ tabId: unknown; fields: unknown }> = []
   const listRequestsCalls: Array<Record<string, unknown>> = []
   const searchCalls: Array<{
     tabId: unknown
@@ -180,9 +186,9 @@ export function createMinimalRouter(overrides?: {
       highlightElement: async (...args: unknown[]) => {
         elementToolCalls.push({ method: 'highlight', args })
       },
-      clickSelector: async (_tabId: unknown, selector: unknown) => {
+      clickSelector: async (_tabId: unknown, selector: unknown, frame?: unknown) => {
         clickCalls.push({ tabId: _tabId, selector })
-        if (overrides?.clickSelector) return overrides.clickSelector(_tabId, selector)
+        if (overrides?.clickSelector) return overrides.clickSelector(_tabId, selector, frame)
         // 模拟元素缺失时带引导字段的错误，验证 batch 错误序列化不丢字段
         if (selector === '#missing') {
           const error = new Error(`element not found: ${selector}`) as Error & {
@@ -199,14 +205,18 @@ export function createMinimalRouter(overrides?: {
       },
       doubleClickSelector: async () => undefined,
       fillSelector: async () => undefined,
-      fillFields: async (_tabId: unknown, fields: unknown) => ({
-        results: (fields as Array<{ selector: string }>).map((field) => ({
-          selector: field.selector,
-          ok: true,
-        })),
-        succeeded: Array.isArray(fields) ? fields.length : 0,
-        failed: 0,
-      }),
+      fillFields: async (_tabId: unknown, fields: unknown) => {
+        fillFieldsCalls.push({ tabId: _tabId, fields })
+        if (overrides?.fillFields) return overrides.fillFields(_tabId, fields)
+        return {
+          results: (fields as Array<{ selector: string }>).map((field) => ({
+            selector: field.selector,
+            ok: true,
+          })),
+          succeeded: Array.isArray(fields) ? fields.length : 0,
+          failed: 0,
+        }
+      },
       typeIntoSelector: async (
         _tabId: unknown,
         selector: unknown,
@@ -500,6 +510,7 @@ export function createMinimalRouter(overrides?: {
     evalCalls,
     cookieGetCalls,
     clickCalls,
+    fillFieldsCalls,
     listRequestsCalls,
     searchCalls,
     downloadsCalls,
@@ -2645,5 +2656,167 @@ describe('command history metadata', () => {
     )
     // 历史只记命令名和 workspace，不落 URL、selector 等参数
     expect(JSON.stringify(result.commands)).not.toContain('https://example.com/a')
+  })
+})
+
+describe('element ref source frame routing', () => {
+  test('a ref observed at top returns to the top document after switching into a subframe', async () => {
+    const { router, state } = createMinimalRouter({
+      snapshotTab: async () => ({ elements: [{ ref: '@e7#p1' }] }),
+      clickSelector: async (_tabId, _selector, frame) => ({ routedFrame: frame ?? null }),
+    })
+
+    await router.handleCommand({ command: 'snapshot', args: { tabId: 1 } })
+    await router.handleCommand({ command: 'frame', args: { selector: '#sub' } })
+    expect(state.targeting.selectedFrames.get(1)).toBe('#sub')
+
+    // 未显式 --frame：@e7#p1 的来源是主文档，不能被 selectedFrames 带到子 frame
+    const result = await router.handleCommand({
+      command: 'click',
+      args: { selector: '@e7#p1' },
+    })
+    expect(result).toMatchObject({ routedFrame: 'top', meta: { frame: null } })
+  })
+
+  test('the latest subframe observation wins for the same tab+ref', async () => {
+    const { router, state } = createMinimalRouter({
+      snapshotTab: async () => ({ elements: [{ ref: '@e7#p1' }] }),
+      clickSelector: async (_tabId, _selector, frame) => ({ routedFrame: frame ?? null }),
+    })
+
+    await router.handleCommand({ command: 'snapshot', args: { tabId: 1 } })
+    await router.handleCommand({ command: 'frame', args: { selector: '#sub' } })
+    await router.handleCommand({ command: 'snapshot', args: { tabId: 1 } })
+    // 切回主框架后，最新观察仍是子 frame，同号 ref 应回到子 frame
+    await router.handleCommand({ command: 'frame', args: { selector: 'top' } })
+    expect(state.targeting.selectedFrames.has(1)).toBe(false)
+
+    const result = await router.handleCommand({
+      command: 'click',
+      args: { selector: '@e7#p1' },
+    })
+    expect(result).toMatchObject({ routedFrame: '#sub' })
+  })
+
+  test('an explicit --frame still wins over the registered source frame', async () => {
+    const { router } = createMinimalRouter({
+      snapshotTab: async () => ({ elements: [{ ref: '@e7#p1' }] }),
+      clickSelector: async (_tabId, _selector, frame) => ({ routedFrame: frame ?? null }),
+    })
+
+    await router.handleCommand({ command: 'snapshot', args: { tabId: 1 } })
+
+    const result = await router.handleCommand({
+      command: 'click',
+      args: { selector: '@e7#p1', frame: '#explicit' },
+    })
+    expect(result).toMatchObject({ routedFrame: '#explicit' })
+  })
+
+  test('navigation clears registrations so an old ref falls back to the current selection', async () => {
+    const { router, state } = createMinimalRouter({
+      snapshotTab: async () => ({ elements: [{ ref: '@e7#p1' }] }),
+      clickSelector: async (_tabId, _selector, frame) => ({ routedFrame: frame ?? null }),
+    })
+
+    await router.handleCommand({ command: 'snapshot', args: { tabId: 1 } })
+    invalidatePageRefs(state as unknown as ExtensionState, 1)
+
+    const result = await router.handleCommand({
+      command: 'click',
+      args: { selector: '@e7#p1' },
+    })
+    expect(result).toMatchObject({ routedFrame: null })
+  })
+
+  test('refs returned by find are registered with the frame find actually used', async () => {
+    const { router, state } = createMinimalRouter({
+      findSemanticTarget: async () => ({ found: true, match: { ref: '@e9#p2' } }),
+      clickSelector: async (_tabId, _selector, frame) => ({ routedFrame: frame ?? null }),
+    })
+    state.targeting.selectedFrames.set(1, '#sub')
+
+    await router.handleCommand({
+      command: 'find',
+      args: { tabId: 1, strategy: 'role', role: 'button', name: 'Go', action: 'locate' },
+    })
+    state.targeting.selectedFrames.delete(1)
+
+    const result = await router.handleCommand({
+      command: 'click',
+      args: { selector: '@e9#p2' },
+    })
+    expect(result).toMatchObject({ routedFrame: '#sub' })
+  })
+
+  test('a queued observation updates the ref source before a later queued click runs', async () => {
+    let releaseSnapshot!: () => void
+    let markSnapshotStarted!: () => void
+    const gate = new Promise<void>((resolve) => {
+      releaseSnapshot = resolve
+    })
+    const snapshotStarted = new Promise<void>((resolve) => {
+      markSnapshotStarted = resolve
+    })
+    const { router, state } = createMinimalRouter({
+      snapshotTab: async () => {
+        markSnapshotStarted()
+        await gate
+        return { elements: [{ ref: '@e7#p1' }] }
+      },
+      clickSelector: async (_tabId, _selector, frame) => ({ routedFrame: frame ?? null }),
+    })
+    // 入队前来源是 A；排在前面的 snapshot 会在等待期间把它改成 B（通过 selectedFrames 作为执行 frame）
+    recordElementRefFrame(state as unknown as ExtensionState, 1, '@e7#p1', '#A')
+    state.targeting.selectedFrames.set(1, '#B')
+
+    const observation = router.handleCommand({ command: 'snapshot', args: { tabId: 1 } })
+    await snapshotStarted
+    const click = router.handleCommand({ command: 'click', args: { tabId: 1, selector: '@e7#p1' } })
+    releaseSnapshot()
+
+    await observation
+    // 若在入队时一次性解析，click 会错误地走旧来源 #A
+    expect(await click).toMatchObject({ routedFrame: '#B' })
+  })
+
+  test('conflicting ref source frames fail closed before any page input', async () => {
+    const { router, state, fillFieldsCalls } = createMinimalRouter()
+    recordElementRefFrame(state as unknown as ExtensionState, 1, '@e1#p1', null)
+    recordElementRefFrame(state as unknown as ExtensionState, 1, '@e2#p1', '#sub')
+
+    const failure = router.handleCommand({
+      command: 'fillform',
+      args: {
+        tabId: 1,
+        fields: [
+          { selector: '@e1#p1', value: 'a' },
+          { selector: '@e2#p1', value: 'b' },
+        ],
+      },
+    })
+
+    await expect(failure).rejects.toMatchObject({
+      code: 'INVALID_COMMAND_ARGS',
+      suggestedAction: expect.stringContaining('snapshot'),
+    })
+    // 冲突必须在任何页面动作之前被拦住，不能悄悄退回当前 selected frame
+    expect(fillFieldsCalls).toHaveLength(0)
+  })
+
+  test('commands without registered refs keep the previous frame behavior', async () => {
+    const { router, fillFieldsCalls } = createMinimalRouter()
+
+    await router.handleCommand({
+      command: 'fillform',
+      args: { tabId: 1, fields: [{ selector: '#plain', value: '1' }] },
+    })
+    // 普通选择器与未登记的 @e 引用都不改变原有 frame 选择
+    await router.handleCommand({
+      command: 'fillform',
+      args: { tabId: 1, fields: [{ selector: '@e99#p1', value: '1' }] },
+    })
+
+    expect(fillFieldsCalls).toHaveLength(2)
   })
 })

@@ -18,7 +18,7 @@
 ## 参数形态与命令恢复
 
 - `screenshot` 的输出路径是位置参数：`screenshot [path]`，不是 `screenshot --path <path>`；误用 `--path` 时错误会直接给出正确形式。
-- 页面命令超时后先运行 `status` 和 `command list`。标签页控制走独立控制面，可继续用 `tab list`、`target clear`、`tab close <tN>` 恢复；不要连续重试并堆积命令。运行中的 `eval` 被取消或超时后会定向执行 `Runtime.terminateExecution`，其他 CDP 操作仍可能继续在浏览器侧完成。`status.lastError` 保留历史最后错误，可结合 `lastSuccessAt` 判断它是否早于最近成功。
+- 页面命令超时或结果未知时，先读 `error.details.commandId` 并执行 `command status <id>`：`completed_late`/`failed_late` 能直接说明命令最终是否执行、结果或错误是什么；确认后再看 `status`、`command list` 和页面。标签页控制走独立控制面，可继续用 `tab list`、`target clear`、`tab close <tN>` 恢复；不要连续重试并堆积命令。运行中的 `eval` 被取消或超时后会定向执行 `Runtime.terminateExecution`，其他 CDP 操作仍可能继续在浏览器侧完成。`status.lastError` 保留历史最后错误，可结合 `lastSuccessAt` 判断它是否早于最近成功。
 
 ## 启动器、PATH 与 npm 安装
 

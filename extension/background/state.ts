@@ -33,6 +33,7 @@ export function createExtensionState(defaultRelayPort: number): ExtensionState {
       tabHandles: new Map<number, string>(),
       tabIdsByHandle: new Map<string, number>(),
       pageEpochs: new Map<number, number>(),
+      elementRefFrames: new Map<string, string | null>(),
       recentlyCreatedTabs: [],
     },
     session: {

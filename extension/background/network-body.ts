@@ -1,5 +1,4 @@
 import type { ExtensionState, NetworkRequestRecord } from './types.js'
-import { getPageEpoch } from './targeting.js'
 import { createNetworkRequestKey, evictedRequests } from './network-records.js'
 import { DEFAULT_HAR_MAX_BODY_BYTES } from './network-capture.js'
 import type { HarCapture } from './network-capture.js'
@@ -128,8 +127,8 @@ export function createBodyFetcher({
     ) {
       return 'historical request is no longer the live CDP request'
     }
-    if (record.pageEpoch !== getPageEpoch(state, record.tabId))
-      return 'historical page epoch; body is no longer available'
+    // SPA 路由会让 pageEpoch 跳变，但 CDP 往往仍能读到 body；这里不做 epoch 预拒绝，
+    // 由 Network.getResponseBody 的实际结果决定，并把真实错误写回 comment。
     if (record.errorText) return `request failed: ${record.errorText}`
     if (!record.finishedAt) return 'request has not finished; retry detail after loading finishes'
     return null

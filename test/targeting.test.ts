@@ -10,14 +10,16 @@ import {
   getOrCreateTabHandle,
   getPageEpoch,
   invalidatePageRefs,
+  recordElementRefFrame,
   rememberTargetTab,
   resolveEffectiveFrameSelector,
+  resolveElementRefFrameForRefs,
   resolveTabHandle,
   resolveTabInput,
   toTabSummary,
   withFrameSelectorOptions,
 } from '../extension/background/targeting.js'
-import type { ErrorWithCode } from '../extension/background/types.js'
+import type { ErrorWithCode, ExtensionState } from '../extension/background/types.js'
 
 function captureError(run: () => void): ErrorWithCode {
   try {
@@ -262,5 +264,73 @@ describe('frame selector resolution', () => {
     // 不修改传入对象
     expect(options).toEqual({ timeoutMs: 2000 })
     expect(withFrameSelectorOptions('#pay')).toEqual({ frameSelector: '#pay' })
+  })
+})
+
+describe('element ref frame registry', () => {
+  test('records the source document and keeps the latest observation for the same tab+ref', () => {
+    const state = createExtensionState(1234)
+
+    recordElementRefFrame(state, 1, '@e7#p1', 'top')
+    expect(resolveElementRefFrameForRefs(state, 1, ['@e7#p1'])).toEqual({
+      kind: 'frame',
+      frame: null,
+    })
+
+    // 同号 ref 在子 frame 被重新观察后，以最新一次为准
+    recordElementRefFrame(state, 1, ' @e7#p1 ', '#sub')
+    expect(resolveElementRefFrameForRefs(state, 1, ['@e7#p1'])).toEqual({
+      kind: 'frame',
+      frame: '#sub',
+    })
+
+    // 未登记的 ref、其他 tab 与普通选择器都不命中
+    expect(resolveElementRefFrameForRefs(state, 1, ['@e8#p1'])).toEqual({ kind: 'none' })
+    expect(resolveElementRefFrameForRefs(state, 2, ['@e7#p1'])).toEqual({ kind: 'none' })
+    expect(resolveElementRefFrameForRefs(state, 1, ['#plain', null])).toEqual({ kind: 'none' })
+
+    // 多个 ref 指向不同文档时不能任选一个，必须返回冲突让 router fail closed
+    recordElementRefFrame(state, 1, '@e9#p1', null)
+    expect(resolveElementRefFrameForRefs(state, 1, ['@e7#p1', '@e9#p1'])).toEqual({
+      kind: 'conflict',
+    })
+  })
+
+  test('lazily initializes the registry for hand-built state objects', () => {
+    const state = createExtensionState(1234)
+    delete (state.targeting as { elementRefFrames?: unknown }).elementRefFrames
+
+    recordElementRefFrame(state, 3, '@e2#p5', '#frame')
+
+    expect(state.targeting.elementRefFrames?.size).toBe(1)
+    expect(resolveElementRefFrameForRefs(state, 3, ['@e2#p5'])).toEqual({
+      kind: 'frame',
+      frame: '#frame',
+    })
+  })
+
+  test('invalidatePageRefs and tab dispose clear only the affected tab', () => {
+    const state = createExtensionState(1234)
+    recordElementRefFrame(state, 1, '@e7#p1', null)
+    recordElementRefFrame(state, 2, '@e7#p1', '#sub')
+
+    invalidatePageRefs(state, 1)
+    expect(resolveElementRefFrameForRefs(state, 1, ['@e7#p1'])).toEqual({ kind: 'none' })
+    expect(resolveElementRefFrameForRefs(state, 2, ['@e7#p1'])).toEqual({
+      kind: 'frame',
+      frame: '#sub',
+    })
+
+    clearRemovedPageEpoch(state, 2)
+    expect(resolveElementRefFrameForRefs(state, 2, ['@e7#p1'])).toEqual({ kind: 'none' })
+  })
+
+  test('a hand-built state without the field never throws on cleanup', () => {
+    const manualState = {
+      targeting: { selectedFrames: new Map(), pageEpochs: new Map() },
+    } as unknown as ExtensionState
+
+    expect(() => invalidatePageRefs(manualState, 9)).not.toThrow()
+    expect(() => clearRemovedPageEpoch(manualState, 9)).not.toThrow()
   })
 })

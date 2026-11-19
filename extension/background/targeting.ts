@@ -6,6 +6,7 @@ import {
 } from '../../src/core/agent-handles.js'
 import {
   getAgentElementRefPageEpoch,
+  isAgentElementRef,
   isStaleAgentElementRef,
 } from '../../src/core/agent-selectors.js'
 import type {
@@ -181,6 +182,7 @@ function bumpPageEpoch(state: ExtensionState, tabId: number): number {
  */
 export function invalidatePageRefs(state: ExtensionState, tabId: number): number {
   clearSelectedFrame(state, tabId)
+  clearElementRefFrames(state, tabId)
   return bumpPageEpoch(state, tabId)
 }
 
@@ -189,6 +191,102 @@ export function invalidatePageRefs(state: ExtensionState, tabId: number): number
  */
 export function clearRemovedPageEpoch(state: ExtensionState, tabId: number): void {
   state.targeting.pageEpochs.delete(tabId)
+  // dispose 只走这里回收 per-tab 状态，来源记录必须一起删，避免 tabId 复用后命中旧文档。
+  clearElementRefFrames(state, tabId)
+}
+
+/** 元素引用来源记录的硬上限：超出后按插入顺序淘汰，防止长会话无限增长 */
+const ELEMENT_REF_FRAME_LIMIT = 4096
+
+/** top/main/default 等别名统一成 null（主框架），空值也视为未指定 */
+export function normalizeFrameSelectorValue(selector: string | null | undefined): string | null {
+  const trimmed = typeof selector === 'string' ? selector.trim() : ''
+  if (!trimmed) return null
+  return ['top', 'main', 'default'].includes(trimmed.toLowerCase()) ? null : trimmed
+}
+
+function elementRefFrameKey(tabId: number, ref: string): string {
+  return `${tabId}|${ref}`
+}
+
+/** 读取来源记录表；旧测试手工构造的 targeting 没有该字段时按需补上 */
+function getElementRefFrames(state: ExtensionState): Map<string, string | null> {
+  const current = state.targeting.elementRefFrames
+  if (current instanceof Map) return current
+  const created = new Map<string, string | null>()
+  state.targeting.elementRefFrames = created
+  return created
+}
+
+/**
+ * 记录一次观察：ref 来自哪个文档。同 tab 同 ref 再被观察时覆盖旧值，
+ * 以最新快照/查找结果为准；主框架统一存 null。
+ */
+export function recordElementRefFrame(
+  state: ExtensionState,
+  tabId: number,
+  ref: string,
+  frameSelector: string | null | undefined,
+): void {
+  const normalizedRef = String(ref || '').trim()
+  if (!normalizedRef || !isAgentElementRef(normalizedRef) || !Number.isFinite(tabId)) return
+
+  const map = getElementRefFrames(state)
+  const key = elementRefFrameKey(tabId, normalizedRef)
+  // 先删再插，让刚观察到的条目回到 FIFO 尾部
+  map.delete(key)
+  map.set(key, normalizeFrameSelectorValue(frameSelector))
+  while (map.size > ELEMENT_REF_FRAME_LIMIT) {
+    const oldest = map.keys().next().value
+    if (oldest === undefined) break
+    map.delete(oldest)
+  }
+}
+
+export type ElementRefFrameResolution =
+  | { kind: 'none' }
+  | { kind: 'frame'; frame: string | null }
+  | { kind: 'conflict' }
+
+/**
+ * 按已登记的 @e 引用解析来源 frame。
+ * - none：没有可用登记，调用方维持原有 frame 选择；
+ * - frame：所有已登记引用指向同一文档（null 表示主框架）；
+ * - conflict：多个引用指向不同文档，必须由调用方 fail closed，不能任选一个。
+ */
+export function resolveElementRefFrameForRefs(
+  state: ExtensionState,
+  tabId: number,
+  refs: readonly (string | null | undefined)[],
+): ElementRefFrameResolution {
+  const map = state.targeting.elementRefFrames
+  if (!(map instanceof Map) || map.size === 0) return { kind: 'none' }
+
+  let resolved: { frame: string | null } | null = null
+  for (const ref of refs) {
+    const normalizedRef = typeof ref === 'string' ? ref.trim() : ''
+    if (!normalizedRef || !isAgentElementRef(normalizedRef)) continue
+    const key = elementRefFrameKey(tabId, normalizedRef)
+    if (!map.has(key)) continue
+    const frame = map.get(key) ?? null
+    if (!resolved) {
+      resolved = { frame }
+      continue
+    }
+    if (resolved.frame !== frame) return { kind: 'conflict' }
+  }
+  return resolved ? { kind: 'frame', frame: resolved.frame } : { kind: 'none' }
+}
+
+/** 清掉指定 tab 的全部来源记录；key 前缀保证不触碰其他 tab */
+export function clearElementRefFrames(state: ExtensionState, tabId: number): void {
+  const map = state.targeting.elementRefFrames
+  if (!(map instanceof Map) || map.size === 0) return
+  const prefix = `${tabId}|`
+  // Map 迭代器允许在遍历中删除当前项，不需要先复制 key 列表
+  for (const key of map.keys()) {
+    if (key.startsWith(prefix)) map.delete(key)
+  }
 }
 
 function createStaleRefError(

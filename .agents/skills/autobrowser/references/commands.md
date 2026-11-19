@@ -17,7 +17,7 @@
 - `target show` / `target set <tN>` / `target active` / `target clear`
 - `command list` / `command status <id>` / `command cancel <id>` / `command reset`
 - `window new`
-- `frame <@fN|selector|top>`
+- `frame <@fN|selector|top>` — 选择持续有效，直到下一次 `frame` 或页面导航/重载；`snapshot`/`find` 返回的元素 ref 会记录来源 frame，后续省略 `--frame` 的操作按来源路由，显式 `--frame` 仍优先。跨 iframe 连续操作建议显式 `--frame top` / `--frame <selector>` 或重新 `snapshot`。
 - `click` / `dblclick` / `fill` / `find` / `type` / `press` / `keyboard` / `hover` / `focus` / `select` / `check` / `uncheck` / `scroll` / `scrollintoview` / `drag` / `drop` / `upload`
 - `press <key>` 只接受一个键名（例如 Enter），不接受 selector 位置参数；先 `click` / `focus <selector>` 聚焦目标，否则按键发给当前焦点元素
 - `mousemove` / `mousedown` / `mouseup` / `mousewheel`

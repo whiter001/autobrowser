@@ -66,12 +66,12 @@ export const ERROR_ACTIONS: Record<string, ErrorAction> = {
   COMMAND_EXECUTION_UNKNOWN: {
     retryable: false,
     action:
-      "Reconnect, then inspect 'status', 'command list' and the page before retrying; never replay side-effecting commands blindly.",
+      "Reconnect, then read error.details.commandId and run 'command status <id>' to resolve the unknown outcome before inspecting the page; never replay side-effecting commands blindly.",
   },
   COMMAND_TIMEOUT: {
     retryable: true,
     action:
-      "Run 'status' then 'command list'; the browser operation may still be finishing. Verify the page before retrying.",
+      "Read error.details.commandId and run 'command status <id>' first: the browser operation may still be finishing. Then inspect 'status'/'command list' and the page before retrying.",
   },
   EVALUATION_TIMEOUT: {
     retryable: false,
