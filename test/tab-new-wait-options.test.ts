@@ -308,6 +308,57 @@ describe('tab new navigation wait options', () => {
     })
   })
 
+  test('accepts --url as the positional URL equivalent', async () => {
+    const direct = await runCli(['tab', 'new', '--url', 'https://example.com'])
+
+    expect(direct.exitCode).toBe(0)
+    expect(direct.fetchCalls.map((call) => call.body)).toEqual([
+      { command: 'tab.new', args: { url: 'https://example.com' } },
+    ])
+
+    const waited = await runCli(
+      ['tab', 'new', '--url', 'https://example.com', '--wait-until', 'load'],
+      null,
+      { fetchImpl: navigationFetchMock() },
+    )
+    expect(waited.exitCode).toBe(0)
+    expect(waited.fetchCalls[1].body?.args).toMatchObject({
+      tabId: 't42',
+      url: 'https://example.com',
+    })
+  })
+
+  test('rejects duplicate or conflicting tab new URLs before creating a tab', async () => {
+    for (const args of [
+      ['tab', 'new', '--url', 'https://a.example', '--url', 'https://b.example'],
+      ['tab', 'new', 'https://a.example', '--url', 'https://b.example'],
+      ['tab', 'new', '--url', 'https://b.example', 'https://a.example'],
+    ]) {
+      const result = await runCli(args)
+
+      expect(result.exitCode).toBe(1)
+      expect(result.fetchCalls).toHaveLength(0)
+      expect(cliErrorPayload(result.stdout).error.message).toMatch(
+        /duplicate tab new option: --url|either a positional URL or --url/,
+      )
+    }
+  })
+
+  test('rejects a missing --url value before creating a tab', async () => {
+    for (const args of [
+      ['tab', 'new', '--url'],
+      ['tab', 'new', '--url', '--wait-until', 'load'],
+    ]) {
+      const result = await runCli(args)
+
+      expect(result.exitCode).toBe(1)
+      expect(result.fetchCalls).toHaveLength(0)
+      const error = cliErrorPayload(result.stdout).error
+      expect(error.code).toBe('CLI_INVALID_ARGUMENT')
+      expect(error.message).toContain('missing value for --url')
+    }
+  })
+
   test('rejects a tab new timeout alias without any wait option', async () => {
     const result = await runCli(['tab', 'new', 'https://example.com', '--timeout', '1000'])
 

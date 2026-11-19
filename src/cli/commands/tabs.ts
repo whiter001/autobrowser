@@ -97,6 +97,7 @@ async function handleTab(rest: string[], context: CommandContext): Promise<numbe
         for (let index = 0; index < tabArgs.length; index += 1) {
           const value = tabArgs[index]!
           if (value === '--wait-for') index += 2
+          else if (value === '--url') index += 1
           else if (
             value === '--timeout-ms' ||
             value === '--timeout' ||
@@ -109,7 +110,7 @@ async function handleTab(rest: string[], context: CommandContext): Promise<numbe
             throw new Error(`unsupported tab new option: ${value}`)
           }
         }
-        const options = parseGotoArgs(tabArgs)
+        const options = parseTabNewArgs(tabArgs)
         if (
           options.timeoutMs !== undefined &&
           !options.waitFor &&
@@ -439,6 +440,44 @@ async function createTabAndWait(
       wait: waited.result,
     },
   }
+}
+
+/**
+ * tab new 的 URL 既可以写成位置参数，也可以写成 --url。
+ * 先把 --url 摘出来再交给 parseGotoArgs，这样重复 --url 或位置/选项同时出现都能在创建标签前报错，
+ * 而不是让后出现的值静默覆盖先出现的值。
+ */
+function parseTabNewArgs(rest: string[]): GotoArgs {
+  let urlOption: string | undefined
+  const remaining: string[] = []
+
+  for (let index = 0; index < rest.length; index += 1) {
+    const value = rest[index]
+    if (value !== '--url') {
+      remaining.push(value)
+      continue
+    }
+
+    const rawUrl = rest[index + 1]
+    // 后续选项不是 URL 值，按缺值处理，避免把 --wait-until 之类当成 URL
+    if (rawUrl === undefined || rawUrl.startsWith('--')) {
+      throw new Error('missing value for --url')
+    }
+    if (urlOption !== undefined) {
+      throw new Error('duplicate tab new option: --url')
+    }
+    urlOption = rawUrl
+    index += 1
+  }
+
+  const options = parseGotoArgs(remaining)
+  if (urlOption !== undefined) {
+    if (options.url !== undefined) {
+      throw new Error('tab new accepts either a positional URL or --url, not both')
+    }
+    options.url = urlOption
+  }
+  return options
 }
 
 function parseGotoArgs(rest: string[]): GotoArgs {

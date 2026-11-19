@@ -7,6 +7,7 @@
   - 需要复用或留档的脚本写成 `.js` 文件，用 `--file <path>`。
   - `--base64` 只用于机器生成的传输（调用方已经持有编码后的字节），不要作为人工手写的默认写法。
 - `eval` 适合执行小段页面上下文 JS，用于只读提取、状态检查或轻量验证。
+- `eval` 在**隔离世界**执行：`window.fetch`、`XMLHttpRequest` 这类被页面或扩展改写过的接口，在 `eval` 里通常仍是原生实现，页面自己的埋点/拦截改写也看不到。要验证主世界的 monkey patch（例如插件是否改写了 `window.fetch`）或调用主世界函数，用 `cdp Runtime.evaluate`（不传 `contextId` 即页面主世界）；不要因为 `eval` 读出原生 `fetch` 就断言页面没有被改写，也不要反过来用 `eval` 的结果否定主世界行为。
 - 脚本默认在隔离的函数作用域里执行：顶层 `const`/`let`/`var`/`function` 不会写进页面全局，同一个脚本可以原样重复执行，不需要手工包 IIFE。单个表达式仍返回 completion value（最后一个表达式的值）。多语句脚本可以直接写顶层 `await`（按 REPL 条目求值，顶层 await 合法且保留完成值）和顶层 `return`（按 async 函数体求值，结果由 `return` 给出），都不需要手工包装 async IIFE；两种混用时以 `return` 为准。注意顶层 `await` 的 REPL 路径下 `var` 与 `function` 声明会落到页面全局，需要严格隔离时自己包一层 async IIFE。
 - CSS 属性选择器的值本身必须按 CSS 语法带引号，例如 `a[href*="/n/"]`——这正是最容易被命令行层层吞掉的一类源码。`not a valid selector` 表示脚本已解析并运行、页面拒绝了 CSS：原因既可能是引号被转义吃掉，也可能是选择器本身非法，不要把所有 selector 错误都归因成命令行引号问题。
 - PowerShell 用双引号包内联脚本会静默改写源码：`$USERPROFILE` 这类 `$` 变量会被插值（常见结果是空串且不报错），嵌套的 `"` 会被吃掉，`document.querySelector(".ant-tabs-tab")` 到达页面时变成不带引号的选择器并抛 `PAGE_EVALUATION_EXCEPTION`。凡是多行、含引号或含 `$` 的脚本一律走 `--stdin`/`--file`；结果"看起来没有数据"时先核对脚本实际传入的内容，不要先怀疑页面。
@@ -35,6 +36,7 @@ return links.slice(0, 10)
 ## CDP 使用边界
 
 - `cdp <Domain.method> [json]` 用于现有命令无法覆盖的 tab 级 CDP 场景，例如 `cdp Runtime.evaluate '{"expression":"6 * 7","returnByValue":true}'`；复杂参数也可使用 `--params '<json>'`。
+- Windows 上传复杂 JSON 时不要让 PowerShell 拼引号：用 argv 数组直接传（如 Node/Bun `spawnSync(cmd, ['cdp', 'Runtime.evaluate', json])`，把调用写进脚本或调用方代码里，而不是在命令行里拼引号）。`--base64` 只是 `eval` 的传输编码，不是 JSON 参数：把 base64 传给 `--params` 或位置参数会按 JSON 解析失败，不要试图用编码绕开引号问题。
 - CDP 仅允许 tab 级方法，拒绝 `Browser/Target/SystemInfo` 和 `Debugger.disable`。它可能产生页面副作用，断连后的未知结果不能盲目重放；优先使用语义明确的普通命令，不要把 CDP 当成默认操作方式。
 
 ## DOM 定位失败时的探测

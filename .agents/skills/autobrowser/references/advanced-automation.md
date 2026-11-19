@@ -33,10 +33,19 @@
 ## 组件交互与异步断言
 
 - `fill` 负责派发真实输入事件，但受控组件可能按自身状态回滚输入值。antd DatePicker 支持文本录入时，先 `click` 输入框，再用 `type <selector> <value>` 逐键输入日期并按 `press Enter`，最后用 `get value` 核验；`fill` 不等于逐键输入，不能用它回滚就断言组件不支持手动输入。组件未接受键入或只需面板选择时，再打开面板点击具体日期单元格，不要反复 `fill` 或改用 DOM 赋值绕过组件。
+- `fill` 成功、`get value` 读出正确值，只证明**控件值**，不证明业务已生效：日期、筛选条件、查询框改完后，很多页面要按 Enter 或点页面上的"查询"按钮才会发请求刷新数据。0 条结果先核对查询时间范围（默认区间常常很短）和筛选条件，再用 `network requests --filter <接口片段>` 确认请求确实发出且参数正确；不要因为控件值正确就断言"没有数据"，也不要反复重填或改方案。
 - `click` 是一次真实点击；对按钮、输入框等 toggle 控件，先用 snapshot/eval 检查面板或弹层当前状态，不要在 eval 里调用 `el.click()` 后又无条件执行一次 `click`，否则第二次可能把刚打开的面板关闭。
 - Vue/React 等框架的状态更新和渲染是异步的，`.click()` 后同步读取 DOM 可能仍是旧值。优先用 `wait <selector>`、`wait --fn '<expression>'` 或 `wait --text <text>` 等条件等待；不要固定 sleep 2~3 秒后就断定所有页面都已完成更新。
 - 开发环境热更新（HMR）后不要沿用热更新前的现场：弹层可能已被关闭、旧 ref 失效、组件数据被重置。先重新定位并重新打开弹层，等目标容器出现后再测量；发现面板只剩 `<!---->`、列表行数为 0 或默认选项为空时，先完整 `reload` 复核再判断是否真的是持久性渲染缺陷，复验选项/多选内容前也要确认接口数据已加载。
 - 组件行元素和空态以真实 DOM 为准：虚拟滚动或二次封装的表格，行元素不一定在 `tbody tr` 下，先用 eval 统计真实行元素的类名和数量；空态常表现为行数为 0 加根节点空态类，正好用来区分"确实没有数据"和"选择器写错"，不要凭假设的选择器断言表格未渲染。
+
+## 后台标签与 Ant 弹层组件
+
+- 后台/隐藏标签里 Drawer、TreeSelect 的入场动效可能停在 `enter-start`、面板留在视口外：先 `tab select <tN>` 把目标标签置前（会恢复并聚焦窗口，最小化窗口一并还原为 `normal`，`visibilityState` 与 CSS/rAF 时钟随之恢复），再点击或测量；不要改用 eval 改样式绕过动效。
+- 需要在隐藏标签上做真实点击时，用 `set focus on` 打开 CDP 焦点仿真，结束后 `set focus off`；它只模拟焦点，不等于激活标签页。
+- TreeSelect 打开后，用 `snapshot --target .ant-tree-select-dropdown` 查看全部选项，或 `find role treeitem --name <名称>` 直接定位节点：选项的 `.ant-select-tree-node-content-wrapper[title]` 没有显式 role，snapshot/find 已按组件语义把它识别为 treeitem。
+- `click` 成功只代表事件已派发，不代表弹层开了或关了；要读回 `.ant-select-selection-item` 的文本核对选中值，再决定下一步。
+- 验证到选择结果为止，不要提交业务表单；用户明确要求提交时再操作。
 
 ## HTML5 拖放与鼠标
 

@@ -256,9 +256,10 @@ export const HELP_ROOT: HelpNode = helpNode(
         helpNode(
           'new',
           '打开新标签页；工作区模式启用时将其绑定到当前工作区。',
-          'autobrowser tab new [url] [--wait-until <mode>] [--settle-timeout <ms>] [--dom-quiet-ms <ms>] [--wait-for url <pattern>|selector <sel>] [--timeout-ms <ms>]',
+          'autobrowser tab new [url|--url <url>] [--wait-until <mode>] [--settle-timeout <ms>] [--dom-quiet-ms <ms>] [--wait-for url <pattern>|selector <sel>] [--timeout-ms <ms>]',
           [
             '等待新建的句柄（而不是活动标签页）；失败时仍会保留 result.tab。',
+            '--url <url> 与位置 URL 等价；二者同时出现或重复 --url 会在创建标签前报错。',
             '--wait-until 支持 none|commit|domcontentloaded|interactive|load|networkidle|domquiet；无需 sleep 命令。',
             '--timeout-ms 设置创建后的等待预算（默认 30000 毫秒）；需要搭配等待类选项。--timeout 可作为 --timeout-ms 的别名；两者同时使用或重复使用都会报错。',
             '受管标签页会在首次 URL 导航之前附着调试器，以便捕获早期请求。',
@@ -468,11 +469,18 @@ export const HELP_ROOT: HelpNode = helpNode(
         '页面结果可能包含敏感数据；检查点绝不包含 cookie 或令牌。目前需要 Chromium 扩展。',
       ],
     ),
-    helpNode('click', '点击指定选择器。', 'autobrowser click <selector> [--follow-new-tab]', [
-      '--follow-new-tab  点击打开了新标签页时，把当前目标切换到该新标签页（内部复用 tab attach）。',
-      '默认只报告新标签页（结果里的 newTabId / newTabHandle），不会改变当前目标；只有显式加 --follow-new-tab 才接管。',
-      '不是所有弹窗都该接管：只有确实要在新标签继续操作时才跟随，否则留在原页面。',
-    ]),
+    helpNode(
+      'click',
+      '点击 CSS 选择器或 @eN 元素引用。',
+      'autobrowser click <selector|@eN> [--follow-new-tab]',
+      [
+        '<selector> 接受 CSS 选择器；<@eN> 直接使用 snapshot 返回的元素引用，无需先 find。',
+        '@eN 会原样转发给扩展；引用失效时重新 snapshot 再点击，不要猜编号。',
+        '--follow-new-tab  点击打开了新标签页时，把当前目标切换到该新标签页（内部复用 tab attach）。',
+        '默认只报告新标签页（结果里的 newTabId / newTabHandle），不会改变当前目标；只有显式加 --follow-new-tab 才接管。',
+        '不是所有弹窗都该接管：只有确实要在新标签继续操作时才跟随，否则留在原页面。',
+      ],
+    ),
     helpNode('dblclick', '双击指定选择器。', 'autobrowser dblclick <selector>'),
     helpNode(
       'fill',
@@ -948,7 +956,7 @@ export const HELP_ROOT: HelpNode = helpNode(
           '列出已捕获的请求。',
           'autobrowser network requests [--filter <text>] [--type <xhr,fetch>] [--method <POST>] [--status <2xx>] [--sort oldest|newest] [--limit <n>] [--cursor <token>] [--all-tabs] [--all-epochs] [--include-details]',
           [
-            '--filter <text>',
+            '--filter <text>  按 URL 文本缩小列表；优先于 --include-pattern（后者不属于本命令）',
             '--type <xhr,fetch>',
             '--method <POST>',
             '--status <2xx>',
@@ -959,6 +967,9 @@ export const HELP_ROOT: HelpNode = helpNode(
             '--page-size <n>  旧版别名；推荐使用 --limit',
             '--all-tabs',
             '--all-epochs',
+            '--include-pattern 仅属于 network har start；列表请用 --filter <text>，否则 data: 字体/图片资源会把结果撑大。',
+            '示例：autobrowser network requests --filter centralized/policy --type xhr,fetch --sort newest',
+            '示例：autobrowser network requests --filter /api/ --type xhr,fetch --limit 30 --sort newest',
             '空结果会区分 NOT_ATTACHED（错过的请求无法恢复）、EPOCH_FILTERED（可尝试 --all-epochs）、NO_DATA 与 FILTERED_OUT。',
             '--include-details  detailed 模式不做 concise 字段投影',
           ],
@@ -976,6 +987,7 @@ export const HELP_ROOT: HelpNode = helpNode(
           [
             '--timeout-ms <ms>',
             '优先使用 network requests 返回的稳定短引用（rN）；仍接受旧版 CDP id。',
+            '单条 request 默认返回详情；--include-details 只属于 network requests 列表，不要用在这里。',
             '响应体按需通过 CDP 拉取；concise 模式把每个返回的响应体限制在 16KiB 内并标记截断。',
           ],
         ),
@@ -1049,6 +1061,7 @@ export const HELP_ROOT: HelpNode = helpNode(
       'autobrowser snapshot [selector|--target <selector|@eN>] [--role <a,b,c>] [--changed] [--include-text] [--limit <1..200>]',
       [
         '--target <selector|@eN>  把快照限制在元素的子树内',
+        '没有 --selector 选项：目标请写成位置参数，或使用 --target <css>。',
         '--role <button,link,...>  只返回 role 匹配的元素；@eN 引用在多次快照间保持稳定',
         '--changed  返回新增/变化的元素，包含 checked/disabled 状态与 removedRefs；首次运行或发生导航时返回 full:true。回复是纯差异（不含文本、按钮、标题、frame 或页面元数据）。',
         '--include-text  在 concise 快照中同时返回完整页面文本；被 --changed 忽略，后者始终是纯差异',

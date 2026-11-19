@@ -73,8 +73,12 @@ export function createTabsCommandHandler({
 
     if (typeof updatedTab?.windowId === 'number') {
       try {
+        // focused 只把窗口提到前台，不会还原最小化窗口；最小化时 document 仍是 hidden，
+        // Drawer/TreeSelect 的 CSS transition 与 rAF motion 会被挂起。state:'normal' 同时恢复窗口，
+        // 才能真正让页面 visible。这里只动窗口，不新增 CDP 调用，避免调试器超时拖住 tab.select。
         await windowsUpdate(updatedTab.windowId, {
           focused: true,
+          state: 'normal',
         })
       } catch {
         // Best effort only.

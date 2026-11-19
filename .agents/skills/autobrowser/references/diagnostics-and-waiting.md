@@ -13,7 +13,8 @@
 - `wait time 3`、`wait ms 3` 和 `wait 3` 都表示 **3 毫秒**。
 - 如果要等 3 秒，请写成 `wait time 3000`。
 - 超时参数单位均为毫秒，正式名统一为 `--timeout-ms <ms>`；`--timeout <ms>` 是 `wait`/`goto`/`open`/`tab new`/`eval`/`run`/`reload` 都接受的兼容别名。`goto`/`open`/`tab new`/`eval`/`run`/`reload` 发往 relay 的字段是 `timeoutMs`；`wait` 仍映射到既有的 `args.timeout`。同一条命令里混用两个名字或重复同名会按参数错误拒绝（`CLI_INVALID_ARGUMENT`，不发送请求），不要靠重复传入来覆盖前值。`tab new` 的 `--timeout-ms`/`--timeout` 必须搭配等待选项（`--wait-until`/`--settle-timeout`/`--dom-quiet-ms`/`--wait-for`）使用。
-- 如果页面仍在加载，优先使用 `open <url>` 后再配合短等待，或直接用 `wait --load networkidle`。
+- 页面有持续后台请求（日志检索、监控看板、轮询/长轮询类页面）时，不要指望 `networkidle`：优先等待具体 DOM 状态或关键文本（`wait <selector> --state new|stable`、`wait --text <text>`），或确认目标请求已出现在 `network requests` 中。
+- `wait --load networkidle` 超时只表示该窗口内网络没有空闲，**不等于**导航失败或业务查询失败。先查 `pageEpoch` 是否推进、`snapshot`/`get url` 是否已到目标页面、`command status` 的最终状态；页面已经就绪就沿原任务继续，不要重放 `reload`/`goto` 去"修"这个超时。
 - `goto/open/reload/tab new` 可用 `--wait-until none|commit|domcontentloaded|interactive|load|networkidle|domquiet` 选择等待阶段，并可追加 `--wait-for url <pattern>` 或 `--wait-for selector <sel>` 等最终结果。`tab new` 固定等待新建 handle；等待失败仍在 `result.tab` 保留新 tab。等待成功后 `result.tab`/`result.meta` 会刷新为最后观察到的页面状态，`wait.meta` 仍可用于核对等待时的上下文。旧扩展缺少 wait 执行证明时 CLI 返回失败，不伪造已等待。
 
 ## 搜索、引用与歧义恢复

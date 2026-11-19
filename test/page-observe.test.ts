@@ -1161,8 +1161,16 @@ class ObserveNode {
     return { left: 0, top: 0, width: 20, height: 10 }
   }
   matches(selector: string): boolean {
-    return selector.split(',').some((part) => {
+    return selector.split(',').some((raw) => {
+      let part = raw.trim()
       if (part === '*') return true
+      // 简单类选择器：用于 Ant 组件语义节点（如 .ant-select-tree-node-content-wrapper[title]）
+      const classMatch = /\.([\w-]+)/.exec(part)
+      if (classMatch) {
+        if (!this.className.split(/\s+/).includes(classMatch[1]!)) return false
+        part = part.replace(/\.[\w-]+/, '')
+        if (!part) return true
+      }
       if (part.startsWith('#')) return this.id === part.slice(1)
       const attr = /\[([^=\]]+)(?:=['"]?([^'"\]]+)['"]?)?\]/.exec(part)
       const tag = /^[a-z0-9]+/i.exec(part)?.[0]
@@ -2093,5 +2101,50 @@ describe('snapshot concise projection', () => {
     expect(delta.full).toBe(false)
     expect(delta.elements).toHaveLength(0)
     expect(delta.unchangedCount).toBe(3)
+  })
+})
+
+describe('ant design vue tree select semantics', () => {
+  // Ant Design Vue TreeSelect 的节点文本容器只有 title，没有显式 role
+  function antTreeNode(label: string): ObserveNode {
+    const node = new ObserveNode('DIV')
+    node.className =
+      'ant-select-tree-node-content-wrapper ant-select-tree-node-content-wrapper-normal'
+    node.setAttribute('title', label)
+    node.innerText = label
+    return node
+  }
+
+  test('snapshot infers treeitem and find locates it by role and name', async () => {
+    const h = expressionHarness(new ObserveDocument([antTreeNode('杭州市')]))
+
+    const snapshot = (await h.domain.snapshotTab(1, null, {
+      responseFormat: 'detailed',
+    })) as ObservedSnapshot
+    expect(snapshot.elements).toHaveLength(1)
+    expect(snapshot.elements[0]).toMatchObject({ role: 'treeitem', name: '杭州市' })
+    expect(snapshot.elements[0]!.ref).toBe('@e1#p1')
+
+    const found = await h.domain.findSemanticTarget(
+      1,
+      { strategy: 'role', role: 'treeitem', name: '杭州市' } as never,
+      null,
+    )
+    expect(found.match).toMatchObject({ role: 'treeitem', name: '杭州市', ref: '@e1#p1' })
+  })
+
+  test('an explicit role still wins over the treeitem inference', async () => {
+    const node = antTreeNode('杭州市')
+    node.setAttribute('role', 'option')
+    const h = expressionHarness(new ObserveDocument([node]))
+
+    const snapshot = (await h.domain.snapshotTab(1, null, {
+      responseFormat: 'detailed',
+    })) as ObservedSnapshot
+    expect(snapshot.elements[0]).toMatchObject({ role: 'option', name: '杭州市' })
+
+    await expect(
+      h.domain.findSemanticTarget(1, { strategy: 'role', role: 'treeitem' } as never, null),
+    ).rejects.toMatchObject({ code: 'ELEMENT_NOT_FOUND' })
   })
 })

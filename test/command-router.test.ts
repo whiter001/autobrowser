@@ -1989,6 +1989,94 @@ describe('stale tab handle errors', () => {
   })
 })
 
+describe('tab select visibility recovery', () => {
+  // tab.select 走 chrome.tabs.update/windows.update 的回调封装，mock 必须同步回调；
+  // 记录窗口 updateInfo 并允许模拟拒绝，用于验证恢复窗口的语义与 best-effort 容错
+  function installChromeTabUpdateStub(
+    tab: { id: number; windowId: number },
+    options: { rejectWindowUpdate?: boolean } = {},
+  ): { windowUpdates: Array<{ windowId: number; info: unknown }>; restore: () => void } {
+    const originalChrome = globalThis.chrome
+    const windowUpdates: Array<{ windowId: number; info: unknown }> = []
+    // 复用一个 runtime 对象：拒绝窗口更新时在回调前注入 lastError，模拟真实 API 失败路径
+    const runtime: { lastError?: { message: string } } = {}
+    Object.defineProperty(globalThis, 'chrome', {
+      configurable: true,
+      enumerable: true,
+      writable: true,
+      value: {
+        runtime,
+        tabs: {
+          update: (_tabId: number, _props: unknown, callback: (value: unknown) => void) => {
+            callback(tab)
+          },
+        },
+        windows: {
+          update: (windowId: number, info: unknown, callback: (value: unknown) => void) => {
+            windowUpdates.push({ windowId, info })
+            if (options.rejectWindowUpdate) runtime.lastError = { message: 'window unavailable' }
+            callback({ id: tab.windowId })
+          },
+        },
+      },
+    })
+    const restore = () => {
+      Object.defineProperty(globalThis, 'chrome', {
+        configurable: true,
+        enumerable: true,
+        writable: true,
+        value: originalChrome,
+      })
+    }
+    return { windowUpdates, restore }
+  }
+
+  test('restores and focuses the selected tab window without CDP calls', async () => {
+    const { windowUpdates, restore } = installChromeTabUpdateStub({ id: 2, windowId: 7 })
+    try {
+      const { router, cdpCalls } = createMinimalRouter({
+        getTargetTab: async () => ({ id: 2 }),
+      })
+
+      const result = await router.handleCommand({
+        command: 'tab.select',
+        args: { tabId: 2 },
+      })
+
+      expect(result).toMatchObject({ selected: true })
+      // focused 不会还原最小化窗口，必须同时 state:'normal'，否则 document 仍是 hidden
+      expect(windowUpdates).toEqual([{ windowId: 7, info: { focused: true, state: 'normal' } }])
+      // 置前不再经过 CDP：调试器超时不会拖住 tab.select
+      expect(cdpCalls).toEqual([])
+    } finally {
+      restore()
+    }
+  })
+
+  test('keeps the tab selected when the window update is rejected', async () => {
+    const { windowUpdates, restore } = installChromeTabUpdateStub(
+      { id: 2, windowId: 7 },
+      { rejectWindowUpdate: true },
+    )
+    try {
+      const { router } = createMinimalRouter({
+        getTargetTab: async () => ({ id: 2 }),
+      })
+
+      const result = await router.handleCommand({
+        command: 'tab.select',
+        args: { tabId: 2 },
+      })
+
+      // 窗口恢复失败只影响可见性，tab 选择本身仍然完成
+      expect(windowUpdates).toHaveLength(1)
+      expect(result).toMatchObject({ selected: true, tab: expect.objectContaining({ id: 2 }) })
+    } finally {
+      restore()
+    }
+  })
+})
+
 describe('command target pinning', () => {
   test('applies a handle target to the page action and to meta', async () => {
     // 生产环境 getTargetTab 对无法解析的目标回落到当前 targetTabId，

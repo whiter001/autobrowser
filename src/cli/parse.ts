@@ -256,6 +256,14 @@ export function parseNetworkRequestsArgs(rest: string[]): Record<string, unknown
       continue
     }
 
+    // 这两个模式参数只属于 network har start；最近邻会把 --include-pattern 拐到 --include-details，
+    // 而列表过滤的正确做法是 --filter <text>，所以这里直接给出可执行的替代方案。
+    if (value === '--include-pattern' || value === '--exclude-pattern') {
+      throw new Error(
+        `${value} belongs to network har start; use network requests --filter <text> to narrow the list`,
+      )
+    }
+
     if (value.startsWith('--')) {
       throw new Error(
         `unsupported network option: ${value}${optionHintSuffix(value, NETWORK_REQUEST_OPTIONS)}`,
@@ -1128,6 +1136,12 @@ export function parseSnapshotArgs(rest: string[]): SnapshotArgs {
     if (value === '--include-text') {
       includeText = true
       continue
+    }
+
+    if (value === '--selector') {
+      throw new Error(
+        'snapshot does not accept --selector: pass the target positionally (autobrowser snapshot <selector>) or use --target <css>',
+      )
     }
 
     if (value.startsWith('--')) {

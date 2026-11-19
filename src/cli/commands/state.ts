@@ -587,6 +587,13 @@ async function handleNetwork(rest: string[], context: CommandContext): Promise<n
       return 0
     }
 
+    // 列表专用参数在单条请求上是常见误用；这里直接说明归属，避免只报 unsupported option。
+    if (rest.slice(1).includes('--include-details')) {
+      return throwCommandError(
+        '--include-details belongs to network requests (the list command); network request <rN> already returns details for a single request',
+      )
+    }
+
     if (!requestId) {
       return context.writeHelp(['network', 'request'])
     }

@@ -4,6 +4,8 @@
 
 - 未启动 HAR 时只自动监控网络元数据，不预取 body；`network request <id>` 按需通过 CDP 获取 body，历史请求或失效 CDP 会话可能无法补取，须查看获取失败信息。`--include-details` 只包含已存储的详情，不保证 body 完整。
 - `network requests` 默认只看目标 tab 的当前页面 epoch；跨 tab 或跨页面历史必须显式使用 `--all-tabs` / `--all-epochs`，headers/body 用 `network request <id>` 或 `--include-details` 获取。默认按最旧记录分页（每页 50，`--page` / `--page-size` 调页；`--limit` 是 `--page-size` 的别名），调试最新流量加 `--sort newest`；`total` 是过滤后的总数，不是当前页条数。
+- 列表侧过滤用 `network requests` 自己的参数：`--filter <子串>`（在 URL、方法、资源类型、状态文本等字段里做子串匹配）、`--type <xhr,fetch>`、`--method`、`--status <2xx>`、`--sort newest`，例如 `network requests --filter centralized/policy --type xhr,fetch --sort newest --limit 30`。`--include-pattern`/`--exclude-pattern` 只属于 `network har start`，传给 `network requests` 会报 `CLI_INVALID_ARGUMENT`；需要收窄结果就换 `--filter`/`--type`，不要因为参数写错就重放整条列表或改去抓 HAR。
+- `emptyReason: FILTERED_OUT` 表示已有请求历史但被当前过滤条件全部排除，**不代表请求没有发生**；`EPOCH_FILTERED` 才是被页面 epoch 过滤。前者先放宽或去掉 `--filter`/`--type`/`--method`/`--status` 并核对分页范围，后者再试 `--all-epochs`；最后用 `total`、`snapshot` 和页面自身状态判断，不要把空列表当成接口失败或"页面没发请求"的依据。
 
 ## HAR 采集限额与 body
 

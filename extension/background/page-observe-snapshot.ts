@@ -18,6 +18,13 @@ const AGENT_SNAPSHOT_MAX_ELEMENTS = 200
 const CONCISE_SNAPSHOT_MAX_ELEMENTS = 50
 const SNAPSHOT_MAX_JSON_BYTES = 200_000
 
+/**
+ * Ant Design Vue TreeSelect 的节点文本容器只有 title、没有显式 role，
+ * 但它在组件语义上是树选项：加入候选并按 treeitem 推断后，snapshot/find 才能用 role/name 定位。
+ * 这是组件语义适配，不做站点 URL 特判；显式 role 仍然优先。
+ */
+const ANT_TREE_NODE_SELECTOR = '.ant-select-tree-node-content-wrapper[title]'
+
 /** concise 元素只保留可操作字段；text 与坐标在大页面上占比最高，默认不返回。 */
 const CONCISE_ELEMENT_FIELDS = [
   'ref',
@@ -245,6 +252,7 @@ export function createSnapshotFeature({
         const targetRootSelector = ${JSON.stringify(resolvedTarget?.resolvedSelector || null)};
         const roles = ${JSON.stringify(roles)};
         const changedMode = ${changedMode};
+        const antTreeNodeSelector = ${JSON.stringify(ANT_TREE_NODE_SELECTOR)};
         const previousSignatures = ${JSON.stringify(previousSignatures)};
 
 ${PAGE_CONTEXT_SNAPSHOT_HELPERS_SOURCE}
@@ -290,6 +298,8 @@ ${PAGE_CONTEXT_SNAPSHOT_HELPERS_SOURCE}
           if (explicitRole) {
             return explicitRole;
           }
+
+          if (node.matches(antTreeNodeSelector)) return 'treeitem';
 
           const tagName = node.tagName.toLowerCase();
           if (tagName === 'a' && node.getAttribute('href')) return 'link';
@@ -340,6 +350,7 @@ ${PAGE_CONTEXT_SNAPSHOT_HELPERS_SOURCE}
           'summary',
           '[role]',
           '[tabindex]:not([tabindex="-1"])',
+          antTreeNodeSelector,
         ];
 
         // 合并成单个选择器，一次遍历取齐全部候选（deepQuerySelectorAll 内部已去重）

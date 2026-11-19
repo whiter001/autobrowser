@@ -1,5 +1,9 @@
 import { describe, expect, test } from 'bun:test'
-import { parseConsoleArgs, parseNetworkRouteArgs } from '../src/cli/parse.js'
+import {
+  parseConsoleArgs,
+  parseNetworkRequestsArgs,
+  parseNetworkRouteArgs,
+} from '../src/cli/parse.js'
 
 describe('cli network route and console argument parsing', () => {
   test('parses network route mock options', () => {
@@ -44,5 +48,16 @@ describe('cli network route and console argument parsing', () => {
     expect(() => parseConsoleArgs(['--level', 'verbose'])).toThrow('unsupported console level')
     expect(() => parseConsoleArgs(['--bogus'])).toThrow('unsupported console option')
     expect(() => parseConsoleArgs(['extra'])).toThrow('unexpected extra console argument')
+  })
+
+  test('routes pattern flags on network requests to --filter instead of a nearest neighbour', () => {
+    for (const flag of ['--include-pattern', '--exclude-pattern']) {
+      expect(() => parseNetworkRequestsArgs([flag, 'centralized/policy'])).toThrow(
+        'belongs to network har start',
+      )
+      expect(() => parseNetworkRequestsArgs([flag, 'centralized/policy'])).toThrow(
+        '--filter <text>',
+      )
+    }
   })
 })

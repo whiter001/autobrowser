@@ -15,6 +15,7 @@ import {
   parseNetworkRouteArgs,
   parseScreenshotArgs,
   parseSearchArgs,
+  parseSnapshotArgs,
   parseWaitArgs,
 } from '../src/cli/parse.js'
 import { parseScrollArgs } from '../src/cli/commands/elements.js'
@@ -219,8 +220,12 @@ describe('cli helpers', () => {
   test('documents tab, find, and get help output', async () => {
     const tabHelp = await runCli(['help', 'tab'])
     expect(tabHelp.exitCode).toBe(0)
-    expect(tabHelp.stdout).toContain('autobrowser tab new [url]')
+    expect(tabHelp.stdout).toContain('autobrowser tab new [url|--url <url>]')
     expect(tabHelp.stdout).toContain('autobrowser tab close [tN]')
+
+    const tabNewHelp = await runCli(['help', 'tab', 'new'])
+    expect(tabNewHelp.exitCode).toBe(0)
+    expect(tabNewHelp.stdout).toContain('--url <url> 与位置 URL 等价')
 
     const findHelp = await runCli(['help', 'find'])
     expect(findHelp.exitCode).toBe(0)
@@ -237,6 +242,30 @@ describe('cli helpers', () => {
     expect(getHelp.stdout).toContain('autobrowser get <attribute> [selector]')
     expect(getHelp.stdout).toContain('title、url 和 cdp-url 读取当前页面并忽略选择器')
     expect(getHelp.stdout).toContain('其他属性名会透传给页面元素')
+  })
+
+  test('documents click refs, snapshot limits, and network request filtering', async () => {
+    const clickHelp = await runCli(['help', 'click'])
+    expect(clickHelp.exitCode).toBe(0)
+    expect(clickHelp.stdout).toContain('autobrowser click <selector|@eN>')
+    expect(clickHelp.stdout).toContain('直接使用 snapshot 返回的元素引用')
+
+    const snapshotHelp = await runCli(['help', 'snapshot'])
+    expect(snapshotHelp.exitCode).toBe(0)
+    expect(snapshotHelp.stdout).toContain('--limit <1..200>')
+    expect(snapshotHelp.stdout).toContain('没有 --selector 选项')
+
+    const requestsHelp = await runCli(['help', 'network', 'requests'])
+    expect(requestsHelp.exitCode).toBe(0)
+    expect(requestsHelp.stdout).toContain(
+      'autobrowser network requests --filter centralized/policy --type xhr,fetch --sort newest',
+    )
+    expect(requestsHelp.stdout).toContain('--include-pattern 仅属于 network har start')
+    expect(requestsHelp.stdout).toContain('data: 字体/图片资源')
+
+    const requestHelp = await runCli(['help', 'network', 'request'])
+    expect(requestHelp.exitCode).toBe(0)
+    expect(requestHelp.stdout).toContain('--include-details 只属于 network requests 列表')
   })
 
   test('documents search help output', async () => {
@@ -872,6 +901,47 @@ describe('cli helpers', () => {
     expect(() => parseNetworkRequestsArgs(['--filtter', 'api'])).toThrow(
       'unsupported network option: --filtter',
     )
+  })
+
+  test('forwards @eN click targets unchanged to the extension', async () => {
+    const result = await runCli(['click', '@e12'])
+
+    expect(result.exitCode).toBe(0)
+    expect(result.fetchCalls[0].body).toEqual({
+      command: 'click',
+      args: { selector: '@e12' },
+    })
+  })
+
+  test('rejects snapshot --selector with positional or --target guidance', async () => {
+    expect(() => parseSnapshotArgs(['--selector', '#panel'])).toThrow('--target <css>')
+
+    const result = await runCli(['snapshot', '--selector', '#panel'])
+    expect(result.exitCode).toBe(1)
+    expect(result.fetchCalls).toHaveLength(0)
+    const message = cliErrorPayload(result.stdout).error.message
+    expect(message).toContain('positionally')
+    expect(message).toContain('--target <css>')
+  })
+
+  test('explains that a single network request already returns details', async () => {
+    const result = await runCli(['network', 'request', 'r9', '--include-details'])
+
+    expect(result.exitCode).toBe(1)
+    expect(result.fetchCalls).toHaveLength(0)
+    const message = cliErrorPayload(result.stdout).error.message
+    expect(message).toContain('--include-details belongs to network requests')
+    expect(message).toContain('already returns details')
+  })
+
+  test('rejects network requests --include-pattern with --filter guidance', async () => {
+    const result = await runCli(['network', 'requests', '--include-pattern', 'centralized/policy'])
+
+    expect(result.exitCode).toBe(1)
+    expect(result.fetchCalls).toHaveLength(0)
+    const message = cliErrorPayload(result.stdout).error.message
+    expect(message).toContain('network har start')
+    expect(message).toContain('--filter <text>')
   })
 
   test('rejects unknown global flags before the command name', async () => {

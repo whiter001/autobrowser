@@ -5,6 +5,9 @@ import { PAGE_CONTEXT_FIND_HELPERS_SOURCE } from './page-observe-helpers.js'
 import { getPageEpoch, withFrameSelectorOptions } from './targeting.js'
 import type { FrameSelector, TabInput } from './types.js'
 
+/** 与 snapshot 共用同一套语义：Ant Design Vue TreeSelect 节点没有显式 role，按 treeitem 处理。 */
+const ANT_TREE_NODE_SELECTOR = '.ant-select-tree-node-content-wrapper[title]'
+
 export interface SemanticTargetMatch extends Record<string, unknown> {
   ref?: string
   tag?: string
@@ -99,7 +102,9 @@ export function createSemanticFindFeature({
         const exact = ${exact ? 'true' : 'false'};
         const position = ${JSON.stringify(position)};
         const candidatesCount = ${candidatesCount};
-        const actionableSelector = 'a[href],button,input:not([type="hidden"]),textarea,select,summary,[role],[tabindex]:not([tabindex="-1"])';
+        const antTreeNodeSelector = ${JSON.stringify(ANT_TREE_NODE_SELECTOR)};
+        // 可点击判定与候选列表必须同时包含 TreeSelect 节点，否则 role/name 命中了却退回到普通文本节点
+        const actionableSelector = 'a[href],button,input:not([type="hidden"]),textarea,select,summary,[role],[tabindex]:not([tabindex="-1"]),' + antTreeNodeSelector;
 
 ${PAGE_CONTEXT_FIND_HELPERS_SOURCE}
 
@@ -178,6 +183,10 @@ ${PAGE_CONTEXT_FIND_HELPERS_SOURCE}
             return explicitRole.toLowerCase();
           }
 
+          if (node.matches(antTreeNodeSelector)) {
+            return 'treeitem';
+          }
+
           const tagName = String(node.tagName || '').toLowerCase();
           if (tagName === 'a' && node.getAttribute('href')) return 'link';
           if (tagName === 'button') return 'button';
@@ -217,6 +226,7 @@ ${PAGE_CONTEXT_FIND_HELPERS_SOURCE}
           'summary',
           '[role]',
           '[tabindex]:not([tabindex="-1"])',
+          antTreeNodeSelector,
         ]);
 
         // 惰性计算：broadTextCandidates 需要逐节点 isVisible（强制同步布局），

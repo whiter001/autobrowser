@@ -8,6 +8,8 @@
 - `connect` 打开连接页后会输出确认，但这只表示页面已打开；如果连接页自动关闭，优先用 `status` 检查连接结果，不要反复等待页面。
 - 如果 `connect` 没有打开或没有连上，确认浏览器命令指向已加载解包扩展的配置文件，必要时显式传 `--browser-command`。
 - 如果页面看起来空白或不对，先确认是不是登录页、验证码页，或者虚拟滚动列表。
+- 浏览器证书 interstitial（隐私错误页，如 `NET::ERR_CERT_AUTHORITY_INVALID` 的"高级 → 继续访问"页）和 `chrome://`、`edge://`、`devtools://` 页面都不在可附加范围：`snapshot`/`click` 会报 `Cannot access chrome:// or edge:// URLs` 或 `Cannot attach to this target`。它们不是普通 DOM 页面，autobrowser 也不能替你点"继续访问"：把情况告诉用户，由用户手动放行（或换成受信的本地证书），放行后再 `tab list` 找到一个真实业务标签继续。不要对同一地址反复重试、反复截图等待，更不要因此改用其他自动化框架。
+- `extension reload` 后浏览器可能额外打开自己的扩展管理页（`edge://extensions` 等）并成为 active 标签；它同样不可附加。用 `tab list` 找回原业务标签，不要对这个页面发命令，也别把它当成重载失败。
 
 ## extension info 字段
 
