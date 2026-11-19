@@ -385,9 +385,13 @@ describe('runtime snapshot', () => {
       headers: '[redacted]',
     })
 
-    runtime.setLastCommand('eval', { script: 'document.cookie' })
+    runtime.setLastCommand('eval', {
+      script: 'document.cookie',
+      args: { token: 'secret-in-args' },
+    })
     expect(runtime.snapshot().snapshot.lastCommand?.args).toEqual({
       script: '[redacted]',
+      args: '[redacted]',
     })
 
     const stateFilePath = path.join(homeDir, '.autobrowser', 'state.json')
@@ -397,6 +401,7 @@ describe('runtime snapshot', () => {
 
     expect(persistedState.snapshot.lastCommand?.args).toEqual({
       script: '[redacted]',
+      args: '[redacted]',
     })
   })
 

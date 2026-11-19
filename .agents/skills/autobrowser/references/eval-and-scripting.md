@@ -33,6 +33,16 @@ return links.slice(0, 10)
 - 复杂交互优先拆成更小的 autobrowser 命令或脚本步骤，保留原任务目标逐步推进。
 - 针对单个元素执行函数脚本时用 `eval --element <selector|@eN> 'el => el.textContent'`，保留 stale/frame 检查。`locator <selector>` 会生成并验证唯一 locator；`highlight <selector> [--style <outline>]` 做不改布局的高亮，单元素恢复用 `highlight <selector> --hide`，全部恢复用 `highlight --hide`。
 
+## eval 参数注入与结果分页
+
+- 需要把外部值带进页面脚本时不要拼接源码：用可重复的 `--arg <key=value>` 注入局部变量 `args`，例如 `autobrowser eval --arg keyword=shoes --expr 'args.keyword'`；键值很多时改用 `--args-json '<json-object>'` 一次传入整个对象。两者互斥，同时使用按参数错误拒绝。
+- `--arg` 的值始终是字符串，key 必须非空且不能包含点号；重复 key 直接报错，不会静默覆盖。需要数字或对象时用 `--args-json`，在脚本里自行转换（例如 `Number(args.page)`）。
+- 三条求值路径都提供 `args`：direct eval 在脚本外层作用域定义，replMode（顶层 `await`）在脚本前补声明，async IIFE（顶层 `return`）把它作为形参；脚本自身声明 `args` 不会导致脚本被执行两次。`--element` 的函数第一个参数仍是 `el`，`args` 是第二个参数：`(el, args) => el.textContent.includes(args.keyword)`。
+- 大结果先用 `--offset <非负整数>` / `--limit <正整数>` 分页，只有在显式指定其中之一时才分页（缺省 offset=0、limit=10000）。只支持字符串和数组：字符串按 Unicode code point 切片，不会把 emoji 的代理对切成两半；数组按元素切片。其它结果类型返回 `INVALID_COMMAND_ARGS`，应改写脚本让它返回字符串（如 `JSON.stringify`）或数组。
+- 分页响应是 `{ value, pagination: { kind: "text"|"array", offset, limit, total, nextOffset, truncated } }`。`offset` 超过尾部时 `value` 为空、`nextOffset` 为 `null`；`truncated` 表示是否还有后续，续读用返回的 `nextOffset`。不指定 offset/limit 时结果结构与旧版本完全一致。
+- `--max-result-bytes` 检查的是分页后的结果与响应大小，所以先用小 `limit` 分页可以绕开"整段结果先撞上限"的困境；不要把提高上限当成默认解法。
+- 目标标签停在 `chrome-error://` 错误页时 `eval` 不会执行脚本，直接返回 `NAVIGATION_FAILED`，`details.url` 是当前错误页地址。先重新导航（`goto <url>` 或 `reload`），再用 `get url` 确认，然后重试 eval；不要把它当成脚本或选择器问题反复调参。
+
 ## CDP 使用边界
 
 - `cdp <Domain.method> [json]` 用于现有命令无法覆盖的 tab 级 CDP 场景，例如 `cdp Runtime.evaluate '{"expression":"6 * 7","returnByValue":true}'`；复杂参数也可使用 `--params '<json>'`。

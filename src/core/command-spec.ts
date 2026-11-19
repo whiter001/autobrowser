@@ -317,6 +317,38 @@ function validateFillFormFields(args: Record<string, unknown>, command: string):
   })
 }
 
+// eval 的 args 是注入到页面脚本里的局部变量。这里只拒绝空键和带点号的键，
+// 避免把 a.b 静默当成字面量键；带连字符等非标识符的键仍允许，但脚本里只能用
+// args[key] 读取，不能写成 args.key。
+function validateEvalArgsField(args: Record<string, unknown>, command: string): void {
+  const extra = args.args
+  if (extra === undefined) {
+    return
+  }
+
+  if (!isRecord(extra)) {
+    throw createCommandArgsValidationError(command, 'args must be an object', {
+      field: 'args',
+      value: extra,
+    })
+  }
+
+  for (const key of Object.keys(extra)) {
+    if (!key) {
+      throw createCommandArgsValidationError(command, 'args keys must be non-empty strings', {
+        field: 'args',
+        value: extra,
+      })
+    }
+    if (key.includes('.')) {
+      throw createCommandArgsValidationError(command, 'args keys must not contain "."', {
+        field: 'args',
+        key,
+      })
+    }
+  }
+}
+
 function validateBatchWhen(value: unknown): void {
   if (!isRecord(value)) {
     throw new Error('when must be an object')
@@ -651,6 +683,7 @@ function validateCommandArgsShape(command: string, args: unknown): void {
       readStringField(normalizedArgs, 'script', command)
       readStringField(normalizedArgs, 'element', command, { required: false })
       readOptionalNonNegativeNumberField(normalizedArgs, 'timeoutMs', command)
+      validateEvalArgsField(normalizedArgs, command)
       {
         // 缺省不限制结果大小；显式设置时必须是正整数
         const maxResultBytes = readOptionalNonNegativeIntegerField(
@@ -664,6 +697,18 @@ function validateCommandArgsShape(command: string, args: unknown): void {
             'maxResultBytes must be a positive integer',
             { field: 'maxResultBytes', value: maxResultBytes },
           )
+        }
+      }
+      {
+        // 分页只在显式指定 offset/limit 时生效：offset 从 0 开始，limit 必须为正，
+        // 避免 --limit 0 得到永远空页、还把 truncated 误判成 false。
+        readOptionalNonNegativeIntegerField(normalizedArgs, 'offset', command)
+        const limit = readOptionalNonNegativeIntegerField(normalizedArgs, 'limit', command)
+        if (limit !== undefined && limit < 1) {
+          throw createCommandArgsValidationError(command, 'limit must be a positive integer', {
+            field: 'limit',
+            value: limit,
+          })
         }
       }
       return

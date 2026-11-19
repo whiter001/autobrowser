@@ -1,10 +1,36 @@
 import { withFrameSelectorOptions } from './targeting.js'
 import type { ErrorWithCode, FrameSelector, TabInput } from './types.js'
 import type { PageInputContext } from './page-input-context.js'
-import { assertEvalResultWithinLimit, createElementNotFoundError } from './page-input-helpers.js'
+import {
+  assertEvalResultWithinLimit,
+  createElementNotFoundError,
+  createNavigationFailedError,
+  isBrowserErrorPageUrl,
+} from './page-input-helpers.js'
+import {
+  isEvalPaginationRequested,
+  paginateEvalResult,
+  type EvalPaginationRequest,
+} from './page-input-eval-result.js'
 
 // eval / locator / highlight 三个页面求值工具：
 // 都基于页面内表达式执行，共享 selector 解析与求值入口
+
+export interface EvaluateScriptOptions extends EvalPaginationRequest {
+  /** 页面脚本通过局部变量 args 读取的注入值；缺省为空对象。 */
+  args?: Record<string, unknown>
+}
+
+const NAVIGATION_FAILED_RESULT = '__autobrowserNavigationFailed'
+
+// args 会作为 JS 字面量拼进源码，JSON.stringify 后仍需转义行分隔符：
+// 它们在 JSON 字符串里合法，但直接落进源码会被部分引擎当成换行。
+function serializeEvalArgs(args: Record<string, unknown> | undefined): string {
+  if (!args) return '{}'
+  return JSON.stringify(args)
+    .replace(/\u2028/g, '\\u2028')
+    .replace(/\u2029/g, '\\u2029')
+}
 
 /**
  * 创建脚本执行命令：eval 与相关的注入执行入口。
@@ -50,21 +76,41 @@ export function createEvalCommands(pageContext: PageInputContext) {
     timeoutMs?: number,
     elementSelector?: string,
     maxResultBytes?: number,
+    evalOptions?: EvaluateScriptOptions,
   ) {
+    // 错误页本身有可执行文档，但脚本只会读到 chromewebdata 的空内容，把导航失败
+    // 伪装成页面真的没数据；先拒绝并提示重新导航。tabs.url 在失败页可能仍是旧地址，
+    // 所以 direct-eval 包装还会检查真实 location。只影响公共 eval，导航内部探测不经过这里。
+    const targetTab = await pageContext.getTargetTab(tabId)
+    if (isBrowserErrorPageUrl(targetTab.url)) {
+      throw createNavigationFailedError(targetTab.url)
+    }
+
     const options = withFrameSelectorOptions(frameSelector, {
       userGesture: true,
       ...(typeof timeoutMs === 'number' ? { timeoutMs } : {}),
     })
+    const argsLiteral = serializeEvalArgs(evalOptions?.args)
     let effectiveScript = script
     if (elementSelector) {
       const { resolvedSelector } = await resolveElementSelectorForTab(tabId, elementSelector)
       effectiveScript = `(() => {
         const el = deepQuerySelector(document, ${JSON.stringify(resolvedSelector)});
         if (!el) return { __autobrowserElementNotFound: true };
-        return (${script})(el);
+        return (${script})(el, args);
       })()`
     }
     const finish = (value: unknown): unknown => {
+      if (value && typeof value === 'object') {
+        const result = value as Record<string, unknown>
+        if (
+          result[NAVIGATION_FAILED_RESULT] === true &&
+          typeof result.url === 'string' &&
+          isBrowserErrorPageUrl(result.url)
+        ) {
+          throw createNavigationFailedError(result.url)
+        }
+      }
       if (
         elementSelector &&
         value &&
@@ -72,21 +118,31 @@ export function createEvalCommands(pageContext: PageInputContext) {
         (value as Record<string, unknown>).__autobrowserElementNotFound === true
       )
         throw createElementNotFoundError(elementSelector)
-      assertEvalResultWithinLimit(value, maxResultBytes)
-      return value
+      const paginated = paginateEvalResult(value, evalOptions)
+      // 分页后检查上限：先切片再量大小，避免大结果在分页前就被字节上限拒绝
+      assertEvalResultWithinLimit(
+        isEvalPaginationRequested(evalOptions) ? paginated : value,
+        maxResultBytes,
+      )
+      return paginated
     }
 
     // 第一级：direct eval。直接以全局脚本执行会把顶层 const/let 留在页面词法环境，
     // 第二次运行同一脚本即报 "already declared"。包进函数作用域的 direct eval：仍返回
     // completion value（简单表达式的值不变），声明与函数只在 wrapper 内可见，可原样重复执行。
+    // args 定义在 wrapper 作用域，eval 里的脚本按作用域链读取，脚本自己声明 args 也不会冲突。
     try {
       const { value } = await evaluateInTabContext(
         tabId,
-        `(() => eval(${JSON.stringify(effectiveScript)}))()`,
+        `(() => { const args = ${argsLiteral};
+if (globalThis.location?.href.startsWith('chrome-error://')) return { ${NAVIGATION_FAILED_RESULT}: true, url: globalThis.location.href };
+return eval(${JSON.stringify(effectiveScript)}) })()`,
         options,
       )
       return finish(value)
     } catch (error) {
+      // 错误页守卫在求值用户脚本前返回；即使脚本带顶层 await/return，也不能进入后续求值路径
+      if ((error as ErrorWithCode).code === 'NAVIGATION_FAILED') throw error
       // 编译检查失败时按"已执行过"处理，宁可不重试也不能重放副作用
       let compiled = true
       try {
@@ -99,12 +155,16 @@ export function createEvalCommands(pageContext: PageInputContext) {
 
     // 第二级：replMode。direct eval 的求值上下文不是 async，顶层 await 会解析失败；
     // Runtime.evaluate 的 replMode 原生支持顶层 await，并保留脚本的完成值，
-    // 同时顶层 const/let 不泄漏到页面全局。
+    // 同时顶层 const/let 不泄漏到页面全局。args 只能作为前置声明注入。
     try {
-      const { value } = await evaluateInTabContext(tabId, effectiveScript, {
-        ...options,
-        replMode: true,
-      })
+      const { value } = await evaluateInTabContext(
+        tabId,
+        `const args = ${argsLiteral};\n${effectiveScript}`,
+        {
+          ...options,
+          replMode: true,
+        },
+      )
       return finish(value)
     } catch (error) {
       // 编译期失败没有运行期调用栈；有栈说明脚本已经开始执行，不能再换路径重放。
@@ -114,9 +174,10 @@ export function createEvalCommands(pageContext: PageInputContext) {
 
     // 第三级：async IIFE。replMode 同样不接受顶层 return（"Illegal return statement"），
     // 这类脚本必须自己带 return，因此完成值由脚本的 return 给出，不会像顶层 await 那样丢值。
+    // args 走形参而不是 const 声明，脚本自己写 `const args` 时不会撞名。
     const { value } = await evaluateInTabContext(
       tabId,
-      `(async () => {\n${effectiveScript}\n})()`,
+      `(async (args) => {\n${effectiveScript}\n})(${argsLiteral})`,
       options,
     )
     return finish(value)

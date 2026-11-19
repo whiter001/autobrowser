@@ -285,13 +285,17 @@ describe('cli helpers', () => {
     expect(result.exitCode).toBe(0)
     expect(result.fetchCalls).toHaveLength(0)
     expect(result.stdout).toContain(
-      'autobrowser eval [--stdin|--file <path>|--base64] [--timeout-ms <ms>] [--max-result-bytes <n>] [--output <path>] [--element <selector>] [--expr] <script>',
+      'autobrowser eval [--stdin|--file <path>|--base64] [--timeout-ms <ms>] [--max-result-bytes <n>] [--arg <key=value> ...|--args-json <json-object>] [--offset <n>] [--limit <n>] [--output <path>] [--element <selector>] [--expr] <script>',
     )
     expect(result.stdout).toContain('--max-result-bytes <n>')
     expect(result.stdout).toContain('--output <path>')
     expect(result.stdout).toContain('已存在的文件会被覆盖')
     expect(result.stdout).toContain('--element <selector>')
     expect(result.stdout).toContain('--expr <script>')
+    expect(result.stdout).toContain('--arg <key=value>')
+    expect(result.stdout).toContain('--args-json')
+    expect(result.stdout).toContain('--offset <n>')
+    expect(result.stdout).toContain('--limit <n>')
     expect(result.stdout).toContain('--timeout-ms <ms>')
     expect(result.stdout).toContain('--file <path>  从文件读取复杂或多行的脚本源码')
     expect(result.stdout).toContain('--stdin  从 stdin 读取复杂或多行的脚本源码')
@@ -355,6 +359,91 @@ describe('cli helpers', () => {
       const error = cliErrorPayload(duplicate.stdout).error
       expect(error.code).toBe('CLI_INVALID_ARGUMENT')
       expect(error.message).toContain('duplicate')
+    }
+  })
+
+  test('parses repeatable eval --arg values into the script args object', async () => {
+    const script = 'args.keyword'
+    const result = await runCli([
+      'eval',
+      '--expr',
+      script,
+      '--arg',
+      'keyword=shoes',
+      '--arg',
+      'page=2',
+      '--arg',
+      'empty=',
+    ])
+
+    expect(result.exitCode).toBe(0)
+    expect(result.fetchCalls[0].body).toEqual({
+      command: 'eval',
+      args: {
+        script,
+        args: { keyword: 'shoes', page: '2', empty: '' },
+        responseFormat: 'concise',
+      },
+    })
+  })
+
+  test('accepts eval --args-json and rejects mixing it with --arg', async () => {
+    const script = 'args'
+    const result = await runCli(['eval', '--expr', script, '--args-json', '{"keyword":"shoes"}'])
+    expect(result.exitCode).toBe(0)
+    expect(result.fetchCalls[0].body?.args).toMatchObject({ args: { keyword: 'shoes' } })
+
+    for (const argv of [
+      ['--arg', 'keyword=shoes', '--args-json', '{"keyword":"other"}'],
+      ['--args-json', '{"keyword":"other"}', '--arg', 'keyword=shoes'],
+    ]) {
+      const mixed = await runCli(['eval', '--expr', script, ...argv])
+      expect(mixed.exitCode).toBe(1)
+      expect(mixed.fetchCalls).toHaveLength(0)
+      const error = cliErrorPayload(mixed.stdout).error
+      expect(error.code).toBe('CLI_INVALID_ARGUMENT')
+      expect(error.message).toContain('cannot be combined')
+    }
+  })
+
+  test('rejects malformed eval --arg and --args-json payloads', async () => {
+    for (const [argv, message] of [
+      [['--arg', 'keyword'], 'expected key=value'],
+      [['--arg', '=shoes'], 'key must be non-empty'],
+      [['--arg', 'a.b=shoes'], 'must not contain "."'],
+      [['--arg', 'keyword=one', '--arg', 'keyword=two'], 'duplicate --arg key'],
+      [['--args-json', '[1,2]'], 'expected a JSON object'],
+      [['--args-json', '{oops'], 'expected a JSON object'],
+      [['--args-json', '{"a.b":"x"}'], 'must not contain "."'],
+      [['--args-json', '{"":"x"}'], 'keys must be non-empty'],
+      [['--arg'], 'missing value for --arg'],
+    ] as const) {
+      const result = await runCli(['eval', '--expr', '1', ...argv])
+      expect(result.exitCode).toBe(1)
+      expect(result.fetchCalls).toHaveLength(0)
+      const error = cliErrorPayload(result.stdout).error
+      expect(error.code).toBe('CLI_INVALID_ARGUMENT')
+      expect(error.message).toContain(message)
+    }
+  })
+
+  test('forwards eval pagination options and validates their bounds', async () => {
+    const script = 'document.body.innerText'
+    const result = await runCli(['eval', '--expr', script, '--offset', '10', '--limit', '50'])
+    expect(result.exitCode).toBe(0)
+    expect(result.fetchCalls[0].body?.args).toMatchObject({ offset: 10, limit: 50 })
+
+    for (const [argv, message] of [
+      [['--offset', '-1'], 'expected >= 0'],
+      [['--offset', '1.5'], 'expected an integer'],
+      [['--limit', '0'], 'expected >= 1'],
+      [['--limit', 'x'], 'expected a finite number'],
+    ] as const) {
+      const invalid = await runCli(['eval', '--expr', script, ...argv])
+      expect(invalid.exitCode).toBe(1)
+      expect(invalid.fetchCalls).toHaveLength(0)
+      expect(cliErrorPayload(invalid.stdout).error.code).toBe('CLI_INVALID_ARGUMENT')
+      expect(cliErrorPayload(invalid.stdout).error.message).toContain(message)
     }
   })
 

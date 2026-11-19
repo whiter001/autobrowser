@@ -288,6 +288,42 @@ describe('AutobrowserMcpServer.callTool', () => {
     ])
   })
 
+  test('eval forwards args and pagination options', async () => {
+    const mock = recordingRequestCommand(okResult({ value: 'shoes' }))
+    const server = new AutobrowserMcpServer({ requestCommand: mock, responseMode: 'both' })
+
+    const evalTool = server.listTools().find((tool) => tool.name === 'eval')!
+    expect(evalTool.inputSchema.properties?.args).toMatchObject({ type: 'object' })
+    expect(evalTool.inputSchema.properties?.offset).toMatchObject({ type: 'integer', minimum: 0 })
+    expect(evalTool.inputSchema.properties?.limit).toMatchObject({ type: 'integer', minimum: 1 })
+
+    await server.callTool('eval', {
+      script: 'return args.keyword',
+      args: { keyword: 'shoes' },
+      offset: 0,
+      limit: 5,
+    })
+    expect(mock.calls).toEqual([
+      {
+        command: 'eval',
+        args: {
+          script: 'return args.keyword',
+          args: { keyword: 'shoes' },
+          offset: 0,
+          limit: 5,
+          responseFormat: 'concise',
+        },
+      },
+    ])
+
+    const invalid = await server.callTool('eval', { script: '1 + 1', args: [] })
+    expect(invalid.isError).toBe(true)
+    expect(
+      (invalid.structuredContent as { error: { code: string; message: string } }).error,
+    ).toMatchObject({ code: 'CLI_INVALID_ARGUMENT', message: 'args must be an object' })
+    expect(mock.calls).toHaveLength(1)
+  })
+
   test('eval forwards output and rejects a non-string output', async () => {
     const mock = recordingRequestCommand(
       okResult({ path: 'C:/tmp/result.json', format: 'json', bytes: 12 }),

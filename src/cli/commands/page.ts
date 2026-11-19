@@ -219,12 +219,32 @@ function extractEvalOptions(rest: string[]): {
   element?: string
   maxResultBytes?: number
   outputPath?: string
+  evalArgs?: Record<string, unknown>
+  offset?: number
+  limit?: number
 } {
   const scriptRest: string[] = []
   let timeoutMs: number | undefined
   let element: string | undefined
   let maxResultBytes: number | undefined
   let outputPath: string | undefined
+  let evalArgs: Record<string, unknown> | undefined
+  let argsJsonUsed = false
+  let offset: number | undefined
+  let limit: number | undefined
+
+  const setEvalArg = (key: string, value: unknown) => {
+    if (!key) {
+      throw new Error('invalid --arg: key must be non-empty (expected key=value)')
+    }
+    if (key.includes('.')) {
+      throw new Error(`invalid --arg key ${JSON.stringify(key)}: keys must not contain "."`)
+    }
+    if (evalArgs && key in evalArgs) {
+      throw new Error(`duplicate --arg key: ${key}`)
+    }
+    evalArgs = { ...evalArgs, [key]: value }
+  }
 
   for (let index = 0; index < rest.length; index += 1) {
     const value = rest[index]
@@ -243,6 +263,67 @@ function extractEvalOptions(rest: string[]): {
         min: 1,
         integer: true,
       })
+      index += 1
+      continue
+    }
+    if (value === '--arg') {
+      const pair = rest[index + 1]
+      if (pair === undefined) {
+        throw new Error('missing value for --arg')
+      }
+      if (argsJsonUsed) {
+        throw new Error('--arg and --args-json cannot be combined')
+      }
+      const separator = pair.indexOf('=')
+      if (separator < 0) {
+        throw new Error(`invalid --arg ${JSON.stringify(pair)}: expected key=value`)
+      }
+      setEvalArg(pair.slice(0, separator), pair.slice(separator + 1))
+      index += 1
+      continue
+    }
+    if (value === '--args-json') {
+      const raw = rest[index + 1]
+      if (raw === undefined) {
+        throw new Error('missing value for --args-json')
+      }
+      if (argsJsonUsed) {
+        throw new Error('duplicate --args-json option')
+      }
+      if (evalArgs) {
+        throw new Error('--arg and --args-json cannot be combined')
+      }
+      let parsed: unknown
+      try {
+        parsed = JSON.parse(raw)
+      } catch {
+        throw new Error(`invalid --args-json: expected a JSON object`)
+      }
+      if (!isRecord(parsed) || Array.isArray(parsed)) {
+        throw new Error('invalid --args-json: expected a JSON object')
+      }
+      for (const key of Object.keys(parsed)) {
+        if (!key) {
+          throw new Error('invalid --args-json: keys must be non-empty')
+        }
+        if (key.includes('.')) {
+          throw new Error(
+            `invalid --args-json key ${JSON.stringify(key)}: keys must not contain "."`,
+          )
+        }
+      }
+      evalArgs = parsed
+      argsJsonUsed = true
+      index += 1
+      continue
+    }
+    if (value === '--offset') {
+      offset = parseNumberArg(rest[index + 1], 'offset', { min: 0, integer: true })
+      index += 1
+      continue
+    }
+    if (value === '--limit') {
+      limit = parseNumberArg(rest[index + 1], 'limit', { min: 1, integer: true })
       index += 1
       continue
     }
@@ -273,7 +354,7 @@ function extractEvalOptions(rest: string[]): {
     scriptRest.push(value)
   }
 
-  return { scriptRest, timeoutMs, element, maxResultBytes, outputPath }
+  return { scriptRest, timeoutMs, element, maxResultBytes, outputPath, evalArgs, offset, limit }
 }
 
 async function handleEval(rest: string[], context: CommandContext): Promise<number | void> {
@@ -281,9 +362,8 @@ async function handleEval(rest: string[], context: CommandContext): Promise<numb
     return 0
   }
 
-  const { scriptRest, timeoutMs, element, maxResultBytes, outputPath } = parseOrThrow(() =>
-    extractEvalOptions(rest),
-  )
+  const { scriptRest, timeoutMs, element, maxResultBytes, outputPath, evalArgs, offset, limit } =
+    parseOrThrow(() => extractEvalOptions(rest))
   const script = await context.resolveEvalScript(scriptRest)
   const args: Record<string, unknown> = { script }
   if (timeoutMs !== undefined) {
@@ -291,6 +371,9 @@ async function handleEval(rest: string[], context: CommandContext): Promise<numb
   }
   if (element !== undefined) args.element = element
   if (maxResultBytes !== undefined) args.maxResultBytes = maxResultBytes
+  if (evalArgs !== undefined) args.args = evalArgs
+  if (offset !== undefined) args.offset = offset
+  if (limit !== undefined) args.limit = limit
   if (outputPath !== undefined) {
     args.output = outputPath
     // 落盘时默认 detailed：concise 的 32KiB 上限会让一次正文抓取就失败，

@@ -649,7 +649,7 @@ export const MCP_TOOLS: McpToolDefinition[] = [
   {
     name: 'eval',
     description:
-      'Run JavaScript in the page context and return the serialized result. The script can use await. Pass output to write the full JSON result to a file (2-space indent, trailing newline) and return {path, format, bytes} instead of inlining the body; output defaults to response_format detailed, so results above the concise 32KiB limit still reach the file unless you ask for concise explicitly.',
+      'Run JavaScript in the page context and return the serialized result. The script can use await and reads the optional args object through the local variable args (for example return args.keyword). With element, the function receives el and args. Pass offset/limit to paginate a string (by Unicode code points) or array result and get {value, pagination}; both are omitted by default and the raw result is returned. Pass output to write the full JSON result to a file (2-space indent, trailing newline) and return {path, format, bytes} instead of inlining the body; output defaults to response_format detailed, so results above the concise 32KiB limit still reach the file unless you ask for concise explicitly.',
     command: 'eval',
     inputSchema: {
       type: 'object',
@@ -657,11 +657,28 @@ export const MCP_TOOLS: McpToolDefinition[] = [
         script: {
           type: 'string',
           description:
-            'JavaScript source; with element, use a function such as el => el.textContent.',
+            'JavaScript source; with element, use a function such as el => el.textContent. Read injected values from the local args object.',
         },
         element: {
           type: 'string',
           description: 'Optional CSS/@eN target passed to the script as el.',
+        },
+        args: {
+          type: 'object',
+          description:
+            'Values exposed to the script as the local variable args, for example {"keyword": "shoes"}. Keys must be non-empty and must not contain ".".',
+        },
+        offset: {
+          type: 'integer',
+          minimum: 0,
+          description:
+            'Start index for paginating a string (Unicode code points) or array result. Defaults to 0 when offset/limit is used.',
+        },
+        limit: {
+          type: 'integer',
+          minimum: 1,
+          description:
+            'Page size for paginating a string or array result. Defaults to 10000 when offset/limit is used.',
         },
         output: {
           type: 'string',
@@ -675,7 +692,16 @@ export const MCP_TOOLS: McpToolDefinition[] = [
       if (args.output !== undefined && (typeof args.output !== 'string' || !args.output.trim())) {
         throw new Error('output must be a non-empty string')
       }
-      return { script: args.script, ...onlyDefined(args, ['element', 'output']) }
+      if (
+        args.args !== undefined &&
+        (!args.args || typeof args.args !== 'object' || Array.isArray(args.args))
+      ) {
+        throw new Error('args must be an object')
+      }
+      return {
+        script: args.script,
+        ...onlyDefined(args, ['element', 'args', 'offset', 'limit', 'output']),
+      }
     },
   },
   {

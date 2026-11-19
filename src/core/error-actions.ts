@@ -122,6 +122,11 @@ export const ERROR_ACTIONS: Record<string, ErrorAction> = {
     retryable: false,
     action: "Handle the dialog first: 'dialog status', 'dialog accept' or 'dialog dismiss'.",
   },
+  NAVIGATION_FAILED: {
+    retryable: false,
+    action:
+      "Re-navigate to the intended URL ('goto <url>' or 'reload'), confirm the result with 'get url', then retry; retrying on the error page repeats the same failure.",
+  },
   NETWORK_DATA_NOT_FOUND: {
     retryable: false,
     action: 'Check the request chain with network requests first; do not fabricate DOM results.',

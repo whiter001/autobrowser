@@ -643,6 +643,43 @@ describe('command specs', () => {
     )
   })
 
+  test('validates eval args and pagination boundaries', () => {
+    expect(() =>
+      validateCommandArgs('eval', { script: 'args.keyword', args: { keyword: 'shoes' } }),
+    ).not.toThrow()
+    // args-json 允许嵌套 JSON 值，命令层只约束外层必须是对象、键可直接写成 args.key
+    expect(() =>
+      validateCommandArgs('eval', { script: 'args', args: { keyword: 'shoes', page: 2 } }),
+    ).not.toThrow()
+    expect(() => validateCommandArgs('eval', { script: '1', args: [] })).toThrow(
+      'args must be an object',
+    )
+    // null 不等于"未提供"：显式传 null 仍按类型错误拒绝
+    expect(() => validateCommandArgs('eval', { script: '1', args: null })).toThrow(
+      'args must be an object',
+    )
+    expect(() => validateCommandArgs('eval', { script: '1', args: { '': 'x' } })).toThrow(
+      'args keys must be non-empty strings',
+    )
+    expect(() => validateCommandArgs('eval', { script: '1', args: { 'a.b': 'x' } })).toThrow(
+      'args keys must not contain "."',
+    )
+
+    expect(() => validateCommandArgs('eval', { script: 'text', offset: 0, limit: 1 })).not.toThrow()
+    expect(() => validateCommandArgs('eval', { script: 'text', offset: -1 })).toThrow(
+      'offset must be a non-negative integer',
+    )
+    expect(() => validateCommandArgs('eval', { script: 'text', offset: 1.5 })).toThrow(
+      'offset must be a non-negative integer',
+    )
+    expect(() => validateCommandArgs('eval', { script: 'text', limit: 0 })).toThrow(
+      'limit must be a positive integer',
+    )
+    expect(() => validateCommandArgs('eval', { script: 'text', limit: '10' })).toThrow(
+      'limit must be a finite number',
+    )
+  })
+
   test('validates coordinate mouse and drop payloads', () => {
     expect(() => validateCommandArgs('mousemove', { x: 10, y: 20 })).not.toThrow()
     expect(() => validateCommandArgs('mousedown', { button: 'right' })).not.toThrow()

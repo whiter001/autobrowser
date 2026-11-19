@@ -300,7 +300,10 @@ describe('production evaluate and debugger dispatch cancellation gates', () => {
 })
 
 describe('evaluateScript top-level function body compatibility', () => {
-  const isolated = (script: string) => `(() => eval(${JSON.stringify(script)}))()`
+  const isolated = (script: string) =>
+    `(() => { const args = {};
+if (globalThis.location?.href.startsWith('chrome-error://')) return { __autobrowserNavigationFailed: true, url: globalThis.location.href };
+return eval(${JSON.stringify(script)}) })()`
   // 间接 eval 在全局作用域执行，连续两次即可复现页面里的"重复声明"现场
   // oxlint-disable-next-line no-eval -- 只有间接 eval 能模拟页面全局执行
   const runInPageScope = (expression: string) => globalThis.eval(expression)
@@ -338,6 +341,7 @@ describe('evaluateScript top-level function body compatibility', () => {
   test('returns the completion value of a simple expression through the isolated wrapper', async () => {
     let expression = ''
     const pageInput = createPageInputDomain({
+      getTargetTab: async () => ({ id: 1, url: 'https://example.com' }) as never,
       evaluateInTabContext: async (_tabId: unknown, source: string) => {
         expression = source
         return { value: runInPageScope(source) } as never
@@ -351,6 +355,7 @@ describe('evaluateScript top-level function body compatibility', () => {
   test('reruns a top-level const script without leaking declarations into the page global', async () => {
     let expression = ''
     const pageInput = createPageInputDomain({
+      getTargetTab: async () => ({ id: 1, url: 'https://example.com' }) as never,
       evaluateInTabContext: async (_tabId: unknown, source: string) => {
         expression = source
         return { value: runInPageScope(source) } as never
@@ -371,6 +376,7 @@ describe('evaluateScript top-level function body compatibility', () => {
     const calls: Array<{ expression: string; options?: Record<string, unknown> }> = []
     const script = 'return { ok: true }'
     const pageInput = createPageInputDomain({
+      getTargetTab: async () => ({ id: 1, url: 'https://example.com' }) as never,
       ...evalHarness(
         calls,
         (callIndex) => {
@@ -386,13 +392,14 @@ describe('evaluateScript top-level function body compatibility', () => {
     expect(calls).toHaveLength(3)
     expect(calls[0]?.expression.endsWith(isolated(script))).toBe(true)
     expect(calls[1]?.options?.replMode).toBe(true)
-    expect(calls[2]?.expression.endsWith(`(async () => {\n${script}\n})()`)).toBe(true)
+    expect(calls[2]?.expression.endsWith(`(async (args) => {\n${script}\n})({})`)).toBe(true)
   })
 
   test('falls back to async IIFE when a script mixes top-level await and return', async () => {
     const calls: Array<{ expression: string; options?: Record<string, unknown> }> = []
     const script = 'const result = await Promise.resolve(42);\nreturn result'
     const pageInput = createPageInputDomain({
+      getTargetTab: async () => ({ id: 1, url: 'https://example.com' }) as never,
       ...evalHarness(
         calls,
         (callIndex) => {
@@ -406,13 +413,14 @@ describe('evaluateScript top-level function body compatibility', () => {
 
     await expect(pageInput.evaluateScript(1, script, null)).resolves.toBe(42)
     expect(calls).toHaveLength(3)
-    expect(calls[2]?.expression.endsWith(`(async () => {\n${script}\n})()`)).toBe(true)
+    expect(calls[2]?.expression.endsWith(`(async (args) => {\n${script}\n})({})`)).toBe(true)
   })
 
   test('retries top-level await as a replMode evaluation that keeps the completion value', async () => {
     const calls: Array<{ expression: string; options?: Record<string, unknown> }> = []
     const script = 'const result = await Promise.resolve(42);\nresult'
     const pageInput = createPageInputDomain({
+      getTargetTab: async () => ({ id: 1, url: 'https://example.com' }) as never,
       ...evalHarness(
         calls,
         (callIndex) => {
@@ -436,6 +444,7 @@ describe('evaluateScript top-level function body compatibility', () => {
     const calls: Array<{ expression: string; options?: Record<string, unknown> }> = []
     const script = 'const body = await (await fetch("/api")).text();\nbody'
     const pageInput = createPageInputDomain({
+      getTargetTab: async () => ({ id: 1, url: 'https://example.com' }) as never,
       ...evalHarness(
         calls,
         (callIndex) => {
@@ -457,6 +466,7 @@ describe('evaluateScript top-level function body compatibility', () => {
     const script =
       'const r = await Promise.resolve(1);\nthrow new SyntaxError("Illegal return statement")'
     const pageInput = createPageInputDomain({
+      getTargetTab: async () => ({ id: 1, url: 'https://example.com' }) as never,
       ...evalHarness(
         calls,
         (callIndex) => {
@@ -479,6 +489,7 @@ describe('evaluateScript top-level function body compatibility', () => {
   test('uses executionContextId for the compile check in an isolated world', async () => {
     const compileParams: Array<Record<string, unknown>> = []
     const pageInput = createPageInputDomain({
+      getTargetTab: async () => ({ id: 1, url: 'https://example.com' }) as never,
       evaluateInTabContext: async () => {
         throw parseError('await is only valid in async functions')
       },
@@ -503,6 +514,7 @@ describe('evaluateScript top-level function body compatibility', () => {
   test('does not retry scripts after a runtime SyntaxError', async () => {
     const expressions: string[] = []
     const pageInput = createPageInputDomain({
+      getTargetTab: async () => ({ id: 1, url: 'https://example.com' }) as never,
       evaluateInTabContext: async (_tabId: unknown, expression: string) => {
         expressions.push(expression)
         throw new Error(
@@ -522,6 +534,7 @@ describe('evaluateScript top-level function body compatibility', () => {
   test('does not retry a script that throws a parser-looking SyntaxError at runtime', async () => {
     const expressions: string[] = []
     const pageInput = createPageInputDomain({
+      getTargetTab: async () => ({ id: 1, url: 'https://example.com' }) as never,
       evaluateInTabContext: async (_tabId: unknown, expression: string) => {
         expressions.push(expression)
         // 脚本运行期主动抛出与解析器同款的 SyntaxError 文案
@@ -540,6 +553,7 @@ describe('evaluateScript top-level function body compatibility', () => {
   test('does not retry when the compile check itself fails', async () => {
     const expressions: string[] = []
     const pageInput = createPageInputDomain({
+      getTargetTab: async () => ({ id: 1, url: 'https://example.com' }) as never,
       evaluateInTabContext: async (_tabId: unknown, expression: string) => {
         expressions.push(expression)
         throw new Error(
@@ -560,6 +574,7 @@ describe('evaluateScript top-level function body compatibility', () => {
   test('does not retry scripts after other evaluation errors', async () => {
     const expressions: string[] = []
     const pageInput = createPageInputDomain({
+      getTargetTab: async () => ({ id: 1, url: 'https://example.com' }) as never,
       evaluateInTabContext: async (_tabId: unknown, expression: string) => {
         expressions.push(expression)
         throw new Error('page evaluation failed: ReferenceError: missing is not defined')
@@ -576,6 +591,7 @@ describe('evaluateScript top-level function body compatibility', () => {
 
   test('enforces an opt-in UTF-8 result size limit without truncating', async () => {
     const pageInput = createPageInputDomain({
+      getTargetTab: async () => ({ id: 1, url: 'https://example.com' }) as never,
       evaluateInTabContext: async () => ({ value: '你好' }),
     } as never)
 
@@ -596,10 +612,231 @@ describe('evaluateScript top-level function body compatibility', () => {
   test('does not impose a result size limit by default', async () => {
     const value = 'x'.repeat(1024 * 1024)
     const pageInput = createPageInputDomain({
+      getTargetTab: async () => ({ id: 1, url: 'https://example.com' }) as never,
       evaluateInTabContext: async () => ({ value }),
     } as never)
 
     await expect(pageInput.evaluateScript(1, 'largeResult', null)).resolves.toBe(value)
+  })
+
+  test('exposes injected args to the direct eval path', async () => {
+    const pageInput = createPageInputDomain({
+      getTargetTab: async () => ({ id: 1, url: 'https://example.com' }) as never,
+      evaluateInTabContext: async (_tabId: unknown, source: string) => {
+        const value = runInPageScope(source)
+        return { value } as never
+      },
+    } as never)
+
+    await expect(
+      pageInput.evaluateScript(1, 'args.keyword', null, undefined, undefined, undefined, {
+        args: { keyword: 'shoes' },
+      }),
+    ).resolves.toBe('shoes')
+  })
+
+  test('injects args into all three eval paths without changing the script', async () => {
+    const calls: Array<{ expression: string; options?: Record<string, unknown> }> = []
+    const script = 'const result = await Promise.resolve(args.keyword);\nreturn result'
+    const pageInput = createPageInputDomain({
+      getTargetTab: async () => ({ id: 1, url: 'https://example.com' }) as never,
+      ...evalHarness(
+        calls,
+        (callIndex) => {
+          if (callIndex === 0) throw parseError('await is only valid in async functions')
+          if (callIndex === 1) throw parseError('Illegal return statement')
+          return { value: 'shoes' }
+        },
+        false,
+      ),
+    } as never)
+
+    await expect(
+      pageInput.evaluateScript(1, script, null, undefined, undefined, undefined, {
+        args: { keyword: 'shoes' },
+      }),
+    ).resolves.toBe('shoes')
+
+    // direct eval 在 wrapper 作用域声明 args，脚本自身的顶层声明仍留在 eval 内层作用域
+    expect(calls[0]?.expression).toContain('const args = {"keyword":"shoes"}')
+    // replMode 只能在脚本前面补声明，完成值仍是脚本最后一条表达式
+    expect(calls[1]?.expression).toContain('const args = {"keyword":"shoes"};')
+    expect(calls[1]?.expression.endsWith(script)).toBe(true)
+    // async IIFE 用形参，脚本自己写 const args 也不会撞名
+    expect(calls[2]?.expression.endsWith('})({"keyword":"shoes"})')).toBe(true)
+  })
+
+  test('passes args as the second element-function parameter', async () => {
+    const expressions: string[] = []
+    const pageInput = createPageInputDomain({
+      getTargetTab: async () => ({ id: 1, url: 'https://example.com' }) as never,
+      resolveElementSelectorForTab: async () => ({ resolvedSelector: '#item' }),
+      evaluateInTabContext: async (_tabId: unknown, source: string) => {
+        expressions.push(source)
+        return { value: 'shoes' } as never
+      },
+    } as never)
+
+    await expect(
+      pageInput.evaluateScript(
+        1,
+        '(el, args) => args.keyword',
+        null,
+        undefined,
+        '#item',
+        undefined,
+        {
+          args: { keyword: 'shoes' },
+        },
+      ),
+    ).resolves.toBe('shoes')
+    expect(expressions[0]).toContain('const args = {"keyword":"shoes"}')
+    expect(expressions[0]).toContain('(el, args)')
+  })
+
+  test('paginates strings by Unicode code point instead of UTF-16 units', async () => {
+    const value = 'a😀b🇨🇳c'
+    const pageInput = createPageInputDomain({
+      getTargetTab: async () => ({ id: 1, url: 'https://example.com' }) as never,
+      evaluateInTabContext: async () => ({ value }),
+    } as never)
+
+    await expect(
+      pageInput.evaluateScript(1, 'text', null, undefined, undefined, undefined, {
+        offset: 1,
+        limit: 2,
+      }),
+    ).resolves.toEqual({
+      value: '😀b',
+      pagination: { kind: 'text', offset: 1, limit: 2, total: 6, nextOffset: 3, truncated: true },
+    })
+  })
+
+  test('paginates arrays by element and returns an empty page past the end', async () => {
+    const pageInput = createPageInputDomain({
+      getTargetTab: async () => ({ id: 1, url: 'https://example.com' }) as never,
+      evaluateInTabContext: async () => ({ value: [1, 2, 3] }),
+    } as never)
+
+    await expect(
+      pageInput.evaluateScript(1, 'list', null, undefined, undefined, undefined, { offset: 1 }),
+    ).resolves.toEqual({
+      value: [2, 3],
+      pagination: {
+        kind: 'array',
+        offset: 1,
+        limit: 10_000,
+        total: 3,
+        nextOffset: null,
+        truncated: false,
+      },
+    })
+    await expect(
+      pageInput.evaluateScript(1, 'list', null, undefined, undefined, undefined, {
+        offset: 9,
+        limit: 2,
+      }),
+    ).resolves.toEqual({
+      value: [],
+      pagination: {
+        kind: 'array',
+        offset: 9,
+        limit: 2,
+        total: 3,
+        nextOffset: null,
+        truncated: false,
+      },
+    })
+  })
+
+  test('keeps the raw result when pagination is not requested', async () => {
+    const pageInput = createPageInputDomain({
+      getTargetTab: async () => ({ id: 1, url: 'https://example.com' }) as never,
+      evaluateInTabContext: async () => ({ value: 'plain' }),
+    } as never)
+
+    await expect(
+      pageInput.evaluateScript(1, 'text', null, undefined, undefined, undefined, {
+        args: { keyword: 'x' },
+      }),
+    ).resolves.toBe('plain')
+  })
+
+  test('rejects pagination for non-string, non-array results', async () => {
+    const pageInput = createPageInputDomain({
+      getTargetTab: async () => ({ id: 1, url: 'https://example.com' }) as never,
+      evaluateInTabContext: async () => ({ value: 42 }),
+    } as never)
+
+    await expect(
+      pageInput.evaluateScript(1, '6 * 7', null, undefined, undefined, undefined, { limit: 5 }),
+    ).rejects.toMatchObject({ code: 'INVALID_COMMAND_ARGS' })
+  })
+
+  test('measures the paginated result against maxResultBytes', async () => {
+    const value = '😀'.repeat(1000)
+    const pageInput = createPageInputDomain({
+      getTargetTab: async () => ({ id: 1, url: 'https://example.com' }) as never,
+      evaluateInTabContext: async () => ({ value }),
+    } as never)
+
+    // 原值 4000 字节，分页后只回 5 个 code point，应该能通过 512 字节上限
+    await expect(
+      pageInput.evaluateScript(1, 'text', null, undefined, undefined, 512, { limit: 5 }),
+    ).resolves.toMatchObject({ pagination: { total: 1000, nextOffset: 5, truncated: true } })
+    await expect(
+      pageInput.evaluateScript(1, 'text', null, undefined, undefined, 512),
+    ).rejects.toMatchObject({ code: 'EVAL_RESULT_TOO_LARGE' })
+  })
+
+  test('refuses to run scripts on a browser error page', async () => {
+    const expressions: string[] = []
+    const pageInput = createPageInputDomain({
+      getTargetTab: async () => ({ id: 1, url: 'chrome-error://chromewebdata/' }) as never,
+      evaluateInTabContext: async (_tabId: unknown, expression: string) => {
+        expressions.push(expression)
+        return { value: 1 }
+      },
+    } as never)
+
+    await expect(pageInput.evaluateScript(1, 'document.title', null)).rejects.toMatchObject({
+      code: 'NAVIGATION_FAILED',
+      details: { url: 'chrome-error://chromewebdata/' },
+      suggestedAction: expect.stringContaining('get url'),
+    })
+    // 脚本一次都没有送到页面
+    expect(expressions).toHaveLength(0)
+  })
+
+  test('checks the real location when the tabs API retains the pre-error URL', async () => {
+    const previousLocation = Object.getOwnPropertyDescriptor(globalThis, 'location')
+    Object.defineProperty(globalThis, 'location', {
+      configurable: true,
+      value: { href: 'chrome-error://chromewebdata/' },
+    })
+    const expressions: string[] = []
+    const pageInput = createPageInputDomain({
+      getTargetTab: async () => ({ id: 1, url: 'http://127.0.0.1:1/' }) as never,
+      evaluateInTabContext: async (_tabId: unknown, expression: string) => {
+        expressions.push(expression)
+        return { value: runInPageScope(expression) }
+      },
+    } as never)
+
+    try {
+      await expect(
+        pageInput.evaluateScript(1, 'globalThis.__autobrowserErrorPageScriptRan = true', null),
+      ).rejects.toMatchObject({
+        code: 'NAVIGATION_FAILED',
+        details: { url: 'chrome-error://chromewebdata/' },
+      })
+      expect(expressions).toHaveLength(1)
+      expect(Reflect.get(globalThis, '__autobrowserErrorPageScriptRan')).toBeUndefined()
+    } finally {
+      if (previousLocation) Object.defineProperty(globalThis, 'location', previousLocation)
+      else Reflect.deleteProperty(globalThis, 'location')
+      Reflect.deleteProperty(globalThis, '__autobrowserErrorPageScriptRan')
+    }
   })
 })
 
@@ -2315,6 +2552,7 @@ describe('element eval, locator and highlight tools', () => {
   function createElementToolInput(value: unknown, expressions: string[]) {
     return createPageInputDomain({
       state: createExtensionState(1),
+      getTargetTab: async () => ({ id: 1, url: 'https://example.com' }) as never,
       resolveElementSelectorForTab: async () => ({
         resolvedSelector: '[data-autobrowser-ref="e1"]',
       }),
@@ -2332,10 +2570,11 @@ describe('element eval, locator and highlight tools', () => {
       pageInput.evaluateScript(1, 'el => el.textContent', '#frame', undefined, '@e1'),
     ).resolves.toBe('element text')
     // 元素脚本同样包进隔离的 direct eval，声明不会落到页面全局
-    expect(expressions[0]).toContain('(() => eval("(() => {')
+    expect(expressions[0]).toContain('(() => { const args = {};')
+    expect(expressions[0]).toContain('return eval("(() => {')
     expect(expressions[0]).toContain('data-autobrowser-ref')
     expect(expressions[0]).toContain('__autobrowserElementNotFound')
-    expect(expressions[0]).toContain('return (el => el.textContent)(el)')
+    expect(expressions[0]).toContain('return (el => el.textContent)(el, args)')
   })
 
   test('keeps stale guidance when element eval cannot find its target', async () => {
@@ -2349,6 +2588,7 @@ describe('element eval, locator and highlight tools', () => {
   test('element scripts keep the not-found marker through the isolation wrapper', async () => {
     const expressions: string[] = []
     const pageInput = createPageInputDomain({
+      getTargetTab: async () => ({ id: 1, url: 'https://example.com' }) as never,
       resolveElementSelectorForTab: async () => ({ resolvedSelector: '#missing' }),
       evaluateInTabContext: async (_tab: unknown, source: string) => {
         expressions.push(source)
@@ -2363,7 +2603,7 @@ describe('element eval, locator and highlight tools', () => {
       '@e1',
     )
     expect(expressions).toHaveLength(1)
-    expect(expressions[0]).toContain('(() => eval("(() => {')
+    expect(expressions[0]).toContain('return eval("(() => {')
   })
 
   test('generates locators with test-id, id and CSS path fallbacks', async () => {

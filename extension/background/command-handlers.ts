@@ -381,6 +381,9 @@ export function createCommandHandlers({
 
   register(['eval'], async ({ scope }) => {
     const { args, tabId, frameSelector } = scope
+    const evalArgs = readObjectArg(args, 'args')
+    const offset = readOptionalNumberArg(args, 'offset')
+    const limit = readOptionalNumberArg(args, 'limit')
     return await pageInput.evaluateScript(
       tabId,
       readStringArg(args, 'script', 'document.title'),
@@ -389,6 +392,11 @@ export function createCommandHandlers({
       readOptionalStringArg(args, 'element'),
       readOptionalNumberArg(args, 'maxResultBytes') ??
         (args.responseFormat === 'detailed' ? undefined : 32_768),
+      {
+        ...(evalArgs ? { args: evalArgs } : {}),
+        ...(offset !== undefined ? { offset } : {}),
+        ...(limit !== undefined ? { limit } : {}),
+      },
     )
   })
   register(['locator'], async ({ scope }) => {

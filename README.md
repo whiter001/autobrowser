@@ -537,6 +537,12 @@ autobrowser tab close t2058764137
 
 结果装不下终端时用 `--output <path>` 落盘：`eval` 把完整结果写成 2 空格缩进的 JSON（末尾换行），stdout 只留 `{ path, format: "json", bytes }` 这个小型摘要（`meta` 等执行上下文保留），不再把正文写进 stdout。输出始终是 JSON，与文件扩展名无关，推荐统一使用 `.json`，不要按 `.txt` 等扩展名猜测内容格式。相对路径按当前目录解析，同名文件会被覆盖，写文件失败按普通 CLI 错误返回。指定 `--output` 且没有显式 `--response-format` 时按 `detailed` 执行，因此默认不受 concise 的 32KiB 结果上限约束；显式 `--response-format concise` 仍保留 32KiB，显式 `--max-result-bytes <n>` 始终优先。MCP 的 `eval` 工具同样如此：传 `output` 且不传 `response_format` 时按 `detailed` 执行，显式 `response_format: "concise"` 才保留 32KiB 上限。落盘只改变结果的去向，不改变页面脚本的语义。
 
+脚本需要外部参数时用 `--arg <key=value>`（可重复）注入局部变量 `args`，例如 `autobrowser eval --arg keyword=shoes --expr 'args.keyword'`；改用 `--args-json '<json-object>'` 可以一次传入整个对象，二者互斥。`--arg` 的值始终是字符串，key 必须非空且不能包含点号（避免把 `a.b` 当成普通键静默生效），重复 key 会报 `CLI_INVALID_ARGUMENT`。三条求值路径都支持 `args`：direct eval 在脚本外层作用域定义它，replMode（顶层 `await`）在脚本前补声明，async IIFE（顶层 `return`）把它作为形参，脚本自身的声明不会因此重复执行。`--element` 的函数第一个参数仍是 `el`，`args` 作为第二个参数传入，例如 `(el, args) => el.textContent.includes(args.keyword)`。MCP 的 `eval` 工具用 `args` 对象暴露同样的能力。
+
+大结果可以先用 `--offset <非负整数>` / `--limit <正整数>` 分页，只有显式指定其中之一时才分页（缺省 offset=0、limit=10000）。分页只支持字符串和数组：字符串按 Unicode code point 切片（基于 `Array.from`，不会切断 emoji 的代理对），数组按元素切片；其它结果类型返回 `INVALID_COMMAND_ARGS`，不会静默降级。分页后的响应是 `{ value, pagination: { kind: "text"|"array", offset, limit, total, nextOffset, truncated } }`，`offset` 超过尾部时 `value` 为空、`nextOffset` 为 `null`，`truncated` 表示是否还有后续；不指定 offset/limit 时结果与旧版本完全一致。`--max-result-bytes` 检查的是分页后的结果与响应大小，因此可以先用小 `limit` 取回大结果的一部分，而不是被整段结果先顶到上限。MCP 的 `eval` 工具同样接受 `offset`/`limit`。
+
+如果目标标签停在 `chrome-error://` 错误页（上一次导航失败），`eval` 不会执行用户脚本，而是返回 `NAVIGATION_FAILED` 并在 `details.url` 给出当前地址：先用 `goto <url>` 或 `reload` 重新导航，再用 `get url` 确认页面已经恢复。导航内部的 `readyState` 探测不经过这条检查。
+
 PowerShell 用单引号 here-string 直通 stdin，`@'` 与结束的 `'@` 都必须独占行首：
 
 ```powershell

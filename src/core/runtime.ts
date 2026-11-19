@@ -122,7 +122,8 @@ function redactCommandArgs(command: string, args: unknown): unknown {
 
   // lastCommand 会持久化到 state.json，这里只保留排障所需的结构信息。
   if (command === 'eval') {
-    redact('script')
+    // args 是注入到脚本里的外部值，常带令牌或搜索词，与脚本源码一起脱敏
+    redact('script', 'args')
   }
   if (command === 'run') {
     redact('source')

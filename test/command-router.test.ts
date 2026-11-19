@@ -104,7 +104,12 @@ export function createMinimalRouter(overrides?: {
   const waitTextCalls: Array<{ text: unknown; gone?: unknown }> = []
   const typeCalls: Array<{ tabId: unknown; selector: unknown; value: unknown; submit?: unknown }> =
     []
-  const evalCalls: Array<{ tabId: unknown; script: unknown; maxResultBytes?: number }> = []
+  const evalCalls: Array<{
+    tabId: unknown
+    script: unknown
+    maxResultBytes?: number
+    options?: unknown
+  }> = []
   const cookieGetCalls: Array<{ tabId: unknown; filters: unknown }> = []
   const clickCalls: Array<{ tabId: unknown; selector: unknown }> = []
   const fillFieldsCalls: Array<{ tabId: unknown; fields: unknown }> = []
@@ -175,8 +180,9 @@ export function createMinimalRouter(overrides?: {
         _timeout: unknown,
         _element: unknown,
         maxResultBytes?: number,
+        options?: unknown,
       ) => {
-        evalCalls.push({ tabId, script, maxResultBytes })
+        evalCalls.push({ tabId, script, maxResultBytes, options })
         if (overrides?.evaluateScript) return overrides.evaluateScript(tabId, script)
         return undefined
       },
@@ -1245,6 +1251,20 @@ describe('command router eval cancellation', () => {
     })
 
     expect(evalCalls.map((call) => call.maxResultBytes)).toEqual([32_768, undefined])
+  })
+
+  test('forwards eval args and pagination options to the page input domain', async () => {
+    const { router, evalCalls } = createMinimalRouter()
+
+    await router.handleCommand({
+      command: 'eval',
+      args: { script: 'args.keyword', args: { keyword: 'shoes' }, offset: 2, limit: 5 },
+    })
+
+    expect(evalCalls).toHaveLength(1)
+    expect(evalCalls[0]).toMatchObject({
+      options: { args: { keyword: 'shoes' }, offset: 2, limit: 5 },
+    })
   })
 
   test('terminates a running eval and lets subsequent tab commands run', async () => {

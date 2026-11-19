@@ -27,7 +27,7 @@
 - `wait`
 - `snapshot`
 - `screenshot [path] [--element <selector|@eN>] [--full]` — `--element` 会先把目标滚到视口中心并短暂等待懒加载图片 decode，不修改视口尺寸；超时后先用 `command status` 核验，不要重放
-- `eval`
+- `eval` — 用 --arg <key=value>（可重复）或 --args-json '<json-object>'（二者互斥）向脚本注入局部变量 args；用 --offset/--limit 对字符串或数组结果分页，返回 { value, pagination }。目标停在 chrome-error:// 时返回 NAVIGATION_FAILED，不会执行脚本。
 - `run <file.js>`
 - `cdp`
 - `cookies`

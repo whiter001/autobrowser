@@ -12,6 +12,27 @@ export function createElementNotFoundError(selector: string): Error {
   })
 }
 
+/**
+ * 目标标签停在 chrome-error:// 说明上一次导航失败。错误页文档本身可执行，
+ * 但里面没有真实页面内容，继续跑脚本只会把导航失败伪装成空结果。
+ */
+export function createNavigationFailedError(url: string): Error {
+  const error = Object.assign(
+    new Error(`target tab is showing a browser error page (${url}); navigation did not complete`),
+    {
+      code: 'NAVIGATION_FAILED',
+      details: { url },
+      suggestedAction: `Re-navigate to the intended URL (for example 'goto <url>' or 'reload'), confirm the result with 'get url', then run eval again.`,
+    },
+  )
+  return error
+}
+
+/** 判断当前 tab URL 是否停在浏览器错误页。 */
+export function isBrowserErrorPageUrl(url: string | undefined): url is string {
+  return typeof url === 'string' && url.startsWith('chrome-error://')
+}
+
 const evalResultEncoder = new TextEncoder()
 
 // 结果大小按 relay 实际发送的 JSON 文本（UTF-8）计算；undefined 视为 0 字节。
