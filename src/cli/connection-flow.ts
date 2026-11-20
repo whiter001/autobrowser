@@ -348,7 +348,10 @@ export function createConnectionFlow(options: ConnectionFlowOptions): Connection
       }
 
       try {
-        return await getStatus(baseUrl)
+        const status = await getStatus(baseUrl)
+        // 只在本次调用真的拉起了本地 relay 时标记：状态对象会被 status 直接原样输出，
+        // 调用方据此区分"我一直开着"与"这条 status 顺手起的服务"。
+        return serverState.started ? { ...status, serverAutoStarted: true } : status
       } catch (retryError) {
         if (!isServerConnectionError(retryError)) {
           throw retryError

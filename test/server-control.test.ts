@@ -1,7 +1,12 @@
 import { afterEach, describe, expect, test } from 'bun:test'
 import { createServer, type Server, type ServerResponse } from 'node:http'
+import { createServer as createTcpServer } from 'node:net'
 import { getStatus } from '../src/cli/client.js'
-import { buildServerLaunchArgs, waitForServerStatus } from '../src/cli/server-control.js'
+import {
+  buildServerLaunchArgs,
+  waitForPortsToClose,
+  waitForServerStatus,
+} from '../src/cli/server-control.js'
 
 const status = { relayPort: 12345, ipcPort: 12346, extensionConnected: false }
 
@@ -191,5 +196,69 @@ describe('background server launch arguments', () => {
     const args = buildServerLaunchArgs({ relayPort: 57978, ipcPort: 57979 }, 'extension-id')
     expect(args).not.toContain('--session')
     expect(args.indexOf('server')).toBeGreaterThan(args.indexOf('--extension-id'))
+  })
+})
+
+describe('waiting for stopped listeners to release ports', () => {
+  async function listenOnFreePort(): Promise<{ port: number; close: () => Promise<void> }> {
+    const server = createTcpServer()
+    await new Promise<void>((resolve, reject) => {
+      server.once('error', reject)
+      server.listen(0, '127.0.0.1', () => resolve())
+    })
+    const address = server.address()
+    if (!address || typeof address === 'string') {
+      throw new Error('failed to allocate a listener')
+    }
+
+    // 测试里会先定时关闭再在 finally 里收尾，close 必须可重复调用。
+    let closed = false
+    return {
+      port: address.port,
+      close: () => {
+        if (closed) return Promise.resolve()
+        closed = true
+        return new Promise<void>((resolve, reject) => {
+          server.close((error) => (error ? reject(error) : resolve()))
+        })
+      },
+    }
+  }
+
+  test('returns immediately once every port is free', async () => {
+    const first = await listenOnFreePort()
+    const second = await listenOnFreePort()
+    const ports = [first.port, second.port]
+    await first.close()
+    await second.close()
+
+    expect(await waitForPortsToClose(ports, 1000)).toBe(true)
+  })
+
+  test('keeps polling until the listener actually closes', async () => {
+    const listener = await listenOnFreePort()
+    const startedAt = Date.now()
+    const timer = setTimeout(() => {
+      void listener.close()
+    }, 60)
+
+    try {
+      expect(await waitForPortsToClose([listener.port], 2000, 10)).toBe(true)
+      // 端口在第二轮轮询前一直可连，必须等到它真的关闭才算释放。
+      expect(Date.now() - startedAt).toBeGreaterThanOrEqual(40)
+    } finally {
+      clearTimeout(timer)
+      await listener.close()
+    }
+  })
+
+  test('reports a port that is still occupied after the deadline', async () => {
+    const listener = await listenOnFreePort()
+
+    try {
+      expect(await waitForPortsToClose([listener.port], 150, 20)).toBe(false)
+    } finally {
+      await listener.close()
+    }
   })
 })

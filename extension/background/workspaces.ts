@@ -345,7 +345,7 @@ export function createWorkspaceManager({
     const explicit = tabInput != null && String(tabInput).trim() !== ''
     let tabId = resolveTabInput(state, tabInput) ?? (explicit ? null : workspace.targetTabId)
     if (typeof tabId !== 'number' && !explicit) {
-      // 没有默认目标时自动认领已有标签；显式 tab 仍走 TAB_NOT_ATTACHED，不能借自动认领绕过归属
+      // 没有默认目标时自动认领已有标签；显式 tab 的认领在下方按 args.autoAttach 单独处理
       if (args.autoAttach !== false) tabId = (await autoAttachTab(workspace.id)) ?? null
       if (typeof tabId !== 'number') {
         throw workspaceError(
@@ -371,7 +371,14 @@ export function createWorkspaceManager({
       )
     }
 
-    const attachment = state.workspaces.attachments.get(tabId)
+    let attachment = state.workspaces.attachments.get(tabId)
+    if (!attachment && explicit && args.autoAttach !== false) {
+      // 显式指定未绑定 tab 与隐式自动认领共用同一条原子 attach 路径：
+      // 目标已属于其他 workspace 时 attach 直接抛 TAB_BUSY，绝不在这里抢占或转移归属。
+      await attach(workspace.id, tabId)
+      autoAttachments.add(autoAttachmentKey(workspace.id, tabId))
+      attachment = state.workspaces.attachments.get(tabId)
+    }
     if (!attachment) {
       throw workspaceError(
         'TAB_NOT_ATTACHED',

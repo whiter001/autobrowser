@@ -83,11 +83,14 @@ Windows 上同样用 `npm root -g` 获取该路径。
 autobrowser server
 ```
 
-这会在后台启动中继服务和 IPC 服务。之后如果要停止它们：
+这会在后台启动中继服务和 IPC 服务。之后可以显式停止或重启它们：
 
 ```bash
 autobrowser server stop
+autobrowser server restart
 ```
+
+`stop` 不会自动拉起服务，并会等待 relay/IPC 端口释放后再返回。`restart` 先优雅停止运行中的服务，再复用持久化或显式指定的同一组端口启动；服务未运行时它不会偷偷改为首次启动，需使用 `autobrowser server`。
 
 然后在另一个终端打开连接页：
 
@@ -95,7 +98,7 @@ autobrowser server stop
 autobrowser connect
 ```
 
-如果本地后台服务尚未运行，`connect` 会自动先启动它。连接页打开后 CLI 会输出确认；这表示页面已打开，不代表扩展握手已完成，再运行 `autobrowser status` 确认 `extension: connected`。
+如果本地后台服务尚未运行，`connect` 会自动先启动它。连接页打开后 CLI 会输出确认；这表示页面已打开，不代表扩展握手已完成，再运行 `autobrowser status` 确认 `extension: connected`。如果 `status` 自身拉起了后台服务，文本摘要会显示 `server: auto-started by this status command`，显式 `--json` 输出会带 `serverAutoStarted:true`；已有服务则不显示该标记。
 
 ## 命名会话与生命周期
 
@@ -157,12 +160,12 @@ autobrowser workspace groups off      # 关闭展示并恢复原组
 - `tab attach <tN>` 原子复用已有页面，保留当前登录、表单和筛选状态；其他 workspace 已持有时返回 `TAB_BUSY`。`--readonly` 只允许观察命令，click/eval/run 等会被拒绝。
 - 点击打开新标签页（`target=_blank` / `window.open`）时结果会带 `newTabId` / `newTabHandle`，但默认只报告，不改当前目标；`click --follow-new-tab` 才显式接管（内部就是 `tab attach`），因此新标签的归属与租约和其它 `tab attach` 完全一致。
 - `tab detach [tN]` 解除归属但不改变页面。每个 workspace 可拥有多个 tab，并只保存自己的默认目标。
-- Workspace 没有目标时，页面命令默认原子认领一个未绑定标签页：优先当前活动页，其余按 tabId 稳定排序；遇到 `TAB_BUSY` 会尝试下一空闲页，不抢占其他 workspace。localhost 等可调试页面均可使用，结果 meta 在首次认领带 `autoAttached:true`。没有空闲页时 `open <url>` 创建并绑定新 tab，其他命令返回 `WORKSPACE_TARGET_REQUIRED`。使用全局 `--no-auto-attach` 可恢复只接受显式目标的行为；它只关闭自动认领，不等于 `--no-workspace`。独立调研/抓取不要依赖 `open` 自动认领空闲页，优先 `tab new` 或 `--no-auto-attach`，避免导航用户现有页面。
+- Workspace 没有目标时，页面命令默认原子认领一个未绑定标签页：优先当前活动页，其余按 tabId 稳定排序；遇到 `TAB_BUSY` 会尝试下一空闲页，不抢占其他 workspace。显式 `--tab <tN>` 指向未绑定标签时也会直接认领并设为当前目标，无需先单独执行 `tab attach`。localhost 等可调试页面均可使用，结果 meta 在首次认领带 `autoAttached:true`。没有空闲页时 `open <url>` 创建并绑定新 tab，其他命令返回 `WORKSPACE_TARGET_REQUIRED`。使用全局 `--no-auto-attach` 可关闭上述自动认领，此时显式指定的未绑定标签仍需先 `tab attach`；它不等于 `--no-workspace`，也不能抢占其他 workspace 的标签。独立调研/抓取不要依赖 `open` 自动认领空闲页，优先 `tab new` 或 `--no-auto-attach`，避免导航用户现有页面。
 - 标签归属默认租约 1 小时，命令执行会续约，并保存到 `chrome.storage.local` 供扩展重载后恢复。过期或异常回收只解除归属，不重置页面。
 - 同一标签的命令按 FIFO 串行执行；不要在一个 tab 上并发堆积多个长等待，条件已变化时先结束或取消上一个等待。写入、提交、点击前用 `get url` / `snapshot` 核对当前页面和元素，避免在多 AI 共用的标签上误操作。
 - 命令超时或结果未知时先 `command status <id>` 再核对页面实际状态。`command list` / `command status` 的历史带 `command`、`workspace`、`requestedAt`（relay 发出）、`receivedAt`（扩展收到）、`enqueuedAt`（入队）、`startedAt`（开始执行）和 `finishedAt`，可把 relay→扩展接收→入队→执行→完成逐段拆开定位延迟；历史不记录 URL、selector、eval 脚本等参数。确认副作用前不要重放。
 - 历史元数据保留最近 500 条，迟到结果只保留最新 25 份：更早的 `completed_late` 仍保留 id、状态和时间戳，但 `result` 会被裁掉并标 `resultEvicted:true`。`command list/status` 返回 `diagnostics`（`historyLimit`、`lateResultLimit`、`restoredCount`、`evictedCount`、`lastPersistError`、`lastPersistedAt`、`lastRestoreError`）；`command status <id>` 查不到时 `evicted:true` 表示“已被上限淘汰”，`evicted:false` 且 `commands` 为空只表示“当前扩展历史与有界淘汰清单均未命中”，不能绝对证明扩展从未收到该 id（旧版本记录、淘汰清单有界、恢复失败都可能未命中）；`lastRestoreError` 非空表示本次启动读取历史失败，此时历史为空不代表没有历史。
-- `extension reload`、`extension reconnect`、`server stop` 是全局操作，会影响所有 AI；执行前先确认其他 workspace 是否正在使用。
+- `extension reload`、`extension reconnect`、`server stop`、`server restart` 是全局操作，会影响所有 AI；执行前先确认其他 workspace 是否正在使用。
 - 后台标签页的定时器可能因浏览器节流延迟当前页面任务，多 AI 切换活动页会间接放大。依赖可见性或定时器结果的验证可 `tab select` 保持前台，或使用独立 `--session`；`set focus on` 只做 CDP 焦点仿真，不能保证消除后台定时器节流。
 - Workspace 模式下 `close all` 只关闭当前 workspace 的 owned 标签；任务结束时用 `tab detach` 或 `workspace release` 释放自己的标签，保留页面给后续复用，不要关闭其他 AI 仍在使用的标签。
 

@@ -9,7 +9,7 @@ import {
 } from '../../core/protocol.js'
 import { compareBuilds, readCliBuildInfo } from '../build-info.js'
 import { readExtensionBuildInfo } from '../extension-build-info.js'
-import { isRecord } from '../client.js'
+import { getStatus, isRecord } from '../client.js'
 import { CLI_ERROR_CODES, CliUsageError } from '../cli-error.js'
 import { getLocalControlBaseUrl, targetsLocalControlServer } from '../connection.js'
 import { startBackgroundServer } from '../server-boot.js'
@@ -20,6 +20,7 @@ import {
   readPersistedConnectionInfo,
   spawnDetachedProcess,
   stopBackgroundServer,
+  waitForPortsToClose,
   type ServerSnapshotStatus,
 } from '../server-control.js'
 import { startServers } from '../../server.js'
@@ -57,6 +58,12 @@ export function formatStatusSummary(status: Record<string, unknown>, brief = fal
 
   if (ipcPort !== null) {
     lines.push(`ipc: http://127.0.0.1:${ipcPort}`)
+  }
+
+  // 这一行只在本次 status 调用亲自拉起 relay 时出现：否则"我之前跑过 status"会让
+  // 调用方误以为服务是之前启动的，排查旧进程/旧端口时判断错方向。
+  if (status.serverAutoStarted === true) {
+    lines.push('server: auto-started by this status command')
   }
 
   lines.push(`extension: ${extensionConnected ? 'connected' : 'waiting for extension'}`)
@@ -197,18 +204,24 @@ async function handleHelp(rest: string[], context: CommandContext): Promise<numb
   return context.writeHelp(rest)
 }
 
-async function ensureBackgroundServer(
-  context: CommandContext,
-  options: {
-    announceAlreadyRunning?: boolean
-  } = {},
-): Promise<{
+interface BackgroundServerStartOutcome {
+  kind: 'already-running' | 'started'
   status: ServerSnapshotStatus
-  started: boolean
-} | null> {
+}
+
+/**
+ * 在指定端口上拉起后台服务，并把所有失败结局统一翻成带恢复建议的 CLI 错误。
+ *
+ * 默认端口来自 flags，restart 需要覆盖成持久化/显式指定的端口，所以端口是参数而不是
+ * 直接读 context.flags：两处各写一遍 spawn 选项很容易在重启时漏掉解析出的端口。
+ */
+async function startBackgroundServerOnPorts(
+  context: CommandContext,
+  ports: { relayPort: number; ipcPort: number },
+): Promise<BackgroundServerStartOutcome> {
   const result = await startBackgroundServer({
-    relayPort: context.flags.relayPort,
-    ipcPort: context.flags.ipcPort,
+    relayPort: ports.relayPort,
+    ipcPort: ports.ipcPort,
     session: context.flags.session,
     resolveExtensionId: () => resolveExtensionId(context.homeDir, context.flags.extensionId),
     spawnCommand: context.dependencies.spawnDetachedProcess ?? spawnDetachedProcess,
@@ -216,16 +229,10 @@ async function ensureBackgroundServer(
 
   switch (result.kind) {
     case 'already-running':
-      if (options.announceAlreadyRunning ?? true) {
-        process.stdout.write('autobrowser server already running\n')
-      }
-      return { status: result.status, started: false }
+      return { kind: 'already-running', status: result.status }
 
     case 'started':
-      process.stdout.write(
-        `autobrowser server started in background\nrelay: http://127.0.0.1:${context.flags.relayPort}\nipc: ${getLocalControlBaseUrl(context.flags.ipcPort)}\n`,
-      )
-      return { status: result.status, started: true }
+      return { kind: 'started', status: result.status }
 
     case 'spawn-failed':
       throwServerStartupError(
@@ -241,9 +248,36 @@ async function ensureBackgroundServer(
 
     case 'not-ready':
       throwServerStartupError(
-        `Failed to start background server on ${getLocalControlBaseUrl(context.flags.ipcPort)}`,
+        `Failed to start background server on ${getLocalControlBaseUrl(ports.ipcPort)}`,
       )
   }
+}
+
+async function ensureBackgroundServer(
+  context: CommandContext,
+  options: {
+    announceAlreadyRunning?: boolean
+  } = {},
+): Promise<{
+  status: ServerSnapshotStatus
+  started: boolean
+} | null> {
+  const outcome = await startBackgroundServerOnPorts(context, {
+    relayPort: context.flags.relayPort,
+    ipcPort: context.flags.ipcPort,
+  })
+
+  if (outcome.kind === 'already-running') {
+    if (options.announceAlreadyRunning ?? true) {
+      process.stdout.write('autobrowser server already running\n')
+    }
+    return { status: outcome.status, started: false }
+  }
+
+  process.stdout.write(
+    `autobrowser server started in background\nrelay: http://127.0.0.1:${context.flags.relayPort}\nipc: ${getLocalControlBaseUrl(context.flags.ipcPort)}\n`,
+  )
+  return { status: outcome.status, started: true }
 }
 
 /**
@@ -255,6 +289,142 @@ function throwServerStartupError(message: string): never {
     suggestedAction:
       "Run 'autobrowser status' to check the server state, then start it again; if it keeps failing, run 'autobrowser server --serve' in a foreground terminal to see the startup error.",
   })
+}
+
+interface PersistedServerTarget {
+  token: string
+  relayPort: number
+  ipcPort: number
+}
+
+/**
+ * stop/restart 的端口解析：以持久化 state 为默认，显式的 --relay-port/--ipc-port 覆盖之。
+ *
+ * 不能直接用 flags 的默认值：默认端口只是"没配置时用哪个"，而这里要操作的是记录在案的那个
+ * 服务；拿默认端口去 stop 会在用户改过端口后打空。
+ */
+async function resolvePersistedServerTarget(
+  context: CommandContext,
+): Promise<PersistedServerTarget | null> {
+  const persisted = await readPersistedConnectionInfo(
+    context.flags.relayPort,
+    context.flags.ipcPort,
+    context.homeDir,
+  )
+  if (!persisted?.token) {
+    return null
+  }
+
+  return {
+    token: persisted.token,
+    relayPort: context.flags.relayPortExplicitlySet ? context.flags.relayPort : persisted.relayPort,
+    ipcPort: context.flags.ipcPortExplicitlySet ? context.flags.ipcPort : persisted.ipcPort,
+  }
+}
+
+function throwServerShutdownTimeout(ports: number[], action: 'stop' | 'restart'): never {
+  const portList = ports.join(', ')
+  throw new CliUsageError(
+    action === 'stop'
+      ? `Background server accepted the shutdown request but ports ${portList} are still in use.`
+      : `Restart aborted: the old server did not release port ${portList} in time.`,
+    {
+      code: CLI_ERROR_CODES.FAILED,
+      suggestedAction:
+        "Run 'autobrowser status' to check what is still listening; if another process took the port, stop it manually before retrying.",
+    },
+  )
+}
+
+async function stopServer(context: CommandContext): Promise<number | void> {
+  const target = await resolvePersistedServerTarget(context)
+  if (!target) {
+    return throwCommandError('No persisted background server state found.')
+  }
+
+  try {
+    // 只发 /shutdown 控制请求，绝不走普通命令通道：stop 不该依赖扩展连接，也不该
+    // 因为服务不在而顺手拉起一个新的。
+    await stopBackgroundServer(
+      target.ipcPort,
+      target.token,
+      context.dependencies.findProcessIdByPort,
+      context.dependencies.killProcess,
+    )
+  } catch (error) {
+    return throwCommandError(error)
+  }
+
+  // 200 只代表接受关闭，进程退出是异步的。IPC 通常先关，relay 与进程可能还在收尾；
+  // 只等 IPC 就返回，调用方马上替换文件/重启仍会撞上旧 relay。两个目标端口都释放才算停完。
+  const ports = [target.ipcPort, target.relayPort]
+  if (!(await waitForPortsToClose(ports))) {
+    return throwServerShutdownTimeout(ports, 'stop')
+  }
+
+  process.stdout.write('autobrowser server stopped\n')
+  return
+}
+
+async function restartServer(context: CommandContext): Promise<number | void> {
+  const target = await resolvePersistedServerTarget(context)
+  if (!target) {
+    return throwCommandError('No persisted background server state found.')
+  }
+
+  // 直接探测 IPC 端口判断服务是否在跑，而不是走 getCommandStatus：后者会在本地服务不可达时
+  // 自动拉起 relay，restart 就会把"先起一个新进程"当成重启的第一步，最后还报告成功。
+  const current = await getStatus(`http://127.0.0.1:${target.ipcPort}`).catch(() => null)
+  if (!isServerSnapshotStatus(current)) {
+    return throwCommandError(
+      new CliUsageError('No running background server found to restart.', {
+        code: CLI_ERROR_CODES.FAILED,
+        suggestedAction:
+          "Run 'autobrowser server' to start one, or 'autobrowser status' to inspect the recorded connection state.",
+      }),
+    )
+  }
+
+  try {
+    await stopBackgroundServer(
+      target.ipcPort,
+      target.token,
+      context.dependencies.findProcessIdByPort,
+      context.dependencies.killProcess,
+    )
+  } catch (error) {
+    return throwCommandError(error)
+  }
+
+  // relay 和 IPC 必须都释放：只等 IPC 时，旧 relay 仍可能占着 relay 端口让新进程 bind 失败。
+  const ports = [target.ipcPort, target.relayPort]
+  if (!(await waitForPortsToClose(ports))) {
+    return throwServerShutdownTimeout(ports, 'restart')
+  }
+
+  const outcome = await startBackgroundServerOnPorts(context, {
+    relayPort: target.relayPort,
+    ipcPort: target.ipcPort,
+  })
+
+  // 端口已释放却仍有同端口服务应答，说明旧进程没退干净；这种情况不能对外宣称重启成功。
+  if (outcome.kind === 'already-running') {
+    return throwCommandError(
+      new CliUsageError(
+        `Restart failed: a background server is still running on ${getLocalControlBaseUrl(target.ipcPort)}.`,
+        {
+          code: CLI_ERROR_CODES.FAILED,
+          suggestedAction:
+            "Run 'autobrowser status' to confirm the running server, then retry 'autobrowser server restart'.",
+        },
+      ),
+    )
+  }
+
+  process.stdout.write(
+    `autobrowser server restarted in background\nrelay: http://127.0.0.1:${target.relayPort}\nipc: ${getLocalControlBaseUrl(target.ipcPort)}\n`,
+  )
+  return
 }
 
 async function handleServer(rest: string[], context: CommandContext): Promise<number | void> {
@@ -316,34 +486,18 @@ async function handleServer(rest: string[], context: CommandContext): Promise<nu
   }
 
   if (isCommandAction('server', rest[0])) {
+    const action = rest[0]
+
     if (isHelpToken(rest[1])) {
-      return context.writeHelp(['server', 'stop'])
+      return context.writeHelp(['server', action])
     }
 
-    const persistedConnectionInfo = await readPersistedConnectionInfo(
-      context.flags.relayPort,
-      context.flags.ipcPort,
-      context.homeDir,
-    )
-
-    if (!persistedConnectionInfo?.token) {
-      return throwCommandError('No persisted background server state found.')
+    // stop/restart 都不吃位置参数；先拦住，避免把多余 token 静默忽略掉。
+    if (rest.length > 1) {
+      return throwCommandError(`unexpected argument for server ${action}: ${rest[1]}`)
     }
 
-    try {
-      await stopBackgroundServer(
-        context.flags.ipcPortExplicitlySet
-          ? context.flags.ipcPort
-          : persistedConnectionInfo.ipcPort,
-        persistedConnectionInfo.token,
-        context.dependencies.findProcessIdByPort,
-        context.dependencies.killProcess,
-      )
-      process.stdout.write('autobrowser server stopped\n')
-      return
-    } catch (error) {
-      return throwCommandError(error)
-    }
+    return action === 'restart' ? await restartServer(context) : await stopServer(context)
   }
 
   if (isHelpToken(rest[0])) {

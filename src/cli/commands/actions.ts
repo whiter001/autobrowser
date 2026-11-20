@@ -65,7 +65,7 @@ export const COMMAND_ACTIONS = {
     actions: ['list', 'create', 'attach', 'detach', 'close-all', 'kill-all', 'delete-data'],
     defaultAction: 'list',
   },
-  server: { actions: ['stop'] },
+  server: { actions: ['stop', 'restart'] },
   downloads: { actions: ['list', 'clear'], defaultAction: 'list' },
   media: { actions: ['list'] },
   snapshot: { actions: ['export', 'extract'] },

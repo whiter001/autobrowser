@@ -154,4 +154,28 @@ describe('server status summary', () => {
     expect(summary).toContain('CLI a458338, extension b123456')
     expect(summary).not.toContain('0.1.5 != 0.1.5')
   })
+
+  test('spells out that this status call auto-started the relay', () => {
+    // 自动拉起是副作用：不写明的话，用户会以为服务是之前自己起的，排查方向就错了。
+    const summary = formatStatusSummary({
+      relayPort: 57978,
+      ipcPort: 57979,
+      extensionConnected: false,
+      serverAutoStarted: true,
+      snapshot: { tabs: [] },
+    })
+
+    expect(summary).toContain('server: auto-started by this status command')
+  })
+
+  test('stays quiet when the relay was already running', () => {
+    const summary = formatStatusSummary({
+      relayPort: 57978,
+      ipcPort: 57979,
+      extensionConnected: false,
+      snapshot: { tabs: [] },
+    })
+
+    expect(summary).not.toContain('auto-started')
+  })
 })

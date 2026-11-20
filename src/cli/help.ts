@@ -81,9 +81,16 @@ export const HELP_ROOT: HelpNode = helpNode(
     helpNode(
       'server',
       '管理后台 relay 与 IPC 服务。',
-      'autobrowser server [--serve] [--relay-port <port>] [--ipc-port <port>] [--extension-id <id>] [--browser-command <command>] [--browser-arg <arg>]',
+      'autobrowser server [stop|restart] [--serve] [--relay-port <port>] [--ipc-port <port>] [--extension-id <id>] [--browser-command <command>] [--browser-arg <arg>]',
       undefined,
-      [helpNode('stop', '停止后台服务。', 'autobrowser server stop')],
+      [
+        helpNode('stop', '停止后台服务并等待端口释放。', 'autobrowser server stop'),
+        helpNode(
+          'restart',
+          '重启后台服务：先优雅停止并等待端口释放，再在同一 relay/IPC 端口上重新启动。',
+          'autobrowser server restart [--relay-port <port>] [--ipc-port <port>]',
+        ),
+      ],
     ),
     helpNode(
       'session',
@@ -123,6 +130,7 @@ export const HELP_ROOT: HelpNode = helpNode(
       '显示服务状态。默认输出为可读摘要；传入 --json 可获得原始状态对象，传入 --brief 还会折叠各标签页的页面 epoch。',
       'autobrowser status [--json|--brief]',
       [
+        '本地服务未运行时会自动启动；本次调用亲自启动时，摘要显示 server: auto-started by this status command，原始状态带 serverAutoStarted:true。',
         '原始状态包含 connectionGeneration 与 lastDisconnect 诊断信息；安全的只读命令在重连后会重试一次，而有副作用的命令永不自动重放。',
       ],
     ),
@@ -215,8 +223,8 @@ export const HELP_ROOT: HelpNode = helpNode(
         '对 Chromium 调用方默认启用工作区隔离；auto 会为每个调用方推导一个稳定的 id。优先级：--workspace、AUTOBROWSER_WORKSPACE，最后才是 auto。',
         '可用 --no-workspace 或 AUTOBROWSER_WORKSPACE=off（不区分大小写）关闭；--no-workspace 不能与 --workspace 同时使用。',
         'WebDriver 引擎（--engine firefox|webkit）不会获得默认工作区；显式指定 --workspace 或 AUTOBROWSER_WORKSPACE 非 off 时，仍会提示工作区仅支持 Chromium。',
-        '没有指定目标时，页面命令会原子地占用一个空闲的已有标签页（优先活动标签页，其次按稳定的标签页顺序）；localhost 及其他可调试页面均可被占用。结果的 meta 会标记一次 autoAttached。',
-        '使用 --no-auto-attach 可保持只接受显式目标。没有空闲标签页时，open 会创建一个；其他命令返回 WORKSPACE_TARGET_REQUIRED。',
+        '没有指定目标时，页面命令会原子地占用一个空闲的已有标签页（优先活动标签页，其次按稳定的标签页顺序）；显式 --tab 指向未绑定标签时也会直接认领并设为当前目标。localhost 及其他可调试页面均可被占用。结果的 meta 会标记一次 autoAttached。',
+        '使用 --no-auto-attach 可关闭自动认领，此时显式未绑定标签仍需先 tab attach。没有空闲标签页时，open 会创建一个；其他命令返回 WORKSPACE_TARGET_REQUIRED。',
         'release 只解除标签页的附着，不关闭、不重载、也不重置它们。',
         'groups 是配置文件级的标签页分组显示开关（默认关闭），不是工作区操作：它不改变归属关系，并且在 --no-workspace 下同样有效。报告内容包含 enabled、available、groups 和 lastError。',
         'groups 开启时，每个工作区映射到一个 Chromium 标签页组，组名简短、颜色稳定；attach、auto-attach、tab new 以及已有附着都会加入该组。',

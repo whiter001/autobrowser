@@ -90,26 +90,46 @@ function killProcessByPid(pid: number, signal?: NodeJS.Signals | number): boolea
   }
 }
 
-async function waitForPortToClose(
-  port: number,
-  timeoutMs: number = 3000,
+/**
+ * 等到这些端口都不再接受连接。
+ *
+ * /shutdown 返回 200 只代表服务接受了关闭请求，监听 socket 未必已经释放；`server stop`
+ * 之后立刻 `server start`、或 `server restart` 在同一端口重新 bind 时，抢在旧进程
+ * 真正退出前启动会直接 bind 失败。这里用「连接被拒绝」作为释放证据，超时返回 false,
+ * 由调用方决定报错还是降级。
+ */
+export async function waitForPortsToClose(
+  ports: number[],
+  timeoutMs: number = 5000,
   intervalMs: number = 100,
 ): Promise<boolean> {
+  const uniquePorts = [...new Set(ports.filter((port) => Number.isInteger(port) && port > 0))]
+  if (uniquePorts.length === 0) {
+    return true
+  }
+
   const deadline = Date.now() + timeoutMs
 
-  while (Date.now() <= deadline) {
-    try {
-      if (!(await isPortInUse(port))) {
-        return true
-      }
-    } catch {
+  while (true) {
+    const closed = await Promise.all(
+      uniquePorts.map((port) =>
+        isPortInUse(port)
+          .then((inUse) => !inUse)
+          // 探测本身失败不能证明端口被占用，按已释放处理，避免因为偶发探测错误卡满超时
+          .catch(() => true),
+      ),
+    )
+
+    if (closed.every(Boolean)) {
       return true
+    }
+
+    if (Date.now() >= deadline) {
+      return false
     }
 
     await new Promise((resolve) => setTimeout(resolve, intervalMs))
   }
-
-  return false
 }
 
 export function parseWindowsNetstatListeningPid(stdout: string, port: number): number | null {
@@ -182,7 +202,7 @@ async function terminateProcessListeningOnPort(
   }
 
   killProcess(pid, 'SIGTERM')
-  return await waitForPortToClose(port)
+  return await waitForPortsToClose([port], 3000)
 }
 
 export async function spawnDetachedProcess(

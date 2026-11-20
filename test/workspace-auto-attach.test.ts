@@ -196,20 +196,92 @@ describe('workspace auto attach through the command router', () => {
     expect(metaOf(snapshot)).not.toHaveProperty('autoAttached')
   })
 
-  test('keeps TAB_NOT_ATTACHED for an explicit tab even when free tabs exist', async () => {
+  test('attaches an explicitly targeted free tab and reports it only once', async () => {
+    const { router, snapshotCalls } = routerWithTabs([
+      tab(1, 'https://one.example'),
+      tab(2, 'https://two.example'),
+    ])
+
+    const first = await router.handleCommand({
+      command: 'snapshot',
+      args: { workspace: 'ai-a', tabId: 2 },
+    })
+    expect(first).toMatchObject({
+      meta: { workspace: 'ai-a', tabId: 2, autoAttached: true, autoAttachedTabId: 2 },
+    })
+    expect(metaOf(first).target).toMatchObject({ tabId: 2, explicit: true })
+
+    // 只认领被显式指定的标签，其他空闲标签保持 attachable，不能被顺带认领
+    const listed = (await router.handleCommand({ command: 'tab.list', args: {} })) as {
+      tabs: Array<{ id: number | null; workspace: string | null; attachable: boolean }>
+    }
+    expect(listed.tabs).toMatchObject([
+      { id: 1, workspace: null, attachable: true },
+      { id: 2, workspace: 'ai-a', attachable: false },
+    ])
+
+    // 同一 workspace 后续不带 tabId 的命令沿用刚认领的目标，且不再重复报告
+    const second = await router.handleCommand({ command: 'snapshot', args: { workspace: 'ai-a' } })
+    expect(second).toMatchObject({ meta: { workspace: 'ai-a', tabId: 2 } })
+    expect(metaOf(second)).not.toHaveProperty('autoAttached')
+    expect(metaOf(second)).not.toHaveProperty('autoAttachedTabId')
+    expect(snapshotCalls.map((call) => call.tabId)).toEqual([2, 2])
+  })
+
+  test('attaches an explicitly targeted free tab addressed as a tN handle', async () => {
+    const { router, snapshotCalls } = routerWithTabs([tab(3, 'https://three.example')])
+
+    const result = await router.handleCommand({
+      command: 'snapshot',
+      args: { workspace: 'ai-a', tabId: 't3' },
+    })
+    expect(result).toMatchObject({
+      meta: { workspace: 'ai-a', tabId: 3, autoAttached: true, autoAttachedTabId: 3 },
+    })
+    expect(metaOf(result).target).toMatchObject({ tabId: 3, handle: 't3', explicit: true })
+    expect(snapshotCalls.map((call) => call.tabId)).toEqual([3])
+  })
+
+  test('keeps TAB_NOT_ATTACHED for an explicit free tab when auto attach is disabled', async () => {
     const { router } = routerWithTabs([
       tab(1, 'https://one.example'),
       tab(2, 'https://two.example'),
     ])
 
     await expect(
-      router.handleCommand({ command: 'snapshot', args: { workspace: 'ai-a', tabId: 1 } }),
+      router.handleCommand({
+        command: 'snapshot',
+        args: { workspace: 'ai-a', tabId: 1, autoAttach: false },
+      }),
     ).rejects.toMatchObject({ code: 'TAB_NOT_ATTACHED' })
 
     const listed = (await router.handleCommand({ command: 'tab.list', args: {} })) as {
-      tabs: Array<{ workspace: string | null; attachable: boolean }>
+      tabs: Array<{ workspace: string | null }>
     }
-    expect(listed.tabs.every((item) => item.workspace === null && item.attachable)).toBe(true)
+    expect(listed.tabs.every((item) => item.workspace === null)).toBe(true)
+  })
+
+  test('rejects an explicit tab owned by another workspace instead of taking it over', async () => {
+    const { router, snapshotCalls } = routerWithTabs([tab(1, 'https://one.example')])
+
+    await router.handleCommand({
+      command: 'tab.attach',
+      args: { workspace: 'owner-ws', handle: 't1' },
+    })
+
+    await expect(
+      router.handleCommand({ command: 'snapshot', args: { workspace: 'caller-ws', tabId: 1 } }),
+    ).rejects.toMatchObject({
+      code: 'TAB_BUSY',
+      details: { tabHandle: 't1', workspace: 'owner-ws' },
+    })
+
+    // 没有偷偷执行命令，也没有把归属改到 caller-ws
+    expect(snapshotCalls).toHaveLength(0)
+    const listed = (await router.handleCommand({ command: 'tab.list', args: {} })) as {
+      tabs: Array<{ id: number | null; workspace: string | null }>
+    }
+    expect(listed.tabs.find((item) => item.id === 1)?.workspace).toBe('owner-ws')
   })
 
   test('honors autoAttach:false sent by the CLI', async () => {
@@ -322,5 +394,15 @@ describe('workspace auto attach CLI flag', () => {
 
     const defaults = await runCli(['--workspace', 'ai-a', 'snapshot'])
     expect(defaults.fetchCalls[0].body?.args).not.toHaveProperty('autoAttach')
+  })
+
+  test('forwards an explicit --tab handle without disabling auto attach', async () => {
+    const explicit = await runCli(['--workspace', 'ai-a', '--tab', 't2', 'snapshot'])
+    expect(explicit.exitCode).toBe(0)
+    expect(explicit.fetchCalls[0].body).toMatchObject({
+      command: 'snapshot',
+      args: { workspace: 'ai-a', tabId: 't2' },
+    })
+    expect(explicit.fetchCalls[0].body?.args).not.toHaveProperty('autoAttach')
   })
 })
