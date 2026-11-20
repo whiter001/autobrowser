@@ -24,6 +24,38 @@ interface CommandArgsValidationError extends Error {
 export const DROP_MAX_FILE_BYTES = 32 * 1024 * 1024
 export const DROP_MAX_TOTAL_BYTES = 64 * 1024 * 1024
 
+/** wait 支持的等待类型；协议字段 type 的合法取值。 */
+const WAIT_TYPES = ['time', 'selector', 'url', 'text', 'load', 'networkidle', 'fn']
+
+/** wait 的等待条件字段：出现任意一个即认为给出了等待目标。 */
+const WAIT_CONDITION_KEYS = ['ms', 'type', 'selector', 'url', 'text', 'fn']
+
+/**
+ * batch/MCP 传的是协议字段名，与 CLI 选项名不总是同名（eval 的字段是 script，
+ * CLI 侧却是 --expr；get 的属性字段是 attr，CLI 侧是位置参数 <attribute>）。
+ * 用户按 CLI 习惯猜键名时，报错里直接给出正确键名和等价 CLI 写法。
+ */
+const COMMAND_ARG_CLI_EQUIVALENTS: Record<string, Record<string, string>> = {
+  eval: { script: "eval --expr '<script>'" },
+  type: { value: 'type <selector> <value>' },
+  fill: { value: 'fill <selector> <value>' },
+  click: { selector: 'click <selector>' },
+  press: { key: 'press <key>' },
+  wait: {
+    ms: 'wait --ms <ms>',
+    type: 'wait --type <time|selector|url|text|load|networkidle|fn>',
+  },
+  get: { selector: 'get <attribute> <selector>', attr: 'get <attribute> [selector]' },
+  run: { source: 'run <file.js>' },
+  cdp: { method: 'cdp <Domain.method> [json]', params: "cdp <method> --params '<json>'" },
+}
+
+/** 字段名拼错时补一句等价 CLI 写法；表里没有的命令/字段保持原样报错。 */
+function argCliHint(command: string, key: string): string {
+  const cli = COMMAND_ARG_CLI_EQUIVALENTS[command]?.[key]
+  return cli ? ` (args 键是 ${key}，等价 CLI：${cli})` : ''
+}
+
 /** 兼容既有的目标规格调用方；完整控制面见 COMMAND_CATALOG。 */
 export const COMMAND_SPECS: CommandDescriptor[] = COMMAND_CATALOG.filter(
   (spec) => spec.supportsTabTarget,
@@ -42,9 +74,10 @@ function createCommandArgsValidationError(
   command: string,
   reason: string,
   details: Record<string, unknown> = {},
+  hint = '',
 ): CommandArgsValidationError {
   const error = new Error(
-    `invalid command arguments for ${command}: ${reason}`,
+    `invalid command arguments for ${command}: ${reason}${hint}`,
   ) as CommandArgsValidationError
   error.code = 'INVALID_COMMAND_ARGS'
   error.details = {
@@ -72,27 +105,33 @@ function readStringField(
   const value = args[key]
   if (value === undefined || value === null) {
     if (options.required) {
-      throw createCommandArgsValidationError(command, `${key} must be a non-empty string`, {
-        field: key,
-        value,
-      })
+      throw createCommandArgsValidationError(
+        command,
+        `${key} must be a non-empty string`,
+        { field: key, value },
+        argCliHint(command, key),
+      )
     }
 
     return undefined
   }
 
   if (typeof value !== 'string') {
-    throw createCommandArgsValidationError(command, `${key} must be a string`, {
-      field: key,
-      value,
-    })
+    throw createCommandArgsValidationError(
+      command,
+      `${key} must be a string`,
+      { field: key, value },
+      argCliHint(command, key),
+    )
   }
 
   if (!options.allowEmpty && !value.trim()) {
-    throw createCommandArgsValidationError(command, `${key} must be a non-empty string`, {
-      field: key,
-      value,
-    })
+    throw createCommandArgsValidationError(
+      command,
+      `${key} must be a non-empty string`,
+      { field: key, value },
+      argCliHint(command, key),
+    )
   }
 
   return value
@@ -107,20 +146,24 @@ function readNumberField(
   const value = args[key]
   if (value === undefined || value === null) {
     if (options.required) {
-      throw createCommandArgsValidationError(command, `${key} must be a number`, {
-        field: key,
-        value,
-      })
+      throw createCommandArgsValidationError(
+        command,
+        `${key} must be a number`,
+        { field: key, value },
+        argCliHint(command, key),
+      )
     }
 
     return undefined
   }
 
   if (typeof value !== 'number' || !Number.isFinite(value)) {
-    throw createCommandArgsValidationError(command, `${key} must be a finite number`, {
-      field: key,
-      value,
-    })
+    throw createCommandArgsValidationError(
+      command,
+      `${key} must be a finite number`,
+      { field: key, value },
+      argCliHint(command, key),
+    )
   }
 
   return value
@@ -854,17 +897,42 @@ function validateCommandArgsShape(command: string, args: unknown): void {
         }
       }
       return
-    case 'wait':
-      readStringField(normalizedArgs, 'type', command, { required: false })
-      readStringField(normalizedArgs, 'selector', command, { required: false })
+    case 'wait': {
+      const waitType = readStringField(normalizedArgs, 'type', command, { required: false })
+      const waitSelector = readStringField(normalizedArgs, 'selector', command, {
+        required: false,
+      })
       readStringField(normalizedArgs, 'state', command, { required: false })
-      readStringField(normalizedArgs, 'url', command, { required: false })
-      readStringField(normalizedArgs, 'text', command, { required: false })
-      readStringField(normalizedArgs, 'fn', command, { required: false })
+      const waitUrl = readStringField(normalizedArgs, 'url', command, { required: false })
+      const waitText = readStringField(normalizedArgs, 'text', command, { required: false })
+      const waitFn = readStringField(normalizedArgs, 'fn', command, { required: false })
       readNumberField(normalizedArgs, 'timeout', command, { required: false })
-      readNumberField(normalizedArgs, 'ms', command, { required: false })
+      const waitMs = readNumberField(normalizedArgs, 'ms', command, { required: false })
       readBooleanField(normalizedArgs, 'gone', command)
+      // type 写错（如把 ms 写成 time）时直接列出合法取值，避免只看到空串错误
+      if (waitType !== undefined && !WAIT_TYPES.includes(waitType)) {
+        throw createCommandArgsValidationError(
+          command,
+          `type must be one of ${WAIT_TYPES.join(', ')}`,
+          { field: 'type', value: waitType },
+        )
+      }
+      // timeout/state/gone 单独出现不构成等待条件，报错时列出可用的键名
+      if (
+        waitMs === undefined &&
+        waitType === undefined &&
+        waitSelector === undefined &&
+        waitUrl === undefined &&
+        waitText === undefined &&
+        waitFn === undefined
+      ) {
+        throw createCommandArgsValidationError(
+          command,
+          `one of ${WAIT_CONDITION_KEYS.join(', ')} is required`,
+        )
+      }
       return
+    }
     case 'screenshot': {
       const full = readBooleanField(normalizedArgs, 'full', command)
       readBooleanField(normalizedArgs, 'annotate', command)

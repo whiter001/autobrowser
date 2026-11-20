@@ -264,7 +264,12 @@ export function createCommandHandlers({
     if (waitType === 'fn' || waitFn) {
       return await pageObserve.waitForExpression(tabId, waitFn, timeout, frameSelector)
     }
-    throw new Error(`unsupported wait type: ${waitType}`)
+    // 兜底路径：等待条件缺失或类型拼错时给出可用类型清单，避免只抛出空串错误
+    const waitTypeLabel = waitType.trim() ? waitType : '(empty)'
+    throw new Error(
+      `unsupported wait type: ${waitTypeLabel} (valid types: time, selector, url, text, load, networkidle, fn)` +
+        (waitType.trim() ? '' : '; pass one of ms, type, selector, url, text, fn'),
+    )
   }
 
   async function closeTabs(tabId: TabInput, closeAll: boolean, workspace: string | null) {

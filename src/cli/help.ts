@@ -71,7 +71,8 @@ export const HELP_ROOT: HelpNode = helpNode(
       'autobrowser batch [--stdin|--file <path>|--base64] <json-array|json-object>',
       [
         '步骤格式：形如 { "command": <name>, "args": { ... } } 的数组，例如 [{"command":"eval","args":{"script":"1+1"}},{"command":"click","args":{"selector":"#btn"}},{"command":"wait","args":{"ms":500}}]。',
-        'args 的键与各命令的 CLI 选项一一对应；步骤超时使用 args.timeoutMs（CLI 参数 --timeout-ms 映射到该字段）。',
+        'args 用的是协议字段名，与 CLI 选项名不总是同名：eval 用 script（CLI 是 --expr）、type/fill 用 value、get 用 attr、run 用 source、cdp 用 method、wait 用 ms/type/selector/url/text/fn；步骤超时使用 args.timeoutMs（CLI 参数 --timeout-ms 映射到该字段）。',
+        '参数名写错时会直接报出正确键名与等价 CLI 写法；拿不准就先跑 autobrowser help <command> 看该命令的字段。',
         '在 Windows/PowerShell 上优先使用 --file/--stdin：内联 JSON 的引号常被 shell 改写，JSON 解析错误通常意味着 shell 转义有问题，而不是 CLI 缺陷。',
         '重试可能重复失败步骤已经产生的副作用；重试不是幂等性保证。',
         '总预算合并各步骤预算、重试、延迟以及嵌套 batch；含传输余量的上限为 30 分钟。',

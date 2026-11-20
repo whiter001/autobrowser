@@ -783,6 +783,31 @@ describe('command specs', () => {
     )
   })
 
+  test('reports the protocol field name and its CLI equivalent for mistyped args', () => {
+    expect(() => validateCommandArgs('eval', {})).toThrow(
+      'invalid command arguments for eval: script must be a non-empty string',
+    )
+    expect(() => validateCommandArgs('eval', {})).toThrow('args 键是 script')
+    expect(() => validateCommandArgs('eval', {})).toThrow('--expr')
+    expect(() => validateCommandArgs('get', { attr: 'text' })).toThrow('args 键是 selector')
+    expect(() => validateCommandArgs('get', { attr: 'text' })).toThrow('get <attribute> <selector>')
+  })
+
+  test('requires a wait condition and lists the supported wait types', () => {
+    expect(() => validateCommandArgs('wait', {})).toThrow(
+      'one of ms, type, selector, url, text, fn is required',
+    )
+    expect(() => validateCommandArgs('wait', { timeout: 1000 })).toThrow(
+      'one of ms, type, selector, url, text, fn is required',
+    )
+    expect(() => validateCommandArgs('wait', { type: 'foo' })).toThrow(
+      'type must be one of time, selector, url, text, load, networkidle, fn',
+    )
+    expect(() => validateCommandArgs('wait', { ms: 300 })).not.toThrow()
+    expect(() => validateCommandArgs('wait', { type: 'networkidle' })).not.toThrow()
+    expect(() => validateCommandArgs('wait', { selector: '#done' })).not.toThrow()
+  })
+
   test('validates search command arguments', () => {
     expect(() => validateCommandArgs('search', {})).toThrow(
       'invalid command arguments for search: query must be a non-empty string',
