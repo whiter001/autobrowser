@@ -40,6 +40,7 @@ return links.slice(0, 10)
 - 三条求值路径都提供 `args`：direct eval 在脚本外层作用域定义，replMode（顶层 `await`）在脚本前补声明，async IIFE（顶层 `return`）把它作为形参；脚本自身声明 `args` 不会导致脚本被执行两次。`--element` 的函数第一个参数仍是 `el`，`args` 是第二个参数：`(el, args) => el.textContent.includes(args.keyword)`。
 - 大结果先用 `--offset <非负整数>` / `--limit <正整数>` 分页，只有在显式指定其中之一时才分页（缺省 offset=0、limit=10000）。只支持字符串和数组：字符串按 Unicode code point 切片，不会把 emoji 的代理对切成两半；数组按元素切片。其它结果类型返回 `INVALID_COMMAND_ARGS`，应改写脚本让它返回字符串（如 `JSON.stringify`）或数组。
 - 分页响应是 `{ value, pagination: { kind: "text"|"array", offset, limit, total, nextOffset, truncated } }`。`offset` 超过尾部时 `value` 为空、`nextOffset` 为 `null`；`truncated` 表示是否还有后续，续读用返回的 `nextOffset`。不指定 offset/limit 时结果结构与旧版本完全一致。
+- 返回形状随是否分页而变：**未指定 `--offset`/`--limit` 时，结果就是脚本的原始返回值**（标量就是标量、对象就是对象，CLI 输出里统一放在 `result` 字段下）；指定 `--offset`/`--limit` 时才返回 `{ value, pagination: { kind, offset, limit, total, nextOffset, truncated } }`。脚本要稳定拿到对象结构时自己返回固定结构，不要依赖外层包装。
 - `--max-result-bytes` 检查的是分页后的结果与响应大小，所以先用小 `limit` 分页可以绕开"整段结果先撞上限"的困境；不要把提高上限当成默认解法。
 - 目标标签停在 `chrome-error://` 错误页时 `eval` 不会执行脚本，直接返回 `NAVIGATION_FAILED`，`details.url` 是当前错误页地址。先重新导航（`goto <url>` 或 `reload`），再用 `get url` 确认，然后重试 eval；不要把它当成脚本或选择器问题反复调参。
 

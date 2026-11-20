@@ -49,6 +49,7 @@
 
 ## CLI 参数与回放
 
+- batch 的 `args` 键是**协议字段名**，与 CLI 选项名不总是同名：eval 用 `script`（CLI 是 `--expr`）、type 与 fill 用 `value`、get 用 `attr`、run 用 `source`、cdp 用 `method`、wait 用 `ms`/`type`/`selector`/`url`/`text`/`fn`。按 CLI 习惯猜键名会报错，参数名写错时错误消息会直接给出正确键名与等价 CLI 写法。
 - `--file`、`--stdin`、`--base64` 互斥；未知选项、冲突模式和缺参会返回非零退出码，不要把帮助文本或退出码 0 当成命令已执行。
 - 命令名写错时返回 `CLI_UNKNOWN_COMMAND` 并给出最接近的命令名（不再打印整页帮助），按 `details.candidates` 改写命令即可。
 - 最终标准命令响应为 `ok:false` 时进程退出码为 1，JSON `error` 仍保留；脚本可同时检查 return code 和 JSON。goto fallback 的最终成功结果、batch 的最终聚合响应决定退出状态，内部已恢复步骤不会误报。

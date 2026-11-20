@@ -36,6 +36,22 @@
 
 - `fill` 负责派发真实输入事件，但受控组件可能按自身状态回滚输入值。antd DatePicker 支持文本录入时，先 `click` 输入框，再用 `type <selector> <value>` 逐键输入日期并按 `press Enter`，最后用 `get value` 核验；`fill` 不等于逐键输入，不能用它回滚就断言组件不支持手动输入。组件未接受键入或只需面板选择时，再打开面板点击具体日期单元格，不要反复 `fill` 或改用 DOM 赋值绕过组件。
 - `fill` 成功、`get value` 读出正确值，只证明**控件值**，不证明业务已生效：日期、筛选条件、查询框改完后，很多页面要按 Enter 或点页面上的"查询"按钮才会发请求刷新数据。0 条结果先核对查询时间范围（默认区间常常很短）和筛选条件，再用 `network requests --filter <接口片段>` 确认请求确实发出且参数正确；不要因为控件值正确就断言"没有数据"，也不要反复重填或改方案。
+- `type --submit` 的 Enter 紧跟键入发出，受控组件可能还没处理完 `input` 事件就读到空串并把值清空（antd DatePicker 实测会被清空）。组件库场景用 `type` 后单独 `press Enter`，中间留出事件处理时间。
+- `fill ""` 会触发受控组件的 `onChange(null)`，对"一组输入框"是破坏性的：antd RangePicker 只对一侧 `fill` 就会清掉整段区间（含另一侧已填好的值）；`press Escape` 同样会取消"只选了一半"的区间。范围选择器填不同起止值只能点浮层单元格，两端填同一个值也可以（文本录入只会写进一侧）。
+- RangePicker 的文本录入只能写进一半：在起始框输入会清掉结束值，反之亦然；**起止两端填同一个值**才能得到完整区间（`2026-02` → `2026-02` 实测有效）。两端填不同值只能点浮层里的日期单元格。
+- antd 各 picker 的默认 format（实测结论，文本录入按此格式填）：
+
+  | 类型 | format | 备注 |
+  |---|---|---|
+  | date | `YYYY-MM-DD` | |
+  | week | `YYYY-WW周` | zh_CN locale，`wo` 渲染成"周"；`2024-12th` / `2024-W12` 也能解析 |
+  | month | `YYYY-MM` | |
+  | quarter | `YYYY-QN` | 面板单元格文案就是 `Q1`~`Q4` |
+  | year | `YYYY` | |
+  | time | `HH:mm:ss` | 输 `12:30` 会被补成 `12:30:00` |
+  | date + showTime | `YYYY-MM-DD HH:mm:ss` | 范围选择器带 showTime 时是 `YYYY-MM-DD HH:mm` |
+- antd 带 showTime 的 RangePicker：选完起始日期与时间后要再点浮层底部的「确定」（`.ant-picker-ok button`），面板才会切到结束选择；`mode="time"` 的 DatePicker 面板点不动，只能往输入框录完整日期时间。取值优先从浮层里"未禁用的单元格"反推，`disabledDate` 会让含禁用日期的月份在界面上仍显示可用、但录入被拒。
+- 判断 antd 浮层是否打开用 `d.style.display!=='none'` 加高度判断，不要用 `ant-slide-up-enter/leave` 动画 class（窗口失焦时 leave 动画可能永远不结束，class 会停在 enter）；连续操作多个选择器时先关掉上一个浮层，否则它的 portal 会盖住下一个输入框，让 `click` 打在浮层上。
 - `click` 是一次真实点击；对按钮、输入框等 toggle 控件，先用 snapshot/eval 检查面板或弹层当前状态，不要在 eval 里调用 `el.click()` 后又无条件执行一次 `click`，否则第二次可能把刚打开的面板关闭。
 - Vue/React 等框架的状态更新和渲染是异步的，`.click()` 后同步读取 DOM 可能仍是旧值。优先用 `wait <selector>`、`wait --fn '<expression>'` 或 `wait --text <text>` 等条件等待；不要固定 sleep 2~3 秒后就断定所有页面都已完成更新。
 - 开发环境热更新（HMR）后不要沿用热更新前的现场：弹层可能已被关闭、旧 ref 失效、组件数据被重置。先重新定位并重新打开弹层，等目标容器出现后再测量；发现面板只剩 `<!---->`、列表行数为 0 或默认选项为空时，先完整 `reload` 复核再判断是否真的是持久性渲染缺陷，复验选项/多选内容前也要确认接口数据已加载。
