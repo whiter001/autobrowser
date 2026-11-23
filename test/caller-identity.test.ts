@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test'
 import {
   defaultIdentityTimeoutMs,
+  detectInvocationShell,
   resolveAutomaticWorkspaceId,
   WORKSPACE_IDENTITY_UNAVAILABLE,
   WorkspaceIdentityError,
@@ -50,6 +51,107 @@ function launcherProcess(
 ): ProcessInfo {
   return { pid, ppid, startTime, name, commandLine: 'autobrowser snapshot' }
 }
+
+describe('detectInvocationShell', () => {
+  test.each([
+    ['C:\\Program Files\\Git\\bin\\BASH.EXE', 'bash'],
+    ['pwsh.exe', 'pwsh'],
+    ['powershell.exe', 'powershell'],
+    ['cmd.exe', 'cmd'],
+    ['nu.exe', 'nu'],
+  ])('reports the nearest shell %s past a native launcher', async (name, expected) => {
+    const queryProcess = makeTreeQuery({
+      1000: { ...autobrowserProcess(1000, 910), name: 'bun.exe' },
+      910: launcherProcess(910, 800, 'autobrowser-windows-x64.exe', 'Mon Jan 1 08:30:00 2024'),
+      800: shellProcess(800, 700, name),
+      700: { ...shellProcess(700, 1, 'pwsh.exe'), startTime: 'Mon Jan 1 07:30:00 2024' },
+      1100: shellProcess(1100, 1000, 'powershell.exe'),
+    })
+
+    expect(await detectInvocationShell({ queryProcess, getCurrentPid: () => 1000 })).toBe(expected)
+  })
+
+  test('returns unknown instead of recognizing a shell that was only spawned for the query', async () => {
+    const queryProcess = makeTreeQuery({
+      1000: autobrowserProcess(1000, 900),
+      900: trustedHost(900, 'Mon Jan 1 07:30:00 2024'),
+      1100: shellProcess(1100, 1000, 'powershell.exe'),
+    })
+
+    expect(await detectInvocationShell({ queryProcess, getCurrentPid: () => 1000 })).toBe('unknown')
+  })
+
+  test('does not mistake a reused Windows parent PID for a shell', async () => {
+    const queryProcess = makeTreeQuery({
+      1000: { ...autobrowserProcess(1000, 800), startTime: '/Date(1760000000000)/' },
+      800: { ...shellProcess(800, 1, 'pwsh.exe'), startTime: '/Date(1760000000001)/' },
+    })
+
+    expect(await detectInvocationShell({ queryProcess, getCurrentPid: () => 1000 })).toBe('unknown')
+  })
+
+  test('does not look past a reused intermediate parent PID', async () => {
+    const queryProcess = makeTreeQuery({
+      1000: { ...autobrowserProcess(1000, 910), startTime: '/Date(1760000000001)/' },
+      910: launcherProcess(910, 800, 'autobrowser.exe', '/Date(1760000000002)/'),
+      800: { ...shellProcess(800, 1, 'pwsh.exe'), startTime: '/Date(1760000000000)/' },
+    })
+
+    expect(await detectInvocationShell({ queryProcess, getCurrentPid: () => 1000 })).toBe('unknown')
+  })
+
+  test.each([
+    ['current process', 'not-a-date', '/Date(1760000000001)/'],
+    ['candidate shell', '/Date(1760000000000)/', 'not-a-date'],
+  ])('returns unknown when the %s has an invalid start time', async (_, childTime, parentTime) => {
+    const queryProcess = makeTreeQuery({
+      1000: { ...autobrowserProcess(1000, 800), startTime: childTime },
+      800: { ...shellProcess(800, 1, 'pwsh.exe'), startTime: parentTime },
+    })
+
+    expect(await detectInvocationShell({ queryProcess, getCurrentPid: () => 1000 })).toBe('unknown')
+  })
+
+  test('does not look past an intermediate ancestor with an invalid start time', async () => {
+    const queryProcess = makeTreeQuery({
+      1000: { ...autobrowserProcess(1000, 910), startTime: '/Date(1760000000000)/' },
+      910: launcherProcess(910, 800, 'autobrowser.exe', 'not-a-date'),
+      800: { ...shellProcess(800, 1, 'pwsh.exe'), startTime: '/Date(1760000000001)/' },
+    })
+
+    expect(await detectInvocationShell({ queryProcess, getCurrentPid: () => 1000 })).toBe('unknown')
+  })
+
+  test('returns unknown when the process query fails', async () => {
+    const queryProcess: ProcessQuery = () => Promise.reject(new Error('access denied'))
+    expect(await detectInvocationShell({ queryProcess, getCurrentPid: () => 1000 })).toBe('unknown')
+  })
+
+  test('distinguishes the invocation shells without changing workspace identity', async () => {
+    const getCurrentPid = () => 1000
+    const getEnv = () => ({ WT_SESSION: 's1' })
+    const host = trustedHost(900, 'Mon Jan 1 07:30:00 2024')
+    const queryForShell = (name: string) =>
+      makeTreeQuery({
+        1000: autobrowserProcess(1000, 800),
+        800: shellProcess(800, 900, name),
+        900: host,
+      })
+    const bash = { getCurrentPid, getEnv, queryProcess: queryForShell('bash.exe') }
+    const pwsh = { getCurrentPid, getEnv, queryProcess: queryForShell('pwsh.exe') }
+    const direct = {
+      getCurrentPid,
+      getEnv,
+      queryProcess: makeTreeQuery({ 1000: autobrowserProcess(1000, 900), 900: host }),
+    }
+
+    expect(await detectInvocationShell(bash)).toBe('bash')
+    expect(await detectInvocationShell(pwsh)).toBe('pwsh')
+    const expected = await resolveAutomaticWorkspaceId(direct)
+    expect(await resolveAutomaticWorkspaceId(bash)).toBe(expected)
+    expect(await resolveAutomaticWorkspaceId(pwsh)).toBe(expected)
+  })
+})
 
 describe('resolveAutomaticWorkspaceId', () => {
   test('uses AUTOBROWSER_CALLER_ID when set and keeps it stable', async () => {

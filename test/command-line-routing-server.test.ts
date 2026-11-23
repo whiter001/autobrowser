@@ -1,8 +1,9 @@
-import { describe, expect, test } from 'bun:test'
+import { describe, expect, spyOn, test } from 'bun:test'
 import { mkdir, mkdtemp, writeFile } from 'node:fs/promises'
 import { createServer } from 'node:net'
 import os from 'node:os'
 import path from 'node:path'
+import * as callerIdentity from '../src/cli/caller-identity.js'
 import { cliErrorPayload, runCli } from './command-line-test-utils.js'
 
 async function getFreePort(): Promise<number> {
@@ -406,6 +407,43 @@ describe('cli command routing', () => {
     expect(result.exitCode).toBe(1)
     expect(killCalls).toEqual([])
     expect(cliErrorPayload(result.stdout).error.message).toContain('not an autobrowser server')
+  })
+
+  test('status reports the local invocation shell in text, brief and JSON output', async () => {
+    const { detectInvocationShell } = callerIdentity
+    const detect = spyOn(callerIdentity, 'detectInvocationShell').mockResolvedValue('bash')
+    const fetchImpl = async () =>
+      Response.json({
+        relayPort: 57978,
+        ipcPort: 57979,
+        extensionConnected: false,
+        invocationShell: 'not-the-local-shell',
+      })
+
+    try {
+      const json = await runCli(['status', '--json'], undefined, { fetchImpl })
+      expect(JSON.parse(json.stdout)).toMatchObject({ invocationShell: 'bash' })
+
+      detect.mockResolvedValue('pwsh')
+      const text = await runCli(['status'], undefined, { fetchImpl })
+      expect(text.stdout).toContain('invocation shell: pwsh\n')
+      const brief = await runCli(['status', '--brief'], undefined, { fetchImpl })
+      expect(brief.stdout).toContain('invocation shell: pwsh\n')
+
+      detect.mockImplementation(() =>
+        detectInvocationShell({ queryProcess: () => Promise.reject(new Error('access denied')) }),
+      )
+      const unknown = await runCli(['status', '--json'], undefined, { fetchImpl })
+      expect(unknown.exitCode).toBe(0)
+      expect(JSON.parse(unknown.stdout)).toMatchObject({ invocationShell: 'unknown' })
+      expect(detect).toHaveBeenCalledTimes(4)
+
+      await runCli(['status', '--help'])
+      await runCli(['version'])
+      expect(detect).toHaveBeenCalledTimes(4)
+    } finally {
+      detect.mockRestore()
+    }
   })
 
   test('status marks a relay it auto-started in the structured result', async () => {

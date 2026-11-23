@@ -8,6 +8,7 @@ import {
   readJsonFile,
 } from '../../core/protocol.js'
 import { compareBuilds, readCliBuildInfo } from '../build-info.js'
+import { detectInvocationShell } from '../caller-identity.js'
 import { readExtensionBuildInfo } from '../extension-build-info.js'
 import { getStatus, isRecord } from '../client.js'
 import { CLI_ERROR_CODES, CliUsageError } from '../cli-error.js'
@@ -40,6 +41,9 @@ const SHUTDOWN_WATCHDOG_MS = 5_000
 
 export function formatStatusSummary(status: Record<string, unknown>, brief = false): string {
   const lines: string[] = ['autobrowser status']
+  if (typeof status.invocationShell === 'string') {
+    lines.push(`invocation shell: ${status.invocationShell}`)
+  }
   const relayPort = typeof status.relayPort === 'number' ? status.relayPort : null
   const ipcPort = typeof status.ipcPort === 'number' ? status.ipcPort : null
   const startedAt = typeof status.startedAt === 'string' ? status.startedAt : null
@@ -784,14 +788,26 @@ async function handleStatus(rest: string[], context: CommandContext): Promise<nu
 
   if (context.flags.engine !== 'chromium') {
     const payload = await context.requestCommand(context.flags.server, 'status', {})
-    context.writeResult(payload)
-    return payload.ok === false ? 1 : 0
+    if (payload.ok === false) {
+      context.writeResult(payload)
+      return 1
+    }
+    const invocationShell = await detectInvocationShell()
+    if (!context.flags.json) {
+      process.stdout.write(`invocation shell: ${invocationShell}\n`)
+      context.writeResult(payload)
+    } else {
+      context.writeResult({ ...payload, invocationShell })
+    }
+    return 0
   }
 
-  const status = await attachVersionSkew(
-    context,
-    await context.getCommandStatus(context.flags.server),
-  )
+  const serverStatus = await context.getCommandStatus(context.flags.server)
+  const [statusWithVersionSkew, invocationShell] = await Promise.all([
+    attachVersionSkew(context, serverStatus),
+    detectInvocationShell(),
+  ])
+  const status = { ...statusWithVersionSkew, invocationShell }
   // status 默认给人读的摘要：json 默认就是 true，只有显式 --json 才输出原始对象，
   // 否则 --raw/--brief 这类「要文本」的用法反而会被默认值吞掉。
   if (!context.flags.json || !context.flags.jsonExplicitlySet) {

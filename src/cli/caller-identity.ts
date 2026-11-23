@@ -275,6 +275,60 @@ async function withOverallTimeout<T>(promise: Promise<T>, timeoutMs: number): Pr
   }
 }
 
+function processStartTimestamp(startTime: string): number {
+  // Windows PowerShell 5.1 的 ConvertTo-Json 使用 /Date(...)/，不同于 ps 的日期字符串。
+  const windowsDate = /^\/Date\((-?\d+)(?:[+-]\d{4})?\)\/$/.exec(startTime)
+  return windowsDate ? Number(windowsDate[1]) : Date.parse(startTime)
+}
+
+/** 仅为本次调用提供诊断，不读取默认 shell 配置，也不参与 workspace 身份解析。 */
+export async function detectInvocationShell(
+  options: Pick<ResolveWorkspaceIdOptions, 'queryProcess' | 'getCurrentPid' | 'timeoutMs'> = {},
+): Promise<string> {
+  const timeoutMs = options.timeoutMs ?? defaultIdentityTimeoutMs()
+  const queryProcess =
+    options.queryProcess ??
+    (process.platform === 'win32' ? buildWindowsQuery(timeoutMs) : buildPosixQuery(timeoutMs))
+
+  try {
+    return await withOverallTimeout(
+      (async () => {
+        const startPid = options.getCurrentPid?.() ?? process.pid
+        let pid = startPid
+        let childStartedAt: number | undefined
+        const visited = new Set<number>()
+
+        // 只沿当前进程的父链查找；用于读进程表的 powershell 是子进程，不会被认作 shell。
+        while (Number.isInteger(pid) && pid > 1 && !visited.has(pid)) {
+          visited.add(pid)
+          const info = await queryProcess(pid)
+          if (!info) break
+
+          const startedAt = processStartTimestamp(info.startTime)
+          // 时间无效时无法验证父链；比子进程更新的父 PID 可能已复用。
+          if (
+            !Number.isFinite(startedAt) ||
+            (childStartedAt !== undefined && startedAt > childStartedAt)
+          ) {
+            break
+          }
+
+          const name = normalizeName(info.name)
+          if (pid !== startPid && ((name !== 'env' && SHELL_NAMES.has(name)) || name === 'nu')) {
+            return name
+          }
+          pid = info.ppid
+          childStartedAt = startedAt
+        }
+        return 'unknown'
+      })(),
+      timeoutMs,
+    )
+  } catch {
+    return 'unknown'
+  }
+}
+
 /**
  * 解析当前自动调用的 workspace 身份。
  *
