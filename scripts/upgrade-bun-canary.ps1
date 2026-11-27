@@ -152,6 +152,87 @@ function Get-FileSha256 {
     return (Get-FileHash -Path $Path -Algorithm SHA256).Hash.ToLower()
 }
 
+# 取得目标二进制的全部硬链接路径。
+# bun.exe / bunx.exe / node_modules\.bin\bun.exe 常常是同一个文件的多个硬链接，
+# 进程只要从其中任意一个路径启动，就会锁住 ~/.bun/bin/bun.exe 这个文件对象；
+# 此时按“可执行文件路径字符串是否等于目标路径”来匹配会漏掉它们。
+function Get-BunHardlinkPaths {
+    param([string]$BunPath)
+
+    $target = [System.IO.Path]::GetFullPath($BunPath)
+    $drive = $target.Substring(0, 2)
+    $paths = @()
+
+    try {
+        foreach ($line in (& fsutil hardlink list $BunPath 2>$null)) {
+            $text = "$line".Trim()
+            if (-not $text) { continue }
+            # fsutil 输出形如 \Users\xxx\...，缺少盘符
+            if ($text.StartsWith('\')) { $text = "$drive$text" }
+            if (-not [System.IO.Path]::IsPathRooted($text)) { continue }
+            $paths += [System.IO.Path]::GetFullPath($text)
+        }
+    }
+    catch { }
+
+    if ($paths.Count -eq 0) { $paths = @($target) }
+    return $paths
+}
+
+# 找出正在占用 bun 二进制的进程。
+# 注意：bun.exe / bunx.exe / node_modules\.bin\bun.exe 往往是指向同一文件的硬链接，
+# 任何一条路径上的进程运行起来都会锁住 ~/.bun/bin/bun.exe，导致覆盖安装失败。
+# 所以这里不能只看路径名，要按硬链接集合去匹配。
+function Get-BunLockingProcesses {
+    param([string]$BunPath)
+
+    $linkPaths = Get-BunHardlinkPaths -BunPath $BunPath
+    $result = @()
+    foreach ($proc in (Get-CimInstance Win32_Process -ErrorAction SilentlyContinue)) {
+        if (-not $proc.ExecutablePath) { continue }
+        try {
+            $exe = [System.IO.Path]::GetFullPath($proc.ExecutablePath)
+        }
+        catch { continue }
+        foreach ($link in $linkPaths) {
+            if ($exe -eq $link) {
+                $result += $proc
+                break
+            }
+        }
+    }
+    return $result
+}
+
+# 停掉占用 bun 的进程（autobrowser relay / dev server 等）。
+# -ExcludePid 用于避免误杀当前脚本自身所在的进程树。
+function Stop-BunLockingProcesses {
+    param([string]$BunPath, [int[]]$ExcludePid = @())
+
+    $procs = Get-BunLockingProcesses -BunPath $BunPath | Where-Object { $ExcludePid -notcontains $_.ProcessId }
+    if (-not $procs) { return 0 }
+
+    foreach ($proc in $procs) {
+        Write-Info "停止占用进程 PID $($proc.ProcessId): $(($proc.CommandLine -split ' ')[0])"
+        try {
+            Stop-Process -Id $proc.ProcessId -Force -ErrorAction Stop
+        }
+        catch {
+            Write-Warning "停止 PID $($proc.ProcessId) 失败: $($_.Exception.Message)"
+        }
+    }
+    return @($procs).Count
+}
+
+# 原地覆盖二进制。
+# 用 File.Copy(overwrite) 而不是 Copy-Item：前者走 CopyFileW，保持目标文件的 file ID 不变，
+# 于是 bun.exe / bunx.exe / node_modules\.bin\bun.exe 这一组硬链接不会因为升级而指向不同版本。
+function Set-FileContentInPlace {
+    param([string]$Source, [string]$Destination)
+
+    [System.IO.File]::Copy($Source, $Destination, $true)
+}
+
 # 读取已安装 bun 的 revision（形如 1.4.5-canary.1+9098897a1），取其中的 commit
 function Get-InstalledCommit {
     param([string]$BunPath)
@@ -291,21 +372,39 @@ try {
         Write-Ok "已备份旧版本 -> $(Split-Path $backup -Leaf)"
     }
 
-    try {
-        Copy-Item $newBin.FullName $bunPath -Force
-    }
-    catch {
-        throw "替换 $bunPath 失败：$($_.Exception.Message)。请先关闭正在运行的 bun 进程（如 dev server / relay）再重试。"
-    }
-
-    # Windows 上 bunx.exe 是 bun.exe 的副本；其他平台 bunx 是指向 bun 的软链
+    # 覆盖二进制前必须清掉占用它的进程（relay / dev server 会把 bun.exe 作为映像加载）。
+    # 占用进程随时可能被别的 CLI 调用重新拉起，所以清理和替换要放在同一个循环里重试。
     $bunxPath = Join-Path $InstallDir ($(if ($bunExeName.EndsWith('.exe')) { 'bunx.exe' } else { 'bunx' }))
-    if ($IsWindows -or $env:OS -eq 'Windows_NT') {
-        Copy-Item $newBin.FullName $bunxPath -Force
+    $installed = $false
+    $lastError = $null
+    for ($attempt = 1; $attempt -le 5; $attempt++) {
+        $stopped = Stop-BunLockingProcesses -BunPath $bunPath
+        if ($stopped -gt 0) {
+            Write-Info "已停止 $stopped 个占用进程，等待文件句柄释放..."
+            Start-Sleep -Milliseconds 800
+        }
+        try {
+            Set-FileContentInPlace -Source $newBin.FullName -Destination $bunPath
+            if ($IsWindows -or $env:OS -eq 'Windows_NT') {
+                # Windows 上 bunx.exe 与 bun.exe 通常是硬链接，原地覆盖 bun.exe 后两者同时更新；
+                # 少数环境下两者是独立文件，这里再补一次原地覆盖保证版本一致。
+                Set-FileContentInPlace -Source $newBin.FullName -Destination $bunxPath
+            }
+            else {
+                if (Test-Path $bunxPath) { Remove-Item $bunxPath -Force }
+                New-Item -ItemType SymbolicLink -Path $bunxPath -Target $bunPath | Out-Null
+            }
+            $installed = $true
+            break
+        }
+        catch {
+            $lastError = $_.Exception.Message
+            Write-Warning "替换失败（第 $attempt 次）: $lastError"
+            Start-Sleep -Seconds 2
+        }
     }
-    else {
-        if (Test-Path $bunxPath) { Remove-Item $bunxPath -Force }
-        New-Item -ItemType SymbolicLink -Path $bunxPath -Target $bunPath | Out-Null
+    if (-not $installed) {
+        throw "替换 $bunPath 失败：$lastError。请先关闭正在运行的 bun 进程（如 dev server / relay）再重试。"
     }
     Write-Ok "已安装到 $bunPath"
 
