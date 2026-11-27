@@ -183,6 +183,34 @@ describe('CLI response exit codes', () => {
     expect(result.requestCount).toBe(0)
   })
 
+  // 二级 action 的帮助旗标必须在参数解析前截住：-h/--help 若落到取值解析里，会被当成
+  // 宽度、坐标或 HAR 输出路径，既报错又可能发出请求。
+  for (const { argv, usage } of [
+    {
+      argv: ['set', 'viewport', '--help'],
+      usage: 'autobrowser set viewport [width] [height] [deviceScaleFactor] [mobile]',
+    },
+    { argv: ['set', 'geo', '-h'], usage: 'autobrowser set geo [latitude] [longitude] [accuracy]' },
+    {
+      argv: ['network', 'har', 'stop', '--help'],
+      usage: 'autobrowser network har stop [output.har]',
+    },
+    { argv: ['network', 'har', 'status', '--help'], usage: 'autobrowser network har status' },
+    {
+      argv: ['network', 'har', 'recover', '--help'],
+      usage: 'autobrowser network har recover [output.har]',
+    },
+  ]) {
+    test(`${argv.join(' ')} prints that action's usage without a request`, async () => {
+      const result = await runCli(argv, failure)
+      expect(result.exitCode).toBe(0)
+      expect(result.stdout).toContain('用法：')
+      expect(result.stdout).toContain(usage)
+      expect(result.stderr).toBe('')
+      expect(result.requestCount).toBe(0)
+    })
+  }
+
   test('an unwritten failed request does not override the final successful response', async () => {
     const result = await runCli(['test-exit-code'], failure, async (_rest, context) => {
       await context.requestCommand(context.flags.server, 'eval', { script: '42' })

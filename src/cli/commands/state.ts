@@ -247,6 +247,12 @@ async function handleSet(rest: string[], context: CommandContext): Promise<numbe
     return 0
   }
 
+  // type 已确定、具体参数还没解析：这里截住帮助旗标，否则 --help/-h 会被当成 width/取值
+  // （例如 set viewport --help 被报成非法宽度，而不是打印该 action 的用法）。
+  if (helpRequested(subArgs[0], context, ['set', type])) {
+    return 0
+  }
+
   if (type === 'viewport') {
     const viewportArgs = parseOrThrow(() => ({
       width: parseOptionalNumberArg(subArgs[0], 'viewport width', 1280, {
@@ -618,11 +624,13 @@ async function handleNetwork(rest: string[], context: CommandContext): Promise<n
       return 0
     }
 
-    if (subaction === 'start') {
-      if (helpRequested(rest[2], context, ['network', 'har', 'start'])) {
-        return 0
-      }
+    // 子命令已确定、参数尚未解析：帮助旗标必须先于解析，否则 har stop --help 会被当作
+    // HAR 输出路径，har status --help 也会直接发请求。
+    if (helpRequested(rest[2], context, ['network', 'har', subaction])) {
+      return 0
+    }
 
+    if (subaction === 'start') {
       await requestAndWrite(context, 'network', {
         action: 'har',
         subaction: 'start',
