@@ -1,6 +1,7 @@
 import type { PageObserveDependencies } from './page-observe-context.js'
 import { createFeedFeature } from './page-observe-feed.js'
 import { createSemanticFindFeature } from './page-observe-find.js'
+import { createReadPageFeature } from './page-observe-read-page.js'
 import { createScreenshotFeature } from './page-observe-screenshot.js'
 import { createSearchFeature } from './page-observe-search.js'
 import { createSnapshotFeature } from './page-observe-snapshot.js'
@@ -19,6 +20,12 @@ export type {
   SemanticTargetResult,
 } from './page-observe-find.js'
 export type {
+  ReadPageFeatureDependencies,
+  ReadPageScanEnvironment,
+  ReadPageScanOptions,
+  ReadPageScanResult,
+} from './page-observe-read-page.js'
+export type {
   SearchMatchLine,
   SearchPageTextOptions,
   SearchPageTextResult,
@@ -27,7 +34,7 @@ export type {
 export type { SnapshotTabOptions } from './page-observe-snapshot.js'
 
 /**
- * 组合各观察子域（screenshot/snapshot/find/search/feed/wait）。
+ * 组合各观察子域（screenshot/snapshot/find/search/feed/readPage/wait）。
  * 各子域实现位于 page-observe-*.ts，这里只负责依赖注入与对外暴露的稳定接口。
  */
 export function createPageObserveDomain(dependencies: PageObserveDependencies) {
@@ -36,6 +43,7 @@ export function createPageObserveDomain(dependencies: PageObserveDependencies) {
   const { findSemanticTarget } = createSemanticFindFeature(dependencies)
   const { searchPageText } = createSearchFeature(dependencies)
   const { collectFeed } = createFeedFeature(dependencies)
+  const { readPage } = createReadPageFeature(dependencies)
   const {
     waitForExpression,
     waitForLoadEvent,
@@ -50,6 +58,7 @@ export function createPageObserveDomain(dependencies: PageObserveDependencies) {
     collectFeed,
     captureScreenshot,
     findSemanticTarget,
+    readPage,
     searchPageText,
     snapshotTab,
     waitForExpression,

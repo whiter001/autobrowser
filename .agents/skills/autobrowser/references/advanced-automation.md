@@ -32,6 +32,16 @@
 - 空匹配是成功结果（`items: []`、`matchedCount: 0`），不要当成失败反复重跑；相对路径按调用方 cwd 解析，根级 `--tab`/`--frame` 同样生效。
 - 与 `feed`/`collect` 的分工：`extract` 处理当前页已经渲染出来的静态列表；需要滚动加载或翻页的流式内容用 `feed`/`collect`。
 
+## 长文与 PDF 读取（read_page）
+
+- `read_page` 面向“读正文”而不是“找元素”：它滚动扫描 DOM（或解析 PDF 文本层），把捕获到的全文分片返回。与 `snapshot`（可交互元素）、`search`（已加载文本里的查找）、`feed`（结构化卡片）分工不同。
+- 只有 `complete:true` 表示真正扫到底；`ok:true` 不等于读到了全文。`stopReason` 说明为什么停：`maxScreens`（屏数用尽）、`endlessFeed`（信息流持续长高）、`renderFrozen`（后台标签渲染被冻结）、`stalled`（滚动卡住）、`budgetExhausted`（页内预算耗尽）、`documentChanged`（扫描途中页面变了）、`captureLimit`（超过 400 万字符）、`noText`（没有文本）。空文本永远不会标成 `complete`。
+- `--cursor` 续读同一次扫描已捕获的内容（扩展侧缓存最多 8 份、总文本 8MiB、5 分钟 TTL），不会重新滚动扫描，因此不能与 `--max-screens`/`--timeout-ms` 同用。页面导航、URL 变化或缓存过期后游标失效并返回 `STALE_READ_CURSOR`；此时重新不带 `--cursor` 跑一次，不要把旧文本当成新页面。
+- `--output <path>` 把本次扫描捕获的完整文本（不只是 stdout 当前分片）以 UTF-8 原始文本写入文件，stdout 改为 `{ path, bytes }` 并保留完整读取元数据；长文优先落盘再按需摘取，避免把整篇塞进上下文。
+- 分片不会切断 UTF-16 代理对；同一篇正文里合法重复的行会保留（只去掉相邻两屏因滚动而重叠的部分），虚拟列表不会重复交付同一段文字。
+- PDF 页面自动切换为 `strategy:"pdf"`：逐页取文本层并保留 `[page N/M]` 标记，返回 `pdfStatus`（`ok`/`loading`/`no_text`/`password`/`too_large`/`unavailable`）与 `pages`/`pagesRead`。顶层原生 PDF 的视图器不可达时，会按原 PDF URL 带登录态（`credentials:"include"`）下载原始字节（上限 20MiB），用扩展内置 pdf.js 在本地解析文本，字节不发往外部服务。密码保护、无文本层、未加载完成、解析失败都不会返回 `complete:true`；没有文本层时只提示外部做 OCR，autobrowser 不自动 OCR、不绕过密码。frame 里的 PDF 用 webNavigation 的 `documentId` 唯一定位，同名 URL 出现在多个 frame 时报 `AMBIGUOUS_FRAME`，不会猜一个。
+- 只读观察：不点击、不提交、不主动激活标签页，读完恢复原滚动位置；可在只读 workspace 运行。
+
 ## SPA 列表与文本采集
 
 - 对于类似 x.com 的 SPA 列表页，优先从 `article` 等可见节点读取内容，不要直接相信 `get text body`。

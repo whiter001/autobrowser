@@ -2,6 +2,7 @@ import { copyFile, readFile, rm, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { EXTENSION_PUBLIC_KEY } from '../src/core/extension.js'
 import { createBuildInfo, formatBuildVersionName, writeBuildInfoFile } from './lib/build-info.js'
+import { buildPdfJsAssets } from './lib/pdfjs-assets.js'
 
 const rootDir = process.cwd()
 const extensionDir = path.join(rootDir, 'extension')
@@ -27,6 +28,7 @@ if (!build.success) {
 
 const buildInfo = await createBuildInfo(rootDir)
 await writeBuildInfoFile(outputDir, buildInfo)
+await buildPdfJsAssets(outputDir, rootDir)
 
 const manifestPath = path.join(outputDir, 'manifest.json')
 const manifest = JSON.parse(

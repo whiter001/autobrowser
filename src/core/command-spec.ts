@@ -1,6 +1,14 @@
 import { parseSearchQueryRegex } from './search.js'
 import { getCommandRequestBudgetMs } from './command-budget.js'
 import { MAX_DOWNLOAD_RETRIES, MAX_DOWNLOAD_RETRY_DELAY_MS } from './file-transfer.js'
+import {
+  READ_PAGE_MAX_CHARS_LIMIT,
+  READ_PAGE_MAX_SCREENS_LIMIT,
+  READ_PAGE_MAX_TIMEOUT_MS,
+  READ_PAGE_MIN_CHARS,
+  READ_PAGE_MIN_SCREENS,
+  READ_PAGE_MIN_TIMEOUT_MS,
+} from './read-page.js'
 
 import {
   COMMAND_CATALOG,
@@ -979,6 +987,66 @@ function validateCommandArgsShape(command: string, args: unknown): void {
           command,
           error instanceof Error ? error.message : 'invalid search regex',
           { field: 'query', value: query },
+        )
+      }
+      return
+    }
+    case 'read_page': {
+      const cursor = readStringField(normalizedArgs, 'cursor', command, { required: false })
+      const maxChars = readOptionalNonNegativeIntegerField(normalizedArgs, 'maxChars', command)
+      if (
+        maxChars !== undefined &&
+        (maxChars < READ_PAGE_MIN_CHARS || maxChars > READ_PAGE_MAX_CHARS_LIMIT)
+      ) {
+        throw createCommandArgsValidationError(
+          command,
+          `maxChars must be between ${READ_PAGE_MIN_CHARS} and ${READ_PAGE_MAX_CHARS_LIMIT}`,
+          { field: 'maxChars', value: maxChars },
+        )
+      }
+      const maxScreens = readOptionalNonNegativeIntegerField(normalizedArgs, 'maxScreens', command)
+      if (
+        maxScreens !== undefined &&
+        (maxScreens < READ_PAGE_MIN_SCREENS || maxScreens > READ_PAGE_MAX_SCREENS_LIMIT)
+      ) {
+        throw createCommandArgsValidationError(
+          command,
+          `maxScreens must be between ${READ_PAGE_MIN_SCREENS} and ${READ_PAGE_MAX_SCREENS_LIMIT}`,
+          { field: 'maxScreens', value: maxScreens },
+        )
+      }
+      const timeoutMs = readOptionalNonNegativeNumberField(normalizedArgs, 'timeoutMs', command)
+      if (
+        timeoutMs !== undefined &&
+        (timeoutMs < READ_PAGE_MIN_TIMEOUT_MS || timeoutMs > READ_PAGE_MAX_TIMEOUT_MS)
+      ) {
+        throw createCommandArgsValidationError(
+          command,
+          `timeoutMs must be between ${READ_PAGE_MIN_TIMEOUT_MS} and ${READ_PAGE_MAX_TIMEOUT_MS}`,
+          { field: 'timeoutMs', value: timeoutMs },
+        )
+      }
+      readBooleanField(normalizedArgs, 'includeCapturedText', command)
+      // 续读只回放已捕获的缓存，不会重新滚动；让用户以为 maxScreens/timeoutMs 会重新生效
+      // 会导致误判，所以直接拒绝这两个组合。
+      if (cursor !== undefined && maxScreens !== undefined) {
+        throw createCommandArgsValidationError(
+          command,
+          'cursor cannot be combined with maxScreens',
+          {
+            field: 'maxScreens',
+            value: maxScreens,
+          },
+        )
+      }
+      if (cursor !== undefined && timeoutMs !== undefined) {
+        throw createCommandArgsValidationError(
+          command,
+          'cursor cannot be combined with timeoutMs',
+          {
+            field: 'timeoutMs',
+            value: timeoutMs,
+          },
         )
       }
       return

@@ -18,6 +18,11 @@ const GENERIC_ACTION: ErrorAction = {
 }
 
 export const ERROR_ACTIONS: Record<string, ErrorAction> = {
+  AMBIGUOUS_FRAME: {
+    retryable: false,
+    action:
+      'Point --frame at a frame that is unique in the tab (or read the top-level document); autobrowser will not guess between same-URL frames.',
+  },
   AMBIGUOUS_TARGET: {
     retryable: false,
     action:
@@ -198,6 +203,16 @@ export const ERROR_ACTIONS: Record<string, ErrorAction> = {
     retryable: false,
     action:
       'Restart the list query without cursor; the previous continuation point no longer exists.',
+  },
+  STALE_READ_CURSOR: {
+    retryable: false,
+    action:
+      'Run read_page again without --cursor: the page or capture changed, and the old cursor must not be replayed against new content.',
+  },
+  PDF_UNAVAILABLE: {
+    retryable: false,
+    action:
+      'Open the PDF in a top-level tab and run read_page again; autobrowser never falls back to reading the viewer chrome as if it were the PDF text.',
   },
   STALE_ELEMENT_REF: {
     retryable: false,

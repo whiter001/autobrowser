@@ -7,7 +7,7 @@
 - 端口 `57978` 的本地中继服务
 - 端口 `57979` 的 CLI API 服务
 - 带有基于 token 的连接流程的浏览器扩展
-- 覆盖服务与连接管理、导航、标签页和窗口控制、元素交互、对话框、等待与状态检查、cookie、存储、剪贴板、浏览器状态、网络检查与拦截、snapshot、snapshot 导出/提取、截图、初始化脚本注入（`script add/list/remove`），以及 `batch`、`status`、`config`、`replay`、`network export` 这类实用命令的核心能力
+- 覆盖服务与连接管理、导航、标签页和窗口控制、元素交互、对话框、等待与状态检查、cookie、存储、剪贴板、浏览器状态、网络检查与拦截、snapshot、snapshot 导出/提取、长文读取（read_page，支持 DOM 与 PDF）、截图、初始化脚本注入（`script add/list/remove`），以及 `batch`、`status`、`config`、`replay`、`network export` 这类实用命令的核心能力
 
 以上能力同样通过 npm 全局安装的 `autobrowser` 命令提供，npm 用户不需要克隆本仓库；安装步骤见 [`install.md`](install.md)。
 
@@ -87,6 +87,16 @@ autobrowser find label "Email" fill "agent@example.com"
 ```
 
 当你需要把 snapshot 数据导出给下游处理时，可以使用 `snapshot export` 导出完整的 JSONL 流，或者用 `snapshot extract` 搭配 `--field` 选择更窄的记录。对于网络跟踪，`network export` 会写出 JSONL 摘要，通常比完整 HAR 更方便 diff。
+
+要读长页面正文（文章、报告、PDF），用 `read_page`：
+
+```bash
+autobrowser read_page --max-chars 20000
+autobrowser read_page --output ./article.txt
+autobrowser read_page --cursor rp_xxx --max-chars 20000
+```
+
+它会滚动扫描 DOM（或解析 PDF 文本层）并把全文分片返回。**`ok:true` 不等于读到了全文**：只有真正扫到底时 `complete` 才为 `true`，其余情况由 `stopReason` 说明（`maxScreens`、`endlessFeed`、`renderFrozen`、`stalled`、`budgetExhausted`、`documentChanged`、`captureLimit`、`noText`）。扫描总是从页首开始，读完恢复原滚动位置；途中跳转会立即停止并报告 `documentChanged`，不会混入新页面正文，也不会滚动新页面。`--cursor` 只回放已捕获的缓存、不会重新扫描，页面变了会返回 `STALE_READ_CURSOR`；`--output` 把本次捕获的完整文本以 UTF-8 落盘，stdout 只回 `{path, bytes}`，但 `complete`/`stopReason`/`truncated` 仍按真实语义返回（写了文件不等于读完）。PDF 页面会返回 `pdfStatus`（`ok`/`loading`/`no_text`/`password`/`too_large`/`unavailable`）与 `pages`/`pagesRead`；视图器不可达的顶层原生 PDF 会按原 URL 带登录态下载原始字节（上限 20MiB），用扩展内置 pdf.js 本地解析，字节不外传。没有文本层时只提示外部 OCR，autobrowser 不自动 OCR、不绕过密码。该命令只读：不点击、不提交、不激活标签页。
 
 对于多标签页流程，优先使用 `tab list` 中的稳定标签页句柄：
 

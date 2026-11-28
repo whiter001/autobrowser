@@ -1137,6 +1137,26 @@ export const HELP_ROOT: HelpNode = helpNode(
         '示例：nextStartLine:201 -> autobrowser search "error" --context 3 --start-line 201',
       ],
     ),
+    helpNode(
+      'read_page',
+      '读取长页面正文：滚动扫描 DOM 或解析 PDF 文本，按分片返回。',
+      'autobrowser read_page [--cursor <id>] [--max-chars <1..60000>] [--max-screens <1..60>] [--timeout-ms <100..120000>] [--output <path>]',
+      [
+        '--cursor <id>  续读同一次扫描已捕获的内容；只回放缓存，不会重新滚动扫描',
+        '--max-chars <n>  本次返回的最大字符数（默认 60000）',
+        '--max-screens <n>  首次扫描最多推进的屏数（默认 60）',
+        '--timeout-ms <ms>  页内扫描预算（默认 25000，范围 100..120000）',
+        '--output <path>  把本次扫描捕获的完整文本以 UTF-8 写入文件，stdout 改为 { path, bytes }',
+        '返回 text/url/strategy/chars/totalChars/complete/truncated/nextCursor/stopReason/screens/scrollHeight/backgroundTab。',
+        'complete 只有在真正扫到底时才为 true；stopReason 说明为什么停下：maxScreens、endlessFeed、renderFrozen、stalled、budgetExhausted、documentChanged、captureLimit、noText。',
+        'ok:true 不等于读到了全文：必须同时检查 complete 与 stopReason，空文本永远不会是 complete。',
+        '--cursor 不能与 --max-screens/--timeout-ms 同用：续读只回放缓存，这两个参数不会重新生效。',
+        'PDF 页面返回 strategy:pdf 与 pdfStatus（ok/loading/no_text/password/too_large/unavailable）以及 pages/pagesRead；顶层原生 PDF 的视图器不可达时，按原 URL 带登录态下载原始字节（上限 20MiB）并用内置 pdf.js 本地解析，字节不外传；没有文本层时 autobrowser 不会自动 OCR，也不会绕过密码。',
+        '只读观察命令：不点击、不提交、不激活标签页，滚动读取结束后恢复原来的滚动位置。',
+        '与其它命令的分工：snapshot 看可交互元素，search 在已加载文本里查找，feed 采结构化卡片，read_page 读长正文。',
+        '根级 --tab/--frame/--workspace 照常生效；read_page 允许在只读工作区里运行。',
+      ],
+    ),
   ],
 )
 

@@ -241,6 +241,61 @@ export const MCP_TOOLS: McpToolDefinition[] = [
     toArgs: (args) => onlyDefined(args, ['query', 'context', 'limit', 'startLine']),
   },
   {
+    name: 'read_page',
+    description:
+      'Read long page content: scroll the DOM and capture the text, or extract a PDF text layer. Returns text (current slice), chars/totalChars, complete, stopReason. complete is true only when the page was scanned to the end; ok:true alone does not mean the whole text was read. stopReason says why the scan stopped (maxScreens, endlessFeed, renderFrozen, stalled, budgetExhausted, documentChanged, captureLimit, noText). A cursor replays the captured buffer without rescanning; it cannot be combined with maxScreens/timeoutMs. PDF pages add strategy pdf, pdfStatus and pages/pagesRead; autobrowser never OCRs or unlocks a PDF.',
+    command: 'read_page',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        cursor: {
+          type: 'string',
+          description:
+            'Continue a previous read from its nextCursor. Replays the captured buffer only; cannot be combined with maxScreens or timeoutMs.',
+        },
+        maxChars: {
+          type: 'integer',
+          minimum: 1,
+          maximum: 60000,
+          description: 'Maximum characters returned (default 60000).',
+        },
+        maxScreens: {
+          type: 'integer',
+          minimum: 1,
+          maximum: 60,
+          description: 'Maximum screens the first scan advances through (default 60).',
+        },
+        timeoutMs: {
+          type: 'number',
+          minimum: 100,
+          maximum: 120000,
+          description: 'In-page scan budget in milliseconds (default 25000).',
+        },
+        output: {
+          type: 'string',
+          description: 'Write the full captured text to this path (UTF-8); returns {path, bytes}.',
+        },
+      },
+    },
+    toArgs: (args) => {
+      if (args.cursor !== undefined && args.maxScreens !== undefined) {
+        throw new Error('cursor cannot be combined with maxScreens')
+      }
+      if (args.cursor !== undefined && args.timeoutMs !== undefined) {
+        throw new Error('cursor cannot be combined with timeoutMs')
+      }
+      const out = onlyDefined(args, ['cursor', 'maxChars', 'maxScreens', 'timeoutMs'])
+      if (args.output !== undefined) {
+        if (typeof args.output !== 'string' || !args.output.trim()) {
+          throw new Error('output must be a non-empty string')
+        }
+        out.output = args.output
+        out.includeCapturedText = true
+      }
+      return out
+    },
+  },
+  {
     name: 'feed',
     description:
       'Collect structured cards from a virtual list with scrolling and dedupe. Returns author, handle, time, text, url, mediaUrls, avatarUrls, timelineContext, repostBy, adapter, promoted, authorUrl and trackingUrl. mediaUrls holds body images/videos only; avatars are reported separately in avatarUrls. timelineContext is the timeline/social context text (for example, a repost banner such as "Hongbo Zhang 已转帖") and repostBy is the account that reposted (null when no repost author can be identified). URL dedupe falls back to author/handle/text for cards without links; STALE_FEED_STATE means the page navigated and results were discarded. adapter names the optional site adapter that was enabled (for example "youtube"); it is null when the page matched no adapter and the generic extraction was used. promoted marks advertising cards (false for regular cards), authorUrl is the author home page and trackingUrl is the ad tracking link; both are null when the site has no such semantics. On YouTube the adapter reads the channel name as author, the /@handle link as handle, the publish time only from the metadata line (null when there is no reliable time) and treats images inside channel links as avatars. On Bilibili the adapter reads the owner name as author, the publish date only from the card date area (null when there is no reliable date), the BV video link as url and space.bilibili.com/<uid> as authorUrl; cm.bilibili.com tracking links go to trackingUrl, and ad cards get promoted true with url null so dedupe falls back to author and text instead of the tracking URL.',

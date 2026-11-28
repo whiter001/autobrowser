@@ -12,7 +12,9 @@
     "downloads",
     "tabCapture",
     "offscreen",
-    "alarms"
+    "alarms",
+    "scripting",
+    "webNavigation"
   ],
   "host_permissions": [
     "http://127.0.0.1:*/*",
@@ -25,6 +27,12 @@
   "background": {
     "service_worker": "background.js"
   },
+  "web_accessible_resources": [
+    {
+      "resources": ["vendor/pdfjs/*"],
+      "matches": ["<all_urls>"]
+    }
+  ],
   "options_page": "options.html",
   "action": {
     "default_title": "autobrowser"

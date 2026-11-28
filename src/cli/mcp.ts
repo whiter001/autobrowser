@@ -18,7 +18,7 @@ import {
   toVideoResult,
   type McpResponseMode,
 } from './mcp-response.js'
-import { MCP_TOOLS, MCP_TOOLS_BY_NAME } from './mcp-tools.js'
+import { MCP_TOOLS, MCP_TOOLS_BY_NAME, type McpToolDefinition } from './mcp-tools.js'
 import { parseResponseFormat } from './response-format.js'
 
 const CURSOR_LIST_COMMANDS = new Set([
@@ -39,6 +39,7 @@ export const MCP_CORE_TOOL_NAMES = [
   'reload',
   'snapshot',
   'search',
+  'read_page',
   'find',
   'click',
   'fill',
@@ -270,11 +271,43 @@ export class AutobrowserMcpServer {
       }
     }
 
-    return toSuccessResult(payload.result, {
+    let resolvedResult: unknown = payload.result
+    try {
+      resolvedResult = await this.resolveCommandResult(definition, commandArgs, payload)
+    } catch (error) {
+      return toErrorResult(
+        undefined,
+        error instanceof Error ? error.message : String(error),
+        {},
+        { responseMode: this.responseMode },
+      )
+    }
+
+    return toSuccessResult(resolvedResult, {
       command: definition.command,
       responseFormat,
       responseMode: this.responseMode,
     })
+  }
+
+  /**
+   * read_page --output 由 MCP 进程本地落盘：正文太大时不该塞进模型上下文，
+   * 只回 {path, bytes} 摘要。
+   */
+  private async resolveCommandResult(
+    definition: McpToolDefinition,
+    commandArgs: Record<string, unknown>,
+    payload: CommandResponse,
+  ): Promise<unknown> {
+    const outputPath = commandArgs.output
+    if (definition.command !== 'read_page' || typeof outputPath !== 'string') {
+      return payload.result
+    }
+    if (!isRecord(payload.result)) {
+      return payload.result
+    }
+    const { writeReadPageOutput } = await import('./commands/read-page.js')
+    return await writeReadPageOutput(payload.result, outputPath)
   }
 
   async connect(transport: Transport): Promise<void> {

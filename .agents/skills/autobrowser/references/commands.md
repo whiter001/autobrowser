@@ -26,6 +26,7 @@
 - `get`
 - `wait`
 - `snapshot`
+- `read_page [--cursor <id>] [--max-chars <1..60000>] [--max-screens <1..60>] [--timeout-ms <100..120000>] [--output <path>]` — 滚动扫描 DOM 或解析 PDF 文本层并分片返回长正文。ok:true 不等于全文，只有 complete:true 才是扫到底，其余看 stopReason（maxScreens/endlessFeed/renderFrozen/stalled/budgetExhausted/documentChanged/captureLimit/noText）。--cursor 只回放捕获缓存、不重新扫描，不能与 --max-screens/--timeout-ms 同用，失效时报 STALE_READ_CURSOR；--output 把本次捕获的完整文本以 UTF-8 落盘、stdout 只回 path 与 bytes。PDF 额外返回 pdfStatus 与 pages/pagesRead；顶层原生 PDF 的视图器不可达时按原 URL 带登录态下载原始字节（上限 20MiB）并用内置 pdf.js 本地解析，字节不外传。
 - `screenshot [path] [--element <selector|@eN>] [--full]` — `--element` 会先把目标滚到视口中心并短暂等待懒加载图片 decode，不修改视口尺寸；超时后先用 `command status` 核验，不要重放
 - `eval` — 用 --arg <key=value>（可重复）或 --args-json '<json-object>'（二者互斥）向脚本注入局部变量 args；用 --offset/--limit 对字符串或数组结果分页，返回 { value, pagination }。目标停在 chrome-error:// 时返回 NAVIGATION_FAILED，不会执行脚本。
 - `run <file.js>`
@@ -59,6 +60,6 @@
 ## 其他调用接口
 
 - MCP 客户端无需走 CLI：导航类可用 `navigate` / `reload` / `back` / `forward`，脚本与扩展控制用 `script` / `extension`，参数与 CLI 同名（`tab` / `frame` 由工具自动注入）。
-- MCP 默认只列出 19 个核心工具：`navigate`、`reload`、`snapshot`、`search`、`find`、`click`、`fill`、`type`、`press`、`get`、`wait`、`eval`、`tab_list`、`tab_attach`、`tab_detach`、`tab_new`、`tab_select`、`tab_close`、`workspace`。`AUTOBROWSER_MCP_TOOLSET=all` 恢复完整 54 个；未列出的工具仍可直接调用，只是不出现在 `tools/list`。
+- MCP 默认只列出 20 个核心工具：`navigate`、`reload`、`snapshot`、`search`、`read_page`、`find`、`click`、`fill`、`type`、`press`、`get`、`wait`、`eval`、`tab_list`、`tab_attach`、`tab_detach`、`tab_new`、`tab_select`、`tab_close`、`workspace`。`AUTOBROWSER_MCP_TOOLSET=all` 恢复完整 55 个；未列出的工具仍可直接调用，只是不出现在 `tools/list`。
 - MCP 响应默认 `AUTOBROWSER_MCP_RESPONSE_MODE=text`，只写 `content` 文本；`structured` 对普通 object 只写 `structuredContent`（数组/原始值回退文本），`both` 双写兼容旧客户端。错误结果同样遵循该模式，`structured`/`both` 下读 `structuredContent.error`。`screenshot` / `video` / `tracing` 的媒体结果保持原样。
 - `cookies list` 是 `cookies get` 的别名，支持同样的 `--domain` / `--path` 过滤。

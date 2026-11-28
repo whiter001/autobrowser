@@ -480,6 +480,24 @@ export function createCommandHandlers({
       scope.frameSelector,
     )
   })
+  register(['read_page'], async ({ scope }) => {
+    const { args } = scope
+    const cursor = readOptionalStringArg(args, 'cursor')
+    const maxChars = readOptionalNumberArg(args, 'maxChars')
+    const maxScreens = readOptionalNumberArg(args, 'maxScreens')
+    const timeoutMs = readOptionalNumberArg(args, 'timeoutMs')
+    return await pageObserve.readPage(
+      scope.tabId,
+      {
+        ...(cursor ? { cursor } : {}),
+        ...(maxChars !== undefined ? { maxChars } : {}),
+        ...(maxScreens !== undefined ? { maxScreens } : {}),
+        ...(timeoutMs !== undefined ? { timeoutMs } : {}),
+        ...(readBooleanArg(args, 'includeCapturedText') ? { includeCapturedText: true } : {}),
+      },
+      scope.frameSelector,
+    )
+  })
   register(['screenshot'], async ({ scope }) => {
     return await pageObserve.captureScreenshot(
       scope.tabId,

@@ -16,6 +16,7 @@ const CORE_TOOL_NAMES = [
   'reload',
   'snapshot',
   'search',
+  'read_page',
   'find',
   'click',
   'fill',
@@ -42,6 +43,7 @@ const KNOWN_TOOL_NAMES = [
   'extension',
   'snapshot',
   'search',
+  'read_page',
   'feed',
   'find',
   'click',
@@ -115,7 +117,7 @@ function okResult(result: unknown): CommandResponse {
 }
 
 describe('AutobrowserMcpServer.listTools', () => {
-  test('exposes only the 19 core tools by default', () => {
+  test('exposes only the 20 core tools by default', () => {
     const server = new AutobrowserMcpServer({ requestCommand: async () => okResult({}) })
     const tools = server.listTools()
 
@@ -126,14 +128,14 @@ describe('AutobrowserMcpServer.listTools', () => {
     }
   })
 
-  test('exposes all 54 tools with object-typed input schemas when toolset is all', () => {
+  test('exposes all 55 tools with object-typed input schemas when toolset is all', () => {
     const server = new AutobrowserMcpServer({
       toolset: 'all',
       requestCommand: async () => okResult({}),
     })
     const tools = server.listTools()
 
-    expect(tools).toHaveLength(54)
+    expect(tools).toHaveLength(55)
     expect(tools.map((tool) => tool.name)).toEqual(KNOWN_TOOL_NAMES)
     for (const tool of tools) {
       expect(tool.inputSchema.type).toBe('object')

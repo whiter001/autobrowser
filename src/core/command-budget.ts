@@ -118,6 +118,11 @@ export function getCommandRequestBudgetMs(
       const timeout = duration('timeout')
       const ms = duration('ms')
       explicit = ms !== undefined && ms > 0 ? ms : timeout
+    } else if (name === 'read_page') {
+      // 页内扫描有自己的 deadline；relay 必须等得比它久，
+      // 否则扩展还在滚动时 relay 先取消，代理只会看到超时而不是部分结果。
+      // 未显式指定时沿用默认预算，不额外加传输余量。
+      explicit = duration('timeoutMs')
     } else if (name === 'feed') {
       // 先按 collectFeed 归一化，时间上限只约束最终预算，不约束计数。
       const count = (key: string, fallback: number): number => {

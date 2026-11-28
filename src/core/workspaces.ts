@@ -44,6 +44,7 @@ const READONLY_COMMANDS = new Set([
   'get',
   'is',
   'media',
+  'read_page',
   'search',
   'snapshot',
   'wait',

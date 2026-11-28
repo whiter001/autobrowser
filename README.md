@@ -11,7 +11,7 @@
 - 本地中继服务，端口 `57978`
 - CLI API 服务，端口 `57979`
 - 带有基于 token 的连接流程的浏览器扩展
-- 覆盖服务与连接管理、导航、标签页和窗口控制、元素交互、对话框、等待与状态检查、cookie、存储、剪贴板、浏览器状态、网络检查与拦截、snapshot、snapshot 导出/提取、截图、初始化脚本注入，以及 `batch`、`status`、`config`、`replay` 这类实用命令的核心能力
+- 覆盖服务与连接管理、导航、标签页和窗口控制、元素交互、对话框、等待与状态检查、cookie、存储、剪贴板、浏览器状态、网络检查与拦截、snapshot、snapshot 导出/提取、长文读取（read_page，支持 DOM 与 PDF）、截图、初始化脚本注入，以及 `batch`、`status`、`config`、`replay` 这类实用命令的核心能力
 
 运行 `autobrowser help` 可以查看完整命令树。`src/cli/help.ts` 里的 help 输出是权威来源，也会说明根级标志位，例如 `--tab`、`--frame` 和 `--auto-connect`。
 
@@ -502,6 +502,23 @@ autobrowser search "error" --limit 10
 
 查询默认按大小写不敏感的子串匹配；以 `/pattern/flags` 形式书写则按正则匹配（`g` 标志会被忽略）。`--context <n>` 控制上下文行数（默认 3，范围 0–50）；`--limit <n>` 限制窗口数（默认 20、最大 200，0 不返回窗口或游标）。每次还受 200 返回行/100000 UTF-8 字节预算约束，单个合并窗口也可能截断。`--start-line <n>` 为 1 起算的正安全整数，默认 1；若 `truncated:true` 且 `nextStartLine:201`，保持查询/目标不变运行 `search "error" --limit 10 --start-line 201` 续读，MCP 对应 `search` 的 `startLine:201`。页面内容变化可能改变行号，应重新确认。该命令只读、不定位元素也不执行动作，与 `find` 互补。
 
+`read_page` 命令读取长页面正文：滚动扫描 DOM（或解析 PDF 文本层），把全文分片返回：
+
+```bash
+autobrowser read_page                              # 读当前页正文，默认每次最多返回 60000 字符
+autobrowser read_page --max-chars 20000            # 自定义单次返回上限
+autobrowser read_page --output ./article.txt       # 把本次捕获的完整文本落盘
+autobrowser read_page --cursor rp_xxx --max-chars 20000   # 续读上一次扫描已捕获的部分
+```
+
+返回 `text`、`url`、`strategy`（`dom` / `pdf`）、`chars`、`totalChars`、`complete`、`truncated`、`nextCursor`、`stopReason`、`screens`、`scrollHeight`、`backgroundTab`。**`ok:true` 不等于读到了全文**：只有真正扫到底时 `complete` 才为 `true`，其余情况由 `stopReason` 说明原因——`maxScreens`（屏数用尽）、`endlessFeed`（信息流无限长高）、`renderFrozen`（后台标签页渲染被冻结）、`stalled`（滚动卡住）、`budgetExhausted`（页内预算耗尽）、`documentChanged`（扫描途中页面变了）、`captureLimit`（超过 400 万字符捕获上限）、`noText`（没有读到文本）。空文本永远不会标成 `complete`。
+
+`--cursor` 只回放扩展侧的捕获缓存（最多 8 份、总文本 8MiB、5 分钟 TTL），不会重新滚动扫描，因此不能与 `--max-screens` / `--timeout-ms` 同用；页面导航、URL 变化或缓存过期后游标会失效并返回 `STALE_READ_CURSOR`，此时应重新运行一次不带 `--cursor` 的 `read_page`。`--output <path>` 把**本次扫描捕获的完整文本**（不是 stdout 当前分片）以 UTF-8 原始文本写入文件，stdout 改为 `{ path, bytes }` 并保留完整读取元数据——写了文件不等于读到了全文，`complete`/`stopReason`/`truncated`/`chars` 仍按本次读取的真实语义返回，落盘字符数另记在 `capturedChars`。分片不会切断 UTF-16 代理对；若 `--max-chars 1` 恰好落在代理对上、连一个完整码点都放不下，会直接返回 `INVALID_COMMAND_ARGS`（建议 `--max-chars` ≥ 2），而不是给一个永远前进不了的空分片。
+
+PDF 页面会自动切换到 `strategy: "pdf"`，逐页取文本层并保留 `[page N/M]` 标记，同时返回 `pdfStatus`（`ok` / `loading` / `no_text` / `password` / `too_large` / `unavailable`）以及 `pages`、`pagesRead`。如果 PDF 视图器不可达（Chrome 158 的顶层原生 PDF 没有 `PDFViewerApplication`），autobrowser 会按原 PDF URL 带登录态（`credentials: "include"`）下载原始字节，用扩展内置的 pdf.js 在本地解析文本；下载上限 20MiB，超限报 `too_large`。字节不会发往外部服务，只在当前标签页/扩展内处理。密码保护、无文本层、未加载完成和解析失败都不会返回 `complete:true`；没有文本层时只会提示外部做 OCR，autobrowser 不会自动 OCR，也不会绕过密码。frame 里的 PDF 通过 webNavigation 的 `documentId` 唯一定位，同名 URL 出现在多个 frame 时报 `AMBIGUOUS_FRAME` 而不是猜一个。
+
+分工建议：`snapshot` 看可交互元素、`search` 在已加载文本里查找、`feed` 采结构化卡片、`read_page` 读长正文。`read_page` 是只读观察命令：不点击、不提交、不激活标签页，可在只读工作区里运行。扫描总是**从页首开始**（不依赖当前滚动位置，原位置在中部或底部也不会漏掉前文），读完后恢复原来的滚动位置；扫描途中若页面发生跳转，会立即停止并报告 `documentChanged`，既不会把新页面的正文混进旧结果，也不会去滚动新页面。
+
 `batch` 命令把多条命令编码成一个 JSON 序列一次提交，按顺序执行，适合“先快照、再按条件交互”的多步流程。每条命令是一个对象：`command`（命令名）、`args`（参数对象）、可选的 `label`（步骤说明）、可选的 `id`（供后续步骤引用的稳定标识）、可选的 `when`（条件分支）、可选的 `skipRemainingOnFailure`（失败即终止剩余步骤）。`when` 引用前面某个步骤的结果做分支：`step` 是被引用步骤的序号（1 起算）或 `id`，`path` 是结果上的点路径（支持数组下标，如 `elements.0.ref`），`equals` / `truthy` / `exists` 三选一作为判定谓词：
 
 ```json
@@ -514,7 +531,7 @@ autobrowser search "error" --limit 10
 
 条件不满足，或引用的步骤失败/被跳过时，该步骤被跳过（结果带 `skipped: true` 与 `reason`），后续步骤照常执行；`skipRemainingOnFailure: true` 只在 `continueOnError: true` 时生效——失败后剩余步骤会被显式标记跳过（summary 带 `terminated: true`），否则（默认）batch 在首个失败步骤处报 `BATCH_STEP_FAILED` 并中止。
 
-请求预算默认 30 秒；显式 eval/navigation/click `timeoutMs`、wait `timeout`/`ms` 加 5 秒传输余量且不低于默认预算。feed 按滚动次数（上限 40）× `pauseMs` + 60 秒执行余量 + 5 秒传输余量计算，不低于默认预算，超过 30 分钟则拒绝。batch 合成步骤、重试、延迟和嵌套预算，总上限 30 分钟（含余量），超大/非有限预算会拒绝。已发送后断连的结果可能未知；仅白名单只读命令会在重连后按剩余预算重试一次，副作用命令不自动重放。先检查 `status`、`command list` 和页面实际状态。显式 batch `retries` 可能重复失败步骤已发生的副作用，**不是幂等保证**；取消/超时阻止后续步骤，但不能撤销已发生的动作或所有在途 CDP 工作。
+请求预算默认 30 秒；显式 eval/navigation/click `timeoutMs`、wait `timeout`/`ms` 加 5 秒传输余量且不低于默认预算。read_page 的 `timeoutMs`（默认 25000，范围 100–120000）同样计入预算并额外加 5 秒传输余量，页内 deadline 先到期，扩展会带着部分结果返回。feed 按滚动次数（上限 40）× `pauseMs` + 60 秒执行余量 + 5 秒传输余量计算，不低于默认预算，超过 30 分钟则拒绝。batch 合成步骤、重试、延迟和嵌套预算，总上限 30 分钟（含余量），超大/非有限预算会拒绝。已发送后断连的结果可能未知；仅白名单只读命令会在重连后按剩余预算重试一次，副作用命令不自动重放。先检查 `status`、`command list` 和页面实际状态。显式 batch `retries` 可能重复失败步骤已发生的副作用，**不是幂等保证**；取消/超时阻止后续步骤，但不能撤销已发生的动作或所有在途 CDP 工作。
 
 标签页会在 `tab list` 中暴露形如 `t<Chrome tabId>` 的稳定句柄（例如 `t2058764132`），CLI 可以直接使用返回的句柄切换或关闭标签页；不要猜测从 1 开始的短序号：
 
@@ -770,7 +787,7 @@ autobrowser dialog auto --on
 autobrowser mcp
 ```
 
-默认只暴露 19 个核心工具，并且响应只写文本，避免 `tools/list` 的约 41KB schema 和同一结果的 JSON 双写占满模型上下文。核心工具为：`navigate`、`reload`、`snapshot`、`search`、`find`、`click`、`fill`、`type`、`press`、`get`、`wait`、`eval`、`tab_list`、`tab_attach`、`tab_detach`、`tab_new`、`tab_select`、`tab_close`、`workspace`。
+默认只暴露 20 个核心工具，并且响应只写文本，避免 `tools/list` 的约 41KB schema 和同一结果的 JSON 双写占满模型上下文。核心工具为：`navigate`、`reload`、`snapshot`、`search`、`read_page`、`find`、`click`、`fill`、`type`、`press`、`get`、`wait`、`eval`、`tab_list`、`tab_attach`、`tab_detach`、`tab_new`、`tab_select`、`tab_close`、`workspace`。
 
 兼容开关通过环境变量控制：
 
