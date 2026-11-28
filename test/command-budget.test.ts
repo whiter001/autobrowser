@@ -32,13 +32,49 @@ describe('bounded command budgets', () => {
     expect(getCommandRequestBudgetMs('download')).toBe(30_000)
     expect(getCommandRequestBudgetMs('download', { timeoutMs: 35_000 })).toBe(40_000)
     expect(getCommandRequestBudgetMs('download', { timeoutMs: 1_000 })).toBe(30_000)
+    // 可填上限就是总预算减去传输余量；1800000 本身会被拒绝，不能当成有效 timeoutMs。
+    const maxTimeoutMs = MAX_REQUEST_TIMEOUT_MS - COMMAND_TRANSPORT_ALLOWANCE_MS
+    expect(maxTimeoutMs).toBe(1_795_000)
+    expect(getCommandRequestBudgetMs('download', { timeoutMs: maxTimeoutMs })).toBe(
+      MAX_REQUEST_TIMEOUT_MS,
+    )
     expect(() =>
       validateCommandArgs('download', {
         url: 'https://example.com/a.png',
         outputPath: '/tmp/a.png',
-        timeoutMs: MAX_REQUEST_TIMEOUT_MS,
+        timeoutMs: maxTimeoutMs,
       }),
-    ).toThrow()
+    ).not.toThrow()
+
+    for (const timeoutMs of [maxTimeoutMs + 1, 1_799_999, MAX_REQUEST_TIMEOUT_MS]) {
+      let message = ''
+      try {
+        getCommandRequestBudgetMs('download', { timeoutMs })
+      } catch (error) {
+        message = error instanceof Error ? error.message : String(error)
+      }
+      // 报错必须点出真正能填的上限、传输余量和总预算，而不是只说总预算超限。
+      expect(message).toContain('1795000')
+      expect(message).toContain('5000')
+      expect(message).toContain('1800000')
+    }
+  })
+
+  test('keeps navigation waitFor budgets and their limit explanation consistent', () => {
+    // waitFor 会把 timeoutMs 计入两次，可填上限随之折半，不能被 download 的 1795000 误导。
+    for (const command of ['goto', 'open', 'reload']) {
+      expect(getCommandRequestBudgetMs(command, { timeoutMs: 897_500, waitFor: 'url' })).toBe(
+        MAX_REQUEST_TIMEOUT_MS,
+      )
+      let message = ''
+      try {
+        getCommandRequestBudgetMs(command, { timeoutMs: 897_501, waitFor: 'url' })
+      } catch (error) {
+        message = error instanceof Error ? error.message : String(error)
+      }
+      expect(message).toContain('897500')
+      expect(message).toContain('2x')
+    }
   })
 
   test('composes nested steps, retries and per-step retry delays', () => {

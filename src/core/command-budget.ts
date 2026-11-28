@@ -1,6 +1,8 @@
 export const DEFAULT_REQUEST_TIMEOUT_MS = 30_000
 export const MAX_REQUEST_TIMEOUT_MS = 30 * 60_000
 export const COMMAND_TRANSPORT_ALLOWANCE_MS = 5_000
+/** 单阶段命令可填的 timeoutMs 上限；多阶段命令还需按执行倍率折算。 */
+export const MAX_SINGLE_STAGE_TIMEOUT_MS = MAX_REQUEST_TIMEOUT_MS - COMMAND_TRANSPORT_ALLOWANCE_MS
 export const MAX_BATCH_DEPTH = 16
 const MAX_BATCH_NODES = 10_000
 const MAX_BATCH_RETRIES = 1_000
@@ -18,6 +20,16 @@ function invalidBudget(command: string, reason: string): never {
     code: 'INVALID_COMMAND_ARGS',
     details: { command, reason, maxRequestTimeoutMs: MAX_REQUEST_TIMEOUT_MS },
   })
+}
+
+export function getCommandTimeoutLimitMessage(timeoutMultiplier = 1): string {
+  const maxTimeoutMs = Math.floor(MAX_SINGLE_STAGE_TIMEOUT_MS / timeoutMultiplier)
+  const doubling =
+    timeoutMultiplier > 1 ? `; waitFor doubles timeoutMs (${timeoutMultiplier}x)` : ''
+  return (
+    `timeoutMs must be at most ${maxTimeoutMs}ms: ${MAX_REQUEST_TIMEOUT_MS}ms total request budget ` +
+    `minus ${COMMAND_TRANSPORT_ALLOWANCE_MS}ms transport allowance${doubling}`
+  )
 }
 
 /** 浏览器与 relay 共用；先限制递归规模，再计算最坏情况下的重试预算，绝不静默截断。 */
@@ -102,8 +114,13 @@ export function getCommandRequestBudgetMs(
     }
 
     let explicit: number | undefined
+    // 这些命令的预算就是「timeoutMs × 倍率 + 传输余量」，触顶时能从用户输入反推真实上限。
+    // media/feed 的预算还含固定加成，套用同一句提示会给出错误数字，保持通用报错。
+    let explainTimeoutLimit = false
+    let timeoutMultiplier = 1
     if (['eval', 'run', 'goto', 'open', 'click', 'reload', 'network', 'download'].includes(name)) {
       explicit = duration('timeoutMs')
+      explainTimeoutLimit = true
       if (name === 'goto' || name === 'open') {
         duration('settleTimeoutMs')
         duration('domQuietMs')
@@ -111,6 +128,7 @@ export function getCommandRequestBudgetMs(
       // 导航的附加等待在导航后运行，两段都必须纳入预算。
       if (['reload', 'goto', 'open'].includes(name) && input.waitFor) {
         explicit = (explicit ?? defaultTimeoutMs) * 2
+        timeoutMultiplier = 2
       }
     } else if (name === 'media' && input.waitFor) {
       explicit = (duration('timeoutMs') ?? defaultTimeoutMs) + defaultTimeoutMs
@@ -138,12 +156,19 @@ export function getCommandRequestBudgetMs(
       count('stallRounds', 3)
       explicit = maxScrolls * pauseMs + FEED_EXECUTION_ALLOWANCE_MS
     }
-    return explicit === undefined
-      ? defaultTimeoutMs
-      : bounded(
-          Math.max(defaultTimeoutMs, explicit + COMMAND_TRANSPORT_ALLOWANCE_MS),
-          'request budget',
-        )
+    if (explicit === undefined) {
+      return defaultTimeoutMs
+    }
+    const budget = Math.max(defaultTimeoutMs, explicit + COMMAND_TRANSPORT_ALLOWANCE_MS)
+    if (budget > MAX_REQUEST_TIMEOUT_MS) {
+      if (explainTimeoutLimit) {
+        // 与其只说总预算超限，不如反推出真正能填的 timeoutMs：总量先扣掉固定的传输余量，
+        // 再按 waitFor 之类的倍率折算。否则用户会把 1800000 当成可填值反复撞同一句报错。
+        invalidBudget(command, getCommandTimeoutLimitMessage(timeoutMultiplier))
+      }
+      return bounded(budget, 'request budget')
+    }
+    return budget
   }
   return visit(command, args, 0)
 }

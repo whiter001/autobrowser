@@ -51,7 +51,12 @@ describe('network domain HAR export', () => {
       captureTabId: 1,
       checkpoint: { saved: true },
     })
-    expect(await network.getHarStatus()).toMatchObject({ recording: false, captureId })
+    expect(await network.getHarStatus()).toMatchObject({
+      recording: false,
+      captureId,
+      // 正常停止后顶层与 checkpoint 都是 false，不应被误判为 stale。
+      checkpoint: { recording: false, stale: false },
+    })
 
     const recreated = createNetworkDomain({
       state: createExtensionState(57978),
@@ -68,6 +73,7 @@ describe('network domain HAR export', () => {
         recoverable: true,
         captureTabId: 1,
         requestCount: 1,
+        stale: false,
       },
     })
     const recovered = await recreated.recoverHar()
@@ -79,6 +85,55 @@ describe('network domain HAR export', () => {
     })
     expect(recovered.startedAt).toBeString()
     expect(recovered.har).toBeObject()
+  })
+
+  test('flags a leftover recording checkpoint as stale after the runtime is rebuilt', async () => {
+    const stored: Record<string, unknown> = {}
+    const storage = {
+      storageLocalSet: async (items: Record<string, unknown>) => {
+        Object.assign(stored, items)
+      },
+      storageLocalGet: async (key: string) => ({ [key]: stored[key] }),
+    }
+    const network = createNetworkDomain({
+      state: createExtensionState(57978),
+      getTargetTab: async () => ({ id: 1 }) as never,
+      sendRawDebuggerCommand: async () => ({}) as never,
+      sendDebuggerCommand: async () => ({}) as never,
+      ...storage,
+    })
+    const { captureId } = (await network.startHar(1)) as { captureId: string }
+
+    // 录制进行中：实时状态与 checkpoint 一致，stale 必须为 false 且没有 stale 提示。
+    const live = await network.getHarStatus()
+    expect(live).toMatchObject({
+      recording: true,
+      checkpoint: { recording: true, stale: false },
+    })
+    expect(live.suggestedAction).toBeUndefined()
+
+    // 模拟扩展运行态重建：内存里的 HAR 状态被清空，但持久化 checkpoint 仍记着录制中。
+    const recreated = createNetworkDomain({
+      state: createExtensionState(57978),
+      getTargetTab: async () => ({ id: 1 }) as never,
+      sendRawDebuggerCommand: async () => ({}) as never,
+      sendDebuggerCommand: async () => ({}) as never,
+      ...storage,
+    })
+    const status = await recreated.getHarStatus()
+    expect(status).toMatchObject({
+      recording: false,
+      checkpoint: {
+        available: true,
+        recording: true,
+        stale: true,
+        captureId,
+      },
+    })
+    // 必须点明当前没有活动 capture，并给出 recover 旧检查点或 start 新捕获（会替换旧捕获）的路径。
+    expect(status.suggestedAction).toContain('No HAR capture is currently active')
+    expect(status.suggestedAction).toContain('network har recover')
+    expect(status.suggestedAction).toContain('network har start')
   })
 
   test('guarded stop rejects stale IDs without changing recording and returns ordered unique URLs', async () => {

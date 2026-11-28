@@ -767,7 +767,7 @@ export const HELP_ROOT: HelpNode = helpNode(
         '--dedupe-by-content  非 HLS 下载完成后，若输出目录中已有 SHA-256 相同的 EPUB/MOBI，则跳过保存',
         '--quality <best|worst|height>  HLS 清晰度选择；默认 best',
         '--concurrency <1..16>  HLS 分片并发数；默认 4',
-        '--timeout-ms <ms>  整个下载任务的总预算',
+        '--timeout-ms <1..1795000>  整个下载任务的总预算；另加 5000 毫秒传输余量，总请求预算上限 1800000 毫秒，因此可填上限为 1795000',
         '--retries <0..5>  针对网络错误、HTTP 429 与 5xx 的额外重试次数；默认 2；--retries 0 表示禁用重试',
         '--retry-delay-ms <0..60000>  指数退避的基础间隔；默认 250 毫秒；各次重试共享原始截止时间',
         '--overwrite | --no-clobber  覆盖已有输出，或在下载前直接失败；默认 overwrite',

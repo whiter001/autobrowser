@@ -948,6 +948,18 @@ describe('cli helpers', () => {
     expect(result.stdout).toContain('--har-unlimited')
   })
 
+  test('documents the download timeout ceiling and its transport allowance', async () => {
+    const result = await runCli(['help', 'download'])
+
+    expect(result.exitCode).toBe(0)
+    expect(result.fetchCalls).toHaveLength(0)
+    // 用户需要知道 1800000 不是可填的 timeoutMs：5000 毫秒留给传输，上限是 1795000。
+    expect(result.stdout).toContain('--timeout-ms <1..1795000>')
+    expect(result.stdout).toContain('5000')
+    expect(result.stdout).toContain('1800000')
+    expect(result.stdout).toContain('传输余量')
+  })
+
   test('parses HAR capture limits for network har start', () => {
     expect(parseNetworkHarStartArgs(['--har-unlimited'])).toEqual({
       maxRequests: null,

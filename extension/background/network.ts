@@ -1068,7 +1068,12 @@ export function createNetworkDomain({
     const requestCount = Array.isArray(checkpoint?.requests) ? checkpoint.requests.length : 0
     const capture = captureController.getCapture()
     const lastCheckpointError = captureController.getLastCheckpointError()
-    return {
+    // 顶层 recording 是当前扩展运行时的实时状态，checkpoint.recording 是上次落盘的持久化状态。
+    // 运行态重建后二者可能不一致：checkpoint 仍记着 true，但内存里已没有活动 capture。
+    // stale 只描述这一种"看起来在录、实际没有"的歧义，正常停止（皆为 false）不算 stale。
+    const checkpointRecording = checkpoint?.recording === true
+    const stale = !state.network.harRecording && checkpointRecording
+    const result: Record<string, unknown> = {
       recording: state.network.harRecording,
       captureId: captureController.getCaptureId(capture),
       captureTabId: capture?.tabId ?? null,
@@ -1080,7 +1085,8 @@ export function createNetworkDomain({
         ? {
             available: true,
             recoverable: requestCount > 0,
-            recording: checkpoint.recording === true,
+            recording: checkpointRecording,
+            stale,
             captureId: typeof checkpoint.captureId === 'string' ? checkpoint.captureId : null,
             captureTabId:
               typeof checkpoint.captureTabId === 'number' ? checkpoint.captureTabId : null,
@@ -1092,10 +1098,17 @@ export function createNetworkDomain({
         : {
             available: false,
             recoverable: false,
+            stale: false,
             captureId: null,
             ...(lastCheckpointError ? { error: lastCheckpointError } : {}),
           },
     }
+    if (stale) {
+      result.suggestedAction =
+        'No HAR capture is currently active; this checkpoint is from a previous capture. ' +
+        'Run network har recover to export the old checkpoint, or network har start to begin a new capture (which replaces the old checkpoint).'
+    }
+    return result
   }
 
   async function recoverHar(): Promise<Record<string, unknown>> {

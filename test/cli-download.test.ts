@@ -238,6 +238,44 @@ describe('cli download command', () => {
     }
     expect(requestCalls).toHaveLength(0)
   })
+
+  test('rejects an excessive original timeout before any request and accepts the exact ceiling', async () => {
+    const excessive = await createContext()
+    const failure = await captureFailure(
+      async () =>
+        await mediaCommandRegistry.download!(
+          [
+            'https://example.com/file',
+            path.join(excessive.directory, 'file'),
+            '--timeout-ms',
+            '1795001',
+          ],
+          excessive.context,
+        ),
+    )
+    expect(failure.code).toBe(1)
+    expect(failure.message).toContain('1795000')
+    expect(failure.message).toContain('1800000')
+    expect(failure.message).toContain('5000')
+    expect(excessive.requestCalls).toHaveLength(0)
+
+    const accepted = await createContext()
+    expect(
+      await mediaCommandRegistry.download!(
+        [
+          'https://example.com/file',
+          path.join(accepted.directory, 'file'),
+          '--timeout-ms',
+          '1795000',
+        ],
+        accepted.context,
+      ),
+    ).toBe(0)
+    expect(accepted.requestCalls).toHaveLength(1)
+    expect(accepted.requestCalls[0]!.args.timeoutMs).toBeGreaterThan(0)
+    expect(accepted.requestCalls[0]!.args.timeoutMs).toBeLessThanOrEqual(1795000)
+  })
+
   test('downloads through the browser callback and commits the requested output path', async () => {
     const { context, directory, requestCalls, written } = await createContext()
     const outputPath = path.join(directory, 'out', 'image.bin')

@@ -1,6 +1,10 @@
 import { mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import {
+  getCommandTimeoutLimitMessage,
+  MAX_SINGLE_STAGE_TIMEOUT_MS,
+} from '../core/command-budget.js'
+import {
   parseHlsMasterPlaylist,
   parseHlsMediaPlaylist,
   selectHlsAudioRendition,
@@ -167,6 +171,10 @@ function buildTasks(tracks: TrackPlan[], outputDir: string, filePrefix: string):
 export async function downloadMediaWithHls(
   options: HlsDownloadOptions,
 ): Promise<HlsDownloadResult> {
+  // remaining() 会扣除已耗时，不能把转换后的剩余预算误当成原始输入重新校验。
+  if (options.timeoutMs !== undefined && options.timeoutMs > MAX_SINGLE_STAGE_TIMEOUT_MS) {
+    throw new HlsDownloadError(getCommandTimeoutLimitMessage())
+  }
   let outputPath = path.resolve(options.outputPath)
   const outputDir = path.dirname(outputPath)
   const baseName = path.basename(outputPath)

@@ -1,4 +1,8 @@
 import path from 'node:path'
+import {
+  getCommandTimeoutLimitMessage,
+  MAX_SINGLE_STAGE_TIMEOUT_MS,
+} from '../../core/command-budget.js'
 import { suggestedDownloadFilename } from '../../core/download-filename.js'
 import { isRecord, type CommandResponse } from '../client.js'
 import { downloadMediaWithHls, type BrowserDownloadResult } from '../hls-download.js'
@@ -218,7 +222,12 @@ async function handleDownload(rest: string[], context: CommandContext): Promise<
         if (value === '--retries') retries = parsed
         else retryDelayMs = parsed
       } else if (value === '--timeout-ms') {
-        timeoutMs = parseNumberArg(rest[index + 1], 'timeout ms', { min: 1, integer: true })
+        const parsed = parseNumberArg(rest[index + 1], 'timeout ms', { min: 1, integer: true })
+        // --media 还会先查询媒体清单，因此必须在任何 requestCommand 之前校验原始输入。
+        if (parsed > MAX_SINGLE_STAGE_TIMEOUT_MS) {
+          throw new Error(getCommandTimeoutLimitMessage())
+        }
+        timeoutMs = parsed
         index += 1
       } else if (value === '--dedupe-by-content') {
         dedupeByContent = true
