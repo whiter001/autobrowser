@@ -142,7 +142,7 @@ export function createCommandHandlers({
     const actionValue = readStringArg(args, 'value')
     const position = readStringArg(args, 'position').trim()
     const candidatesCount = Math.floor(readNumberArg(args, 'candidates', 0))
-    // within 优先走协议校验（MCP/batch 已在 relay 侧拦截），这里只做透传；
+    // within 优先走协议校验（batch 已在 relay 侧拦截），这里只做透传；
     // 直接调用扩展时由 findSemanticTarget 内部统一归一 string|string[]
     const within = args.within
     const findOptions: FindSemanticTargetOptions = {

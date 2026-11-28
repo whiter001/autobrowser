@@ -579,7 +579,7 @@ export function createConnectionFlow(options: ConnectionFlowOptions): Connection
 
   /**
    * eval 大结果落盘：把完整 result 写成 2 空格缩进的 JSON（末尾换行），只回小型摘要。
-   * 放在连接层而不是 CLI handler，是因为 MCP 的 eval 复用同一条请求路径；
+   * 放在连接层而不是 CLI handler，是因为 eval 命令复用同一条请求路径；
    * output 是客户端侧的落盘选项，不参与扩展参数校验，也不会发给 relay。
    */
   async function writeEvalResultToFile(

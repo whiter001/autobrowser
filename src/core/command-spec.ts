@@ -39,7 +39,7 @@ const WAIT_TYPES = ['time', 'selector', 'url', 'text', 'load', 'networkidle', 'f
 const WAIT_CONDITION_KEYS = ['ms', 'type', 'selector', 'url', 'text', 'fn']
 
 /**
- * batch/MCP 传的是协议字段名，与 CLI 选项名不总是同名（eval 的字段是 script，
+ * batch 传的是协议字段名，与 CLI 选项名不总是同名（eval 的字段是 script，
  * CLI 侧却是 --expr；get 的属性字段是 attr，CLI 侧是位置参数 <attribute>）。
  * 用户按 CLI 习惯猜键名时，报错里直接给出正确键名和等价 CLI 写法。
  */

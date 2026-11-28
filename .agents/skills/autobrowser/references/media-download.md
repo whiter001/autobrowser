@@ -44,4 +44,4 @@
 - HLS：`download <master.m3u8> <output.mp4> --quality best|worst|720|720p --concurrency 4`。自动下载最佳音视频轨并本地合并，FFmpeg/FFprobe 只读本地文件，不直接访问 CDN；本机需安装这两个工具。
 - HLS 是一个任务：统一 `--timeout-ms`，分片有界并发，失败保留 checkpoint/已校验分片，相同命令下次续传，成功清理。上限 2048 分片、2GiB、4 层 playlist；不支持加密和 `EXT-X-BYTERANGE`。DASH 目前只能发现，不能合并下载。
 - 所有媒体字节都经浏览器和本地鉴权 `/files/:transferId` 通道，不走 Base64/WebSocket。已知 Content-Length 且 >8MiB 时每次只缓冲一个 8MiB 块，relay 校验块/整文件 SHA-256；其他响应沿用缓冲传输。
-- 仅 Chromium 扩展通道，不支持 WebDriver/MCP；底层单文件下载不能作为 `batch` 子步骤。单文件与并发预留上限 512MiB、最多128个上传，15秒无进度判定停滞。
+- 仅 Chromium 扩展通道，不支持 WebDriver；底层单文件下载不能作为 `batch` 子步骤。单文件与并发预留上限 512MiB、最多128个上传，15秒无进度判定停滞。

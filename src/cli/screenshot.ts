@@ -7,7 +7,7 @@ async function mkTempScreenshotDir(): Promise<string> {
   return await mkdtemp(path.join(os.tmpdir(), 'autobrowser-screenshot-'))
 }
 
-// 结果里可能是裸 base64，也可能是 dataUrl。MCP 侧要原样透传 base64 串，CLI 落盘侧要 Buffer，
+// 结果里可能是裸 base64，也可能是 dataUrl。协议侧要原样透传 base64 串，CLI 落盘侧要 Buffer，
 // 所以解析只做一次，解码交给调用方，避免两套实现各写一遍 dataUrl/mimeType 兜底逻辑。
 export function extractScreenshotBase64(result: Record<string, unknown> | undefined): {
   data: string

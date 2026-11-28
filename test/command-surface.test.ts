@@ -2,7 +2,6 @@ import { describe, expect, test } from 'bun:test'
 import { COMMAND_LOADERS } from '../src/cli/commands/index.js'
 import { COMMAND_ACTIONS, SET_RESETTABLE_VALUE_TYPES } from '../src/cli/commands/actions.js'
 import { HELP_ROOT, type HelpNode } from '../src/cli/help.js'
-import { MCP_TOOLS } from '../src/cli/mcp-tools.js'
 import { validateCommandArgs } from '../src/core/command-spec.js'
 import { runCli } from './command-line-test-utils.js'
 import { createCommandHandlers } from '../extension/background/command-handlers.js'
@@ -19,7 +18,7 @@ import {
  * 命令面一致性契约。
  *
  * COMMAND_CATALOG 提供命令与目标能力，command-handlers.ts 提供真实实现注册表；
- * CLI 帮助树告诉 agent 怎么调用，MCP 工具表决定 MCP 客户端能拿到哪些能力。
+ * CLI 帮助树告诉 agent 怎么调用。
  *
  * 这里锁的是「跨文件的交叉关系」，任何一处漏改都会让另外几处说谎，而且失败必须发生在
  * 提交之前——否则 agent 读到的帮助和实际能执行的能力就会悄悄对不上。
@@ -132,38 +131,6 @@ describe('command surface consistency', () => {
     const unreachable = COMMAND_CATALOG.map((descriptor) => descriptor.name).filter(
       (command) => !REGISTRY_KEYS.includes(command.split('.')[0]!),
     )
-    expect(unreachable).toEqual([])
-  })
-
-  test('MCP tools only point at commands the extension router implements', () => {
-    const routerSet = new Set(ROUTER_COMMANDS)
-    const unknown = MCP_TOOLS.filter((tool) => !routerSet.has(tool.command)).map(
-      (tool) => `${tool.name} -> ${tool.command}`,
-    )
-
-    expect(unknown).toEqual([])
-  })
-
-  test('MCP tool names stay unique and follow the MCP naming constraints', () => {
-    const names = MCP_TOOLS.map((tool) => tool.name)
-
-    const duplicates = uniqueSorted(names.filter((name, index) => names.indexOf(name) !== index))
-    expect(duplicates).toEqual([])
-
-    const invalid = names.filter((name) => !/^[a-z][a-z0-9_]{0,63}$/.test(name))
-    expect(invalid).toEqual([])
-
-    const undescribed = MCP_TOOLS.filter((tool) => !tool.description.trim()).map(
-      (tool) => tool.name,
-    )
-    expect(undescribed).toEqual([])
-  })
-
-  test('every MCP tool command is reachable from the CLI', () => {
-    const unreachable = MCP_TOOLS.filter(
-      (tool) => !REGISTRY_KEYS.includes(tool.command.split('.')[0]!),
-    ).map((tool) => `${tool.name} -> ${tool.command}`)
-
     expect(unreachable).toEqual([])
   })
 })

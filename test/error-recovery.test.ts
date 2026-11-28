@@ -1,7 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 import { buildCliErrorPayload } from '../src/cli/cli-error.js'
 import { HlsDownloadError } from '../src/cli/hls-error.js'
-import { toErrorResult } from '../src/cli/mcp-response.js'
 import { createToolError } from '../src/core/tool-error.js'
 import { createSemanticFindFeature } from '../extension/background/page-observe-find.js'
 import { computeSearchPageTextMatches } from '../extension/background/page-observe-search.js'
@@ -40,22 +39,6 @@ describe('error recovery contract', () => {
     expect(hls.error.details).toMatchObject({
       command: 'download',
       detail: 'Error opening local segment',
-    })
-
-    const mcp = toErrorResult(
-      'WAIT_NOT_CONFIRMED',
-      'selector is not visible',
-      {},
-      {
-        responseMode: 'both',
-      },
-    )
-    expect(mcp.structuredContent).toMatchObject({
-      error: {
-        code: 'WAIT_NOT_CONFIRMED',
-        retryable: true,
-        suggestedAction: expect.stringContaining('longer timeout'),
-      },
     })
   })
 

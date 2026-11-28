@@ -177,11 +177,6 @@ async function runMain(
     if (typeof code === 'number' && code !== 0) return code
     return lastResponseFailed ? 1 : code
   } catch (error) {
-    // mcp 命令的 stdout 是 JSON-RPC 通道，错误只能写 stderr，否则会污染协议流
-    if (command === 'mcp') {
-      process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`)
-      return 1
-    }
     return writeCliError(addCommandOptionHint(error, command, rest), {
       json: flags.json,
       command,

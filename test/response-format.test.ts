@@ -4,7 +4,6 @@ import os from 'node:os'
 import path from 'node:path'
 import { parseCli } from '../src/cli/flags.js'
 import { presentCommandResult } from '../src/cli/response-presenters.js'
-import { AutobrowserMcpServer } from '../src/cli/mcp.js'
 import { runCli } from './command-line-test-utils.js'
 
 describe('response format', () => {
@@ -123,29 +122,5 @@ describe('response format', () => {
       { ok: true, result: 2 },
     )
     expect(explicit.fetchCalls[0].body?.args?.responseFormat).toBe('concise')
-  })
-
-  test('MCP advertises response_format and emits compact concise content', async () => {
-    const server = new AutobrowserMcpServer({
-      responseMode: 'both',
-      requestCommand: async () => ({
-        ok: true,
-        result: {
-          tabs: [{ id: 123, handle: 't123', title: 'Example', url: 'https://example.com' }],
-          pagination: { hasNextPage: false },
-        },
-      }),
-    })
-    const tool = server.listTools().find((item) => item.name === 'tab_list')!
-    expect(tool.inputSchema.properties?.response_format).toBeDefined()
-
-    const result = await server.callTool('tab_list')
-    expect(result.content[0]).toEqual({
-      type: 'text',
-      text: '{"tabs":[{"handle":"t123","title":"Example","url":"https://example.com"}],"pagination":{"hasMore":false}}',
-    })
-    expect(result.structuredContent).toMatchObject({
-      tabs: [{ handle: 't123', title: 'Example' }],
-    })
   })
 })

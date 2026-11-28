@@ -176,7 +176,7 @@ autobrowser workspace groups off      # 关闭展示并恢复原组
 - 后台标签页的定时器可能因浏览器节流延迟当前页面任务，多 AI 切换活动页会间接放大。依赖可见性或定时器结果的验证可 `tab select` 保持前台，或使用独立 `--session`；`set focus on` 只做 CDP 焦点仿真，不能保证消除后台定时器节流。
 - Workspace 模式下 `close all` 只关闭当前 workspace 的 owned 标签；任务结束时用 `tab detach` 或 `workspace release` 释放自己的标签，保留页面给后续复用，不要关闭其他 AI 仍在使用的标签。需要一次性清理本轮创建的临时页并保留交付/交接页面时，显式执行 `workspace finish`，不要把收尾当作自动行为。
 
-每个 MCP 服务实例自动使用独立 workspace，并提供 `workspace`（含 `finish` 动作）、`tab_attach`、`tab_detach`、`tab_mark`、`tab_unmark` 工具。Workspace 用于本机误操作隔离，不是跨用户安全认证机制。
+Workspace 用于本机误操作隔离，不是跨用户安全认证机制。
 
 ## Firefox / WebKit
 
@@ -196,7 +196,7 @@ autobrowser --engine webkit open https://example.com
 
 ## Token 友好的输出
 
-列表与查询默认使用 `concise`，只保留高信号字段并输出紧凑 JSON；需要完整字段时加 `--response-format detailed`。MCP 工具对应参数为 `response_format: "concise" | "detailed"`。
+列表与查询默认使用 `concise`，只保留高信号字段并输出紧凑 JSON；需要完整字段时加 `--response-format detailed`。
 
 ```bash
 autobrowser network requests --limit 20
@@ -356,7 +356,7 @@ X 等站点的 MSE `blob:` 视频没有可信 DOM 源时，不要反复 `--resol
 - HLS 自动选择视频和音频轨，所有播放列表、初始化文件及分片都通过浏览器下载，FFmpeg/FFprobe 只处理本地文件。`--quality best|worst|720|720p` 选画质，`--concurrency 1..16` 控制分片并发，`--timeout-ms` 限制整个任务。
 - HLS 失败会保留 checkpoint 和已校验分片，相同命令下次自动续传；成功后清理中间文件。需要本机安装 `ffmpeg` 和 `ffprobe`，合并后返回分辨率、时长、分片数、字节数和摘要。
 - HLS 当前不支持加密或 `EXT-X-BYTERANGE`，最多 2048 个分片、2GiB 总字节和 4 层播放列表。DASH 目前仅能在 `media list` 中发现，尚不支持合并下载。
-- 单文件及并发上传预留上限为 512MiB，最多 128 个上传；15 秒无数据进度判定停滞。该能力仅支持 Chromium 扩展通道，不支持 WebDriver/MCP，底层单文件 `download` 也不能作为 `batch` 子步骤。
+- 单文件及并发上传预留上限为 512MiB，最多 128 个上传；15 秒无数据进度判定停滞。该能力仅支持 Chromium 扩展通道，不支持 WebDriver，底层单文件 `download` 也不能作为 `batch` 子步骤。
 
 ## 截图
 
@@ -425,7 +425,7 @@ async (page) => {
 
 `run` 对目标 tab 使用独占锁：先等待已在执行的同 tab 命令，随后同 tab 普通命令返回 `PAGE_SCRIPT_ACTIVE`；其他 tab 仍可执行。脚本结束、失败、超时或扩展断开后释放锁。超时和断连不能撤销已经发生的浏览器副作用，重试前先检查页面。
 
-桥接只暴露选中的已有 tab，不支持通过 `context.newPage()` 创建新 target；frame 直接使用 `page.frames()` / `page.frameLocator()`，不使用根级 `--frame`。`run` 不能作为 batch 子步骤，目前也不支持 WebDriver/MCP。`page.route()` 在脚本结束后失效，扩展会仅对当前 tab 恢复 autobrowser 自己的网络路由，避免留下无人处理的暂停请求。
+桥接只暴露选中的已有 tab，不支持通过 `context.newPage()` 创建新 target；frame 直接使用 `page.frames()` / `page.frameLocator()`，不使用根级 `--frame`。`run` 不能作为 batch 子步骤，目前也不支持 WebDriver。`page.route()` 在脚本结束后失效，扩展会仅对当前 tab 恢复 autobrowser 自己的网络路由，避免留下无人处理的暂停请求。
 
 ### 可执行示例
 
@@ -490,7 +490,7 @@ autobrowser find role button --position nth=2
 autobrowser find text "Delete" --candidates 3
 ```
 
-策略包括 `role`、`text`、`label`、`placeholder`、`alt`、`title`、`test-id`（匹配 `data-testid`）和 `exact-name`（精确匹配 accessible name/文本，恒精确）。`--name` 默认子串匹配，`--exact`（MCP `exact:true`）才要求精确匹配。只读 `locate`/`text` 默认取 first；写操作有多个匹配且未显式 position 时返回 `AMBIGUOUS_TARGET` 与候选。先收窄条件或用 `--candidates <n>` 查看按质量排序的 Top-N 候选（仅支持 locate），再明确选择 `--position <first|last|nth=N>`（1 起算，越界报错）或确认后的 ref，避免盲目重试。
+策略包括 `role`、`text`、`label`、`placeholder`、`alt`、`title`、`test-id`（匹配 `data-testid`）和 `exact-name`（精确匹配 accessible name/文本，恒精确）。`--name` 默认子串匹配，`--exact` 才要求精确匹配。只读 `locate`/`text` 默认取 first；写操作有多个匹配且未显式 position 时返回 `AMBIGUOUS_TARGET` 与候选。先收窄条件或用 `--candidates <n>` 查看按质量排序的 Top-N 候选（仅支持 locate），再明确选择 `--position <first|last|nth=N>`（1 起算，越界报错）或确认后的 ref，避免盲目重试。
 
 页面里存在大量同名目标时，用可重复的 `--within` 从外到内逐层收窄容器（最多 6 层，每层是 CSS 选择器或 `@eN` 引用）：
 
@@ -508,7 +508,7 @@ autobrowser click '#new-tab'                    # 只报告 newTabId / newTabHan
 autobrowser click '#new-tab' --follow-new-tab   # 显式跟随：把当前目标切到新标签
 ```
 
-`click --verify-delivery`（MCP `verify_delivery`、batch `args.verifyDelivery`）在发出输入前后做一次可信送达验证，适合依赖 `isTrusted` 事件、或点击经常被遮挡/错位的场景：
+`click --verify-delivery`（batch `args.verifyDelivery`）在发出输入前后做一次可信送达验证，适合依赖 `isTrusted` 事件、或点击经常被遮挡/错位的场景：
 
 ```bash
 autobrowser click '#submit' --verify-delivery
@@ -534,7 +534,7 @@ autobrowser search /^Log\s+in/i --context 5
 autobrowser search "error" --limit 10
 ```
 
-查询默认按大小写不敏感的子串匹配；以 `/pattern/flags` 形式书写则按正则匹配（`g` 标志会被忽略）。`--context <n>` 控制上下文行数（默认 3，范围 0–50）；`--limit <n>` 限制窗口数（默认 20、最大 200，0 不返回窗口或游标）。每次还受 200 返回行/100000 UTF-8 字节预算约束，单个合并窗口也可能截断。`--start-line <n>` 为 1 起算的正安全整数，默认 1；若 `truncated:true` 且 `nextStartLine:201`，保持查询/目标不变运行 `search "error" --limit 10 --start-line 201` 续读，MCP 对应 `search` 的 `startLine:201`。页面内容变化可能改变行号，应重新确认。该命令只读、不定位元素也不执行动作，与 `find` 互补。
+查询默认按大小写不敏感的子串匹配；以 `/pattern/flags` 形式书写则按正则匹配（`g` 标志会被忽略）。`--context <n>` 控制上下文行数（默认 3，范围 0–50）；`--limit <n>` 限制窗口数（默认 20、最大 200，0 不返回窗口或游标）。每次还受 200 返回行/100000 UTF-8 字节预算约束，单个合并窗口也可能截断。`--start-line <n>` 为 1 起算的正安全整数，默认 1；若 `truncated:true` 且 `nextStartLine:201`，保持查询/目标不变运行 `search "error" --limit 10 --start-line 201` 续读。页面内容变化可能改变行号，应重新确认。该命令只读、不定位元素也不执行动作，与 `find` 互补。
 
 `read_page` 命令读取长页面正文：滚动扫描 DOM（或解析 PDF 文本层），把全文分片返回：
 
@@ -589,11 +589,11 @@ autobrowser tab close t2058764137
 
 脚本默认在隔离的函数作用域中执行：顶层 `const`/`let`/`var`/`function` 不会留在页面全局，同一个脚本可原样重复执行，不需要手工包 IIFE；简单表达式仍返回 completion value（最后一个表达式的值）。脚本可直接使用顶层 `await`（按 REPL 条目求值，顶层 await 合法且保留完成值）和顶层 `return`（按 async 函数体求值，结果由 `return` 给出），不需要手工包 async IIFE；两者混用时以 `return` 为准。顶层 `await` 的 REPL 路径下 `var`/`function` 声明会落到页面全局，需要严格隔离时可自行包一层 async IIFE。`--element` 的函数脚本同样隔离，也不影响原有的元素未找到（stale）判断。
 
-结果装不下终端时用 `--output <path>` 落盘：`eval` 把完整结果写成 2 空格缩进的 JSON（末尾换行），stdout 只留 `{ path, format: "json", bytes }` 这个小型摘要（`meta` 等执行上下文保留），不再把正文写进 stdout。输出始终是 JSON，与文件扩展名无关，推荐统一使用 `.json`，不要按 `.txt` 等扩展名猜测内容格式。相对路径按当前目录解析，同名文件会被覆盖，写文件失败按普通 CLI 错误返回。指定 `--output` 且没有显式 `--response-format` 时按 `detailed` 执行，因此默认不受 concise 的 32KiB 结果上限约束；显式 `--response-format concise` 仍保留 32KiB，显式 `--max-result-bytes <n>` 始终优先。MCP 的 `eval` 工具同样如此：传 `output` 且不传 `response_format` 时按 `detailed` 执行，显式 `response_format: "concise"` 才保留 32KiB 上限。落盘只改变结果的去向，不改变页面脚本的语义。
+结果装不下终端时用 `--output <path>` 落盘：`eval` 把完整结果写成 2 空格缩进的 JSON（末尾换行），stdout 只留 `{ path, format: "json", bytes }` 这个小型摘要（`meta` 等执行上下文保留），不再把正文写进 stdout。输出始终是 JSON，与文件扩展名无关，推荐统一使用 `.json`，不要按 `.txt` 等扩展名猜测内容格式。相对路径按当前目录解析，同名文件会被覆盖，写文件失败按普通 CLI 错误返回。指定 `--output` 且没有显式 `--response-format` 时按 `detailed` 执行，因此默认不受 concise 的 32KiB 结果上限约束；显式 `--response-format concise` 仍保留 32KiB，显式 `--max-result-bytes <n>` 始终优先。落盘只改变结果的去向，不改变页面脚本的语义。
 
-脚本需要外部参数时用 `--arg <key=value>`（可重复）注入局部变量 `args`，例如 `autobrowser eval --arg keyword=shoes --expr 'args.keyword'`；改用 `--args-json '<json-object>'` 可以一次传入整个对象，二者互斥。`--arg` 的值始终是字符串，key 必须非空且不能包含点号（避免把 `a.b` 当成普通键静默生效），重复 key 会报 `CLI_INVALID_ARGUMENT`。三条求值路径都支持 `args`：direct eval 在脚本外层作用域定义它，replMode（顶层 `await`）在脚本前补声明，async IIFE（顶层 `return`）把它作为形参，脚本自身的声明不会因此重复执行。`--element` 的函数第一个参数仍是 `el`，`args` 作为第二个参数传入，例如 `(el, args) => el.textContent.includes(args.keyword)`。MCP 的 `eval` 工具用 `args` 对象暴露同样的能力。
+脚本需要外部参数时用 `--arg <key=value>`（可重复）注入局部变量 `args`，例如 `autobrowser eval --arg keyword=shoes --expr 'args.keyword'`；改用 `--args-json '<json-object>'` 可以一次传入整个对象，二者互斥。`--arg` 的值始终是字符串，key 必须非空且不能包含点号（避免把 `a.b` 当成普通键静默生效），重复 key 会报 `CLI_INVALID_ARGUMENT`。三条求值路径都支持 `args`：direct eval 在脚本外层作用域定义它，replMode（顶层 `await`）在脚本前补声明，async IIFE（顶层 `return`）把它作为形参，脚本自身的声明不会因此重复执行。`--element` 的函数第一个参数仍是 `el`，`args` 作为第二个参数传入，例如 `(el, args) => el.textContent.includes(args.keyword)`。
 
-大结果可以先用 `--offset <非负整数>` / `--limit <正整数>` 分页，只有显式指定其中之一时才分页（缺省 offset=0、limit=10000）。分页只支持字符串和数组：字符串按 Unicode code point 切片（基于 `Array.from`，不会切断 emoji 的代理对），数组按元素切片；其它结果类型返回 `INVALID_COMMAND_ARGS`，不会静默降级。分页后的响应是 `{ value, pagination: { kind: "text"|"array", offset, limit, total, nextOffset, truncated } }`，`offset` 超过尾部时 `value` 为空、`nextOffset` 为 `null`，`truncated` 表示是否还有后续；不指定 offset/limit 时结果与旧版本完全一致。`--max-result-bytes` 检查的是分页后的结果与响应大小，因此可以先用小 `limit` 取回大结果的一部分，而不是被整段结果先顶到上限。MCP 的 `eval` 工具同样接受 `offset`/`limit`。
+大结果可以先用 `--offset <非负整数>` / `--limit <正整数>` 分页，只有显式指定其中之一时才分页（缺省 offset=0、limit=10000）。分页只支持字符串和数组：字符串按 Unicode code point 切片（基于 `Array.from`，不会切断 emoji 的代理对），数组按元素切片；其它结果类型返回 `INVALID_COMMAND_ARGS`，不会静默降级。分页后的响应是 `{ value, pagination: { kind: "text"|"array", offset, limit, total, nextOffset, truncated } }`，`offset` 超过尾部时 `value` 为空、`nextOffset` 为 `null`，`truncated` 表示是否还有后续；不指定 offset/limit 时结果与旧版本完全一致。`--max-result-bytes` 检查的是分页后的结果与响应大小，因此可以先用小 `limit` 取回大结果的一部分，而不是被整段结果先顶到上限。
 
 如果目标标签停在 `chrome-error://` 错误页（上一次导航失败），`eval` 不会执行用户脚本，而是返回 `NAVIGATION_FAILED` 并在 `details.url` 给出当前地址：先用 `goto <url>` 或 `reload` 重新导航，再用 `get url` 确认页面已经恢复。导航内部的 `readyState` 探测不经过这条检查。
 
@@ -770,7 +770,7 @@ spec 是 JSON：
 - `run` 与 `verify` 都通过现有 `eval` 执行 `script`：当前标签页与 `entryUrl` **同源**时复用页面状态（登录、滚动位置等），跨源才用 `goto` 导航。`--timeout-ms` 直接映射到 eval 超时（100..1800000 毫秒）。
 - 参数两种写法互斥：`--arg key=value` 可重复且值始终是字符串；`--args-json` 传对象，字符串原样、非字符串 `JSON.stringify` 后作为字符串注入。`required` 参数缺失或为空字符串报 `RECIPE_ARGUMENTS_INVALID`；未声明参数不拒绝，但结果 `warnings` 会明确列出。
 - `run` 返回 `{recipe:{name,entryUrl,lastVerified}, value, warnings}`，**不更新** `lastVerified`；`verify` 同样真实执行，只有成功才写入当前 ISO 时间并返回 `{verified:true, ...}`，失败保留原错误码和 recipe 上下文、不写时间，并提示修复后重新 verify。推荐流程：保存 → `run` 验证行为 → `verify` 固化验证时间。
-- `script` 是受信任的 async function body（支持顶层 `return`/`await`），与 `run` 一样不做额外沙箱或静态检查；只运行自己保存的脚本。该命令族目前只提供 CLI，不宣称 MCP 支持。
+- `script` 是受信任的 async function body（支持顶层 `return`/`await`），与 `run` 一样不做额外沙箱或静态检查；只运行自己保存的脚本。该命令族目前只提供 CLI。
 
 ### 数据导出
 
@@ -846,36 +846,6 @@ autobrowser dialog auto --on
 - 命令名写错时不会打印整页帮助，而是直接报出未知命令，并在 `details.candidates` 里给出最接近的命令名（例如 `autobrowser snap` → `snapshot`）；未知选项也会按当前命令的 help 给出最近邻建议。
 - 裸 CSS 选择器未匹配返回 `ELEMENT_NOT_FOUND`，`@eN` 快照引用无法解析返回 `STALE_REFERENCE`，两者的修复建议不再混用。
 - `--raw` / `--brief` 会退回纯文本：错误写在 stderr，并附一行 `[AI SUGGESTION]` 建议。
-
-## MCP 服务器（Model Context Protocol）
-
-`autobrowser mcp` 通过 stdio 暴露一个 MCP（Model Context Protocol）服务器，把核心命令包装成 MCP tools，供 Claude Desktop 等 MCP 客户端直接调用：
-
-```bash
-autobrowser mcp
-```
-
-默认只暴露 22 个核心工具（序列化后约 19.8KB，仍守住 20KB 上限），并且响应只写文本，避免完整 `tools/list` 的约 46KB schema 和同一结果的 JSON 双写占满模型上下文。核心工具为：`navigate`、`reload`、`snapshot`、`search`、`read_page`、`find`、`click`、`fill`、`type`、`press`、`get`、`wait`、`eval`、`tab_list`、`tab_attach`、`tab_detach`、`tab_mark`、`tab_unmark`、`tab_new`、`tab_select`、`tab_close`、`workspace`。`workspace` 工具额外支持 `finish` 动作。
-
-兼容开关通过环境变量控制：
-
-```bash
-# 恢复完整 54 个工具，并保留旧版 content + structuredContent 双写
-AUTOBROWSER_MCP_TOOLSET=all AUTOBROWSER_MCP_RESPONSE_MODE=both autobrowser mcp
-```
-
-- `AUTOBROWSER_MCP_TOOLSET=core|all`，默认 `core`。`all` 恢复完整 54 个工具；未列出的工具仍然注册且可直接调用，只是不出现在 `tools/list` 里，未知工具的错误建议也只列当前可见工具。
-- `AUTOBROWSER_MCP_RESPONSE_MODE=text|structured|both`，默认 `text`。`text` 只写 `content`；`structured` 对普通 object 结果只写 `structuredContent`，`content` 为空数组，数组/原始值无法结构化时回退文本；`both` 同时写两份，保持旧行为。成功和错误结果都遵循该模式。
-- `screenshot`、`video`、`tracing` 的专用媒体结果不参与上述折叠，仍按原样返回图片块或落盘路径摘要，避免重复全量数据。
-- 非法环境变量值会直接报错退出，不会静默回退到默认值。
-
-行为约定与上文的「面向 Agent 的引用」保持一致：
-
-- 先运行 `snapshot` 获取 `@eN` / `@fN` 稳定引用，再用 `click`、`fill`、`get`、`wait` 等工具基于这些句柄操作，而不是去猜 CSS 选择器。
-- 多标签页流程优先用 `tab_list` 获取 `tN` 句柄，再通过 `tab_select` / `tab_close` 操作。
-- 支持目标定位的工具可以传入 `tab`（`tN` 句柄）和 `frame`（`@fN` 引用）参数，把命令绑定到特定标签页或 frame。
-- 页面大规模重渲染或导航后（epoch 变化），先重新运行 `snapshot` 刷新引用，再继续操作。
-- 工具失败会返回 MCP 的 isError 结果。默认 `text` 模式下错误只出现在 `content` 文本中，并带 `[AI SUGGESTION]` 修复建议；需要结构化错误时使用 `structured` 或 `both`，读取 `structuredContent.error`（`code` / `message` / `suggestedAction`）。
 
 ## 测试
 

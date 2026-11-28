@@ -235,7 +235,7 @@ describe('snapshot --limit parsing', () => {
     expect(() => parseSnapshotArgs(['--limit'])).toThrow('missing limit value')
   })
 
-  test('applies the same range to direct command and MCP calls', () => {
+  test('applies the same range to direct command calls', () => {
     expect(() => validateCommandArgs('snapshot', { limit: 120 })).not.toThrow()
     expect(() => validateCommandArgs('snapshot', { limit: 0 })).toThrow('between 1 and 200')
     expect(() => validateCommandArgs('snapshot', { limit: 201 })).toThrow('between 1 and 200')

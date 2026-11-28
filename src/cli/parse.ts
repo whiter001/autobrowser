@@ -938,7 +938,7 @@ export function parseFindArgs(rest: string[]): FindArgs {
       if (layers.length >= MAX_FIND_WITHIN_LAYERS) {
         throw new Error(`find --within accepts at most ${MAX_FIND_WITHIN_LAYERS} nested layers`)
       }
-      // 重复 --within 按出现顺序从外到内嵌套，与 MCP 的 within 数组一致
+      // 重复 --within 按出现顺序从外到内嵌套，与协议层的 within 数组一致
       layers.push(rawWithin.trim())
       findArgs.within = layers
       index += 1

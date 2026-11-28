@@ -212,11 +212,6 @@ export const HELP_ROOT: HelpNode = helpNode(
       'autobrowser connect [--print-token] [--relay-port <port>] [--ipc-port <port>] [--extension-id <id>] [--browser-command <command>] [--browser-arg <arg>]',
     ),
     helpNode(
-      'mcp',
-      '通过 stdio 把核心 autobrowser 命令暴露为 MCP 服务（供 Claude Desktop 及其他 MCP 客户端使用）。',
-      'autobrowser mcp',
-    ),
-    helpNode(
       'workspace',
       '在共享当前浏览器配置文件与登录状态的同时，隔离 AI 调用方的目标（Chromium 默认使用自动工作区）。',
       'autobrowser workspace [current|list|release|groups|finish] [workspace-id]',
@@ -524,7 +519,7 @@ export const HELP_ROOT: HelpNode = helpNode(
     ),
     helpNode(
       'recipe',
-      '保存、运行并验证可复用的命名脚本配方（CLI 命令，暂不提供 MCP 工具）。',
+      '保存、运行并验证可复用的命名脚本配方（CLI 命令）。',
       'autobrowser recipe <save|list|show|run|verify> ...',
       [
         '配方保存在当前 session 的 homeDir/recipes/<name>.json，命名 session 天然隔离。',

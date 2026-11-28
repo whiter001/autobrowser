@@ -1,7 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 import { validateCommandArgs } from '../src/core/command-spec.js'
 import { parseClickArgs } from '../src/cli/commands/elements.js'
-import { AutobrowserMcpServer } from '../src/cli/mcp.js'
 import {
   createPointerCommands,
   recordCreatedTab,
@@ -14,7 +13,6 @@ import {
 } from '../extension/background/page-input-click-delivery.js'
 import { createExtensionState } from '../extension/background/state.js'
 import type { ExtensionState } from '../extension/background/types.js'
-import type { CommandResponse } from '../src/cli/client.js'
 import { cliErrorPayload, runCli } from './command-line-test-utils.js'
 
 /**
@@ -924,39 +922,6 @@ describe('click --verify-delivery CLI and protocol', () => {
         steps: [{ command: 'click', args: { selector: '#x', verifyDelivery: 'yes' } }],
       }),
     ).toThrow(/verifyDelivery must be a boolean/)
-  })
-
-  test('MCP click exposes verify_delivery/timeout_ms and maps them to protocol fields', async () => {
-    const calls: Array<{ command: string; args: Record<string, unknown> }> = []
-    const server = new AutobrowserMcpServer({
-      requestCommand: async (command: string, args: Record<string, unknown>) => {
-        calls.push({ command, args })
-        return { ok: true, result: { delivered: true } } as CommandResponse
-      },
-    })
-
-    const click = new Map(server.listTools().map((tool) => [tool.name, tool])).get('click')!
-    const properties = click.inputSchema.properties as Record<string, unknown>
-    expect(properties.verify_delivery).toBeDefined()
-    expect(properties.timeout_ms).toBeDefined()
-
-    await server.callTool('click', {
-      selector: '#submit',
-      verify_delivery: true,
-      timeout_ms: 2500,
-    })
-    expect(calls).toEqual([
-      {
-        command: 'click',
-        args: { selector: '#submit', verifyDelivery: true, timeoutMs: 2500 },
-      },
-    ])
-
-    await server.callTool('click', { selector: '#plain', timeout_ms: 1200 })
-    expect(calls.at(-1)).toEqual({
-      command: 'click',
-      args: { selector: '#plain', timeoutMs: 1200 },
-    })
   })
 
   test('CLI surfaces CLICK_NOT_READY suggestedAction from the relay error', async () => {

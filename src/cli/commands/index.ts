@@ -3,10 +3,9 @@ import type { CommandHandler, CommandRegistry } from './types.js'
 /**
  * 命令实现按需加载。
  *
- * CLI 每次调用都是独立进程，静态引入全部命令组意味着每条命令都要加载 MCP SDK、
- * HAR 录制、下载链路等与本次无关的模块。实测整张注册表约 225ms，其中仅
- * @modelcontextprotocol/sdk 就占约 190ms，而它只服务 `autobrowser mcp` 一个命令。
- * 改成动态 import 后，只有真正执行的那个命令才付出加载成本。
+ * CLI 每次调用都是独立进程，静态引入全部命令组意味着每条命令都要加载 HAR 录制、
+ * 下载链路等与本次无关的模块。实测整张注册表约 225ms。改成动态 import 后，
+ * 只有真正执行的那个命令才付出加载成本。
  *
  * 命令名集中在这里声明，它仍是「哪些命令真的能跑」的唯一事实来源：
  * test/command-registry.test.ts 会校验它与各实现模块导出的注册表键完全一致。
@@ -37,8 +36,6 @@ const GROUP_LOADERS: Record<string, GroupLoader> = {
   tabs: () => import('./tabs.js').then((module) => module.tabCommandRegistry),
   version: () => import('./version.js').then((module) => module.versionCommandRegistry),
   webmcp: () => import('./webmcp.js').then((module) => module.webmcpCommandRegistry),
-  // mcp 命令独占 @modelcontextprotocol/sdk，必须等到真正执行该命令时才加载
-  mcp: () => import('../mcp.js').then((module) => ({ mcp: module.handleMcpCommand })),
 }
 
 /** 命令名 → 所属实现组。组内注册表的键就是命令名。 */
@@ -126,7 +123,6 @@ const COMMAND_GROUPS: Record<string, string[]> = {
   tabs: ['tab', 'target', 'command', 'workspace', 'open', 'goto'],
   version: ['version'],
   webmcp: ['webmcp'],
-  mcp: ['mcp'],
 }
 
 function createCommandLoaders(): Record<string, CommandLoader> {

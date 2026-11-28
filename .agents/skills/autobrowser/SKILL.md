@@ -36,7 +36,7 @@ autobrowser 是面向 Chrome/Edge 的浏览器自动化 CLI，通过本地 relay
 - 同一 tab 命令 FIFO 串行，不要并发堆长等待；写操作前核对 URL/页面；超时先 `command status` + 页面状态。`command list/status` 历史带 `command`、`workspace` 和 `requestedAt`/`receivedAt`/`enqueuedAt`/`startedAt`，可分段定位 relay→接收→入队→执行耗时；`diagnostics` 与 `evicted` 用于区分淘汰和当前未命中（`evicted:false` 且无记录不等于从未收到；`lastRestoreError` 非空说明历史读取失败）（不含 URL/selector/脚本）。
 - 兜底目标跳过 `chrome-extension://`、`chrome://`、`edge://`、`devtools://`、`about:`。`tN` 由 Chrome tabId 派生（如 `t2058764132`），不是短序号；扩展重连、句柄表未重建时仍可用，已关闭 tab 报 `STALE_TAB_HANDLE`，先 `tab list`。证书 interstitial（隐私错误页）同样不可附加，只能由用户手动放行，不要当普通页面反复重试。
 - `tab new`/`open` 建出的标签可能先停在 `about:blank`，此时首份 `snapshot` 为空不算失败：稍等后用 `tab list` 核对实际 `tN` 与最终 URL，句柄对不上就 `tab attach <tN>` 再重新 `snapshot`。新建或重连后立即操作报 `STALE_TAB_HANDLE`/`TAB_NOT_ATTACHED` 也走这条路径，不要复用旧句柄或改用别的方案重开。
-- 会话清理、标签组、多 MCP workspace、完整租约边界见 [sessions-workspaces.md](references/sessions-workspaces.md)。
+- 会话清理、标签组、多 workspace、完整租约边界见 [sessions-workspaces.md](references/sessions-workspaces.md)。
 
 ## 常用操作路由
 
@@ -52,9 +52,7 @@ autobrowser 是面向 Chrome/Edge 的浏览器自动化 CLI，通过本地 relay
 
 ## 输出体积控制
 
-- 列表/查询默认 `concise`，需要完整字段才 `--response-format detailed`（MCP `response_format`）；不要为一次拿全量而省略分页。
-- MCP 默认 `AUTOBROWSER_MCP_RESPONSE_MODE=text`：结果只写 `content` 文本，不再重复 `structuredContent`。需要结构化字段用 `structured`（普通 object 只写 `structuredContent`，数组/原始值回退文本），需要同时保留两份才用 `both`。截图/视频/tracing 的媒体结果不受影响。
-- MCP 默认 `AUTOBROWSER_MCP_TOOLSET=core`，`tools/list` 只返回 22 个核心工具（navigate/reload/snapshot/search/read_page/find/click/fill/type/press/get/wait/eval/tab_list/tab_attach/tab_detach/tab_mark/tab_unmark/tab_new/tab_select/tab_close/workspace），schema 约 19.8KB（上限 20KB）。需要让客户端看到全部 57 个工具时设 `all`；未列出的工具仍可直接调用，不要因为列表里没有就断定不可用。`workspace` 工具含 `finish` 动作。
+- 列表/查询默认 `concise`，需要完整字段才 `--response-format detailed`；不要为一次拿全量而省略分页。
 - network/console/errors/actions/downloads/command 默认 20 条，`--limit` 最大 100；tab/route 默认 50。更多结果用 `pagination.nextCursor` + `--cursor`，过滤/排序不变。旧 `--page/--page-size` 仅兼容。
 - network 合法 action 只有 `route|unroute|requests|request|export|har`：列请求用 `network requests`，`network list` 不存在（会报 `CLI_INVALID_ARGUMENT`）。列表优先用 `rN` 短引用再 `network request rN`，不要首选长 CDP ID；concise 详情已去掉重复 summary/HAR，body >16KiB 会标记截断。
 - `snapshot` 32KiB、`search` 默认 10 窗口/100 行/32KiB、`eval` 默认 32KiB。截断时用 `nextCursor`、`nextStartLine`、`--target/--role`、`--changed` 续读/收窄，不要改用无界输出。
@@ -73,7 +71,7 @@ autobrowser 是面向 Chrome/Edge 的浏览器自动化 CLI，通过本地 relay
 
 只有任务涉及对应专题时才读取：
 
-- [commands.md](references/commands.md) — 全量命令、参数互斥/`--`、`replay`、MCP 映射。
+- [commands.md](references/commands.md) — 全量命令、参数互斥/`--`、`replay`。
 - [sessions-workspaces.md](references/sessions-workspaces.md) — 命名会话清理、workspace 优先级/标签组/租约、`TAB_BUSY`。
 - [network-and-har.md](references/network-and-har.md) — 请求 epoch/分页、HAR 限额/body/传输/recover。
 - [media-download.md](references/media-download.md) — download/HLS、媒体作用域与溯源、MSE `blob:` 流程、X 视频选源与时长判据、传输上限。

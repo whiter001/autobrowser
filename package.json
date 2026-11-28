@@ -1,13 +1,12 @@
 {
   "name": "@whiter001/autobrowser",
   "version": "0.1.7",
-  "description": "面向 AI agent 的浏览器自动化 CLI：本地 relay + Chrome/Edge 扩展，支持导航、点击/填写、snapshot 引用、网络拦截与 HAR，以及 MCP server",
+  "description": "面向 AI agent 的浏览器自动化 CLI：本地 relay + Chrome/Edge 扩展，支持导航、点击/填写、snapshot 引用、网络拦截与 HAR",
   "keywords": [
     "browser-automation",
     "chrome-extension",
     "cdp",
     "ai-agent",
-    "mcp",
     "scraping",
     "bun"
   ],
@@ -67,7 +66,6 @@
     "bun": ">=1.4.4"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.32.2",
     "pdfjs-dist": "6.5.438",
     "playwright-core": "1.64.1"
   }

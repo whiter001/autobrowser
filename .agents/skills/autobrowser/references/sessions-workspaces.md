@@ -10,7 +10,7 @@
 
 - Workspace 在 Chromium 下默认启用：共享当前浏览器/profile/登录态，但隔离默认 tab 与操作权限；需要独立浏览器环境时仍用 `--session`。解析优先级为显式 `--workspace` > 非 `off` 的 `AUTOBROWSER_WORKSPACE` > 默认 auto，空环境变量等同未设置。
 - 关闭隔离用全局 `--no-workspace` 或 `AUTOBROWSER_WORKSPACE=off`（大小写不敏感），回到无 workspace 的共享目标模式；显式 `--workspace` 仍覆盖 off，但 `--no-workspace` 与 `--workspace` 同用会在发请求前报 `CLI_INVALID_ARGUMENT`。默认 auto 只用于 Chromium：`--engine firefox|webkit` 且没有显式 workspace 配置时保持无 workspace，显式配置仍按原行为报 Chromium-only 错误。
-- auto 组合可信祖先进程 PID、启动时间与终端标识；这些信号会随宿主启动方式、终端复用或进程重启漂移，因此 AI 宿主应在会话开始时按“启动工作区根目录 + AI 会话 ID”生成一次固定 `AUTOBROWSER_CALLER_ID`，整个会话复用。同一 AI 固定、不同 AI 不同；不要只按当前目录，也不要每条命令随 cwd 重算，否则同一工作流会分裂成多个 workspace、丢失默认目标或反复 `TAB_BUSY`。显式 `AUTOBROWSER_WORKSPACE` 优先，设置它时无需另设 caller id。它不是安全认证机制；MCP 服务实例的独立 workspace 语义不变。
+- auto 组合可信祖先进程 PID、启动时间与终端标识；这些信号会随宿主启动方式、终端复用或进程重启漂移，因此 AI 宿主应在会话开始时按“启动工作区根目录 + AI 会话 ID”生成一次固定 `AUTOBROWSER_CALLER_ID`，整个会话复用。同一 AI 固定、不同 AI 不同；不要只按当前目录，也不要每条命令随 cwd 重算，否则同一工作流会分裂成多个 workspace、丢失默认目标或反复 `TAB_BUSY`。显式 `AUTOBROWSER_WORKSPACE` 优先，设置它时无需另设 caller id。它不是安全认证机制。
 - auto 身份不由 shell 决定：它向上遍历进程树，跳过 shell 与 autobrowser 自身，取最近的可信非 shell 祖先哈希。因此新开的 Bash/PowerShell、嵌套 PowerShell、从脚本或 Node 子进程里再调一次，**通常仍会落到同一个 workspace**；只有当调用链跨到不同的可信祖先（换了 IDE/终端窗口、父进程重启或被替换、脱离原会话运行）时身份才会漂移，同一工作流被拆成多个 workspace，进而互相 `TAB_BUSY`、丢失默认目标。这是条件性风险而非每条命令都必然分裂，但跨 shell 仍建议显式继承同一个 `AUTOBROWSER_WORKSPACE` 或 `AUTOBROWSER_CALLER_ID`，不要把稳定性寄托在进程树上。显式 `--workspace <id>` 是全局选项，放在命令名之前（`autobrowser --workspace <id> tab attach <tN>`）；放在子命令之后可能被该子命令的局部解析器拒绝，此时改用环境变量最稳。
 - `tab new` 返回的 `tN` 句柄要立即记下来，后续命令同时显式带 `--workspace <id>` 和 `--tab <tN>`。只给 `--tab` 不够：workspace 未固定时命令会重新推导 auto 身份，可能拒收该句柄或认领一个无关标签。收到 `TAB_BUSY` 等回执里的 owning workspace 时先判断标签归属：确认它是本工作流自己建的（句柄、URL、上下文都能对上），才用该 workspace 加显式 `--tab <tN>` 找回；若它属于其他 AI 或调用方，不要复用其 workspace，也不要强接管，改用自己的空闲标签或 `tab new` 新建。
 - 多个 AI 不共用同一个 workspace，也不能靠重试或改参数绕过 `TAB_BUSY`；需要并发时各自 attach 不同标签。
@@ -29,4 +29,3 @@
 - 开启后一个 workspace 对应一个 Chromium 标签组，组标题是截断的短 workspace id，颜色按 workspace 稳定生成；`tab attach`、自动认领、`tab new` 以及开启时已有归属会同步进组。
 - `tab detach`、`workspace release`、`workspace finish`（保留的标签）、租约过期和 `groups off` 会把仍在管理组里的页面恢复到进入前的组（原本未分组则取消分组）；用户手动移到别组的页面保持不动。
 - groupId 只是可失效的缓存，不承担归属身份；分组失败只记录 `lastError`，不影响归属、页面命令或 attach/detach/release。`close all` 仍按 owned tabs 关闭，不按标签组关闭。
-- 每个 MCP 服务实例自动获得独立 workspace，可用 `workspace`（含 `finish` 动作）、`tab_attach`、`tab_detach`、`tab_mark`、`tab_unmark` 工具管理和复用页面。

@@ -2,7 +2,7 @@
 
 ## 诊断与自动 snapshot
 
-- `tracing start` / `tracing stop [output.json]` 记录目标 tab 的 CDP trace，最大 32MiB；超限明确失败，不静默截断。CLI/MCP 都把 trace 落盘并返回路径，避免大段数据进入模型上下文。
+- `tracing start` / `tracing stop [output.json]` 记录目标 tab 的 CDP trace，最大 32MiB；超限明确失败，不静默截断。CLI 把 trace 落盘并返回路径，避免大段数据进入模型上下文。
 - `video start` / `video stop [output.webm]` 使用 Chrome tabCapture + offscreen MediaRecorder 录制 WebM，默认最长 10 分钟、文件上限 64MiB。`video chapter <title>` 添加章节，JSON sidecar 在 `video stop` 时输出；`video show-actions` / `video hide-actions` 控制后续动作 callout 和目标高亮。浏览器不支持 tabCapture 时按错误信息诊断，不伪造视频结果。
 - `actions [list|clear]` 查看或清理有界动作时间线，包含命令、目标、耗时和错误，但不保存参数值，密码、脚本、cookie 等不会进入日志。
 - `set auto-snapshot on|off` 控制动作后自动 snapshot，默认关闭；只覆盖导航和输入动作，snapshot 失败通过 `snapshotError` 返回，不覆盖原动作结果。开启后会显著增加输出，排查完应关闭。
@@ -22,11 +22,11 @@
 - `search "error" --context 3 --limit 20` 只读搜索当前已加载文档的可见文本，查询词是位置参数，没有 `--text` 选项。它不是 Bing 等 Web 搜索引擎封装，不能改写搜索引擎实际采用的分词、纠错、`site:`/`OR` 语义，也不负责搜索结果分页或跨站去重。`context` 为 0–50；`limit` 限制匹配窗口数（默认 20、最大 200；0 不返回窗口或续读游标），但每次仍最多返回 200 行、100000 UTF-8 字节，单个合并窗口也可能截断。
 - 普通 query 始终按字面量匹配，`|`、`*`、`(`、`?`、`\` 等正则元字符都只是普通字符；正则必须写成 `/pattern/flags`，例如 `search "/签到|打卡|抽奖/" --context 2 --limit 20`。`g` 标志会被忽略，非法正则直接报错。`emptyReason:NO_MATCH` 只表示当前匹配模式（字面量或正则）在范围内无结果，不代表页面没有内容。
 - 字面量查询含正则元字符且在有文本的页面上零命中时，结果会带 `hint`：它说明本次按字面量匹配、元字符不是操作符，并给出 `/pattern/flags` 改写示例（如 `签到|打卡|抽奖` -> `/签到|打卡|抽奖/`）。有命中、显式正则、无元字符的普通查询和 `NO_DATA` 都不会带该字段；看到 `hint` 就先按提示改用正则重试，而不是断言页面没内容。
-- `--start-line <n>` 是 1 起算的正安全整数，默认 1。若 `truncated:true` 且有 `nextStartLine:201`，保持查询和 tab/frame 不变，运行 `search "error" --context 3 --limit 20 --start-line 201` 续读；MCP 对应 `search({query:"error", context:3, limit:20, startLine:201})`。页面变更后行号可能变化，应重新搜索确认。
+- `--start-line <n>` 是 1 起算的正安全整数，默认 1。若 `truncated:true` 且有 `nextStartLine:201`，保持查询和 tab/frame 不变，运行 `search "error" --context 3 --limit 20 --start-line 201` 续读。页面变更后行号可能变化，应重新搜索确认。
 - 微前端壳页的顶层 `snapshot`/`search` 不包含 iframe 内部 DOM；先根据顶层结果的 `frames[]` 和 frame `src` 确认路由，再执行 `frame <@fN|selector>`。frame 选择会持续生效；回到壳页用 `frame top`，跨文档点击优先使用刚观察到的 ref 或显式 `--frame`，不要依赖不同文档中相同的 `@eN` 编号。
 - `snapshot`/`find` 在同一 document 内不复用已分配 ref；这不代表被删除节点仍有效。导航后 ref stale，删除/重渲染后先刷新 snapshot。
 - `snapshot --changed` 包含 checked/disabled 等状态变化与 `removedRefs`；基线按 document/frame 隔离。输出有 200000 UTF-8 字节预算，`truncated` 时用 `--target`/`--role` 收窄或 `--changed` 查看后续变化；只有实际交付的元素进入基线。
-- `find --name` 默认 substring，不是 exact；需要精确匹配用 `--exact`（MCP `exact:true`），`exact-name` 策略恒精确。只读 locate/text 默认取 first；写操作多匹配且未显式 position 时返回 `AMBIGUOUS_TARGET` 和候选。先检查 `--candidates 3`、收窄条件，再明确选择 `--position first|last|nth=N` 或使用确认后的 ref，不盲目重复写操作。
+- `find --name` 默认 substring，不是 exact；需要精确匹配用 `--exact`，`exact-name` 策略恒精确。只读 locate/text 默认取 first；写操作多匹配且未显式 position 时返回 `AMBIGUOUS_TARGET` 和候选。先检查 `--candidates 3`、收窄条件，再明确选择 `--position first|last|nth=N` 或使用确认后的 ref，不盲目重复写操作。
 
 ## 多 AI 场景诊断
 

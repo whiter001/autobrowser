@@ -25,7 +25,6 @@ const GROUP_REGISTRIES: Record<string, () => Promise<Record<string, unknown>>> =
   tabs: async () => (await import('../src/cli/commands/tabs.js')).tabCommandRegistry,
   version: async () => (await import('../src/cli/commands/version.js')).versionCommandRegistry,
   webmcp: async () => (await import('../src/cli/commands/webmcp.js')).webmcpCommandRegistry,
-  mcp: async () => ({ mcp: (await import('../src/cli/mcp.js')).handleMcpCommand }),
 }
 
 describe('命令注册表', () => {
@@ -54,13 +53,6 @@ describe('命令注册表', () => {
       expect(typeof handler).toBe('function')
       expect(name.length).toBeGreaterThan(0)
     }
-  })
-
-  test('mcp 命令在注册表中且与实现一致', async () => {
-    const handler = await COMMAND_LOADERS.mcp!()
-    expect(typeof handler).toBe('function')
-    const { handleMcpCommand } = await import('../src/cli/mcp.js')
-    expect(handler).toBe(handleMcpCommand)
   })
 
   test('未知命令不会命中任何加载器', () => {

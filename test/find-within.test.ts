@@ -1,5 +1,4 @@
 import { describe, expect, test } from 'bun:test'
-import { AutobrowserMcpServer } from '../src/cli/mcp.js'
 import { parseFindArgs } from '../src/cli/parse.js'
 import {
   getAgentElementRefPageEpoch,
@@ -580,7 +579,7 @@ describe('find within end-to-end through command handlers', () => {
   })
 })
 
-describe('find within CLI and MCP protocol', () => {
+describe('find within CLI and protocol', () => {
   test('repeated --within keeps outer-to-inner order', () => {
     expect(
       parseFindArgs([
@@ -651,36 +650,5 @@ describe('find within CLI and MCP protocol', () => {
     expect(() =>
       validateCommandArgs('find', { strategy: 'role', role: 'button', within: 5 }),
     ).toThrow('within must be a string or an array of strings')
-  })
-
-  test('MCP find exposes within in the schema and forwards both shapes', async () => {
-    const calls: Array<{ command: string; args: Record<string, unknown> }> = []
-    const server = new AutobrowserMcpServer({
-      requestCommand: (async (command: string, args: Record<string, unknown>) => {
-        calls.push({ command, args })
-        return { ok: true, result: { found: true } }
-      }) as never,
-    })
-
-    const findTool = server.listTools().find((tool) => tool.name === 'find')!
-    expect(findTool.inputSchema.properties?.within).toMatchObject({
-      anyOf: [{ type: 'string' }, { type: 'array', maxItems: 6 }],
-    })
-
-    await server.callTool('find', {
-      strategy: 'role',
-      role: 'button',
-      within: ['.records', '#record-42'],
-    })
-    await server.callTool('find', { strategy: 'text', query: '删除', within: '.records' })
-
-    expect(calls[0]).toMatchObject({
-      command: 'find',
-      args: { strategy: 'role', role: 'button', within: ['.records', '#record-42'] },
-    })
-    expect(calls[1]).toMatchObject({
-      command: 'find',
-      args: { strategy: 'text', query: '删除', within: '.records' },
-    })
   })
 })

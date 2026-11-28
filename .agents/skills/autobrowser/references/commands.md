@@ -21,7 +21,7 @@
 - `window new`
 - `frame <@fN|selector|top>` — 选择持续有效，直到下一次 `frame` 或页面导航/重载；`snapshot`/`find` 返回的元素 ref 会记录来源 frame，后续省略 `--frame` 的操作按来源路由，显式 `--frame` 仍优先。跨 iframe 连续操作建议显式 `--frame top` / `--frame <selector>` 或重新 `snapshot`。
 - `click` / `dblclick` / `fill` / `find` / `type` / `press` / `keyboard` / `hover` / `focus` / `select` / `check` / `uncheck` / `scroll` / `scrollintoview` / `drag` / `drop` / `upload`
-- `find <strategy> <query> [action] [value] [--within <css|@eN>]...` — --within 可重复、最多 6 层，从外到内嵌套容器（CSS 或 @eN），每层必须在上一层内唯一；0 命中 WITHIN_SCOPE_NOT_FOUND、多命中 WITHIN_SCOPE_AMBIGUOUS、目标只在容器外 WITHIN_SCOPE_ESCAPE，details.layer/selector/candidates 指明要收窄的层。MCP/batch 用 within: string|string[]。只保证容器内的语义定位，不保证业务提交成功
+- `find <strategy> <query> [action] [value] [--within <css|@eN>]...` — --within 可重复、最多 6 层，从外到内嵌套容器（CSS 或 @eN），每层必须在上一层内唯一；0 命中 WITHIN_SCOPE_NOT_FOUND、多命中 WITHIN_SCOPE_AMBIGUOUS、目标只在容器外 WITHIN_SCOPE_ESCAPE，details.layer/selector/candidates 指明要收窄的层。batch 用 within: string|string[]。只保证容器内的语义定位，不保证业务提交成功
 - `click [--verify-delivery|--timeout-ms <ms>]` — 先等可见/启用/视口内/未遮挡/几何稳定的 ready，再装捕获探针确认 trusted pointerdown/mousedown 落在目标上；成功多出 delivery:{status:"delivered",trusted:true,events:[...]}，失败为 CLICK_NOT_READY / CLICK_NOT_DELIVERED / CLICK_DELIVERY_UNKNOWN（details.delivery 带证据）。--timeout-ms 调整总预算（默认 10000，上限 1800000），ready 阶段取它与 5000ms 较小值。只证明输入送达，不证明业务提交成功；验证路径不做 DOM 回退，默认关闭时 click 行为不变
 - `press <key>` 只接受一个键名（例如 Enter），不接受 selector 位置参数；先 `click` / `focus <selector>` 聚焦目标，否则按键发给当前焦点元素
 - `mousemove` / `mousedown` / `mouseup` / `mousewheel`
@@ -62,9 +62,4 @@
 - 需要输入与选项同名的字面量时，在 `--` 后传值，例如 `type '#field' -- '--submit'`。
 - `replay` 会拒绝包含 `[redacted]` 的历史命令，防止把脱敏占位符当成真实参数执行；需要重放敏感操作时重新检查页面并显式构造命令。
 
-## 其他调用接口
-
-- MCP 客户端无需走 CLI：导航类可用 `navigate` / `reload` / `back` / `forward`，脚本与扩展控制用 `script` / `extension`，参数与 CLI 同名（`tab` / `frame` 由工具自动注入）。
-- MCP 默认只列出 22 个核心工具：`navigate`、`reload`、`snapshot`、`search`、`read_page`、`find`、`click`、`fill`、`type`、`press`、`get`、`wait`、`eval`、`tab_list`、`tab_attach`、`tab_detach`、`tab_mark`、`tab_unmark`、`tab_new`、`tab_select`、`tab_close`、`workspace`（序列化约 19.8KB，守住 20KB 上限）。`AUTOBROWSER_MCP_TOOLSET=all` 恢复完整 57 个；未列出的工具仍可直接调用，只是不出现在 `tools/list`。`workspace` 工具含 `finish` 动作，`tab_mark` 只接受 `deliverable|handoff`。
-- MCP 响应默认 `AUTOBROWSER_MCP_RESPONSE_MODE=text`，只写 `content` 文本；`structured` 对普通 object 只写 `structuredContent`（数组/原始值回退文本），`both` 双写兼容旧客户端。错误结果同样遵循该模式，`structured`/`both` 下读 `structuredContent.error`。`screenshot` / `video` / `tracing` 的媒体结果保持原样。
 - `cookies list` 是 `cookies get` 的别名，支持同样的 `--domain` / `--path` 过滤。

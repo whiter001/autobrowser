@@ -110,7 +110,7 @@
 
 ### Issue 5: `cookies` 子命令命名不一致
 
-**处理状态**: 已处理（CLI/MCP/扩展路由支持 `list` 作为 `get` 别名，help 已同步）
+**处理状态**: 已处理（CLI/扩展路由支持 `list` 作为 `get` 别名，help 已同步）
 
 - **严重程度**: 低
 
@@ -121,7 +121,7 @@
 
 **期望行为**
 
-- 已将 `list` 作为 `get` 的别名，CLI/MCP/扩展路由统一映射到 cookies get 行为。
+- 已将 `list` 作为 `get` 的别名，CLI/扩展路由统一映射到 cookies get 行为。
 
 ---
 

@@ -15,7 +15,7 @@
 
 ### 命令与响应契约
 
-- Workspace 身份优先级：`--workspace` > `AUTOBROWSER_WORKSPACE` > MCP 客户端连接上下文 > 自动调用方识别。
+- Workspace 身份优先级：`--workspace` > `AUTOBROWSER_WORKSPACE` > 自动调用方识别。
 - 新增 `workspace current|list|release`，用于查看当前身份、诊断归属和显式回收；自动模式下首次使用时创建 workspace。
 - 新增 `tab attach <tN> [--readonly]` / `tab detach [tN]`；`tab select` 只能选择当前 workspace 已拥有的标签。
 - Workspace 无目标时，`open` 可以创建并绑定新 tab，`goto` 必须提示先 `tab attach` 或 `tab new`，避免意外改写已有页面。
@@ -40,12 +40,11 @@
 - [x] **P2：实现已有标签复用与租约**
   - [x] 实现原子的 `tab attach` / `tab detach`，并发认领同一 tab 时只允许一个 workspace 成功。
   - [x] 实现 owned/readonly 权限、默认目标切换和 `TAB_BUSY` / `WORKSPACE_TARGET_REQUIRED` 恢复建议。
-  - [x] 实现可配置租约与续约：CLI 命令和 MCP 活跃连接续约，长命令运行期间不得被其他调用方回收。
+  - [x] 实现可配置租约与续约：CLI 命令运行时续约，长命令运行期间不得被其他调用方回收。
   - [x] 异常回收只解除 attachment；relay 重启、扩展重连、tab 关闭和浏览器重启后保持或清理映射的规则必须有测试。
 
 - [x] **P3：接入无参数调用方识别**
   - [x] 实现显式参数和环境变量覆盖，并提供 `workspace current` 展示实际解析结果。
-  - [x] MCP 按客户端连接绑定 workspace；重连时通过稳定客户端上下文恢复，不依赖临时进程 PID。
   - [x] CLI 自动识别组合稳定祖先 PID、进程启动时间和终端 ID，处理 PID 复用、临时 shell、后台任务及识别失败。
   - [x] 评估自动模式的默认启用时机；在迁移完成前保留显式配置和旧模式，避免静默改变单 Agent 用户的目标语义。
 
@@ -84,7 +83,6 @@
 - [x] **降低交互延迟**
   - [x] 增强 batch 命令的能力，支持简单的条件分支或基于结果的跳过。
 
-- [x] **MCP 服务器接入 (Model Context Protocol)**：通过 `autobrowser mcp` 在 stdio 上暴露核心命令为 MCP tools（含 `tab` / `frame` 参数注入），供 Claude Desktop 等 MCP 客户端直接调用。
 
 ## 工程化与体验
 

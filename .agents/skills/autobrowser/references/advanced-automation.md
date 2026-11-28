@@ -34,7 +34,7 @@
 
 ## 可执行的命名配方（recipe）
 
-- 把反复使用的页面脚本存成命名配方：`recipe save <name> <spec.json>`（已存在需 `--force`）→ `recipe run <name>` 验证行为 → `recipe verify <name>` 固化验证时间。`recipe list` 只返回元数据，`recipe show <name>` 才返回完整脚本；该命令族目前只有 CLI，没有 MCP 工具。
+- 把反复使用的页面脚本存成命名配方：`recipe save <name> <spec.json>`（已存在需 `--force`）→ `recipe run <name>` 验证行为 → `recipe verify <name>` 固化验证时间。`recipe list` 只返回元数据，`recipe show <name>` 才返回完整脚本；该命令族目前只有 CLI。
 - spec 是 `{name, description?, entryUrl, params:[{name,description,required?}], script, lastVerified?}`。`name` 是安全 slug（小写字母/数字开头，只含小写字母、数字、`_`、`-`，≤64）且必须与 `spec.name` 一致；`entryUrl` 仅 HTTP(S)；`params` ≤50 且不重名；`script` 非空且 ≤256KiB；spec 文件 ≤1MiB。
 - 配方存在当前 session 的 `homeDir/recipes/<name>.json`（目录尽量 700，JSON 用 `writeJsonFile` 的原子写入与 600），命名 session 天然隔离；损坏文件、文件名与内容不一致都报 `INVALID_RECIPE_SPEC`，不会被静默忽略。
 - `run`/`verify` 通过现有 `eval` 执行 `script`，支持顶层 `return`/`await`。当前标签页与 `entryUrl` 同源时复用页面状态（登录、滚动位置等），跨源才用 `goto` 导航；`--timeout-ms` 取值 100..1800000 并映射为 eval 超时。
@@ -67,7 +67,7 @@
 
 - `run <file.js>` 执行文件中的 `async (page) => { ... }`，获得真实 Playwright Page；可用 `--tab <tN>` 选 tab、`--timeout-ms <ms>` 控制总预算，也可用共享的 `--file/--stdin/--base64` 输入。返回值在 `result.value`。
 - run 会等待目标 tab 已在执行的旧命令，然后独占该 tab；等待或运行期间普通同 tab 命令返回 `PAGE_SCRIPT_ACTIVE`，应等待结束或显式操作其他 tab，不要并发打架。其他 tab 可并行。
-- 脚本只获得一个已有 tab；用 `page.frames()` / `page.frameLocator()` 处理 frame，不传根级 `--frame`。不支持 `context.newPage()`，也不能嵌进 batch，目前不支持 WebDriver/MCP。
+- 脚本只获得一个已有 tab；用 `page.frames()` / `page.frameLocator()` 处理 frame，不传根级 `--frame`。不支持 `context.newPage()`，也不能嵌进 batch，目前不支持 WebDriver。
 - 脚本是有本地 Node.js/Bun 权限的可信代码。结束、失败、超时和断连都会释放锁，但不会撤销已发生的页面副作用；重试前先检查页面。`page.route()` 随桥接停止而失效，autobrowser 会按 tab 恢复自己的路由。
 
 ## 组件交互与异步断言

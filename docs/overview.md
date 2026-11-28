@@ -11,7 +11,7 @@
 
 以上能力同样通过 npm 全局安装的 `autobrowser` 命令提供，npm 用户不需要克隆本仓库；安装步骤见 [`install.md`](install.md)。
 
-运行 `autobrowser help` 可以查看完整命令树。`src/cli/help.ts` 里的命令树是标志位和语法的权威来源。`autobrowser mcp` 还会通过 stdio 暴露一个 MCP（Model Context Protocol）服务器，把核心命令包装成 MCP tools，供 Claude Desktop 等 MCP 客户端调用。
+运行 `autobrowser help` 可以查看完整命令树。`src/cli/help.ts` 里的命令树是标志位和语法的权威来源。
 
 ## CLI 输出与退出码
 
@@ -50,7 +50,7 @@ autobrowser open https://example.com
 
 `goto` / `open --wait-for url|selector <value>` 在导航成功后再等待，附加等待默认超时为 30000ms（与 `reload` / `tab new` 相同）。协议中 `url` 始终是 goto/open 的导航目的地，URL 等待条件另用 `waitUrl`；`reload` 没有导航目的地，因历史兼容继续用 `url` 作为 URL 等待条件，不应互换这两个字段。成功响应的 `result.wait` 包含 `type`、`value`、`completed: true` 执行证明；CLI 会拒绝缺少匹配证明的旧扩展响应。等待失败仍返回 `ok: false`，在 `result`（以及 `error.details.result`）保留成功的导航结果和最终 URL。`tab new` 等待失败也保留已创建的 tab，不会自动关闭。
 
-MCP `navigate` 当前不暴露 `waitFor`，所以仍不提供 `frame` 参数；CLI / batch 的 goto/open 可用 frame 定位附加 selector 等待。
+CLI / batch 的 goto/open 可用 frame 定位附加 selector 等待。
 
 带 `--capture-id` 的 HAR stop 会先在同一 tab 目标下查询 status 确认 captureId，再校验 stop 返回的 id；旧扩展未提供身份信息时不会发送 stop。`--include-urls` 若在 stop 后发现旧扩展不支持，capture 可能已停止，可用 `network har recover` 恢复。
 
@@ -62,7 +62,7 @@ MCP `navigate` 当前不暴露 `waitFor`，所以仍不提供 `frame` 参数；C
 
 需要完整 Playwright 页面编程接口时，用 `run <file.js>` 执行 `async (page) => { ... }`。它通过现有扩展的 CDP 桥接提供真实 Page，支持根级 `--tab` 和 `--timeout-ms`，返回 `result.value`。同一 tab 在脚本等待或运行期间由 run 独占，普通命令返回 `PAGE_SCRIPT_ACTIVE`；脚本结束或断连后释放。
 
-该入口是本地不安全代码，仅用于可信脚本。桥接只暴露一个已有 tab，不支持 `context.newPage()`；frame 用 Page 自己的 API。run 不支持 WebDriver、MCP 或 batch 嵌套。`page.route()` 随本次桥接结束而失效，网络域会按 tab 恢复 autobrowser 原有路由。
+该入口是本地不安全代码，仅用于可信脚本。桥接只暴露一个已有 tab，不支持 `context.newPage()`；frame 用 Page 自己的 API。run 不支持 WebDriver 或 batch 嵌套。`page.route()` 随本次桥接结束而失效，网络域会按 tab 恢复 autobrowser 原有路由。
 
 ## 面向 Agent 的工作流
 
@@ -92,7 +92,7 @@ autobrowser find label "Email" fill "agent@example.com"
 autobrowser find role button click --name "删除" --within '.records' --within '#record-42'
 ```
 
-对依赖 trusted 事件、或经常被浮层/骨架屏挡住的目标，用 `click --verify-delivery`（MCP `verify_delivery`、batch `args.verifyDelivery`）：它先等目标可见、启用、在视口内、未被遮挡且几何稳定，再在按下前安装捕获阶段探针，确认 `isTrusted` 的 `pointerdown`/`mousedown` 确实落在目标上。成功结果多出 `delivery:{status:"delivered",trusted:true,events:[...]}`；失败按阶段报 `CLICK_NOT_READY` / `CLICK_NOT_DELIVERED` / `CLICK_DELIVERY_UNKNOWN`，且不会在发出输入后回退 DOM 点击或盲目重放。`delivery` 只证明输入到达目标，不证明业务提交成功；默认不开启时 click 行为与耗时保持原样。`--timeout-ms <ms>`（MCP `timeout_ms`）可调整总预算（默认 10000，上限 1800000），ready 阶段取它与 5000ms 的较小值。
+对依赖 trusted 事件、或经常被浮层/骨架屏挡住的目标，用 `click --verify-delivery`（batch `args.verifyDelivery`）：它先等目标可见、启用、在视口内、未被遮挡且几何稳定，再在按下前安装捕获阶段探针，确认 `isTrusted` 的 `pointerdown`/`mousedown` 确实落在目标上。成功结果多出 `delivery:{status:"delivered",trusted:true,events:[...]}`；失败按阶段报 `CLICK_NOT_READY` / `CLICK_NOT_DELIVERED` / `CLICK_DELIVERY_UNKNOWN`，且不会在发出输入后回退 DOM 点击或盲目重放。`delivery` 只证明输入到达目标，不证明业务提交成功；默认不开启时 click 行为与耗时保持原样。`--timeout-ms <ms>` 可调整总预算（默认 10000，上限 1800000），ready 阶段取它与 5000ms 的较小值。
 
 ```bash
 autobrowser click '#submit' --verify-delivery
@@ -243,7 +243,7 @@ autobrowser extract ./spec.json --output items.jsonl
 
 ## 可执行的命名配方（recipe）
 
-把反复使用的页面脚本保存成命名配方，之后运行并记录验证时间。该命令族目前只提供 CLI（不宣称 MCP 支持）：
+把反复使用的页面脚本保存成命名配方，之后运行并记录验证时间。该命令族目前只提供 CLI：
 
 ```bash
 autobrowser recipe save daily-check ./check.json          # 已存在时加 --force

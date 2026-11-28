@@ -127,7 +127,7 @@ export function resolveTabInput(state: ExtensionState, tabId: TabInput): number 
 }
 
 /** 失效 tab 句柄/已关闭 tabId 的统一错误：机器可读 code + 可执行的下一步建议，
- *  CLI/MCP 错误序列化会自动透出 code/suggestedAction */
+ *  CLI 错误序列化会自动透出 code/suggestedAction */
 export function createStaleTabHandleError(tabId: TabInput): ErrorWithCode {
   const error = new Error(`tab not found: ${tabId}`) as ErrorWithCode
   error.code = 'STALE_TAB_HANDLE'
