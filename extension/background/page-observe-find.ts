@@ -44,6 +44,67 @@ export interface FindSemanticTargetOptions {
   requireUnique?: boolean
   /** locate 查询允许无匹配；动作命令仍应失败。 */
   allowNoMatch?: boolean
+  /**
+   * 嵌套容器定位：从外到内逐层收窄，每层必须是 CSS 选择器或 @eN 引用且在上一层内唯一。
+   * 协议允许 string 或 string[]，最多 6 层；缺省表示全文档定位。
+   */
+  within?: string | string[]
+}
+
+/** within 的最大嵌套层数；再深通常意味着应该用 snapshot 或更精确的容器选择器。 */
+const MAX_WITHIN_LAYERS = 6
+
+/** 归一并校验 within：字符串视作单层，数组保持顺序；空值报 INVALID_COMMAND_ARGS 而不是静默忽略。 */
+function normalizeWithinLayers(value: FindSemanticTargetOptions['within']): string[] {
+  if (value === undefined || value === null) {
+    return []
+  }
+
+  const raw = typeof value === 'string' ? [value] : Array.isArray(value) ? value : null
+  if (!raw) {
+    throw createToolError(
+      'INVALID_COMMAND_ARGS',
+      'within must be a string or an array of strings',
+      {
+        details: { field: 'within', received: value },
+      },
+    )
+  }
+  if (raw.length === 0) {
+    return []
+  }
+  if (raw.length > MAX_WITHIN_LAYERS) {
+    throw createToolError(
+      'INVALID_COMMAND_ARGS',
+      `within accepts at most ${MAX_WITHIN_LAYERS} nested layers`,
+      {
+        details: {
+          field: 'within',
+          received: raw.length,
+          expected: `1..${MAX_WITHIN_LAYERS}`,
+        },
+      },
+    )
+  }
+
+  const layers = raw.map((item) => (typeof item === 'string' ? item.trim() : ''))
+  if (layers.some((layer) => !layer)) {
+    throw createToolError(
+      'INVALID_COMMAND_ARGS',
+      'within layers must be non-empty selectors or @eN refs',
+      { details: { field: 'within', received: raw } },
+    )
+  }
+  return layers
+}
+
+const WITHIN_SUGGESTED_ACTIONS: Record<string, string> = {
+  WITHIN_SCOPE_NOT_FOUND:
+    'The --within layer matched nothing. Check details.layer/details.selector, and confirm the container is rendered inside the previous layer before retrying.',
+  WITHIN_SCOPE_AMBIGUOUS:
+    'The --within container matched multiple elements. Narrow details.selector (or pass an @eN ref from snapshot) until each layer resolves to exactly one container.',
+  WITHIN_SCOPE_ESCAPE:
+    'The layer target only exists outside the previous container. Order layers outer-to-inner and point each layer inside its parent; autobrowser will not widen the scope.',
 }
 
 /**
@@ -52,6 +113,7 @@ export interface FindSemanticTargetOptions {
 export function createSemanticFindFeature({
   state,
   getTargetTab,
+  resolveElementSelectorForTab,
   evaluateInTabContext,
 }: PageObserveDependencies) {
   async function findSemanticTarget(
@@ -60,7 +122,6 @@ export function createSemanticFindFeature({
     frameSelector: FrameSelector,
   ): Promise<SemanticTargetResult> {
     const tab = await getTargetTab(tabId)
-    const pageEpoch = getPageEpoch(state, tab.id)
     const strategy = String(options.strategy || '').trim()
     const role = String(options.role || '').trim()
     const query = String(options.query || '').trim()
@@ -90,6 +151,15 @@ export function createSemanticFindFeature({
       throw new Error(`missing ${strategy} value`)
     }
 
+    // 容器层先逐层解析 @eN 与 pageEpoch：引用过期要在进入页面脚本前就按原协议报 STALE_ELEMENT_REF。
+    const withinLayers = normalizeWithinLayers(options.within)
+    const resolvedWithin: string[] = []
+    for (const layer of withinLayers) {
+      const resolved = await resolveElementSelectorForTab(tab.id, layer)
+      resolvedWithin.push(resolved.resolvedSelector)
+    }
+    const pageEpoch = getPageEpoch(state, tab.id)
+
     const { value } = await evaluateInTabContext<SemanticTargetResult>(
       tab.id,
       `(async () => {
@@ -102,6 +172,7 @@ export function createSemanticFindFeature({
         const exact = ${exact ? 'true' : 'false'};
         const position = ${JSON.stringify(position)};
         const candidatesCount = ${candidatesCount};
+        const withinSelectors = ${JSON.stringify(resolvedWithin)};
         const antTreeNodeSelector = ${JSON.stringify(ANT_TREE_NODE_SELECTOR)};
         // 可点击判定与候选列表必须同时包含 TreeSelect 节点，否则 role/name 命中了却退回到普通文本节点
         const actionableSelector = 'a[href],button,input:not([type="hidden"]),textarea,select,summary,[role],[tabindex]:not([tabindex="-1"]),' + antTreeNodeSelector;
@@ -214,8 +285,115 @@ ${PAGE_CONTEXT_FIND_HELPERS_SOURCE}
           return names.get(node);
         };
 
-        const uniqueCandidates = (selectors) =>
-          deepQuerySelectorAll(document, selectors.join(',')).filter(isVisible);
+        // ---- within：逐层把搜索根收窄到唯一容器 ----
+        // 容器必须是上一层的后代（与 Element.querySelectorAll 一致），最后一层容器自身仍可作为语义目标。
+        let scopeRoot = null;
+
+        const ensureRef = (node) => {
+          const index = computeStableRefIndexes([], [node], refAttribute, 'e',
+            parsePageContextElementRefIndex, observation.highWater).get(node);
+          return '@e' + index + '#p' + pageEpoch;
+        };
+
+        const parentAcrossShadow = (node) => {
+          if (node.parentElement) return node.parentElement;
+          if (node.parentNode && node.parentNode.nodeType === 1) return node.parentNode;
+          const root = typeof node.getRootNode === 'function' ? node.getRootNode() : null;
+          return root && root.host ? root.host : null;
+        };
+
+        const describeContainer = (node) => {
+          const rect = node.getBoundingClientRect();
+          return {
+            ref: ensureRef(node),
+            tag: boundPageText(String(node.tagName || '').toLowerCase()),
+            text: boundPageText(readText(node), 120),
+            name: boundPageText(getAccessibleName(node), 120),
+            x: Math.round(rect.left + rect.width / 2),
+            y: Math.round(rect.top + rect.height / 2),
+          };
+        };
+
+        const resolveWithinScope = () => {
+          if (withinSelectors.length === 0) {
+            return { root: null };
+          }
+
+          let root = null;
+          for (let index = 0; index < withinSelectors.length; index += 1) {
+            const layer = index + 1;
+            const selector = withinSelectors[index];
+            const matches = root
+              ? deepQuerySelectorAll(root, selector)
+              : deepQuerySelectorAll(document, selector);
+            if (matches.length === 1) {
+              root = matches[0];
+              continue;
+            }
+            if (matches.length > 1) {
+              return {
+                error: {
+                  code: 'WITHIN_SCOPE_AMBIGUOUS',
+                  details: { layer, selector, candidates: matches.slice(0, 5).map(describeContainer) },
+                  reason: 'within layer ' + layer + ' selector ' + selector + ' matched ' +
+                    matches.length + ' elements; every container layer must be unique',
+                },
+              };
+            }
+
+            // 容器外存在同选择器目标说明层级顺序写错了；这和"选择器不存在"要分开报
+            const outsideMatches = root ? deepQuerySelectorAll(document, selector) : [];
+            if (outsideMatches.length > 0) {
+              return {
+                error: {
+                  code: 'WITHIN_SCOPE_ESCAPE',
+                  details: {
+                    layer,
+                    selector,
+                    candidates: outsideMatches.slice(0, 5).map(describeContainer),
+                  },
+                  reason: 'within layer ' + layer + ' selector ' + selector +
+                    ' only matched elements outside the previous container',
+                },
+              };
+            }
+            return {
+              error: {
+                code: 'WITHIN_SCOPE_NOT_FOUND',
+                details: { layer, selector, candidates: [] },
+                reason: 'within layer ' + layer + ' selector ' + selector + ' matched no element' +
+                  (root ? ' inside the previous container' : ''),
+              },
+            };
+          }
+          return { root };
+        };
+
+        const withinResolution = resolveWithinScope();
+        if (withinResolution.error) {
+          return { found: false, ...withinResolution.error };
+        }
+        scopeRoot = withinResolution.root;
+
+        // 无 within 时保持全文档候选；有 within 时只收容器子树（含容器自身）的节点
+        const scopedElements = () => {
+          if (!scopeRoot) return deepElements;
+          const collected = deepCollectElements(scopeRoot);
+          return scopeRoot instanceof HTMLElement ? [scopeRoot, ...collected] : collected;
+        };
+
+        const uniqueCandidates = (selectors) => {
+          const selector = selectors.join(',');
+          if (!scopeRoot) {
+            return deepQuerySelectorAll(document, selector).filter(isVisible);
+          }
+          const matches = deepQuerySelectorAll(scopeRoot, selector);
+          const scopedMatches =
+            scopeRoot instanceof HTMLElement && scopeRoot.matches(selector)
+              ? [scopeRoot, ...matches]
+              : matches;
+          return scopedMatches.filter(isVisible);
+        };
 
         const interactiveCandidates = uniqueCandidates([
           'a[href]',
@@ -234,7 +412,7 @@ ${PAGE_CONTEXT_FIND_HELPERS_SOURCE}
         let broadTextCandidates = null;
         const getBroadTextCandidates = () => {
           if (!broadTextCandidates) {
-            broadTextCandidates = deepElements.filter(
+            broadTextCandidates = scopedElements().filter(
               (node) => node instanceof HTMLElement && isVisible(node),
             );
           }
@@ -246,13 +424,22 @@ ${PAGE_CONTEXT_FIND_HELPERS_SOURCE}
             return null;
           }
 
-          return node.matches(actionableSelector) ? node : node.closest(actionableSelector) || node;
-        };
+          // 无 within 时沿用 closest 原路径：不跨 shadow 边界，行为与之前完全一致
+          if (!scopeRoot) {
+            return node.matches(actionableSelector) ? node : node.closest(actionableSelector) || node;
+          }
 
-        const ensureRef = (node) => {
-          const index = computeStableRefIndexes([], [node], refAttribute, 'e',
-            parsePageContextElementRefIndex, observation.highWater).get(node);
-          return '@e' + index + '#p' + pageEpoch;
+          // within 下上溯必须停在容器边界；找不到容器内可交互祖先时保留原节点，
+          // 绝不把动作带到容器外（包括跨 shadow host 上溯）。
+          for (let current = node; current; current = parentAcrossShadow(current)) {
+            if (current.matches(actionableSelector)) {
+              return current;
+            }
+            if (current === scopeRoot) {
+              break;
+            }
+          }
+          return node;
         };
 
         // 排序键：精确匹配优先于模糊，可交互优先于纯文本兜底；值越小越靠前
@@ -532,6 +719,7 @@ ${PAGE_CONTEXT_FIND_HELPERS_SOURCE}
           return {
             found: true,
             pageEpoch,
+            ...(withinSelectors.length > 0 ? { within: withinSelectors } : {}),
             empty: deduped.length === 0,
             ...(deduped.length === 0 ? { emptyReason: 'NO_MATCH' } : {}),
             candidates: deduped
@@ -585,12 +773,24 @@ ${PAGE_CONTEXT_FIND_HELPERS_SOURCE}
         return {
           found: true,
           pageEpoch,
+          ...(withinSelectors.length > 0 ? { within: withinSelectors } : {}),
           match: toTargetDescriptor(selected),
         };
       })()`,
       withFrameSelectorOptions(frameSelector),
     )
 
+    if (
+      value?.code === 'WITHIN_SCOPE_NOT_FOUND' ||
+      value?.code === 'WITHIN_SCOPE_AMBIGUOUS' ||
+      value?.code === 'WITHIN_SCOPE_ESCAPE'
+    ) {
+      // 容器层失败不能落成普通 ELEMENT_NOT_FOUND：details.layer/selector 才能指向真正要收窄的那一层
+      throw createToolError(value.code, value.reason || 'within container resolution failed', {
+        details: value.details ?? { within: withinLayers },
+        suggestedAction: WITHIN_SUGGESTED_ACTIONS[value.code],
+      })
+    }
     if (value?.code === 'AMBIGUOUS_TARGET') {
       const error = createToolError(
         'AMBIGUOUS_TARGET',

@@ -571,15 +571,18 @@ export const HELP_ROOT: HelpNode = helpNode(
     helpNode(
       'find',
       '按 role、文本、label 或其他属性查找元素，并可选择对其执行操作。',
-      'autobrowser find <role|text|label|placeholder|alt|title|test-id|exact-name> <query> [locate|click|fill|type|hover|focus|check|uncheck|text] [value]',
+      'autobrowser find <role|text|label|placeholder|alt|title|test-id|exact-name> <query> [locate|click|fill|type|hover|focus|check|uncheck|text] [value] [--within <css|@eN>]...',
       [
         '--name <name>  默认按可访问名称的子串匹配',
         '--exact  要求精确匹配（exact-name 策略始终精确匹配）',
         '--position <first|last|nth=N>  显式选择匹配项，写操作同样适用',
         '--candidates <n>  先用 locate 查看排序后的候选，再选择目标',
+        '--within <css|@eN>  从外到内逐层收窄容器，可重复且最多 6 层；每层必须是 CSS 选择器或 @eN 引用，并且在上一层内唯一。',
+        '容器层失败时返回 WITHIN_SCOPE_NOT_FOUND（该层未命中）、WITHIN_SCOPE_AMBIGUOUS（该层命中多个）或 WITHIN_SCOPE_ESCAPE（目标只在上一层容器外）；details 带 layer/selector/candidates，按提示收窄容器而不是放弃。',
         'locate 未匹配时返回 ok:true，且 empty:true/emptyReason:NO_MATCH，退出码为 0；操作类命令未匹配时返回 ELEMENT_NOT_FOUND，退出码为 1。',
         '只读的 locate/text 默认取第一个；写操作出现多个匹配时返回 AMBIGUOUS_TARGET 与 candidates。',
         '可通过缩小查询范围、使用 --exact、查看 --candidates，或明确设置 --position 来消除歧义。',
+        'within 只保证容器内的语义定位，不保证业务成功：提交、接口返回等结果仍需用 wait/get 验证。',
       ],
     ),
     helpNode(

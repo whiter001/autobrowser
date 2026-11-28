@@ -492,6 +492,15 @@ autobrowser find text "Delete" --candidates 3
 
 策略包括 `role`、`text`、`label`、`placeholder`、`alt`、`title`、`test-id`（匹配 `data-testid`）和 `exact-name`（精确匹配 accessible name/文本，恒精确）。`--name` 默认子串匹配，`--exact`（MCP `exact:true`）才要求精确匹配。只读 `locate`/`text` 默认取 first；写操作有多个匹配且未显式 position 时返回 `AMBIGUOUS_TARGET` 与候选。先收窄条件或用 `--candidates <n>` 查看按质量排序的 Top-N 候选（仅支持 locate），再明确选择 `--position <first|last|nth=N>`（1 起算，越界报错）或确认后的 ref，避免盲目重试。
 
+页面里存在大量同名目标时，用可重复的 `--within` 从外到内逐层收窄容器（最多 6 层，每层是 CSS 选择器或 `@eN` 引用）：
+
+```bash
+autobrowser find role button click --name "删除" --within '.records' --within '#record-42'
+autobrowser find text "删除" click --within @e7
+```
+
+每一层都必须在上层容器内唯一：0 命中返回 `WITHIN_SCOPE_NOT_FOUND`，命中多个返回 `WITHIN_SCOPE_AMBIGUOUS`（`details.candidates` 有界），目标只存在于上一层容器外返回 `WITHIN_SCOPE_ESCAPE`。`details.layer` / `details.selector` 指向要收窄的那一层，按提示缩小容器即可，不要改成全文档猜测。`within` 只保证容器内的语义定位，不保证业务成功（提交、接口返回仍需自己用 `wait`/`get` 验证）。
+
 `target=_blank`、`window.open` 这类点击新开标签页时，点击结果会带上 `newTabId` 与 `newTabHandle`（新标签的 `tN` 句柄），但**默认只报告，不改变当前目标**：workspace 的默认目标仍然是原来那个标签页。只有显式加 `--follow-new-tab` 才会接管——内部复用现有的 `tab attach`，结果里多出 `followedTab` 和切换到新标签之后的 `meta`。不是所有弹窗都该接管：只有确实要在新标签继续操作时才跟随，否则留在原页面，避免把正在填写的表单和登录态丢在身后。跟随失败（例如新标签已被别的 workspace 占用，返回 `TAB_BUSY`）会明确报错，不会伪装成成功；无 workspace 模式（`--no-workspace`）没有归属可挂，会退回 `tab select` 切换当前目标。`batch` 步骤里的 `followNewTab` 只是意图标记，实际接管仍在 CLI 层用 `--follow-new-tab`（或拿到 `newTabHandle` 后自己 `tab attach`）。
 
 ```bash

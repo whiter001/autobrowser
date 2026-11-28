@@ -352,6 +352,11 @@ export const MCP_TOOLS: McpToolDefinition[] = [
           type: 'number',
           description: 'Return a ranked Top-N candidate list (locate only).',
         },
+        within: {
+          description:
+            'Nested CSS/@eN containers, max 6, each unique inside its parent. String or array.',
+          anyOf: [{ type: 'string' }, { type: 'array', items: { type: 'string' }, maxItems: 6 }],
+        },
         action: {
           type: 'string',
           description: 'Optional action to perform on the matched element.',
@@ -1308,7 +1313,7 @@ function findToArgs(args: Record<string, unknown>): Record<string, unknown> {
   } else {
     out.query = typeof args.query === 'string' ? args.query : args.role
   }
-  for (const key of ['name', 'exact', 'position', 'candidates', 'action', 'value']) {
+  for (const key of ['name', 'exact', 'position', 'candidates', 'action', 'value', 'within']) {
     if (args[key] !== undefined) {
       out[key] = args[key]
     }

@@ -47,6 +47,8 @@ interface FindArgs {
   position?: string
   /** >0 时返回按质量排序的 Top-N 候选列表，而不是单个目标 */
   candidates?: number
+  /** 从外到内逐层收窄的容器（CSS 或 @eN），最多 6 层，每层必须唯一 */
+  within?: string[]
   action?: string
   value?: string
 }
@@ -853,6 +855,9 @@ function isValidFindPosition(value: string): boolean {
   return value === 'first' || value === 'last' || /^nth=[1-9]\d*$/.test(value)
 }
 
+/** within 的嵌套层数上限；与扩展侧 page-observe-find 的 MAX_WITHIN_LAYERS 保持一致。 */
+const MAX_FIND_WITHIN_LAYERS = 6
+
 export function parseFindArgs(rest: string[]): FindArgs {
   const strategy = String(rest[0] || '').trim()
   const queryOrRole = rest[1]
@@ -920,6 +925,22 @@ export function parseFindArgs(rest: string[]): FindArgs {
         throw new Error('candidates must be a positive integer')
       }
       findArgs.candidates = count
+      index += 1
+      continue
+    }
+
+    if (value === '--within') {
+      const rawWithin = rest[index + 1]
+      if (rawWithin === undefined || !rawWithin.trim()) {
+        throw new Error('--within requires a non-empty container selector or @eN ref')
+      }
+      const layers = findArgs.within ?? []
+      if (layers.length >= MAX_FIND_WITHIN_LAYERS) {
+        throw new Error(`find --within accepts at most ${MAX_FIND_WITHIN_LAYERS} nested layers`)
+      }
+      // 重复 --within 按出现顺序从外到内嵌套，与 MCP 的 within 数组一致
+      layers.push(rawWithin.trim())
+      findArgs.within = layers
       index += 1
       continue
     }

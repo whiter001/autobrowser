@@ -86,6 +86,12 @@ autobrowser find text "Pricing" click
 autobrowser find label "Email" fill "agent@example.com"
 ```
 
+同名目标很多时用可重复的 `--within` 从外到内嵌套容器（CSS 或 `@eN`，最多 6 层，每层在上一层内唯一）；容器层失败会报 `WITHIN_SCOPE_NOT_FOUND` / `WITHIN_SCOPE_AMBIGUOUS` / `WITHIN_SCOPE_ESCAPE`，`details.layer`/`selector` 指明要收窄的那一层。它只保证容器内的定位，不保证业务提交成功。
+
+```bash
+autobrowser find role button click --name "删除" --within '.records' --within '#record-42'
+```
+
 对依赖 trusted 事件、或经常被浮层/骨架屏挡住的目标，用 `click --verify-delivery`（MCP `verify_delivery`、batch `args.verifyDelivery`）：它先等目标可见、启用、在视口内、未被遮挡且几何稳定，再在按下前安装捕获阶段探针，确认 `isTrusted` 的 `pointerdown`/`mousedown` 确实落在目标上。成功结果多出 `delivery:{status:"delivered",trusted:true,events:[...]}`；失败按阶段报 `CLICK_NOT_READY` / `CLICK_NOT_DELIVERED` / `CLICK_DELIVERY_UNKNOWN`，且不会在发出输入后回退 DOM 点击或盲目重放。`delivery` 只证明输入到达目标，不证明业务提交成功；默认不开启时 click 行为与耗时保持原样。`--timeout-ms <ms>`（MCP `timeout_ms`）可调整总预算（默认 10000，上限 1800000），ready 阶段取它与 5000ms 的较小值。
 
 ```bash

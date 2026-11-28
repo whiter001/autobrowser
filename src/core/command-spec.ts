@@ -284,6 +284,48 @@ function readStringArrayField(
   return value
 }
 
+/** find 的嵌套容器层数上限；与 CLI/扩展保持一致，避免三处各写一个数字。 */
+export const FIND_MAX_WITHIN_LAYERS = 6
+
+/**
+ * find 的 within 同时接受单个字符串和字符串数组；统一返回从外到内的层列表。
+ * 空数组等同未提供（全文档定位），但空字符串层必须报错而不是静默丢弃。
+ */
+function readWithinField(args: Record<string, unknown>, command: string): string[] | undefined {
+  const value = args.within
+  if (value === undefined || value === null) {
+    return undefined
+  }
+
+  const list = typeof value === 'string' ? [value] : Array.isArray(value) ? value : null
+  if (!list || list.some((item) => typeof item !== 'string')) {
+    throw createCommandArgsValidationError(
+      command,
+      'within must be a string or an array of strings',
+      { field: 'within', value },
+    )
+  }
+  if (list.length === 0) {
+    return undefined
+  }
+  if (list.length > FIND_MAX_WITHIN_LAYERS) {
+    throw createCommandArgsValidationError(
+      command,
+      `within accepts at most ${FIND_MAX_WITHIN_LAYERS} nested layers`,
+      { field: 'within', value, expected: `1..${FIND_MAX_WITHIN_LAYERS}` },
+    )
+  }
+  const layers = list.map((item) => item.trim())
+  if (layers.some((layer) => !layer)) {
+    throw createCommandArgsValidationError(
+      command,
+      'within layers must be non-empty selectors or @eN refs',
+      { field: 'within', value },
+    )
+  }
+  return layers
+}
+
 function readTabInputField(
   args: Record<string, unknown>,
   key: string,
@@ -862,6 +904,9 @@ function validateCommandArgsShape(command: string, args: unknown): void {
           },
         )
       }
+
+      // within 与 position/candidates 可共存：前者收窄搜索根，后者决定层内选哪个目标
+      readWithinField(normalizedArgs, command)
 
       const action = readStringField(normalizedArgs, 'action', command, { required: false })
       if (action === undefined) {

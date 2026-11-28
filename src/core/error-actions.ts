@@ -300,6 +300,21 @@ export const ERROR_ACTIONS: Record<string, ErrorAction> = {
     action:
       'Use a browser/frame that supports WebMCP; autobrowser will not fall back to arbitrary eval.',
   },
+  WITHIN_SCOPE_NOT_FOUND: {
+    retryable: false,
+    action:
+      'The --within layer matched nothing inside its parent. Check error.details.layer/selector and confirm that container is actually rendered there; do not drop the layer to widen the scope silently.',
+  },
+  WITHIN_SCOPE_AMBIGUOUS: {
+    retryable: false,
+    action:
+      'The --within container matched several elements. Narrow error.details.selector (or pass an @eN ref from snapshot) so every layer resolves to exactly one container before retrying.',
+  },
+  WITHIN_SCOPE_ESCAPE: {
+    retryable: false,
+    action:
+      'The layer target exists only outside the previous container. Order --within layers outermost-to-innermost and keep each target inside its parent; autobrowser will not escape the container for you.',
+  },
 }
 
 /** 未知错误码也要给出"先查状态再决定"的通用动作，不能让 agent 只看到一句报错 */
