@@ -1,108 +1,124 @@
 # autobrowser
 
-`autobrowser` 是一个受 `v-browser` 启发、基于 Bun 的浏览器自动化工具。
+面向 AI 的浏览器自动化与页面数据采集 CLI：通过本地 relay 加 Chrome/Edge 扩展驱动真实浏览器，复用登录态，输出 token 友好的 JSON。
 
-更详细的使用文档请见 [`docs/README.md`](docs/README.md)。
+完整命令树以 `autobrowser help` 和 [`src/cli/help.ts`](src/cli/help.ts) 为准，较长的工作流见 [`docs/overview.md`](docs/overview.md)。
 
-## 当前状态
+## 安装（从源码构建，推荐）
 
-这个仓库目前已经具备 Bun 实现的主要自动化流程：
+需要 [Bun](https://bun.sh) >= 1.4.4。在本仓库执行：
 
-- 本地中继服务，端口 `57978`
-- CLI API 服务，端口 `57979`
-- 带有基于 token 的连接流程的浏览器扩展
-- 覆盖服务与连接管理、导航、标签页和窗口控制、元素交互、对话框、等待与状态检查、cookie、存储、剪贴板、浏览器状态、网络检查与拦截、snapshot、snapshot 导出/提取、长文读取（read_page，支持 DOM 与 PDF）、截图、初始化脚本注入，以及 `batch`、`status`、`config`、`replay` 这类实用命令的核心能力
+```bash
+git pull --ff-only        # 已有工作副本时
+bun install
+bun run build:cli
+bun run build:chrome
+bun run link:bun
+```
 
-运行 `autobrowser help` 可以查看完整命令树。`src/cli/help.ts` 里的 help 输出是权威来源，也会说明根级标志位，例如 `--tab`、`--frame` 和 `--auto-connect`。
+`link:bun` 会把原生启动器装到 Bun 旁边，并链接当前仓库的 `dist/autobrowser.js`。Windows 用 `autobrowser.exe`，其他平台用 `autobrowser`；确保 Bun 的 bin 目录在 `PATH` 中。
 
-根级标志位放在命令名前。除了 `--tab`/`--frame`/`--session`/`--engine` 这类目标选择标志，服务连接相关的三个也常被用到：
+```bash
+autobrowser version
+autobrowser help
+```
 
-- `--server <url>`：直接指定 CLI API 服务地址，默认 `http://127.0.0.1:57979`。指向远端或已改端口的服务时用它。
-- `--ipc-port <port>`：覆盖 CLI API 服务端口（默认 `57979`）。除非同时显式给了 `--server`，否则它会同步改写 `--server` 的地址。
-- `--relay-port <port>`：覆盖中继服务端口（默认 `57978`）。扩展连接的是这个端口，不是 `--ipc-port`。
+### 加载扩展
 
-`--session <name>` 会自动改用该命名会话登记的 relay/IPC 端口和地址；只有显式传 `--relay-port`/`--ipc-port`/`--server` 才会覆盖会话自带的端口。`session create` 也可以用 `--relay-port`/`--ipc-port` 指定新会话的端口。
+1. 打开 `chrome://extensions`，开启开发者模式。
+2. 「加载已解压的扩展程序」选择仓库的 `chrome/` 目录。
+3. 连接并确认：
 
-如果你想看 Windows 原生 exe 启动示例，请参见 [`docs/windows-demo.md`](docs/windows-demo.md)。
+```bash
+autobrowser connect
+autobrowser status      # 看到 extension: connected
+autobrowser doctor
+```
 
-## 安装
+`connect` 打开扩展连接页并保存 token 与端口。页面打开不等于握手完成，以 `status` 为准。`autobrowser version` 与 `autobrowser extension info` 的 `commit` 应一致；不一致时重新 `bun run build:chrome`，再在 `chrome://extensions` 重载扩展。
 
-### 前置条件：Bun 运行时
+### npm 安装（备选）
 
-先安装 [Bun](https://bun.sh)（>= 1.4.4）。npm 全局入口默认是 Bun `--compile --aot` 生成的原生启动器，业务仍由 Bun 执行包内 `dist/autobrowser.js`，不是把业务改写到其他语言。启动器从 `PATH` 找 `bun` / `bun.exe`，也可用 `AUTOBROWSER_BUN_PATH` 指定 Bun；需要自定义 JS 入口时设置 `AUTOBROWSER_DIST_ENTRY`。缺少运行时或入口会给出明确错误。Go 启动器仅保留为备选构建。
-
-### 全局安装
+不想克隆仓库时：
 
 ```bash
 npm i -g @whiter001/autobrowser
 ```
 
-装完后 `autobrowser` 命令就在 `PATH` 里了。本文档下面的示例都以这个命令为准；仓库开发者想直接跑源码，见文末的「从源码运行」。
+扩展目录为 `$(npm root -g)/@whiter001/autobrowser/chrome`，按上面的方式加载。本机仍需 Bun >= 1.4.4。
 
-#### 原生全局入口（Windows / macOS / Linux）
-
-包的 `postinstall` 会把对应平台的 Bun AOT 启动器复制到 npm 全局入口：Windows 为 `<prefix>/autobrowser.exe`，POSIX 为 `<prefix>/bin/autobrowser`。支持 macOS、Linux、Windows 的 x64 / arm64。它用参数数组启动 Bun + 包内 `dist/autobrowser.js`，保留 cwd、环境和标准输入输出，不经过 cmd.exe、`.bat`、`.ps1` 或 sh shim。安装成功会移除旧 shim；写死 `autobrowser.cmd` 的调用方应改用 `autobrowser`（Windows 也可显式调用 `autobrowser.exe`）。
-
-`bin` 仍指向 JS，npm 先生成 shim，再由 postinstall 替换。禁用安装脚本（例如 `--ignore-scripts` 或 npm 的 `allow-scripts` 未放行）时，**仍然只有旧 npm shim，不会凭空出现 exe**。按当前 npm 版本放行脚本后重建，例如：
+## 快速开始
 
 ```bash
-npm config set allow-scripts=@whiter001/autobrowser --location=user
-npm rebuild -g @whiter001/autobrowser
+autobrowser open https://example.com
+autobrowser snapshot
 ```
 
-不支持的平台、缺少预编译文件或非全局安装沿用旧入口；Windows 全局缺少原生文件时仍把 `.cmd` 改名为 `.bat`，优先让 PowerShell 使用 `.ps1`。原生文件存在但复制失败会明确报错，不会静默回退。不要从 PowerShell 显式调用 `.cmd`：它可能使 `& | ^ < >` 等参数被再次解析。
+`snapshot` 返回 `@e1` 元素、`@f1` frame 引用和页面 `pageEpoch`。后续操作优先用这些引用，而不是脆弱的 CSS。
 
-原生启动器也不能撤销调用方 shell 已做的展开（如 cmd.exe 的 `%VARIABLE%`）；复杂 `eval` 按「eval 源码输入与 PowerShell」一节的规则走 `--stdin` 或 `--file`。
-
-**卸载注意**：npm 不登记 Windows postinstall 额外生成的 `.exe`，回退产生的 `.bat` 也不登记。`npm uninstall -g @whiter001/autobrowser` 后，请手动清理 `<prefix>/autobrowser.exe` 和可能存在的 `<prefix>/autobrowser.bat`（`npm prefix -g` 可查 prefix）。POSIX 替换了 npm 原有 symlink，卸载时也请检查并清理残留的 `<prefix>/bin/autobrowser`。
-
-源码开发的 `bun run link:bun` 默认用 Bun AOT 构建原生启动器（Windows 为 `autobrowser.exe`，其他平台为 `autobrowser`）并安装到 Bun 旁边，启动器嵌入当前 Bun 与仓库 `dist/autobrowser.js` 的绝对路径，链接后无需额外环境变量；默认不需要 Go，也不生成 sh 包装器。它和 npm 启动器是两条独立路径，见 [`docs/bun-link.md`](docs/bun-link.md)。Bun AOT 当前不能交叉编译，因此发布构建 `bun run build` 对本机目标使用 Bun AOT，其余五个目标自动使用 Go 备选；只构建本机可用 `bun run build:launcher -- --current`，不需要 Go。强制全部使用备选 Go 构建可运行 `bun run build:launcher:go`，源码链接的 Go 备选则加 `-- --go`。
-
-### 验证
+### 页面与定位
 
 ```bash
-autobrowser help
-autobrowser doctor
+autobrowser goto https://example.com/list
+autobrowser snapshot --changed              # 只看新增/变化的元素
+autobrowser find role button click --name "提交"
+autobrowser find text "删除" click --within '.records' --within '#record-42'
+autobrowser click @e2 --verify-delivery     # 用 trusted 事件确认点击真的送达
+autobrowser fill @e5 "test@example.com"
+autobrowser wait --text "完成"
+autobrowser wait ".spinner" --state hidden
 ```
 
-`doctor` 会逐项检查 Bun 运行时、扩展连接、CLI/扩展版本和当前浏览器目标，并为失败项给出修复命令；显式传 `--json` 可获取结构化检查结果。
+- `find` 支持 `role|text|label|placeholder|alt|title|test-id`。写操作命中多个时返回 `AMBIGUOUS_TARGET`，先用 `--candidates` 看候选，再用 `--position` 或确认后的 ref。
+- `--within` 从外到内逐层收窄容器，最多 6 层，每层必须在上一层内唯一。
+- `click` 打开新标签时默认只报告 `newTabId`/`newTabHandle`，加 `--follow-new-tab` 才切换目标。
 
-### 加载浏览器扩展
-
-npm 包里已经包含构建好的未打包扩展，不需要再执行 `bun run build:chrome`。在 chrome://extensions 打开开发者模式，把下面的目录按「加载已解压的扩展程序」加载：
+### 长文与 PDF
 
 ```bash
-$(npm root -g)/@whiter001/autobrowser/chrome
+autobrowser read_page --max-chars 20000 --output ./article.txt
+autobrowser read_page --cursor rp_xxx --max-chars 20000
 ```
 
-Windows 上同样用 `npm root -g` 获取该路径。
+`read_page` 滚动扫描 DOM 或解析 PDF 文本层，返回 `text`、`chars`、`totalChars`、`complete`、`truncated`、`nextCursor`、`stopReason`。**`ok:true` 不等于读到全文**：只有 `complete:true` 才代表扫到底，其余看 `stopReason`（`maxScreens`/`endlessFeed`/`renderFrozen`/`stalled`/`budgetExhausted`/`documentChanged`/`captureLimit`/`noText`）。
 
-## 运行
+`--cursor` 只回放已捕获缓存，不重新扫描；页面变化后返回 `STALE_READ_CURSOR`，需重新读取。`--output` 把本次捕获的完整文本落盘。PDF 返回 `strategy: "pdf"`、`pdfStatus` 与 `pages`/`pagesRead`。
+
+### 结构化采集
 
 ```bash
-autobrowser server
+# 单页列表转 JSONL
+autobrowser extract ./spec.json --output items.jsonl
+autobrowser feed collect 'article' --limit 50 --dedupe url
+
+# 多页可恢复任务：追加式 JSONL + 小 checkpoint
+autobrowser collect run ./spec.json
+autobrowser collect resume ./spec.json
+
+# 保存可复用脚本配方并记录验证时间
+autobrowser recipe save daily-check ./check.json
+autobrowser recipe run daily-check --arg user=alice
+autobrowser recipe verify daily-check --arg user=alice
 ```
 
-这会在后台启动中继服务和 IPC 服务。之后可以显式停止或重启它们：
+`extract` 按 JSON spec 静态读取 DOM，返回 `items` 与 `quality`。`feed` 采虚拟列表卡片，含 `author`/`handle`/`time`/`text`/`url`/`mediaUrls`/`adapter` 等字段。`collect` 每页只把新条目追加到 JSONL，checkpoint 只保留 `spec`/`status`/`nextUrl`/`nextPage`/`failures`/`itemCount`；中断后 `resume` 流式重建去重集合，不会重写已有数据。`recipe run` 只执行，`recipe verify` 真实执行并固化 `lastVerified`。
+
+### 多标签与收尾
 
 ```bash
-autobrowser server stop
-autobrowser server restart
+autobrowser tab list
+autobrowser tab new https://example.com
+autobrowser tab attach t2058764180
+autobrowser tab mark t2058764180 deliverable   # handoff 表示交给后续调用方
+autobrowser tab unmark t2058764180
+autobrowser workspace finish
 ```
 
-`stop` 不会自动拉起服务，并会等待 relay/IPC 端口释放后再返回。`restart` 先优雅停止运行中的服务，再复用持久化或显式指定的同一组端口启动；服务未运行时它不会偷偷改为首次启动，需使用 `autobrowser server`。
+`tN` 是 `t<Chrome tabId>` 稳定句柄，不是短序号。workspace 下优先 `tab attach` 复用已有页面，保留登录、表单和筛选；被其他 workspace 持有返回 `TAB_BUSY`。
 
-然后在另一个终端打开连接页：
+`workspace finish` 绝不自动执行：只关闭本 workspace `origin=created`、无标记、且不在前台的普通临时页；借用页、`deliverable`、`handoff` 和前台标签保留并 detach。
 
-```bash
-autobrowser connect
-```
-
-如果本地后台服务尚未运行，`connect` 会自动先启动它。连接页打开后 CLI 会输出确认；这表示页面已打开，不代表扩展握手已完成，再运行 `autobrowser status` 确认 `extension: connected`。如果 `status` 自身拉起了后台服务，文本摘要会显示 `server: auto-started by this status command`，显式 `--json` 输出会带 `serverAutoStarted:true`；已有服务则不显示该标记。
-
-## 命名会话与生命周期
-
-默认会话仍使用原来的 `~/.autobrowser` 配置和浏览器登录态。需要隔离任务时，可以创建命名会话：
+需要独立的 home、profile、端口和登录态时用命名会话，而不是新建 workspace：
 
 ```bash
 autobrowser session create research
@@ -111,765 +127,81 @@ autobrowser --session research open https://example.com
 autobrowser session list
 ```
 
-每个命名会话都有独立的 home、浏览器 profile、relay/IPC 端口、token 和 tab target。`--session` 放在命令名前；`session attach <name>` 等价于启动并连接该会话，`session detach <name>` 只停止 relay，不删除登录数据。
+### 网络与媒体
 
 ```bash
-autobrowser session close-all research   # 关闭该会话当前窗口的标签页
-autobrowser kill-all                     # 停止已登记的 autobrowser relay
-autobrowser session delete-data research # 停止 relay 并删除该会话数据
+autobrowser network requests --limit 20
+autobrowser network request r12
+autobrowser network har start --include-pattern api
+autobrowser network har stop ./out.har --include-urls
+autobrowser media list --selector 'article' --resolve
+autobrowser download https://example.com/a.png ./out/a.png
+autobrowser download https://example.com/v.m3u8 ./out/v.mp4 --quality best
 ```
 
-`delete-data` 只接受命名会话，重复执行会返回已清理，不会删除默认会话。如果返回 `SESSION_DATA_LOCKED`，先关闭仍占用该 profile 的浏览器，再重试清理；不要强制删除正在使用的 profile。
+`rN` 是会话内稳定的请求短引用。HLS 的清单与分片都经浏览器获取，本地 ffmpeg/ffprobe 只负责封装；失败会保留 checkpoint，相同命令可续传。
 
-## 多 AI Workspace 与标签复用
-
-Workspace 用于多个 AI 共享同一个浏览器、profile 和登录态，同时隔离默认目标与标签归属；它不同于会创建独立浏览器环境的 `--session`。Chromium 下默认启用 auto workspace，不需要先显式声明或设置环境变量。
+### 诊断
 
 ```bash
-# 默认即为 auto：按调用方身份隔离，命令无需重复携带 workspace
-autobrowser snapshot
-
-# 需要固定身份时显式指定，优先级高于环境变量和默认 auto
-autobrowser --workspace ai-a tab list
-autobrowser --workspace ai-a tab attach t2058764180
-
-# 交付/交接页面先打标记，再显式收尾：只关本轮创建的临时页
-autobrowser --workspace ai-a tab mark t2058764180 deliverable
-autobrowser --workspace ai-a workspace finish
+autobrowser status
+autobrowser doctor
+autobrowser console --level error
+autobrowser errors
+autobrowser command list
+autobrowser command status <id>
+autobrowser screenshot ./shot.png --full
+autobrowser tracing start && autobrowser tracing stop ./trace.json
+autobrowser video start && autobrowser video stop ./out.webm
 ```
 
-解析优先级为 `--workspace` > 非 `off` 的 `AUTOBROWSER_WORKSPACE` > 默认 `auto`；空环境变量等同于未设置。`AUTOBROWSER_WORKSPACE=off`（大小写不敏感）或全局 `--no-workspace` 关闭 workspace，恢复无 workspace 的共享目标模式；显式 `--workspace` 仍覆盖 `off`，但 `--no-workspace` 与 `--workspace` 同用会在发出请求前报 `CLI_INVALID_ARGUMENT`。
+`doctor` 逐项检查 Bun、扩展连接、版本与浏览器目标，并给出修复命令。`screenshot` 用位置参数指定路径，`--element @e2` 只截元素。
 
-`auto` 根据可信祖先进程、进程启动时间和终端标识推断调用方；这些信息会随宿主启动方式、终端复用或进程重启漂移，因此 AI 宿主应在会话开始时显式注入身份：按“启动工作区根目录 + AI 会话 ID”生成一次稳定的 `AUTOBROWSER_CALLER_ID`，并在整个会话内复用。同一 AI 固定、不同 AI 必须不同；不要只按当前目录生成，也不要每条命令随 cwd 重算，否则同一条工作流会分裂成多个 workspace，表现为丢失默认目标或反复 `TAB_BUSY`。显式 `AUTOBROWSER_WORKSPACE` 优先级更高，设置它时不需要另设 caller id。`workspace current` 可确认实际身份；`workspace list` 查看归属，`workspace release [id]` 只解除绑定，不关闭或刷新页面。
-
-多个 AI 共用一个浏览器时应优先保留现场而不是新建页面：先 `tab list` 查看 `workspace`/`attachment`/`attachable`，对合适的 `attachable: true` 现有标签用 `tab attach <tN>` 复用，尤其要保留手动登录、已填表单、筛选条件和正在排查的页面。只有没有可用的空闲标签，或任务确实需要独立环境（隔离 cookie、稳定导航、长时间独占）时才 `tab new`/`open`/`session`；新任务并不等于必须新开标签。不同 AI 不要共用同一个 workspace，也不要通过重试或改参数绕过 `TAB_BUSY`。
-
-### 标签组展示
-
-`workspace groups [on|off|status]` 控制整个 profile 的标签组展示，默认关闭；省略参数等同 `status`。它是全局开关而不是某个 workspace 的动作，因此 `--no-workspace workspace groups off` 也能执行。`status` 返回 `enabled`、`available`（浏览器是否支持 tabGroups）、当前 `groups` 与 `lastError`。
+### 脚本与批量
 
 ```bash
-autobrowser workspace groups          # 查询当前状态
-autobrowser workspace groups on       # 为已有归属建立标签组
-autobrowser workspace groups off      # 关闭展示并恢复原组
+autobrowser eval --expr 'document.title'
+autobrowser eval --file ./check.js --arg keyword=shoes
+autobrowser run ./script.js               # async (page) => { ... }，独占该标签
+autobrowser batch --file steps.json       # 顺序执行多条命令
+autobrowser script add --file ./init.js   # 每次导航前注入
 ```
 
-- 开启后一个 workspace 对应一个 Chromium 标签组，组标题是截断后的短 workspace id，颜色按 workspace 稳定生成；`tab attach`、自动认领、`tab new` 以及开启时已有的归属都会同步进组。
-- `tab detach`、`workspace release`、租约过期和 `groups off` 会把仍留在管理组里的页面恢复到进入前的组（原来未分组则取消分组）。用户手动移到别组的页面不会被改回。
-- 组 id 只是可失效的缓存，不是归属身份；分组失败只写入 `lastError`，不影响 attach/detach/release、workspace 归属和页面命令。`close all` 仍按 workspace 的 owned tabs 关闭，不通过关闭整个标签组实现。
+源码含 CSS 选择器、JSON、正则或多行语句时，`eval` 用 `--stdin`/`--file`，不要硬拼内联转义。`run` 是持有浏览器连接的本地不安全代码，不要运行不可信来源。
 
-默认 `auto` 只适用于 Chromium。`--engine firefox|webkit` 且没有显式 workspace 配置时保持无 workspace，不会因为新默认值报 "only supported by Chromium"；显式 `--workspace` 或非 `off` 的 `AUTOBROWSER_WORKSPACE` 在 WebDriver 下仍按原行为报错。`--no-workspace` 和 `off` 在 WebDriver 下都不报错。
+## Agent 约定
 
-- `tab list` 显示 `workspace`、`attachment`、`origin`、`keep` 和 `attachable`；`--response-format detailed` 还显示租约时间。
-- `tab attach <tN>` 原子复用已有页面，保留当前登录、表单和筛选状态；其他 workspace 已持有时返回 `TAB_BUSY`。`--readonly` 只允许观察命令，click/eval/run 等会被拒绝。
-- `origin` 记录页面来源：只有 `tab new`/`open` 在 workspace 内新建的页面是 `created`，`tab attach`、自动认领、`click --follow-new-tab`、`window new` 都是 `attached`。`keep` 只有 `tab mark` 会设置，重新 attach 不会改写已有的 `origin`/`keep`；旧版本保存的归属没有这些字段时按 `attached` + `null` 恢复，因此不会被收尾误关。
-- `tab mark <tN> deliverable|handoff` / `tab unmark <tN>` 只作用于本 workspace 的 owned 标签：其他 workspace 持有返回 `TAB_BUSY`，`--readonly` 附着返回 `WORKSPACE_READONLY`，未附着返回 `TAB_NOT_ATTACHED`。标记只记录交付意图，不关闭、不 detach、也不改当前目标。
-- `workspace finish` 是显式收尾（绝不自动执行）：只关闭本 workspace 创建（`origin=created`）且没有标记、并且不是浏览器当前活动/前台标签的普通临时页；借用页、`deliverable`、`handoff` 和前台标签全部保留并 detach，同时恢复进入前的标签组。保留与关闭成功的标签都会删除 attachment，`targetTabId` 清空，workspace 本身保留供后续任务继续。结果包含 `success`、`closed`、`closedTabIds`、`releasedTabIds`、`preserved`（含 `reason`: deliverable/handoff/borrowed/foreground）、`missingTabIds`、`failedTabs`、`remainingTabIds`；已不存在的页面记 `missingTabIds` 不算失败，关闭失败的页面保留 attachment 供重试，此时 `success=false`，不要当成全部收尾完成。
-- 点击打开新标签页（`target=_blank` / `window.open`）时结果会带 `newTabId` / `newTabHandle`，但默认只报告，不改当前目标；`click --follow-new-tab` 才显式接管（内部就是 `tab attach`），因此新标签的归属与租约和其它 `tab attach` 完全一致。
-- `tab detach [tN]` 解除归属但不改变页面。每个 workspace 可拥有多个 tab，并只保存自己的默认目标。
-- Workspace 没有目标时，页面命令默认原子认领一个未绑定标签页：优先当前活动页，其余按 tabId 稳定排序；遇到 `TAB_BUSY` 会尝试下一空闲页，不抢占其他 workspace。显式 `--tab <tN>` 指向未绑定标签时也会直接认领并设为当前目标，无需先单独执行 `tab attach`。localhost 等可调试页面均可使用，结果 meta 在首次认领带 `autoAttached:true`。没有空闲页时 `open <url>` 创建并绑定新 tab，其他命令返回 `WORKSPACE_TARGET_REQUIRED`。使用全局 `--no-auto-attach` 可关闭上述自动认领，此时显式指定的未绑定标签仍需先 `tab attach`；它不等于 `--no-workspace`，也不能抢占其他 workspace 的标签。独立调研/抓取不要依赖 `open` 自动认领空闲页，优先 `tab new` 或 `--no-auto-attach`，避免导航用户现有页面。
-- 标签归属默认租约 1 小时，命令执行会续约，并保存到 `chrome.storage.local` 供扩展重载后恢复。过期或异常回收只解除归属，不重置页面。
-- 同一标签的命令按 FIFO 串行执行；不要在一个 tab 上并发堆积多个长等待，条件已变化时先结束或取消上一个等待。写入、提交、点击前用 `get url` / `snapshot` 核对当前页面和元素，避免在多 AI 共用的标签上误操作。
-- 命令超时或结果未知时先 `command status <id>` 再核对页面实际状态。`command list` / `command status` 的历史带 `command`、`workspace`、`requestedAt`（relay 发出）、`receivedAt`（扩展收到）、`enqueuedAt`（入队）、`startedAt`（开始执行）和 `finishedAt`，可把 relay→扩展接收→入队→执行→完成逐段拆开定位延迟；历史不记录 URL、selector、eval 脚本等参数。确认副作用前不要重放。
-- 历史元数据保留最近 500 条，迟到结果只保留最新 25 份：更早的 `completed_late` 仍保留 id、状态和时间戳，但 `result` 会被裁掉并标 `resultEvicted:true`。`command list/status` 返回 `diagnostics`（`historyLimit`、`lateResultLimit`、`restoredCount`、`evictedCount`、`lastPersistError`、`lastPersistedAt`、`lastRestoreError`）；`command status <id>` 查不到时 `evicted:true` 表示“已被上限淘汰”，`evicted:false` 且 `commands` 为空只表示“当前扩展历史与有界淘汰清单均未命中”，不能绝对证明扩展从未收到该 id（旧版本记录、淘汰清单有界、恢复失败都可能未命中）；`lastRestoreError` 非空表示本次启动读取历史失败，此时历史为空不代表没有历史。
-- `extension reload`、`extension reconnect`、`server stop`、`server restart` 是全局操作，会影响所有 AI；执行前先确认其他 workspace 是否正在使用。
-- 后台标签页的定时器可能因浏览器节流延迟当前页面任务，多 AI 切换活动页会间接放大。依赖可见性或定时器结果的验证可 `tab select` 保持前台，或使用独立 `--session`；`set focus on` 只做 CDP 焦点仿真，不能保证消除后台定时器节流。
-- Workspace 模式下 `close all` 只关闭当前 workspace 的 owned 标签；任务结束时用 `tab detach` 或 `workspace release` 释放自己的标签，保留页面给后续复用，不要关闭其他 AI 仍在使用的标签。需要一次性清理本轮创建的临时页并保留交付/交接页面时，显式执行 `workspace finish`，不要把收尾当作自动行为。
+- **引用**：`@eN` 元素、`@fN` frame、`tN` 标签页。导航或重渲染后 `pageEpoch` 变化，旧引用失效，先重新 `snapshot`。
+- **全局标志放在命令前**：`--tab`、`--frame`、`--session`、`--workspace`、`--engine`。例如 `autobrowser --tab t1 snapshot`。
+- **输出**：列表与查询默认 `concise`（高信号字段 + 紧凑 JSON），需要完整字段时加 `--response-format detailed`。
+- **错误**：失败时 stdout 是 `{ok:false,error:{code,message,suggestedAction,...}}`，先读 `code` 与 `suggestedAction`，按提示修，不要改换框架重写。
+- **未知结果**：超时或断连后先 `autobrowser command status <id>` 和 `autobrowser status` 核对现场；副作用命令不会自动重放，也不要盲目重试。
+- **`empty:true` 不是失败**：查询无匹配仍是 `ok:true`、退出码 0，按 `emptyReason` 调整条件或等待数据。
 
-Workspace 用于本机误操作隔离，不是跨用户安全认证机制。
+## 浏览器支持
 
-## Firefox / WebKit
-
-默认 `--engine chromium` 保持扩展 + CDP 工作流。Firefox 和 WebKit 改用标准 WebDriver，启动 driver 后可在命令名前选择引擎：
+- **Chromium（Chrome/Edge）**：完整能力，走扩展 + CDP，workspace、网络拦截、HAR、视频录制等均可用。
+- **Firefox / WebKit**：走标准 WebDriver（`geckodriver`/`safaridriver`），支持导航、snapshot、点击/填写、状态、storage、cookies 与截图；Chromium 专有能力返回 `BROWSER_CAPABILITY_UNSUPPORTED`。
 
 ```bash
 geckodriver --port 4444
 autobrowser --engine firefox open https://example.com
-
-safaridriver -p 4723
-autobrowser --engine webkit open https://example.com
 ```
 
-核心适配包括导航、snapshot（不支持 `--changed`）、元素点击/填写/输入、状态读取、storage、cookies，以及视口或单元素 PNG 截图。`get` 的 `count`/`box`/`styles` 没有 WebDriver 专用实现，不能按 Chromium 语义使用。network、tracing、CDP、video、WebMCP 等 Chromium 能力会返回 `BROWSER_CAPABILITY_UNSUPPORTED`，不会用模拟结果冒充支持。
+## 其它能力
 
-能力拒绝目前不是全量参数校验：`goto/open` 的 `waitUntil`、`settleTimeoutMs`、`domQuietMs`、`timeoutMs` 会被接受但不会生效；需要这些等待或超时语义时请使用 Chromium，不要把成功回执当成选项已执行。安装、driver 配置和分引擎 smoke 见 [`docs/install.md`](docs/install.md#firefox--webkitwebdriver)。
+`cookies`、`storage`、`clipboard`、`pdf`、`set`（视口、UA、时区、离线等）、`state save|load`、`replay`、`skill sync`，以及实验性的 `webmcp` 页面工具调用。完整用法见 `autobrowser help <命令>`。
 
-## Token 友好的输出
-
-列表与查询默认使用 `concise`，只保留高信号字段并输出紧凑 JSON；需要完整字段时加 `--response-format detailed`。
+## 开发与验证
 
 ```bash
-autobrowser network requests --limit 20
-autobrowser network requests --limit 20 --cursor '<nextCursor>'
-autobrowser network request r12
-autobrowser snapshot --response-format detailed
-```
-
-- `network/console/errors/actions/downloads/command` 默认最多 20 条，`--limit` 最大 100；`tab list` 和 route list 默认 50 条。使用响应里的 `pagination.nextCursor` 续页，并保持过滤条件不变；旧 `--page/--page-idx/--page-size` 仍兼容。
-- network 列表的 `rN` 是会话内稳定短引用，可直接传给 `network request`；旧 CDP ID 仍可使用。concise 详情去掉重复的 summary/HAR 结构，单个 body 最多 16KiB 并显式标记截断。
-- concise snapshot 默认最多 50 个元素、32KiB，`--limit <1..200>` 可调整元素上限但不提高字节预算；元素只带可操作字段（ref/tag/role/name/value/placeholder/type/href/disabled/checked），省略 text 与坐标，`--include-text` 可显式附带整页 text（`--changed` 仍是纯 diff）；search 默认 10 个窗口、100 行、32KiB；eval 默认结果上限 32KiB（指定 `--output <path>` 落盘时默认按 detailed 执行，不再受该上限约束）。`detailed` 完整保留旧字段与更高预算，是需要的兼容出口。
-- `--raw` 仍表示原始文本输出，不与显式 `--response-format` 混用。大截图、视频、trace 和 HAR 继续落盘后只返回路径与摘要。
-
-## 状态检查
-
-使用 `is` 查看元素状态：
-
-```bash
-autobrowser is visible <sel>
-autobrowser is enabled <sel>
-autobrowser is checked <sel>
-```
-
-该命令还支持 `disabled` 和 `focused`。
-
-## 对话框
-
-对话框命令支持接受、关闭和状态查询：
-
-```bash
-autobrowser dialog accept [text]
-autobrowser dialog dismiss
-autobrowser dialog status
-```
-
-`alert` 和 `beforeunload` 对话框会自动接受，因此不会阻塞自动化流程。`confirm` 和 `prompt` 仍然需要显式处理。
-
-## 等待
-
-等待元素状态、文本、URL、加载状态、JS 条件或固定时间：
-
-```bash
-autobrowser wait <selector>
-autobrowser wait <ms>
-autobrowser wait --text "Welcome"
-autobrowser wait --text "Loading" --gone
-autobrowser wait --url "**/dash"
-autobrowser wait --load networkidle
-autobrowser wait --fn "window.ready === true"
-autobrowser wait "#spinner" --state hidden
-autobrowser wait "#spinner" --state hidden --timeout-ms 10000
-```
-
-`--gone` 与 `--text` 搭配，等待文本从页面消失。超时预算统一使用 `--timeout-ms <ms>`；`--timeout` 作为兼容别名保留，`goto`/`open`/`tab new`/`eval`/`run`/`reload` 也同样接受该别名（单位毫秒；这些命令发往 relay 的字段是 `timeoutMs`，`wait` 仍映射到既有的 `args.timeout`）。同一条命令里两个名字混用或同名重复会按参数错误拒绝，不会静默采用后一个值。
-
-## 扩展
-
-npm 全局安装的用户不需要再构建扩展：构建好的未打包扩展随包发布，在 chrome://extensions 打开开发者模式，把 `$(npm root -g)/@whiter001/autobrowser/chrome` 作为未打包扩展加载即可。
-
-仓库开发者才需要先构建扩展，再把仓库里的 `chrome/` 文件夹作为未打包扩展加载：
-
-```bash
-bun run build:chrome
-```
-
-已加载且在线的扩展在后续构建完成后，可以受控重载代码：
-
-```bash
-autobrowser extension reload
-# 稍等后确认恢复与实际加载的版本/构建
-autobrowser status
-autobrowser extension info
-```
-
-`extension info` 返回 `extensionId`、`version`、`buildTime`、`commit`、`userAgent`，用于重载后确认实际加载的版本与构建；同时带出 `diagnostics`，其中的 `keepalive.alarmFires` / `lastAlarmAt` 可以用来确认扩展的保活 alarm 是否在按时触发。构建输出的 manifest 版本与 `package.json` 同步；每次构建生成 ISO `buildTime` 和短 git `commit`（无 git 时为 `null`）。运行时 `version` 始终取 manifest；旧构建缺少构建信息、读取失败或字段非法时，`buildTime` / `commit` 回退 `null`。功能兼容仍通过 `capabilities` 协商，不根据版本号推断。
-
-`extension reload` 从磁盘重载扩展代码；`extension reconnect` 只重建扩展与 relay 的连接，不加载新代码，与刷新页面的 `reload` 也不同。两者先返回成功回执（`reloading:true` / `reconnecting:true`，并带 `reconnectExpected:true`），约 50ms 后异步执行；回执表示已安排操作，不表示恢复完成。稍等后用 `status` 确认重新连接，再继续页面命令。命令仅用于已连接的 Chromium 扩展，不绑定 tab、不进入页面队列；首次升级到支持此命令的版本仍需在 chrome://extensions 手动重新加载。
-
-扩展注册了 30 秒周期的 keepalive alarm：service worker 被浏览器回收后会在一个周期内自行重连，不用再手动打开扩展页。如果 `status` 持续显示 `waiting for extension` 超过 1 分钟，再回到上面的重载步骤，或确认 relay 是否还在运行。该机制随扩展代码生效，首次升级仍需要先手动重载一次。
-
-操作系统都不为 `chrome-extension://` 注册协议关联，所以打开扩展页必须显式指定浏览器：首次调用时传 `--browser-command "<msedge.exe 或 chrome.exe 路径>"`，之后该值会从 `~/.autobrowser/config.json` 复用。没有指定时 CLI 会直接报错并改为打开 relay 的 `/connect` 页，而不是把链接交给系统弹出"没有可打开此链接的应用"。
-
-加载完成后，运行 `autobrowser connect` 可以打开扩展连接页；它会自动保存 token 和中继端口，而你传入的 `--extension-id`、`--browser-command` 或 `--browser-arg` 也会保存在 `~/.autobrowser/config.json` 中供后续复用。仓库开发者如果还没跑 `bun run link:bun`，可以直接用 `bun run src/cli.ts connect` 代替；命令名其余部分完全一致。`options` 页面仍然可以作为手动兜底，并显示诊断信息。
-
-`autobrowser version`（或 `autobrowser --version`）报告 CLI 与已加载扩展的构建：CLI 的 `version` / `commit` / `buildTime` 来自随 `dist/` 安装的 `build-info.json`（`bun src/cli.ts` 这类开发直跑没有该文件，字段为 `null`）；扩展侧优先通过 `extension info` 读取，未连接或旧扩展不响应时退回 relay status 快照里的 manifest 版本。版本号不同或同版本 commit 不同都会给出 `versionSkew.consistent: false` 和对应处理建议（`buildTime` 只作展示，不参与判断）；`status` 同样携带 `versionSkew`，用来判断"命令行为和预期不符"是不是构建错配导致的。
-
-## 网络
-
-CLI 也提供了网络检查与拦截命令：
-
-```bash
-autobrowser network route <url> [--abort] [--body <json>] [--status <n>] [--content-type <mime>] [--header "Name: Value"] [--remove-headers <a,b>]
-autobrowser network route list
-autobrowser network unroute [url]
-autobrowser network requests [--filter api] [--type xhr,fetch] [--method POST] [--status 2xx] [--sort newest]
-autobrowser network request <requestId> [--timeout-ms <ms>]
-autobrowser network har start [--include-pattern <text>] [--exclude-pattern <text>]
-autobrowser network har stop [output.har] [--timeout-ms <ms>] [--capture-id <id>] [--include-urls]
-```
-
-`har start`、`status`、`stop`、`recover` 的扩展结果都携带 `captureId`（未知时为 `null`）；checkpoint 保留原 capture 的 ID。并发任务应保存 `har start` 返回的 `captureId`，并在停止时传入 `--capture-id <id>`：ID 不匹配或已经停止时命令失败，不会停止或导出其他任务的 capture。CLI stop/recover 默认仍以文件路径作为 `result`，ID 位于 `meta.har.captureId`；stop 加 `--include-urls` 时 `result` 为 `{ path, captureId, urls }`，其中 URL 来自本次保留的请求，按捕获顺序去重，HAR 文件照常写入。不传该选项不会返回 URL 大字段。
-
-`route` 既可以 `--abort` 拦截请求，也可以用 `--body` mock 响应（默认 200 + `application/json`，可用 `--status`、`--content-type`、`--header` 调整），还可以用 `--remove-headers` 在放行前删除请求头。不带 url 的 `unroute` 会清空所有路由。
-
-未开启 HAR 时自动监控仅保存元数据，`network request <id>` 按需通过 CDP 补取 body；历史请求/失效会话可能无法补取，需查看失败信息，`--include-details` 只返回已存详情。HAR body 获取最多 4 个并发槽、单次 10 秒逻辑超时；不可中止的 CDP 工作仍占槽直到结束。`--har-max-requests` 只限制本次 capture 的导出数量，不裁剪全局历史；`--har-max-body-bytes` 只限制存储，不限制 CDP 下载/传输量。`har stop` 只等待本次 capture，大结果透明分块重组；超出传输预算明确报错，不静默截断 HAR。大采集可用 `network har stop [output.har] --timeout-ms <ms>` 延长预算，输出路径也可放在选项之后；超时后先查 `network har status` 的 `checkpoint.recoverable`，再决定是否 `network har recover`。
-
-## 下载与页面媒体
-
-`downloads list` 查看 Chrome 下载记录，`downloads clear` 清空记录；它们不会把 URL 保存成新文件。实际下载使用 `download`：
-
-```bash
-autobrowser download https://example.com/image.png ./out/image.png
-autobrowser download https://example.com/image.png --output-dir ./out
-autobrowser download https://example.com/video.m3u8 ./out/video.mp4 --quality best
-autobrowser download https://example.com/video.m3u8 ./out/video-720.mp4 --quality 720p --concurrency 4
-```
-
-也可以先发现当前页面里的图片和视频，再按返回的 `index` 下载：
-
-```bash
-autobrowser --tab t1 --frame top media list --selector 'article[data-role="tweet"]' --include-background --resolve
-# 确认目标条目有可信 HTTP(S) sources/url；假设返回 pageEpoch=7
-# 下载重新采集时必须使用相同 tab/frame/selector/include-background
-autobrowser --tab t1 --frame top download --media 0 --selector 'article[data-role="tweet"]' --include-background --media-epoch 7 ./out/video.mp4 --quality best
-```
-
-`media list` 读取当前 frame 的 DOM 媒体源；`--resolve` 允许对没有真实源的视频静音短播以记录未验证网络诊断，不承诺解析出可下载流。后台播放可能受浏览器限制。播放探测对已经在播放的视频不再调用 `play()`（MSE 视频的 `play()` 可能长期 pending），直接按播放成功处理且不打断其播放；对原本暂停的视频，`play()` 的启动有 2 秒有限超时，超时按 `playback start timed out` 失败，不会无限等待。`download --media` 会以相同 scope 重新采集，只下载可信 HTTP(S) `sources/url`，不会使用 `observedSources`。
-
-`media list` 的作用域：
-
-- `--selector <css>` 把所有 DOM 媒体采集以及 `--resolve` 的播放探测限定到匹配到的容器内（容器自身是 `img`/`video` 时也算在内）。列表页/推荐流这类一个页面里有多组推文时，用它只取目标那条，避免回复区和推荐区的媒体串进来。
-- 不带 `--selector` 时沿用默认作用域：优先页面 `article` 容器内的可见媒体，其次 `article` 内的媒体，最后整页可见媒体。
-- `--include-background` 额外采集作用域内元素的 CSS `background-image`（优先 computed style，其次内联 style），同样以 `image` 条目返回。只返回 URL 和元数据，不读取也不执行页面内容。
-
-采集前可用 `media list --wait-for 'article[data-role="tweet"]' --selector 'article[data-role="tweet"]' --timeout-ms 15000` 等待目标选择器可见。等待与采集在扩展同一次 media 请求中对同一已解析 tab/frame 执行，不会因 ambient target 切换而漂移；等待失败不继续采集。`--wait-for` 与 `--selector` 独立，`--timeout-ms` 必须与 `--wait-for` 一起使用（单独使用会被 CLI 拒绝），仅设置等待阶段预算（默认 30 秒），不限制后续发现/播放探测。
-
-导航也支持条件等待：`goto/open <url> --wait-for url <pattern>|selector <css> --timeout-ms <ms>`。超时预算也可写成 `--timeout <ms>`（`--timeout-ms` 的兼容别名，二者不可同时或重复出现）。导航与附加条件等待各使用该预算；URL 条件不会覆盖导航地址。只改变 hash 时是同文档导航，提交后回执带 `navigationType:"same-document"` 和 `documentReloaded:false`；`outcome:"completed"` 不代表 SPA 目标路由已经渲染，应使用 `--wait-for selector` 等待目标路由独有元素，应用需要整页初始化时再显式 `reload`。`tab new <url> --wait-until domcontentloaded` 支持与导航一致的等待阶段，也可用 `--wait-for selector <css> --timeout-ms <ms>` 等待最终条件；始终等待返回的新 tab handle，而不是活动标签页，超时仍在错误响应的 `result.tab` 中保留新 tab 信息。受管标签页会在初始导航前 attach，以保留早期网络请求。不带等待选项时输出不变。
-
-`media list` 的溯源信息：
-
-- 顶层返回 `observedAt`（采集时间）、`pageEpoch`（页面 epoch）、`pageUrl`（页面地址）和 `scope`（`selector` / `mode` / `matchedCount`，未指定选择器时如实表示默认作用域）。
-- 顶层还返回 `complete:boolean` 和 `warnings:string[]`。作用域未匹配、空媒体、未解析源/错误或 resolve 探测数量达到上限都会标记 `complete=false` 并给可读 warning；仅正常非空、无已知缺口时为 `true`。`complete` 只表示本次发现过程无已知缺口，不证明未渲染的轮播媒体不存在。
-- 每个条目带 `permalink`（最近 `article` 内首个含 `/status/` 的绝对链接，没有则为 `null`）和 `primarySource`（`dom` = 来自 DOM 属性或 CSS，`none` = 尚未解析出可信源）。顶层 `includeBackground` 回显本次背景图开关。
-
-网络归属采用严格保守契约：默认模式与 selector 模式都不认领历史 tab-wide 候选。即使播放期间新增请求，也可能来自 scope 外并发流量；只有实际 played 的探测才将新增候选放入 `observedSources`（每条 `unverified:true`），仅供诊断，绝不进入可下载的 `sources/url`，`download --media` 不使用它。失败或元素身份不符时诊断为空。只有 observedSources 而无可信 DOM 源仍为 `complete=false` 并给 warning，宁可 unresolved，不猜测下载。
-
-X 等站点的 MSE `blob:` 视频没有可信 DOM 源时，不要反复 `--resolve`：这类视频在 DOM 上永远拿不到可下载地址，`--resolve` 只会给出未验证诊断。此时改用 fresh HAR——`network har start --include-pattern video.twimg.com`，刷新或重新播放目标视频后用 `network har stop --include-urls` 获取播放请求，再选择 master m3u8 执行 `download '<master.m3u8>' out.mp4 --quality best --concurrency 4`。没有可信 DOM 源的条目（无论探测是否播放成功）的 `suggestedAction` 都会给出这条恢复路径；同一作用域里有多个无源视频时先提示用 `--selector` 缩小范围。HLS 合并需要本机安装 FFmpeg/FFprobe；`observedSources` 为空不代表 HAR 中也没有媒体请求。
-
-探测通过同一 document 内的稳定元素 token 找回原元素，并验证 connected 且仍属 scope；空 src、相同 src、删除、重排和替换不会让探测播放别的元素。探测只对原本暂停的视频调用 `play()`/`pause()`，静音短播约 600ms 后还原暂停与 muted 状态；已经在播放的视频不调用 `play()`/`pause()`，也不改写 muted。`play()` 的启动超过 2 秒仍未成功即报 `playback start timed out`，迟到的成功会被立刻 `pause()`，不会留下播放副作用。采集开始记录 pageEpoch，采集/探测后或返回前 epoch 改变时报 `STALE_MEDIA_STATE`，必须重新采集。index 是本次整个 scope 内按 DOM 顺序生成的编号，不是单个 article 内的编号；多容器命中时先结合 `scopeRoot`/`permalink` 和 `primarySource` 确认目标。index 仅在相同 tab/frame/scope/epoch 内有效；`download --media` 重新 list 时须传相同 `--selector`/`--include-background`，并用 `--media-epoch <n>` 要求返回 epoch 完全一致，否则失败。epoch 不代表 DOM 不变，重排后应重新确认 index。CLI 对显式 scope、includeBackground 支持及 wait 完成要求响应明确回显，旧扩展缺少证明时拒绝成功。
-
-下载行为：
-
-- 输出使用显式路径或 `--output-dir` 自动命名（响应头、URL `filename`、路径和 MIME 扩展名），父目录自动创建。默认原子替换已有文件；`--no-clobber` 会在下载前拒绝覆盖，`--overwrite` 可显式选择默认行为。非 HLS 下载可加 `--dedupe-by-content`，按 SHA-256 检查输出目录内已有 EPUB/MOBI；重复时删除临时文件并返回 `duplicate:true`、`duplicateOf`，不新增或覆盖文件。
-- 普通文件只接受 HTTP/HTTPS，扩展携带当前浏览器登录态获取，二进制经本地鉴权 `/files/:transferId` 通道直传 relay，不经过 Base64 或 WebSocket。
-- 每个浏览器下载请求（包括 HLS 播放列表、初始化文件和分片）的初始 fetch 对网络错误、HTTP 429 和 5xx 默认额外重试 2 次；其他 4xx 立即失败。`--retries <0..5>` 调整次数，`--retries 0` 禁用源站重试；`--retry-delay-ms <0..60000>` 设置指数退避基础间隔（默认 250ms）。重试及等待共用原始 `--timeout-ms` 总预算，并服从取消；响应体读取失败不会重新下载，上传开始后也不会重放整个文件，原有上传断点恢复不变。
-- 已知 Content-Length 且超过 8MiB 的文件使用流式传输，每次只保留一个 8MiB 块；小文件和未知长度响应使用原来的缓冲路径。relay 校验分块及整文件 SHA-256 后原子落盘。
-- HLS 自动选择视频和音频轨，所有播放列表、初始化文件及分片都通过浏览器下载，FFmpeg/FFprobe 只处理本地文件。`--quality best|worst|720|720p` 选画质，`--concurrency 1..16` 控制分片并发，`--timeout-ms` 限制整个任务。
-- HLS 失败会保留 checkpoint 和已校验分片，相同命令下次自动续传；成功后清理中间文件。需要本机安装 `ffmpeg` 和 `ffprobe`，合并后返回分辨率、时长、分片数、字节数和摘要。
-- HLS 当前不支持加密或 `EXT-X-BYTERANGE`，最多 2048 个分片、2GiB 总字节和 4 层播放列表。DASH 目前仅能在 `media list` 中发现，尚不支持合并下载。
-- 单文件及并发上传预留上限为 512MiB，最多 128 个上传；15 秒无数据进度判定停滞。该能力仅支持 Chromium 扩展通道，不支持 WebDriver，底层单文件 `download` 也不能作为 `batch` 子步骤。
-
-## 截图
-
-截取屏幕并保存为文件。如果没有提供路径，CLI 会写入临时目录并打印文件路径。
-
-```bash
-autobrowser screenshot
-autobrowser screenshot ./shots/page.png --full
-autobrowser screenshot --element @e2
-autobrowser screenshot --annotate
-autobrowser screenshot --screenshot-dir ./shots --screenshot-format jpeg --screenshot-quality 80
-```
-
-输出路径是位置参数，写法为 `autobrowser screenshot ./shot.png`，不支持 `--path`；误用时会直接提示正确形式。`--full` 会截取整页，`--element` 只截取某个元素（接受选择器或 `@eN` 引用，与 `--full` 互斥），`--annotate` 会给元素添加编号标签，而 `--screenshot-format` / `--screenshot-quality` 用于控制编码后的图片输出。
-
-## 视觉差异比对
-
-仓库开发期脚本 `scripts/visual-diff.ts` 会把 Figma 导出图与页面截图对齐后逐像素比较，输出差异报告。它面向「实现结果是否和设计稿一致」这类问题，不属于 CLI 的公开命令面。
-
-```bash
-# 一条命令跑完：对齐视口 → 截图 → 缩放设计稿 → 比对 → 出报告
-bun scripts/visual-diff.ts run --design ./figma/hero.png --tab t1 --out visual-diff-out
-
-# 已有截图时只做比对
-bun scripts/visual-diff.ts compare --design ./figma/hero.png --screenshot ./shot.png
-```
-
-产物在输出目录：`design-scaled.png`（缩放后的设计稿）、`screenshot.png`（页面截图）、`diff.png`（红色为超容差像素）、`report.md`（差异率与热区坐标）。
-
-两个容易踩的点：
-
-- **缩放系数不写死**。浏览器渲染出的物理像素受系统显示缩放影响（本机 Windows 125% 缩放下，1440 CSS 像素的视口只产出 1152 像素宽的截图），脚本按截图实际像素反推设计稿缩放系数，本机即 0.8。视口对齐也据此迭代收敛，必要时报告里会提示视口宽度与设计稿的偏差。
-- **容差要考虑重采样噪声**。设计稿缩放后与浏览器渲染不完全一致，文字边缘天然有差异，默认容差 8/255 偏紧，纯文字页面建议用 16~24。
-
-## 初始化脚本
-
-`script` 命令管理在每次导航后、页面自身脚本执行前注入的初始化脚本（对应 CDP `Page.addScriptToEvaluateOnNewDocument`，与 Playwright 的 `--init-script` 对齐）：
-
-```bash
-autobrowser script add 'Object.defineProperty(navigator, "webdriver", { get: () => undefined })'
-autobrowser script add --file ./init.js
-autobrowser script list
-autobrowser script remove <id>
-autobrowser script remove --all
-```
-
-脚本对所有标签页全局生效：新打开或新 attach 的标签页会自动补注册，无需重复 add。源码输入方式与 `eval` 一致，支持位置参数、`--file`、`--stdin` 和 `--base64`。
-
-## Playwright Page 脚本
-
-`run` 在当前 Chromium 扩展通道上启动真实 Playwright `Page`，文件内容必须是 `async (page) => { ... }` 函数：
-
-```bash
-autobrowser run ./script.js --timeout-ms 60000
-autobrowser --tab t2 run ./script.js
-```
-
-```js
-async (page) => {
-  await page.getByRole('button', { name: '订阅' }).click()
-  return await page.locator('article').allTextContents()
-}
-```
-
-也支持全局 `--file`、`--stdin`、`--base64` 输入。返回值位于 `result.value`，并带 `tabId`、`handle` 和 `durationMs`。脚本是在持有浏览器连接的 relay 进程中执行的本地不安全代码，可访问 Node.js/Bun 能力，不要运行不可信来源。
-
-`run` 对目标 tab 使用独占锁：先等待已在执行的同 tab 命令，随后同 tab 普通命令返回 `PAGE_SCRIPT_ACTIVE`；其他 tab 仍可执行。脚本结束、失败、超时或扩展断开后释放锁。超时和断连不能撤销已经发生的浏览器副作用，重试前先检查页面。
-
-桥接只暴露选中的已有 tab，不支持通过 `context.newPage()` 创建新 target；frame 直接使用 `page.frames()` / `page.frameLocator()`，不使用根级 `--frame`。`run` 不能作为 batch 子步骤，目前也不支持 WebDriver。`page.route()` 在脚本结束后失效，扩展会仅对当前 tab 恢复 autobrowser 自己的网络路由，避免留下无人处理的暂停请求。
-
-### 可执行示例
-
-仓库 `example/` 提供使用当前安装 CLI 和扩展的确定性验证脚本，均会清理自己的临时标签和文件：
-
-```bash
-bun example/verify-cli.mjs              # 基础连接、run、表单与 eval
-bun example/verify-advanced-cli.mjs     # 网络、HAR、iframe、对话框、文件与 CDP
-bun example/verify-element-zoom.mjs     # 元素局部放大与还原
-bun example/verify-target-safety.mjs    # no-auto-attach、detach 与现场保留
-bun example/verify-new-tab.mjs          # target=_blank 新标签的报告与显式跟随
-bun example/verify-spa-extraction.mjs   # 动态 SPA、复杂 DOM 与大结果 JSON 导出
-bun example/verify-feed-context.mjs     # 数字滚动、正文媒体/头像与转帖上下文
-bun example/verify-media-download.mjs   # MSE 降级、HAR 指引、HLS 与视频校验（需 FFmpeg）
-bun example/verify-youtube-feed.mjs     # YouTube 作者、频道头像、发布时间与适配器
-bun example/verify-bilibili-feed.mjs    # B 站作者、发布时间、广告标记与作者主页
-bun example/verify-checkbox.mjs         # 受控 Checkbox 的 check/uncheck 返回值与实际状态一致
-bun example/verify-datepicker.mjs       # DatePicker 逐键输入日期、Enter 确认并读取结果
-bun example/verify-element-plus-datepicker.mjs # Element Plus 文本输入与可见面板选日期
-bun example/verify-search-regex.mjs     # 复杂正则、引号、反斜杠与 Unicode 搜索
-bun example/verify-eval-shell-regex.mjs # Bash/Pwsh here-doc/here-string 执行复杂 eval 正则
-```
-
-## 面向 Agent 的引用
-
-扩展命令返回对象结果时，会在 `result.meta` 中回显该命令实际操作的标签页上下文：`tabHandle`（Tab Handle）、`tabId`、`frame`（Frame 引用，若为 `top`/`main`/`default` 则归一化为 `null`）、`pageEpoch`、`url` 与 `title`。取不到的字段为 `null`；无页面上下文的对象命令（如 `tab.list`、`script`、`batch`）的 `result.meta` 所有字段均为 `null`。
-
-原始值或数组结果不会附加该字段，CLI 本地生成的响应（包括 Chromium `status`）也不保证存在。因此不要把 `meta` 当作所有成功响应的统一顶层契约；HAR stop/recover 的顶层 `meta.har` 是独立约定，见上文「网络」。
-
-`snapshot` 现在会输出一个 `elements` 列表，里面包含诸如 `@e1`、`@e2`、`@e3` 这样的稳定引用；同时还会输出一个 `frames` 列表，包含当前页面视图中的 `@f1` 之类的 frame 引用。基于选择器的命令在需要选择器的地方也可以直接接受元素引用，而 `frame` 可以直接接受 frame 引用，因此 agent 可以先 snapshot，再基于这些句柄执行操作，而不是去猜 CSS 选择器。
-
-```bash
-autobrowser snapshot
-autobrowser click @e2
-autobrowser fill @e5 "test@example.com"
-autobrowser get text @e3
-autobrowser wait @e7 --state hidden
-autobrowser frame @f1
-```
-
-`snapshot` 也接受一个可选的选择器或 `@eN` 引用（`snapshot @e4` 或 `snapshot --target @e4`），只输出该元素子树的结构。
-
-为降低大页面快照的 token 消耗，`snapshot` 默认使用 `concise` 输出：`elements` 只保留操作需要的 `ref`、`tag`、`role`、`name`、`value`、`placeholder`、`type`、`href`、`disabled`、`checked`，省略 `text` 与 `x/y/width/height`；`frames` 省略坐标；`headings` 只保留 `ref/tag/text`；默认不返回 `buttons` 和整页 `text`。需要旧版完整字段时加 `--response-format detailed`。
-
-- `--include-text`：仅对 `concise` 普通快照生效，附带整页 `text`；`--changed` 即使加了该选项也保持纯 diff。
-- `--role <button,link,...>`：只返回匹配这些 role 的元素（作为现有可见性过滤之上的附加过滤）。同一 document 内 snapshot/find 共用稳定 ref，过滤或删除节点后不复用已分配编号；这不表示被删除节点仍可操作，导航后引用会 stale，应重新 snapshot。
-- `--changed`：增量模式，返回相对上一次快照新增或变化的元素（包含 checked、disabled、href 等状态/语义字段变化）、`removedRefs` 与 `unchangedCount`。响应只包含 `pageEpoch`、`elements`、`unchangedCount`、`full`、`removedRefs` 以及实际存在的截断字段，空 diff 通常小于 1KB。基线按 document/frame 隔离；首次运行或导航后退化为全量快照并带 `full: true`。
-- `--limit <1..200>` 覆盖默认元素数量上限，但不提高输出字节预算。`truncated` 时用 `--target`/`--role` 收窄或 `--changed` 查看变化。只有实际交付的元素进入增量基线，不把裁掉的元素视为已读。
-
-页面被未处理的对话框阻塞时，`--changed` 仍返回 modal 描述，且不更新增量缓存。
-
-还可以使用语义化的 `find` 命令按 role、text、label 等属性查找，并支持位置/次序选择与 Top-N 候选列表：
-
-```bash
-autobrowser find role button click --name "Submit"
-autobrowser find text "Sign in" text --exact
-autobrowser find label "Email" fill "test@example.com"
-autobrowser find placeholder "Search" fill "autobrowser"
-autobrowser find test-id "submit-btn" click
-autobrowser find role button --position last
-autobrowser find role button --position nth=2
-autobrowser find text "Delete" --candidates 3
-```
-
-策略包括 `role`、`text`、`label`、`placeholder`、`alt`、`title`、`test-id`（匹配 `data-testid`）和 `exact-name`（精确匹配 accessible name/文本，恒精确）。`--name` 默认子串匹配，`--exact` 才要求精确匹配。只读 `locate`/`text` 默认取 first；写操作有多个匹配且未显式 position 时返回 `AMBIGUOUS_TARGET` 与候选。先收窄条件或用 `--candidates <n>` 查看按质量排序的 Top-N 候选（仅支持 locate），再明确选择 `--position <first|last|nth=N>`（1 起算，越界报错）或确认后的 ref，避免盲目重试。
-
-页面里存在大量同名目标时，用可重复的 `--within` 从外到内逐层收窄容器（最多 6 层，每层是 CSS 选择器或 `@eN` 引用）：
-
-```bash
-autobrowser find role button click --name "删除" --within '.records' --within '#record-42'
-autobrowser find text "删除" click --within @e7
-```
-
-每一层都必须在上层容器内唯一：0 命中返回 `WITHIN_SCOPE_NOT_FOUND`，命中多个返回 `WITHIN_SCOPE_AMBIGUOUS`（`details.candidates` 有界），目标只存在于上一层容器外返回 `WITHIN_SCOPE_ESCAPE`。`details.layer` / `details.selector` 指向要收窄的那一层，按提示缩小容器即可，不要改成全文档猜测。`within` 只保证容器内的语义定位，不保证业务成功（提交、接口返回仍需自己用 `wait`/`get` 验证）。
-
-`target=_blank`、`window.open` 这类点击新开标签页时，点击结果会带上 `newTabId` 与 `newTabHandle`（新标签的 `tN` 句柄），但**默认只报告，不改变当前目标**：workspace 的默认目标仍然是原来那个标签页。只有显式加 `--follow-new-tab` 才会接管——内部复用现有的 `tab attach`，结果里多出 `followedTab` 和切换到新标签之后的 `meta`。不是所有弹窗都该接管：只有确实要在新标签继续操作时才跟随，否则留在原页面，避免把正在填写的表单和登录态丢在身后。跟随失败（例如新标签已被别的 workspace 占用，返回 `TAB_BUSY`）会明确报错，不会伪装成成功；无 workspace 模式（`--no-workspace`）没有归属可挂，会退回 `tab select` 切换当前目标。`batch` 步骤里的 `followNewTab` 只是意图标记，实际接管仍在 CLI 层用 `--follow-new-tab`（或拿到 `newTabHandle` 后自己 `tab attach`）。
-
-```bash
-autobrowser click '#new-tab'                    # 只报告 newTabId / newTabHandle，当前目标不变
-autobrowser click '#new-tab' --follow-new-tab   # 显式跟随：把当前目标切到新标签
-```
-
-`click --verify-delivery`（batch `args.verifyDelivery`）在发出输入前后做一次可信送达验证，适合依赖 `isTrusted` 事件、或点击经常被遮挡/错位的场景：
-
-```bash
-autobrowser click '#submit' --verify-delivery
-autobrowser click '#new-tab' --follow-new-tab --verify-delivery
-autobrowser click '#submit' --verify-delivery --timeout-ms 2000
-```
-
-开启后扩展会先等待目标 ready：`isConnected`、非 disabled/aria-disabled/inert、可见、中心点在视口内、几何连续两次一致，并且 `elementFromPoint` + composed 路径证明未被遮挡。`--timeout-ms <ms>` 可调整总预算（默认沿用现有 click 的 10000ms，范围 1..1800000）；ready 阶段取它与 5000ms 的较小值，点击后的导航等待仍用同一预算。随后在 `mousePressed` 前安装捕获阶段探针，只接受 `isTrusted` 且坐标与目标中心一致的 `pointerdown`/`mousedown`/`mouseup`/`click`，并用 `composedPath()` 确认事件确实到达目标（含 shadow host 的合理回退）。
-
-成功时结果在原有字段上增加 `delivery: { status: "delivered", trusted: true, events: [...] }`，`clicked`/`newTab*`/下载/导航/`--follow-new-tab` 行为不变：
-
-- ready 失败、尚未发出任何输入 → `CLICK_NOT_READY`，`details.delivery.reason` 给出 `not_found`/`detached`/`disabled`/`not_visible`/`out_of_view`/`obstructed`/`unstable` 及 `blocker`。
-- 探针确认 trusted 事件落在其他元素上 → `CLICK_NOT_DELIVERED`，错误目标的事件会被 `preventDefault` + `stopImmediatePropagation` 拦截，`details.delivery.blocker` 指出实际接收者。
-- 输入已经发出但没有 trusted 按下证据（包括 CDP 回执丢失、页面随即导航/关闭）→ `CLICK_DELIVERY_UNKNOWN`。
-
-`delivery` 只证明 trusted 输入到达目标，不证明业务提交、接口请求或表单校验成功。验证路径禁止 DOM `node.click()` 回退；发生过副作用后也绝不会重放点击。默认不加该选项时行为、耗时和原有 DOM 回退完全不变。WebDriver（Firefox/Safari）适配器没有 CDP 事件探针，`verifyDelivery=true` 会返回 `BROWSER_CAPABILITY_UNSUPPORTED`。
-
-`search` 命令对页面可见文本做全文检索：按行匹配并返回命中行及上下文窗口，适合“抓取页面数据”而不是定位元素：
-
-```bash
-autobrowser search "Sign in"
-autobrowser search /^Log\s+in/i --context 5
-autobrowser search "error" --limit 10
-```
-
-查询默认按大小写不敏感的子串匹配；以 `/pattern/flags` 形式书写则按正则匹配（`g` 标志会被忽略）。`--context <n>` 控制上下文行数（默认 3，范围 0–50）；`--limit <n>` 限制窗口数（默认 20、最大 200，0 不返回窗口或游标）。每次还受 200 返回行/100000 UTF-8 字节预算约束，单个合并窗口也可能截断。`--start-line <n>` 为 1 起算的正安全整数，默认 1；若 `truncated:true` 且 `nextStartLine:201`，保持查询/目标不变运行 `search "error" --limit 10 --start-line 201` 续读。页面内容变化可能改变行号，应重新确认。该命令只读、不定位元素也不执行动作，与 `find` 互补。
-
-`read_page` 命令读取长页面正文：滚动扫描 DOM（或解析 PDF 文本层），把全文分片返回：
-
-```bash
-autobrowser read_page                              # 读当前页正文，默认每次最多返回 60000 字符
-autobrowser read_page --max-chars 20000            # 自定义单次返回上限
-autobrowser read_page --output ./article.txt       # 把本次捕获的完整文本落盘
-autobrowser read_page --cursor rp_xxx --max-chars 20000   # 续读上一次扫描已捕获的部分
-```
-
-返回 `text`、`url`、`strategy`（`dom` / `pdf`）、`chars`、`totalChars`、`complete`、`truncated`、`nextCursor`、`stopReason`、`screens`、`scrollHeight`、`backgroundTab`。**`ok:true` 不等于读到了全文**：只有真正扫到底时 `complete` 才为 `true`，其余情况由 `stopReason` 说明原因——`maxScreens`（屏数用尽）、`endlessFeed`（信息流无限长高）、`renderFrozen`（后台标签页渲染被冻结）、`stalled`（滚动卡住）、`budgetExhausted`（页内预算耗尽）、`documentChanged`（扫描途中页面变了）、`captureLimit`（超过 400 万字符捕获上限）、`noText`（没有读到文本）。空文本永远不会标成 `complete`。
-
-`--cursor` 只回放扩展侧的捕获缓存（最多 8 份、总文本 8MiB、5 分钟 TTL），不会重新滚动扫描，因此不能与 `--max-screens` / `--timeout-ms` 同用；页面导航、URL 变化或缓存过期后游标会失效并返回 `STALE_READ_CURSOR`，此时应重新运行一次不带 `--cursor` 的 `read_page`。`--output <path>` 把**本次扫描捕获的完整文本**（不是 stdout 当前分片）以 UTF-8 原始文本写入文件，stdout 改为 `{ path, bytes }` 并保留完整读取元数据——写了文件不等于读到了全文，`complete`/`stopReason`/`truncated`/`chars` 仍按本次读取的真实语义返回，落盘字符数另记在 `capturedChars`。分片不会切断 UTF-16 代理对；若 `--max-chars 1` 恰好落在代理对上、连一个完整码点都放不下，会直接返回 `INVALID_COMMAND_ARGS`（建议 `--max-chars` ≥ 2），而不是给一个永远前进不了的空分片。
-
-PDF 页面会自动切换到 `strategy: "pdf"`，逐页取文本层并保留 `[page N/M]` 标记，同时返回 `pdfStatus`（`ok` / `loading` / `no_text` / `password` / `too_large` / `unavailable`）以及 `pages`、`pagesRead`。如果 PDF 视图器不可达（Chrome 158 的顶层原生 PDF 没有 `PDFViewerApplication`），autobrowser 会按原 PDF URL 带登录态（`credentials: "include"`）下载原始字节，用扩展内置的 pdf.js 在本地解析文本；下载上限 20MiB，超限报 `too_large`。字节不会发往外部服务，只在当前标签页/扩展内处理。密码保护、无文本层、未加载完成和解析失败都不会返回 `complete:true`；没有文本层时只会提示外部做 OCR，autobrowser 不会自动 OCR，也不会绕过密码。frame 里的 PDF 通过 webNavigation 的 `documentId` 唯一定位，同名 URL 出现在多个 frame 时报 `AMBIGUOUS_FRAME` 而不是猜一个。
-
-分工建议：`snapshot` 看可交互元素、`search` 在已加载文本里查找、`feed` 采结构化卡片、`read_page` 读长正文。`read_page` 是只读观察命令：不点击、不提交、不激活标签页，可在只读工作区里运行。扫描总是**从页首开始**（不依赖当前滚动位置，原位置在中部或底部也不会漏掉前文），读完后恢复原来的滚动位置；扫描途中若页面发生跳转，会立即停止并报告 `documentChanged`，既不会把新页面的正文混进旧结果，也不会去滚动新页面。
-
-`batch` 命令把多条命令编码成一个 JSON 序列一次提交，按顺序执行，适合“先快照、再按条件交互”的多步流程。每条命令是一个对象：`command`（命令名）、`args`（参数对象）、可选的 `label`（步骤说明）、可选的 `id`（供后续步骤引用的稳定标识）、可选的 `when`（条件分支）、可选的 `skipRemainingOnFailure`（失败即终止剩余步骤）。`when` 引用前面某个步骤的结果做分支：`step` 是被引用步骤的序号（1 起算）或 `id`，`path` 是结果上的点路径（支持数组下标，如 `elements.0.ref`），`equals` / `truthy` / `exists` 三选一作为判定谓词：
-
-```json
-{ "command": "snapshot" }
-{ "command": "click", "args": { "selector": "#btn" }, "when": { "step": 1, "path": "found", "truthy": true } }
-{ "command": "snapshot", "id": "snap" }
-{ "command": "fill", "args": { "selector": "#x", "value": "y" }, "when": { "step": "snap", "path": "elements.0.ref", "exists": true } }
-{ "command": "goto", "args": { "url": "https://a.com" }, "skipRemainingOnFailure": true }
-```
-
-条件不满足，或引用的步骤失败/被跳过时，该步骤被跳过（结果带 `skipped: true` 与 `reason`），后续步骤照常执行；`skipRemainingOnFailure: true` 只在 `continueOnError: true` 时生效——失败后剩余步骤会被显式标记跳过（summary 带 `terminated: true`），否则（默认）batch 在首个失败步骤处报 `BATCH_STEP_FAILED` 并中止。
-
-请求预算默认 30 秒；显式 eval/navigation/click `timeoutMs`、wait `timeout`/`ms` 加 5 秒传输余量且不低于默认预算。read_page 的 `timeoutMs`（默认 25000，范围 100–120000）同样计入预算并额外加 5 秒传输余量，页内 deadline 先到期，扩展会带着部分结果返回。feed 按滚动次数（上限 40）× `pauseMs` + 60 秒执行余量 + 5 秒传输余量计算，不低于默认预算，超过 30 分钟则拒绝。batch 合成步骤、重试、延迟和嵌套预算，总上限 30 分钟（含余量），超大/非有限预算会拒绝。已发送后断连的结果可能未知；仅白名单只读命令会在重连后按剩余预算重试一次，副作用命令不自动重放。先检查 `status`、`command list` 和页面实际状态。显式 batch `retries` 可能重复失败步骤已发生的副作用，**不是幂等保证**；取消/超时阻止后续步骤，但不能撤销已发生的动作或所有在途 CDP 工作。
-
-标签页会在 `tab list` 中暴露形如 `t<Chrome tabId>` 的稳定句柄（例如 `t2058764132`），CLI 可以直接使用返回的句柄切换或关闭标签页；不要猜测从 1 开始的短序号：
-
-```bash
-autobrowser tab list
-autobrowser tab select t2058764132
-autobrowser tab close t2058764137
-```
-
-如果页面发生了大规模重渲染或导航，请先重新运行 `snapshot` 刷新引用，再继续操作。
-
-页面有未处理的 confirm/prompt 对话框时，`snapshot` 会返回该 modal 的描述，交互类命令会返回带 `MODAL_OPEN` 错误码和 `suggestedAction` 的错误；先用 `dialog accept` / `dialog dismiss` 处理对话框，再继续操作。
-
-## 其他命令速查
-
-上面几节覆盖的是主要工作流。下面是其余命令族的最小用法示例；每个命令的完整标志位以 `autobrowser help <命令>` 为准。
-
-### eval 源码输入与 PowerShell
-
-`eval` 的源码输入按形态分流：`--expr '<script>'`（位置参数同理）只用于简单单行表达式。只要源码包含 CSS 选择器、JSON、正则、模板字符串或多行语句，就直接用 `--stdin` 或 `--file`，不要先拼一版内联转义再排错。一次性脚本走 `--stdin`；需要复用的脚本写成 `.js` 用 `--file`；`--base64` 只用于机器生成的传输，不作为人工默认写法。
-
-脚本默认在隔离的函数作用域中执行：顶层 `const`/`let`/`var`/`function` 不会留在页面全局，同一个脚本可原样重复执行，不需要手工包 IIFE；简单表达式仍返回 completion value（最后一个表达式的值）。脚本可直接使用顶层 `await`（按 REPL 条目求值，顶层 await 合法且保留完成值）和顶层 `return`（按 async 函数体求值，结果由 `return` 给出），不需要手工包 async IIFE；两者混用时以 `return` 为准。顶层 `await` 的 REPL 路径下 `var`/`function` 声明会落到页面全局，需要严格隔离时可自行包一层 async IIFE。`--element` 的函数脚本同样隔离，也不影响原有的元素未找到（stale）判断。
-
-结果装不下终端时用 `--output <path>` 落盘：`eval` 把完整结果写成 2 空格缩进的 JSON（末尾换行），stdout 只留 `{ path, format: "json", bytes }` 这个小型摘要（`meta` 等执行上下文保留），不再把正文写进 stdout。输出始终是 JSON，与文件扩展名无关，推荐统一使用 `.json`，不要按 `.txt` 等扩展名猜测内容格式。相对路径按当前目录解析，同名文件会被覆盖，写文件失败按普通 CLI 错误返回。指定 `--output` 且没有显式 `--response-format` 时按 `detailed` 执行，因此默认不受 concise 的 32KiB 结果上限约束；显式 `--response-format concise` 仍保留 32KiB，显式 `--max-result-bytes <n>` 始终优先。落盘只改变结果的去向，不改变页面脚本的语义。
-
-脚本需要外部参数时用 `--arg <key=value>`（可重复）注入局部变量 `args`，例如 `autobrowser eval --arg keyword=shoes --expr 'args.keyword'`；改用 `--args-json '<json-object>'` 可以一次传入整个对象，二者互斥。`--arg` 的值始终是字符串，key 必须非空且不能包含点号（避免把 `a.b` 当成普通键静默生效），重复 key 会报 `CLI_INVALID_ARGUMENT`。三条求值路径都支持 `args`：direct eval 在脚本外层作用域定义它，replMode（顶层 `await`）在脚本前补声明，async IIFE（顶层 `return`）把它作为形参，脚本自身的声明不会因此重复执行。`--element` 的函数第一个参数仍是 `el`，`args` 作为第二个参数传入，例如 `(el, args) => el.textContent.includes(args.keyword)`。
-
-大结果可以先用 `--offset <非负整数>` / `--limit <正整数>` 分页，只有显式指定其中之一时才分页（缺省 offset=0、limit=10000）。分页只支持字符串和数组：字符串按 Unicode code point 切片（基于 `Array.from`，不会切断 emoji 的代理对），数组按元素切片；其它结果类型返回 `INVALID_COMMAND_ARGS`，不会静默降级。分页后的响应是 `{ value, pagination: { kind: "text"|"array", offset, limit, total, nextOffset, truncated } }`，`offset` 超过尾部时 `value` 为空、`nextOffset` 为 `null`，`truncated` 表示是否还有后续；不指定 offset/limit 时结果与旧版本完全一致。`--max-result-bytes` 检查的是分页后的结果与响应大小，因此可以先用小 `limit` 取回大结果的一部分，而不是被整段结果先顶到上限。
-
-如果目标标签停在 `chrome-error://` 错误页（上一次导航失败），`eval` 不会执行用户脚本，而是返回 `NAVIGATION_FAILED` 并在 `details.url` 给出当前地址：先用 `goto <url>` 或 `reload` 重新导航，再用 `get url` 确认页面已经恢复。导航内部的 `readyState` 探测不经过这条检查。
-
-PowerShell 用单引号 here-string 直通 stdin，`@'` 与结束的 `'@` 都必须独占行首：
-
-```powershell
-@'
-const links = Array.from(document.querySelectorAll('a[href*="/n/"]'), (a) => a.href)
-return links.slice(0, 10)
-'@ | autobrowser.exe eval --stdin
-```
-
-CSS 属性选择器的值本身要按 CSS 语法带引号（`a[href*="/n/"]`），这也是最容易被多层命令行转义吃掉的一类源码；页面报 `not a valid selector` 时，既要考虑引号被吞，也要考虑选择器本身非法，不要一律归因成 shell 引号问题。
-
-### 浏览器状态模拟
-
-`set` 命令调整浏览器侧的模拟设置，按当前标签页生效：
-
-```bash
-autobrowser set viewport 390 844 3 mobile   # 宽 高 设备像素比 mobile
-autobrowser set device iphone-15            # 一次性设置视口、DPR、mobile 和 UA
-autobrowser set device --reset              # 同时清除设备尺寸和 UA 覆盖
-autobrowser set media dark                  # 配色方案，light / 省略则重置
-autobrowser set media-type print            # 打印或屏幕媒体，--reset 重置
-autobrowser set reduced-motion reduce       # 也支持 no-preference / --reset
-autobrowser set forced-colors active        # 也支持 none / --reset
-autobrowser set contrast more               # 也支持 less / custom / no-preference / --reset
-autobrowser set timezone Asia/Shanghai      # IANA 时区名，--reset 重置
-autobrowser set locale zh-CN                # BCP 47 标签，--reset 重置
-autobrowser set ua "Mozilla/5.0 ..."       # 覆盖 UA，--reset 或空值重置
-autobrowser set geo 39.9 116.4 100          # 纬度 经度 精度(米)
-autobrowser set headers "X-Token:abc,Demo:1"
-autobrowser set offline                     # 切到离线；set offline false 恢复
-autobrowser set permission notifications --reset   # 授权当前源，--reset 撤销
-autobrowser set auto-snapshot on            # 导航和输入后自动附带 snapshot，默认 off
-autobrowser set focus on                    # 隐藏标签页焦点仿真；测量后用 off 关闭
-```
-
-设备预设目前是 `desktop-chrome`、`iphone-15`、`pixel-10`，非法名字返回 `INVALID_DEVICE_PRESET`。
-
-### 目标与命令队列
-
-`target` 管理持久化的目标标签页，`command` 查看和干预扩展侧的命令队列：
-
-```bash
-autobrowser target show                    # 查看当前持久化目标
-autobrowser target set t2                  # 绑定到稳定句柄
-autobrowser target active                  # 改用浏览器活动标签页
-autobrowser target clear                   # 清除持久化目标
-
-autobrowser command list                   # 排队中与执行中的命令
-autobrowser command list --sort newest     # 最近的命令排最前
-autobrowser command list --for-tab t2      # 只看某个标签页的命令
-autobrowser command list --for-workspace ws-a  # 只看某个 workspace 的命令
-autobrowser command status <id>            # 查看单个命令
-autobrowser command cancel <id>            # 按 id 取消
-autobrowser command reset --tab t2         # 重置目标队列
-```
-
-命令超时或页面卡死时，先用 `status` 和 `command list` 判断现场，再决定重试还是恢复，不要连续重放。
-
-历史元数据保留最近 500 条；超过上限的条目会进入有界淘汰清单，`command status <id>` 返回 `evicted:true` 表示“曾被记录但已淘汰”；`evicted:false` 且 `commands` 为空只表示“当前扩展历史与有界淘汰清单均未命中”，不能绝对证明扩展从未收到该 id（旧版本记录、淘汰清单有界、恢复失败都可能未命中）。迟到结果只保留最新 25 份，被裁掉的条目仍保留 `id`、状态和时间戳，并带 `resultEvicted:true`。`command list/status` 同时返回 `diagnostics`（上限、恢复条数、累计淘汰数、最近一次持久化时间与错误、最近一次历史恢复错误）；`lastPersistError` 非空只说明历史落盘失败，不影响命令本身，`lastRestoreError` 非空说明本次启动读取历史失败，此时查不到历史不代表没有历史。历史由所有 AI 共用，默认按最旧优先返回，用 `--sort newest` 看最近的命令、`--for-tab <tN>` 只看某个标签页；显式指定 `--workspace <id>` 或用 `--for-workspace <id>` 时只看该 workspace，默认 auto workspace 不改变全局视图。
-
-### 诊断与录制
-
-```bash
-autobrowser console --level error          # 读控制台输出，还支持 warning/info/debug
-autobrowser errors                         # 读页面错误
-autobrowser console clear                  # 清空控制台缓冲
-autobrowser errors clear
-autobrowser actions list                   # 有界动作时间线，不记录参数值
-autobrowser actions clear
-autobrowser tracing start
-autobrowser tracing stop ./trace.json      # 落盘并返回路径，最大 32MiB
-autobrowser video start
-autobrowser video chapter "第一步" --duration 3000
-autobrowser video stop ./out.webm          # 落盘并返回路径，最大 64MiB
-```
-
-`console` 和 `errors` 支持 `--page`、`--page-size`、`--since <timestamp>` 和 `--all-epochs`；`--level` 会连带包含更严重级别的消息。
-
-### 可恢复的长任务采集
-
-`feed` 采集单页虚拟列表，`collect` 把多页流程跑成可断点续传的 JSONL 任务：
-
-```bash
-autobrowser feed collect 'article' --limit 50 --dedupe url
-autobrowser collect run ./spec.json
-autobrowser collect resume ./spec.json     # 从失败页继续，按内容去重
-```
-
-每条卡片包含 `author`、`handle`、`time`、`text`、`url`、`mediaUrls`、`avatarUrls`、`timelineContext`、`repostBy`、`adapter`、`promoted`、`authorUrl`、`trackingUrl`：
-
-- `mediaUrls` 只放正文图片/视频；`avatarUrls` 单独放头像（X 的 `/profile_images/` 路径与常见 avatar/profile 语义容器算头像；没有头像语义的普通站点图片仍算正文媒体）。
-- `timelineContext` 是时间线上下文（如 `Hongbo Zhang 已转帖`），没有则为 `null`；`repostBy` 是转帖人，不是转帖或识别不出时为 `null`。转帖不会改写 `author`/`handle`。
-- `adapter` 是本次生效的可选站点适配层 id（如 `youtube`），没有启用时为 `null`，此时所有字段都来自通用采集逻辑。
-- `promoted` 表示是不是广告推广条目，普通条目为 `false`；`authorUrl` 是作者主页地址；`trackingUrl` 是广告跟踪链接。站点没有对应语义时后两者为 `null`。
-
-可选站点适配层只在 host 与页面 DOM 特征都命中时才启用，不会改变通用采集行为：
-
-- X（`x.com`/`twitter.com`）：确认是推文时间线页面即可，具体字段继续走通用逻辑。
-- YouTube（`youtube.com`/`youtu.be`）：`author` 取频道名、`handle` 取指向 `/@name` 的频道链接、`time` 只从元信息行取可靠的相对时间或明确日期（取不到就是 `null`，不会从描述正文里猜日期），频道链接里的图片算头像、普通的视频缩略图仍算正文媒体。
-- B 站（`bilibili.com` 及其子域，页面存在 `.bili-video-card` 或 `.bpx-player-primary-area` 时启用）：`author` 取 `.bili-video-card__info--owner` 的第一个非空行（空头像图标不算作者），`time` 只从卡片日期区域取（取不到就是 `null`，不会从描述里猜日期），`url` 只认 BV 视频链接，`authorUrl` 是 `space.bilibili.com/<uid>`；B 站没有 handle 概念，`handle` 为 `null`，不会伪造 `@handle`。`cm.bilibili.com` 跟踪链接或明确的“广告”标记会让 `promoted` 为 `true`，跟踪链接只进 `trackingUrl`；只有广告链接没有 BV 时 `url` 为 `null`，去重回退到作者+正文，不会拿超长跟踪 URL 当身份。
-
-`collect` 的 spec 是 JSON：`{name, mode: "feed"|"network", startUrl?, output, maxPages?, feed?, network?}`。`feed` 模式用 `feed.selector/limit/dedupe/maxScrolls/pauseMs/stallRounds/nextSelector/waitTimeoutMs`；`network` 模式用 `network.urlPattern/itemsPath` 和可选的 `nextPath` 跟随真实响应游标。该命令当前只支持 Chromium 扩展通道。
-
-采集的落盘协议是 version 2：输出是**追加式 JSONL**，每页只把新条目追加到文件末尾；checkpoint 只保留 `spec`/`status`/`nextUrl`/`nextPage`/`failures`/`itemCount`，不再保存条目数组，所以翻页成本与已有数据量无关：
-
-- `collect resume` 会用 node stream **流式扫描**一遍输出 JSONL，重建去重集合和 `itemCount`；不会把整个文件读进内存，也不会重写输出。
-- **崩溃窗口**：条目已经追加进文件、但 checkpoint 还没推进时崩溃，resume 会重抓那一页，并按已落盘内容跳过重复条目后正常推进。
-- **末尾半行**：输出末尾若残留上次崩溃留下的半行 JSON，resume 会只截掉这段残片、保留有效前缀，并在结果与 checkpoint 的 `warnings` 里说明；最后一行是合法 JSON 但缺换行时，追加前会先补换行，不会把两条记录粘连。
-- **损坏与丢失**：中间出现损坏的 JSON 记录会报 `COLLECT_OUTPUT_CORRUPT` 且不推进 checkpoint；输出文件缺失但 checkpoint 已记录条目时报 `COLLECT_OUTPUT_MISSING`；输出的有效记录比 checkpoint 记录的条目数少时报 `COLLECT_OUTPUT_TRUNCATED`（文件被截短或丢了记录），同样不会静默缩小区重基线。checkpoint 本身损坏（例如 version 2 缺少 `itemCount`）时报 `INVALID_COLLECT_CHECKPOINT`，不会替你猜默认值。
-- **v1 迁移**：旧的 version 1 checkpoint 在 resume 时会一次性迁移成 version 2——以 `checkpoint.items` 为权威重写输出文件（`_meta` 与 `failures` 原样保留），之后只追加；version 1 的完成态 resume 仍是 no-op，按 `items.length` 返回条目数。
-- 失败会记录 `failures`、置 `status=failed` 并给出 `suggestedAction`；checkpoint 不含 cookie 或 token。
-
-### 结构化字段提取（extract）
-
-`extract` 用一份 JSON spec 把当前页面的列表静态提取成一维记录，只读 DOM，不执行 spec 里的任何代码：
-
-```json
-{
-  "itemSelector": "li.item",
-  "fields": {
-    "title": { "selector": "h3", "required": true },
-    "price": { "selector": ".price", "type": "number" },
-    "detail": { "selector": "a.more", "attr": "href", "type": "url" },
-    "stock": { "selector": ".stock", "type": "boolean" },
-    "card": { "type": "html" }
-  },
-  "limit": 100
-}
-```
-
-```bash
-autobrowser extract ./spec.json --dry-run          # 默认只取前 5 条，--limit 可覆盖
-autobrowser extract ./spec.json --output items.jsonl
-```
-
-- `type` 取 `text|string|number|boolean|url|html`，默认 `text`；`selector` 省略时在 item 根元素上取值，`attr` 存在时读属性，`html` 读 `outerHTML`，`url` 基于 `document.baseURI` 转绝对地址。
-- 可选字段缺失写 `null`，同时计入 `missingFields`；`required` 字段缺失或类型非法（`number/boolean/url`）会让该行不进入 `items`，可选字段类型非法同样只写 `null`。
-- 无 `--output` 时返回 `items` 与 `quality`；有 `--output` 时只把有效 items 写成 JSONL，stdout 只返回 `path`、`itemCount` 和 `quality` 摘要。
-- `quality` 至少包含 `matchedCount`、`scannedCount`、`itemCount`、`invalidCount`、`missingFields`（每字段缺失次数）、`errors`（最多 20 条，含 `rowIndex/field/code/message`）、`totalErrorCount` 与 `errorsTruncated`。
-- 空匹配是成功结果（`items: []`、`matchedCount: 0`）；`--dry-run` 不能与 `--output` 同用。相对路径按调用方 cwd 解析，根级 `--tab`/`--frame`/`--workspace` 同样生效。
-
-### 可执行的命名配方（recipe）
-
-把一段反复使用的页面脚本保存成命名配方，之后按需运行并记录验证时间：
-
-```bash
-autobrowser recipe save daily-check ./check.json          # 已存在时加 --force
-autobrowser recipe list                                   # 只回元数据，不含脚本
-autobrowser recipe show daily-check                       # 主动读取完整脚本
-autobrowser recipe run daily-check --arg user=alice       # 只执行，不改验证时间
-autobrowser recipe verify daily-check --arg user=alice    # 真实执行，成功后固化 lastVerified
-```
-
-spec 是 JSON：
-
-```json
-{
-  "name": "daily-check",
-  "description": "读取当前账号的未读消息数",
-  "entryUrl": "https://example.com/messages",
-  "params": [
-    { "name": "user", "description": "account name", "required": true }
-  ],
-  "script": "const row = document.querySelector('[data-user=\"' + args.user + '\"]')\nreturn row ? row.textContent.trim() : null",
-  "lastVerified": null
-}
-```
-
-- 配方保存在当前 session 的 `homeDir/recipes/<name>.json`：命名 session 天然隔离。`name` 是安全 slug（小写字母或数字开头，只含小写字母、数字、`_`、`-`，最长 64），必须与 `spec.name` 一致；`entryUrl` 仅 HTTP(S)；`params` 最多 50 个且不能重名；`script` 非空且 ≤256KiB；spec 文件 ≤1MiB。
-- 目录权限尽量收紧为 700，JSON 通过 `writeJsonFile` 原子写入并使用 600 权限；损坏的 spec 或文件名/内容不一致会返回 `INVALID_RECIPE_SPEC`，`list` 不会静默跳过。
-- `run` 与 `verify` 都通过现有 `eval` 执行 `script`：当前标签页与 `entryUrl` **同源**时复用页面状态（登录、滚动位置等），跨源才用 `goto` 导航。`--timeout-ms` 直接映射到 eval 超时（100..1800000 毫秒）。
-- 参数两种写法互斥：`--arg key=value` 可重复且值始终是字符串；`--args-json` 传对象，字符串原样、非字符串 `JSON.stringify` 后作为字符串注入。`required` 参数缺失或为空字符串报 `RECIPE_ARGUMENTS_INVALID`；未声明参数不拒绝，但结果 `warnings` 会明确列出。
-- `run` 返回 `{recipe:{name,entryUrl,lastVerified}, value, warnings}`，**不更新** `lastVerified`；`verify` 同样真实执行，只有成功才写入当前 ISO 时间并返回 `{verified:true, ...}`，失败保留原错误码和 recipe 上下文、不写时间，并提示修复后重新 verify。推荐流程：保存 → `run` 验证行为 → `verify` 固化验证时间。
-- `script` 是受信任的 async function body（支持顶层 `return`/`await`），与 `run` 一样不做额外沙箱或静态检查；只运行自己保存的脚本。该命令族目前只提供 CLI。
-
-### 数据导出
-
-```bash
-autobrowser network export ./requests.jsonl     # 请求摘要 JSONL，比完整 HAR 更好 diff
-autobrowser snapshot export ./snapshot.jsonl    # 完整快照 JSONL
-autobrowser snapshot extract ./fields.jsonl --field 'elements.*.text'
-```
-
-`snapshot extract` 的 `--field` 支持逗号分隔的多项和 `*` 前缀通配，只导出匹配的字段路径。
-
-### 页面读写与其他
-
-```bash
-autobrowser state save my-profile            # 保存浏览器状态
-autobrowser state load my-profile            # 按名字恢复
-autobrowser clipboard read
-autobrowser clipboard write "hello"
-autobrowser pdf                              # 导出当前页为 PDF
-autobrowser config                           # 查看已保存的连接配置
-autobrowser replay                           # 重放上一条记录的命令
-autobrowser skill sync                       # 同步包内 skill 资产到 ~/.agents/skills/autobrowser/
-autobrowser skill status                     # 只检查是否与包内一致，不写入
-```
-
-`replay` 会拒绝含 `[redacted]` 的历史命令，不会拿脱敏占位符当真实参数执行。`skill sync` 是更新 agent 提示词的官方途径：包内 skill 目录 `.agents/skills/autobrowser/` 下的 `SKILL.md`、`references/`、`examples/` 会被同步到 agent 加载位置（默认 `~/.agents/skills/autobrowser/`，可用 `AUTOBROWSER_SKILL_DIR` 覆盖）。sync 只覆盖这些声明范围内的文件，不删除目标目录里的其它内容；内容一致时跳过写入，重复执行是 no-op。`skill status` 会逐个比较这些资产，缺失或内容不同都算 out of sync。
-
-低层输入与拖拽：
-
-```bash
-autobrowser keyboard type "hello"            # type / inserttext / keydown / keyup
-autobrowser mousemove 400 300
-autobrowser mousedown left
-autobrowser mouseup left
-autobrowser mousewheel 0 500
-autobrowser drag "#a" "#b"
-autobrowser scrollintoview "#result"
-autobrowser upload "input[type=file]" ./a.png ./b.png
-autobrowser fillform '[{"selector":"#u","value":"a"},{"selector":"#p","value":"b"}]'
-autobrowser window new
-autobrowser close all                        # 关闭当前窗口全部标签页
-```
-
-`fillform` 一次填多个字段，单个字段失败不会中断其余字段，输入是 JSON 数组或 `{"fields":[...]}`，也支持 `--stdin`/`--file`/`--base64`。
-
-`dialog auto` 控制运行时是否自动接受 alert/beforeunload（默认开启，仅运行时生效）：
-
-```bash
-autobrowser dialog auto --off
-autobrowser dialog auto --on
-```
-
-## 错误输出契约
-
-命令失败时 stdout 上永远是同一套 JSON，退出码为 1：
-
-```json
-{
-  "ok": false,
-  "error": {
-    "message": "missing value for click",
-    "code": "CLI_INVALID_ARGUMENT",
-    "retryable": false,
-    "details": { "path": "click", "command": "click" },
-    "suggestedAction": "Run 'autobrowser help click' to see the accepted arguments, then run the command again with a corrected value."
-  }
-}
-```
-
-- 参数类错误（缺参、多参、取值非法、未知选项）用 `CLI_INVALID_ARGUMENT`，未知命令用 `CLI_UNKNOWN_COMMAND`，其余 CLI 层失败用 `CLI_ERROR`；运行期错误仍用扩展/relay 自己的错误码。
-- `suggestedAction` 是每个错误码的默认下一步（见 `src/core/error-actions.ts`），扩展给出的更具体建议优先；`retryable` 表示检查当前状态后是否可以重试，结果未知时仍禁止盲目重放。
-- 查询无匹配仍是成功：`ok:true`、退出码 0，并带 `empty:true` 和 `emptyReason:NO_DATA|NO_MATCH|FILTERED_OUT`。`find ... locate` 无匹配也按此返回；动作命令无目标则返回 `ELEMENT_NOT_FOUND`、退出码 1。
-- 命令名写错时不会打印整页帮助，而是直接报出未知命令，并在 `details.candidates` 里给出最接近的命令名（例如 `autobrowser snap` → `snapshot`）；未知选项也会按当前命令的 help 给出最近邻建议。
-- 裸 CSS 选择器未匹配返回 `ELEMENT_NOT_FOUND`，`@eN` 快照引用无法解析返回 `STALE_REFERENCE`，两者的修复建议不再混用。
-- `--raw` / `--brief` 会退回纯文本：错误写在 stderr，并附一行 `[AI SUGGESTION]` 建议。
-
-## 测试
-
-运行 `bun test`。
-
-真实浏览器冒烟测试（opt-in，默认跳过）：需要 Chrome for Testing（或能加载 `--load-extension` 的 Chrome，Chrome 137+ 品牌版已屏蔽该开关），跑：
-
-```bash
-bun run test:live
-```
-
-等价于先 `bun run build:chrome` 再 `AUTOBROWSER_LIVE=1 bun test test/live-smoke.test.ts`。二进制按 `CHROME_BIN` 环境变量 → Playwright 缓存里的 Chrome for Testing → 系统 Chrome 的顺序尝试；前置条件不满足时自动跳过，不会让默认 `bun test` 失败。
-
-`bun test` 不会真的拉起浏览器：`NODE_ENV=test` 时 `openUrl` 直接返回，`connect` / `session attach` 之类要开页面的命令只记录 URL，不会把标签页开在开发者机器的真实浏览器里（子进程型 CLI 测试没法注入替身，这道闸门是唯一保证）。确实需要真实浏览器时用 `AUTOBROWSER_DISABLE_BROWSER=0` 显式放开。
-
-## 从源码运行
-
-上面的示例都以 npm 全局安装后的 `autobrowser` 命令为准。如果你是在这个仓库里开发，用 Bun 直接跑：
-
-```bash
-bun install
+bun test           # 单元与集成测试，不会拉起真实浏览器
+bun run check      # typecheck + lint + 格式检查
 bun run build:cli
 bun run build:chrome
-bun run link:bun
+bun run test:live  # 真实浏览器冒烟，opt-in，需要 Chrome for Testing
 ```
 
-`link:bun` 默认用 Bun AOT 构建原生启动器并安装到 Bun 旁边，把本地 CLI 链接成全局的 `autobrowser` 命令；本机只需 Bun。需要备选 Go 实现时运行 `bun run link:bun -- --go`。不链接也可以用 `bun run src/cli.ts <子命令>` 直接运行源码，效果与 `autobrowser <子命令>` 等价；此时按「扩展」一节加载仓库里的 `chrome/`。
+- 完整命令与标志以 `autobrowser help` 和 [`docs/overview.md`](docs/overview.md) 为准。
+- Agent 操作指引在 [`.agents/skills/autobrowser/`](.agents/skills/autobrowser/)；`autobrowser skill sync` 可把技能资产同步到 `~/.agents/skills/autobrowser/`。
+- 安装细节见 [`docs/install.md`](docs/install.md)，`link:bun` 行为见 [`docs/bun-link.md`](docs/bun-link.md)。
