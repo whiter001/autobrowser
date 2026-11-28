@@ -469,8 +469,9 @@ export function parseConsoleArgs(rest: string[]): {
   for (let index = 0; index < rest.length; index += 1) {
     const value = rest[index]
 
-    if (value === 'clear' && index === 0) {
-      action = 'clear'
+    // list 是默认子命令：显式写出来应与省略等价，而不是被当成多余参数。
+    if ((value === 'list' || value === 'clear') && index === 0) {
+      action = value
       continue
     }
 

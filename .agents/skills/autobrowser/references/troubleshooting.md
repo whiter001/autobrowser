@@ -20,6 +20,17 @@
 - `screenshot` 的输出路径是位置参数：`screenshot [path]`，不是 `screenshot --path <path>`；误用 `--path` 时错误会直接给出正确形式。
 - 页面命令超时或结果未知时，先读 `error.details.commandId` 并执行 `command status <id>`：`completed_late`/`failed_late` 能直接说明命令最终是否执行、结果或错误是什么；确认后再看 `status`、`command list` 和页面。标签页控制走独立控制面，可继续用 `tab list`、`target clear`、`tab close <tN>` 恢复；不要连续重试并堆积命令。运行中的 `eval` 被取消或超时后会定向执行 `Runtime.terminateExecution`，其他 CDP 操作仍可能继续在浏览器侧完成。`status.lastError` 保留历史最后错误，可结合 `lastSuccessAt` 判断它是否早于最近成功。
 
+## 哈希路由、截图与幂等复核
+
+- 用 `eval` 直接改 `location.hash` 切路由可能被守卫重定向（例如被弹回 `#/workbench`）：改完立刻 `eval location.hash` 回读实际落地值，不一致就走左侧菜单点击或 `open <完整 URL>`，不要沿用改之前的目标继续操作。`open` 超时后同样先回读 hash 与 `status`，它可能稍后才真正执行，不要立刻重发。
+- `screenshot` 在弹窗淡入动画或页面重载期间容易得到半透明叠加、只有加载动画的图，甚至报 `CDP_DEADLINE_EXCEEDED`。截图前先 `wait <真实内容容器> --state stable`（重载后等业务容器出现，而不是只看 `document.readyState` 变成 complete），超时先核对页面状态再补截，不要盲目重放截图。
+
+## 网络 mock 的通配与复查
+
+- `network route <pattern>` 的 pattern 作用于完整 URL（scheme/host/path/query）：`**` 匹配任意字符（含 `/`），`*` 只在本段内、不跨 `/`，不含通配符时按 URL 子串匹配；fragment 不参与比较。所以 `**/queryAutoDeclareFailedList` 能命中 `http://localhost:5174/common-trade/a/b/queryAutoDeclareFailedList?x=1`，而 `*/queryAutoDeclareFailedList` 不会跨过 host 后的多级路径。
+- mock 是否生效不要只看页面：用 `network requests --filter <接口片段>` 找到该请求，再 `network request <rN>` 确认 `routeAction: mock` 且 `responseBody` 是 mock 内容。没有命中先 `network route list` 核对已注册 pattern，不要先怀疑前端。
+- 页面可能缓存旧响应，单纯 `reload` 不一定重新发请求：切到别的 hash 路由再切回（或重新挂载组件），然后 `network requests --sort newest` 复查是否出现新请求；必要时 `network unroute` 后重新 `network route`。
+
 ## 启动器、PATH 与 npm 安装
 
 - 如果命令报 `command not found` 或退出码 127，这是链接产物或 PATH 的问题，**不是 autobrowser 不可用**：先确认 `bun` 目录在当前 shell 的 PATH 里；Windows 使用 `autobrowser.exe <子命令>`（Windows 没有无扩展名入口），其他平台使用 `autobrowser <子命令>`。这是 shell 解析问题，修好之后继续用 autobrowser，不要因此换方案。

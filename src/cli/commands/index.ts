@@ -120,7 +120,8 @@ const COMMAND_GROUPS: Record<string, string[]> = {
   ],
   skill: ['skill'],
   state: ['cookies', 'storage', 'set', 'clipboard', 'state', 'network'],
-  tabs: ['tab', 'target', 'command', 'workspace', 'open', 'goto'],
+  // tabs 是 tab 的复数别名：同一实现，子命令与参数完全一致
+  tabs: ['tab', 'tabs', 'target', 'command', 'workspace', 'open', 'goto'],
   version: ['version'],
   webmcp: ['webmcp'],
 }

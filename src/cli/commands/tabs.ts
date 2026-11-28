@@ -676,6 +676,8 @@ async function handleOpenOrGoto(
 
 export const tabCommandRegistry: CommandRegistry = {
   tab: handleTab,
+  // 复数别名走同一处理函数：tabs list 等价 tab list，参数与请求完全一致
+  tabs: handleTab,
   target: handleTarget,
   command: handleCommandControl,
   workspace: handleWorkspace,

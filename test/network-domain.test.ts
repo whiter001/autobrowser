@@ -139,6 +139,132 @@ describe('network domain routes', () => {
   })
 })
 
+describe('network domain route patterns', () => {
+  /**
+   * 走真实链路而不是只测正则：route 命中与否由 requestWillBeSent 记录 + Fetch 暂停决定，
+   * 断言落在「请求真的被 fulfill 成 mock」和记录上的 routeId/routeAction。
+   */
+  function createPatternHarness() {
+    const state = createExtensionState(57978)
+    const sendCalls: Array<{ method: string; params?: Record<string, unknown> }> = []
+    const recordCall = async <TResult = unknown>(
+      _tabId: number,
+      method: string,
+      params?: Record<string, unknown>,
+    ): Promise<TResult> => {
+      sendCalls.push({ method, params })
+      return {} as TResult
+    }
+
+    const network = createNetworkDomain({
+      state,
+      getTargetTab: async () => ({ id: 1 }) as never,
+      sendRawDebuggerCommand: recordCall,
+      sendDebuggerCommand: recordCall,
+    })
+
+    const hit = async (url: string, requestId = 'req-pattern') => {
+      await network.handleEvent({ tabId: 1 }, 'Network.requestWillBeSent', {
+        requestId,
+        request: { url, method: 'GET', headers: {} },
+        type: 'XHR',
+        timestamp: 100,
+        wallTime: 100,
+      })
+      await network.handleRequestPaused(1, {
+        requestId: `fetch-${requestId}`,
+        networkId: requestId,
+        resourceType: 'XHR',
+        request: { url, method: 'GET', headers: {} },
+        timestamp: 100.5,
+      })
+      return {
+        fulfilled: sendCalls.some((call) => call.method === 'Fetch.fulfillRequest'),
+        continued: sendCalls.some((call) => call.method === 'Fetch.continueRequest'),
+        record: state.network.requestMap.get(`1:${requestId}`),
+      }
+    }
+
+    return { state, network, sendCalls, hit }
+  }
+
+  test('** 能匹配 Vite 完整 URL（host/path/query），mock 真的生效', async () => {
+    const { network, hit } = createPatternHarness()
+    await network.routeRequest(1, '**/queryAutoDeclareFailedList', { body: { ok: true } })
+
+    const { fulfilled, record } = await hit(
+      'http://localhost:5174/common-trade/a/b/queryAutoDeclareFailedList?x=1#hash',
+    )
+
+    expect(fulfilled).toBe(true)
+    expect(record).toMatchObject({ routeAction: 'mock', status: 200 })
+    expect(record?.responseBody).toContain('"ok": true')
+    // 命中的 route 必须写回记录，否则调用方无法确认 mock 挂在哪条规则上
+    expect(typeof record?.routeId).toBe('string')
+  })
+
+  test('**/api/* 命中嵌套路径，末尾 * 不跨 /', async () => {
+    const nested = createPatternHarness()
+    await nested.network.routeRequest(1, '**/api/*', { body: { mocked: true } })
+    expect((await nested.hit('http://localhost:5174/app/a/b/api/list?x=1')).fulfilled).toBe(true)
+
+    const single = createPatternHarness()
+    await single.network.routeRequest(1, 'https://shop.example.com/common-trade/*', {
+      body: { mocked: true },
+    })
+    expect((await single.hit('https://shop.example.com/common-trade/list?x=1')).fulfilled).toBe(
+      true,
+    )
+
+    // 单星号只在本段内生效：多一级路径不命中，请求原样放行
+    const deep = createPatternHarness()
+    await deep.network.routeRequest(1, 'https://shop.example.com/common-trade/*', {
+      body: { mocked: true },
+    })
+    const missed = await deep.hit('https://shop.example.com/common-trade/a/b/list')
+    expect(missed.fulfilled).toBe(false)
+    expect(missed.continued).toBe(true)
+    expect(missed.record?.routeId).toBeNull()
+    expect(missed.record?.routeAction).toBe('continue')
+  })
+
+  test('不带通配符的 pattern 保持子串兼容行为', async () => {
+    const { network, hit } = createPatternHarness()
+    await network.routeRequest(1, '/api/user', { body: { mocked: true } })
+
+    expect((await hit('https://example.com/v2/api/user?x=1')).fulfilled).toBe(true)
+  })
+
+  test('正则元字符按字面量匹配，query 也参与比较', async () => {
+    const pattern = '**/policy/(latest)/list.json?x=*'
+
+    const matched = createPatternHarness()
+    await matched.network.routeRequest(1, pattern, { body: { mocked: true } })
+    expect(
+      (await matched.hit('http://localhost:5174/market/policy/(latest)/list.json?x=1')).fulfilled,
+    ).toBe(true)
+
+    // `.` 不能当正则通配符吞掉任意字符
+    const missed = createPatternHarness()
+    await missed.network.routeRequest(1, pattern, { body: { mocked: true } })
+    const result = await missed.hit('http://localhost:5174/market/policy/(latest)/listXjson?x=1')
+    expect(result.fulfilled).toBe(false)
+    expect(result.continued).toBe(true)
+  })
+
+  test('空 pattern 不匹配任何请求', async () => {
+    const { state, hit } = createPatternHarness()
+    // 空串会在 routeRequest 阶段被拒；这里直接注入空白规则，验证匹配环节同样不命中
+    state.network.routes.push({ id: 'route_blank', pattern: '   ', abort: false, body: 'BLANK' })
+
+    const { fulfilled, continued, record } = await hit('https://example.com/api/user')
+
+    expect(fulfilled).toBe(false)
+    expect(continued).toBe(true)
+    expect(record?.routeId).toBeNull()
+  })
+})
+
 describe('network domain fetch interception', () => {
   const URL_A = 'https://example.com/api/user'
 

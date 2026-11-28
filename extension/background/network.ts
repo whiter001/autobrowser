@@ -140,17 +140,66 @@ function stripUrlFragment(url: string): string {
   return hashIndex === -1 ? url : url.slice(0, hashIndex)
 }
 
+/** glob 里的普通字符按字面量比较：pattern 中的 `.`、`?`、`(` 等不能当正则元字符 */
+function escapeGlobLiteral(value: string): string {
+  return value.replace(/[.+?^${}()|[\]\\]/g, '\\$&')
+}
+
+/**
+ * 路由 pattern → 正则：`**` 跨任意字符（含 `/`），`*` 只匹配段内字符（不含 `/`）。
+ *
+ * 逐字符扫描而不是「先转义再 replaceAll」，因为 `\*\*` → `.*` 与 `\*` → `[^/]*` 的替换
+ * 顺序会互相吃掉对方的结果。
+ */
+function networkRoutePatternToRegExp(pattern: string): RegExp {
+  let source = ''
+  for (let index = 0; index < pattern.length; index += 1) {
+    const char = pattern[index]!
+    if (char !== '*') {
+      source += escapeGlobLiteral(char)
+      continue
+    }
+    if (pattern[index + 1] === '*') {
+      source += '.*'
+      index += 1
+      continue
+    }
+    source += '[^/]*'
+  }
+  return new RegExp(`^${source}$`)
+}
+
+/**
+ * 路由 pattern 匹配：不含 `*` 时按 URL 子串（兼容旧用法）；含 `*` 时按 glob 匹配完整 URL
+ * （scheme/host/path/query 都参与）。
+ *
+ * 整串匹配失败后，再用去掉 query/fragment 的 URL 试一次：按路径书写的双星号模式
+ * （`**` 后接 `/queryAutoDeclareFailedList`）不该因为真实 URL 带 `?x=1` 而漏命中。
+ * fragment 本身始终不参与比较。
+ */
 function matchesNetworkRoute(pattern: string, url: string): boolean {
   const normalizedPattern = String(pattern || '').trim()
   if (!normalizedPattern) {
     return false
   }
 
+  const target = String(url || '')
+  if (!normalizedPattern.includes('*')) {
+    return target.includes(normalizedPattern)
+  }
+
+  // 单个 `*` 维持旧的「匹配全部 URL」用法；其余模式严格按 glob，`*` 不跨 `/`
   if (normalizedPattern === '*') {
     return true
   }
 
-  return String(url || '').includes(normalizedPattern)
+  const matcher = networkRoutePatternToRegExp(normalizedPattern)
+  if (matcher.test(target)) {
+    return true
+  }
+  const withoutFragment = stripUrlFragment(target)
+  const withoutQuery = withoutFragment.split('?')[0]!
+  return matcher.test(withoutFragment) || matcher.test(withoutQuery)
 }
 
 function findMatchingNetworkRoute(state: ExtensionState, url: string): NetworkRoute | null {

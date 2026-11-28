@@ -316,6 +316,7 @@ export const HELP_ROOT: HelpNode = helpNode(
           'autobrowser tab unmark <tN>',
         ),
       ],
+      ['tabs'],
     ),
     helpNode(
       'target',
@@ -925,8 +926,9 @@ export const HELP_ROOT: HelpNode = helpNode(
     helpNode(
       'console',
       '读取控制台输出。',
-      'autobrowser console [clear] [--level error|warning|info|debug] [--limit <n>] [--cursor <token>] [--page <n>] [--page-size <n>] [--since <timestamp>] [--all-epochs]',
+      'autobrowser console [list] [clear] [--level error|warning|info|debug] [--limit <n>] [--cursor <token>] [--page <n>] [--page-size <n>] [--since <timestamp>] [--all-epochs]',
       [
+        'list 是默认动作，可省略：console 与 console list 等价。',
         '--level <error|warning|info|debug> 每个级别都包含更严重的消息',
         '--page <n>',
         '--page-size <n>',

@@ -96,6 +96,9 @@
 - 组件行元素和空态以真实 DOM 为准：虚拟滚动或二次封装的表格，行元素不一定在 `tbody tr` 下，先用 eval 统计真实行元素的类名和数量；空态常表现为行数为 0 加根节点空态类，正好用来区分"确实没有数据"和"选择器写错"，不要凭假设的选择器断言表格未渲染。
 - 结构选择器（如 `button:has(.icon)`、`:nth-child`）只保证"匹配到某个节点"，不保证是目标：同名按钮或页面上有多个弹层时会命中第一个错误按钮，回执仍可能是 `ok: true, domFallback: true`。优先用 snapshot ref 或 `find role button --name <名称> --exact`，点击后用弹层是否出现/关闭、选中值、关键 DOM 变化核对结果，不要拿 `ok`/`domFallback` 当业务成功。
 - Teleport/portal 弹窗的宿主节点常是 0×0、`innerText` 为空的壳（如 `lt-modal-host` 一类包装层），真实内容和 footer 按钮被挂到 body 或其他容器，且 footer 的「取消/保存」不一定在内容容器内。定位时从文档级查实际的 `role=dialog` 或可见内容根节点，查按钮不要只圈定内容容器；宿主 `innerText` 为空不代表弹窗未渲染，也不要用宿主节点截图判断空白。
+- 弹窗开关状态不要靠宿主节点、`.ant-modal` 是否存在或 `offsetParent` 判断：`a-modal` 关闭后 DOM 仍保留，`ant-modal-wrap` 的 `display` 可能仍是 `block`，而 `position: fixed` 容器的 `offsetParent` 恒为 `null`，会把已关闭的弹窗误判成还开着。读组件 `setupState` 里的 open 值（或对该区域截图比对）才可靠。
+- surely-table 的行是 `.surely-table-body .surely-table-row`（fix-left/right 或 teleport 包裹时用 `.surely-table-row.surely-table-row-level-0`），单元格是 `.surely-table-cell`，`tbody tr` 恒为空。虚拟行按位移定位，DOM 顺序不保证等于 `dataSource` 顺序，校验顺序要读组件 `props('dataSource')`/`setupState`，不要用 DOM 顺序或行号断言。
+- 弹窗内表格高度用固定 `height`（如 `230px`）而不是 `100%`：`a-modal` 内容区高度不确定，`100%` 会让 `surely-table-body` 高度塌成 0；`v-for` 里的多个表格实例必须带唯一 `key`，否则实例复用会只渲染第一列（列数正常、行数为 0）。
 - 虚拟表格分层渲染时，表格容器内的 `thead`/`input` 计数可能暂时为 0，而内容已经显示。先把目标标签置前再观察（后台标签 `visibilityState=hidden`，渲染常不完整），随后用带 `aria-label` 的全局查询或实际控件数量、几何尺寸核验，不要用容器内计数判断是否加载完成，也不要把后台标签的空结果当作交互回归。
 
 ## 后台标签与 Ant 弹层组件
