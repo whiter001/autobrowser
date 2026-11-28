@@ -112,8 +112,10 @@ const CONTROL_COMMANDS = [
   'tab.close',
   'tab.detach',
   'tab.list',
+  'tab.mark',
   'tab.new',
   'tab.select',
+  'tab.unmark',
   'target',
 ] as const
 

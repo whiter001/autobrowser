@@ -132,6 +132,10 @@ autobrowser snapshot
 # 需要固定身份时显式指定，优先级高于环境变量和默认 auto
 autobrowser --workspace ai-a tab list
 autobrowser --workspace ai-a tab attach t2058764180
+
+# 交付/交接页面先打标记，再显式收尾：只关本轮创建的临时页
+autobrowser --workspace ai-a tab mark t2058764180 deliverable
+autobrowser --workspace ai-a workspace finish
 ```
 
 解析优先级为 `--workspace` > 非 `off` 的 `AUTOBROWSER_WORKSPACE` > 默认 `auto`；空环境变量等同于未设置。`AUTOBROWSER_WORKSPACE=off`（大小写不敏感）或全局 `--no-workspace` 关闭 workspace，恢复无 workspace 的共享目标模式；显式 `--workspace` 仍覆盖 `off`，但 `--no-workspace` 与 `--workspace` 同用会在发出请求前报 `CLI_INVALID_ARGUMENT`。
@@ -156,8 +160,11 @@ autobrowser workspace groups off      # 关闭展示并恢复原组
 
 默认 `auto` 只适用于 Chromium。`--engine firefox|webkit` 且没有显式 workspace 配置时保持无 workspace，不会因为新默认值报 "only supported by Chromium"；显式 `--workspace` 或非 `off` 的 `AUTOBROWSER_WORKSPACE` 在 WebDriver 下仍按原行为报错。`--no-workspace` 和 `off` 在 WebDriver 下都不报错。
 
-- `tab list` 显示 `workspace`、`attachment` 和 `attachable`；`--response-format detailed` 还显示租约时间。
+- `tab list` 显示 `workspace`、`attachment`、`origin`、`keep` 和 `attachable`；`--response-format detailed` 还显示租约时间。
 - `tab attach <tN>` 原子复用已有页面，保留当前登录、表单和筛选状态；其他 workspace 已持有时返回 `TAB_BUSY`。`--readonly` 只允许观察命令，click/eval/run 等会被拒绝。
+- `origin` 记录页面来源：只有 `tab new`/`open` 在 workspace 内新建的页面是 `created`，`tab attach`、自动认领、`click --follow-new-tab`、`window new` 都是 `attached`。`keep` 只有 `tab mark` 会设置，重新 attach 不会改写已有的 `origin`/`keep`；旧版本保存的归属没有这些字段时按 `attached` + `null` 恢复，因此不会被收尾误关。
+- `tab mark <tN> deliverable|handoff` / `tab unmark <tN>` 只作用于本 workspace 的 owned 标签：其他 workspace 持有返回 `TAB_BUSY`，`--readonly` 附着返回 `WORKSPACE_READONLY`，未附着返回 `TAB_NOT_ATTACHED`。标记只记录交付意图，不关闭、不 detach、也不改当前目标。
+- `workspace finish` 是显式收尾（绝不自动执行）：只关闭本 workspace 创建（`origin=created`）且没有标记、并且不是浏览器当前活动/前台标签的普通临时页；借用页、`deliverable`、`handoff` 和前台标签全部保留并 detach，同时恢复进入前的标签组。保留与关闭成功的标签都会删除 attachment，`targetTabId` 清空，workspace 本身保留供后续任务继续。结果包含 `success`、`closed`、`closedTabIds`、`releasedTabIds`、`preserved`（含 `reason`: deliverable/handoff/borrowed/foreground）、`missingTabIds`、`failedTabs`、`remainingTabIds`；已不存在的页面记 `missingTabIds` 不算失败，关闭失败的页面保留 attachment 供重试，此时 `success=false`，不要当成全部收尾完成。
 - 点击打开新标签页（`target=_blank` / `window.open`）时结果会带 `newTabId` / `newTabHandle`，但默认只报告，不改当前目标；`click --follow-new-tab` 才显式接管（内部就是 `tab attach`），因此新标签的归属与租约和其它 `tab attach` 完全一致。
 - `tab detach [tN]` 解除归属但不改变页面。每个 workspace 可拥有多个 tab，并只保存自己的默认目标。
 - Workspace 没有目标时，页面命令默认原子认领一个未绑定标签页：优先当前活动页，其余按 tabId 稳定排序；遇到 `TAB_BUSY` 会尝试下一空闲页，不抢占其他 workspace。显式 `--tab <tN>` 指向未绑定标签时也会直接认领并设为当前目标，无需先单独执行 `tab attach`。localhost 等可调试页面均可使用，结果 meta 在首次认领带 `autoAttached:true`。没有空闲页时 `open <url>` 创建并绑定新 tab，其他命令返回 `WORKSPACE_TARGET_REQUIRED`。使用全局 `--no-auto-attach` 可关闭上述自动认领，此时显式指定的未绑定标签仍需先 `tab attach`；它不等于 `--no-workspace`，也不能抢占其他 workspace 的标签。独立调研/抓取不要依赖 `open` 自动认领空闲页，优先 `tab new` 或 `--no-auto-attach`，避免导航用户现有页面。
@@ -167,9 +174,9 @@ autobrowser workspace groups off      # 关闭展示并恢复原组
 - 历史元数据保留最近 500 条，迟到结果只保留最新 25 份：更早的 `completed_late` 仍保留 id、状态和时间戳，但 `result` 会被裁掉并标 `resultEvicted:true`。`command list/status` 返回 `diagnostics`（`historyLimit`、`lateResultLimit`、`restoredCount`、`evictedCount`、`lastPersistError`、`lastPersistedAt`、`lastRestoreError`）；`command status <id>` 查不到时 `evicted:true` 表示“已被上限淘汰”，`evicted:false` 且 `commands` 为空只表示“当前扩展历史与有界淘汰清单均未命中”，不能绝对证明扩展从未收到该 id（旧版本记录、淘汰清单有界、恢复失败都可能未命中）；`lastRestoreError` 非空表示本次启动读取历史失败，此时历史为空不代表没有历史。
 - `extension reload`、`extension reconnect`、`server stop`、`server restart` 是全局操作，会影响所有 AI；执行前先确认其他 workspace 是否正在使用。
 - 后台标签页的定时器可能因浏览器节流延迟当前页面任务，多 AI 切换活动页会间接放大。依赖可见性或定时器结果的验证可 `tab select` 保持前台，或使用独立 `--session`；`set focus on` 只做 CDP 焦点仿真，不能保证消除后台定时器节流。
-- Workspace 模式下 `close all` 只关闭当前 workspace 的 owned 标签；任务结束时用 `tab detach` 或 `workspace release` 释放自己的标签，保留页面给后续复用，不要关闭其他 AI 仍在使用的标签。
+- Workspace 模式下 `close all` 只关闭当前 workspace 的 owned 标签；任务结束时用 `tab detach` 或 `workspace release` 释放自己的标签，保留页面给后续复用，不要关闭其他 AI 仍在使用的标签。需要一次性清理本轮创建的临时页并保留交付/交接页面时，显式执行 `workspace finish`，不要把收尾当作自动行为。
 
-每个 MCP 服务实例自动使用独立 workspace，并提供 `workspace`、`tab_attach`、`tab_detach` 工具。Workspace 用于本机误操作隔离，不是跨用户安全认证机制。
+每个 MCP 服务实例自动使用独立 workspace，并提供 `workspace`（含 `finish` 动作）、`tab_attach`、`tab_detach`、`tab_mark`、`tab_unmark` 工具。Workspace 用于本机误操作隔离，不是跨用户安全认证机制。
 
 ## Firefox / WebKit
 
@@ -805,7 +812,7 @@ autobrowser dialog auto --on
 autobrowser mcp
 ```
 
-默认只暴露 20 个核心工具，并且响应只写文本，避免 `tools/list` 的约 41KB schema 和同一结果的 JSON 双写占满模型上下文。核心工具为：`navigate`、`reload`、`snapshot`、`search`、`read_page`、`find`、`click`、`fill`、`type`、`press`、`get`、`wait`、`eval`、`tab_list`、`tab_attach`、`tab_detach`、`tab_new`、`tab_select`、`tab_close`、`workspace`。
+默认只暴露 22 个核心工具（序列化后约 19.8KB，仍守住 20KB 上限），并且响应只写文本，避免完整 `tools/list` 的约 46KB schema 和同一结果的 JSON 双写占满模型上下文。核心工具为：`navigate`、`reload`、`snapshot`、`search`、`read_page`、`find`、`click`、`fill`、`type`、`press`、`get`、`wait`、`eval`、`tab_list`、`tab_attach`、`tab_detach`、`tab_mark`、`tab_unmark`、`tab_new`、`tab_select`、`tab_close`、`workspace`。`workspace` 工具额外支持 `finish` 动作。
 
 兼容开关通过环境变量控制：
 

@@ -164,6 +164,37 @@ async function handleTab(rest: string[], context: CommandContext): Promise<numbe
       return 0
     }
 
+    case 'mark': {
+      const handle = readRequiredArg(tabArgs[0], context, ['tab', 'mark'])
+      if (!handle) return 0
+      const mode = tabArgs[1]
+      if (mode !== 'deliverable' && mode !== 'handoff') {
+        throw new CliUsageError(
+          `invalid tab mark mode: ${mode ?? '(missing)'} (expected deliverable|handoff)`,
+          { details: { path: 'tab mark' } },
+        )
+      }
+      if (tabArgs.length > 2) {
+        throw new CliUsageError(`unexpected extra argument for tab mark: ${tabArgs[2]}`, {
+          details: { path: 'tab mark' },
+        })
+      }
+      await requestAndWrite(context, 'tab.mark', { handle, mode })
+      return 0
+    }
+
+    case 'unmark': {
+      const handle = readRequiredArg(tabArgs[0], context, ['tab', 'unmark'])
+      if (!handle) return 0
+      if (tabArgs.length > 1) {
+        throw new CliUsageError(`unexpected extra argument for tab unmark: ${tabArgs[1]}`, {
+          details: { path: 'tab unmark' },
+        })
+      }
+      await requestAndWrite(context, 'tab.unmark', { handle })
+      return 0
+    }
+
     default: {
       // 表里声明了 action 但还没有实现分支：必须报错，不能静默当成功。
       return throwCommandError(`tab action is not implemented: ${tabAction}`)
@@ -177,6 +208,15 @@ async function handleWorkspace(rest: string[], context: CommandContext): Promise
   if (resolution.kind !== 'action') return context.writeHelp(['workspace'])
   if (resolution.action === 'release' && rest[1]?.startsWith('--')) {
     throw new Error(`unsupported workspace release option: ${rest[1]}`)
+  }
+  if (resolution.action === 'finish') {
+    if (helpRequested(rest[1], context, ['workspace', 'finish'])) return 0
+    if (rest.length > 1) {
+      throw new CliUsageError(`unexpected extra argument for workspace finish: ${rest[1]}`, {
+        details: { path: 'workspace finish' },
+      })
+    }
+    return await runActionCommand(context, 'workspace', { action: 'finish' })
   }
   if (resolution.action === 'groups') {
     if (helpRequested(rest[1], context, ['workspace', 'groups'])) return 0

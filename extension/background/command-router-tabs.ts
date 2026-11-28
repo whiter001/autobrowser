@@ -149,6 +149,7 @@ export function createTabsCommandHandler({
             readOptionalStringArg(args, 'workspaceId') || currentWorkspace,
           )
         }
+        if (action === 'finish') return await workspaceManager.finish(currentWorkspace)
         throw new Error(`unsupported workspace action: ${action}`)
       }
       case 'extension':
@@ -203,6 +204,22 @@ export function createTabsCommandHandler({
           explicitTabTarget,
           args.readonly === true ? 'readonly' : 'owned',
         )
+      case 'tab.mark': {
+        const keep = readStringArg(args, 'mode')
+        if (keep !== 'deliverable' && keep !== 'handoff') {
+          throw createToolError(
+            'INVALID_COMMAND_ARGS',
+            `tab mark mode must be deliverable or handoff, got ${keep || '(empty)'}`,
+            {
+              suggestedAction:
+                "Mark the page as 'tab mark <tN> deliverable' for a finished result, or 'tab mark <tN> handoff' for a page the next caller should continue with.",
+            },
+          )
+        }
+        return await workspaceManager.mark(requireWorkspace(workspace), explicitTabTarget, keep)
+      }
+      case 'tab.unmark':
+        return await workspaceManager.unmark(requireWorkspace(workspace), explicitTabTarget)
       case 'tab.detach':
         return await workspaceManager.detach(requireWorkspace(workspace), explicitTabTarget)
       case 'tab.select':

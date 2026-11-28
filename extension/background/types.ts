@@ -335,6 +335,10 @@ export interface TabSummary {
   windowId: number | null
   workspace?: string | null
   attachment?: 'owned' | 'readonly' | null
+  /** 页面来源：created 由 workspace 创建，attached 为借用/自动认领/跟随新标签 */
+  origin?: 'created' | 'attached' | null
+  /** 交付/交接标记；finish 只关闭 origin=created 且没有标记的普通临时页 */
+  keep?: 'deliverable' | 'handoff' | null
   attachable?: boolean
   lastActiveAt?: string
   leaseExpiresAt?: string

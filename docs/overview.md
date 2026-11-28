@@ -111,6 +111,8 @@ autobrowser tab list
 autobrowser tab select t2
 ```
 
+Chromium 的 workspace 还区分页面来源与交付意图：`tab list` 的 `origin` 中只有 `tab new`/`open` 在 workspace 内新建的页面是 `created`，`tab attach`、自动认领、`click --follow-new-tab`、`window new` 都是 `attached`；`keep` 由 `tab mark <tN> deliverable|handoff` 设置，`tab unmark <tN>` 清除，两者只接受本 workspace 的 owned 标签（跨 workspace 返回 `TAB_BUSY`，`--readonly` 返回 `WORKSPACE_READONLY`）。收尾必须显式执行 `workspace finish`，它只关闭 `origin=created`、没有标记、且不是当前活动/前台标签的普通临时页，借用页与交付/交接页面一律保留并 detach；关闭失败的页面保持绑定并令 `success=false`，不会假装已经收尾。`workspace release` 与租约过期仍然只解除归属，不关闭任何页面。
+
 如果 DOM 发生了明显变化，请再跑一次 `snapshot` 来刷新引用。
 
 ## 浏览器状态模拟

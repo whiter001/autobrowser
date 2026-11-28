@@ -51,6 +51,8 @@ export const MCP_CORE_TOOL_NAMES = [
   'tab_list',
   'tab_attach',
   'tab_detach',
+  'tab_mark',
+  'tab_unmark',
   'tab_new',
   'tab_select',
   'tab_close',

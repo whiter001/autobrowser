@@ -4,11 +4,13 @@ import {
   isWorkspaceReadonlyCommand,
   normalizeWorkspaceId,
   type WorkspaceAttachment,
+  type WorkspaceAttachmentKeep,
   type WorkspaceAttachmentMode,
+  type WorkspaceAttachmentOrigin,
   type WorkspaceRecord,
 } from '../../src/core/workspaces.js'
 import { createToolError } from '../../src/core/tool-error.js'
-import { storageLocalGet, storageLocalSet, tabsCreate, tabsQuery } from './chrome.js'
+import { storageLocalGet, storageLocalSet, tabsCreate, tabsQuery, tabsRemove } from './chrome.js'
 import { resolveTabInput } from './targeting.js'
 import {
   createChromeWorkspaceGroupApi,
@@ -32,6 +34,8 @@ interface WorkspaceManagerDependencies {
   getTargetTab: (tabId: TabInput) => Promise<TabWithId>
   createTab?: (url: string) => Promise<chrome.tabs.Tab | undefined>
   listTabs?: () => Promise<AutoAttachTab[]>
+  /** finish 关闭临时页；与 tabsRemove 同样的签名，测试可注入假浏览器 */
+  closeTabs?: (tabIds: number[]) => Promise<void>
   storageGet?: (keys: string | string[] | null) => Promise<Record<string, unknown>>
   storageSet?: (items: Record<string, unknown>) => Promise<void>
   /** 标签组展示层；null 表示浏览器不支持，传 undefined 时探测当前环境 */
@@ -80,6 +84,7 @@ export function createWorkspaceManager({
   getTargetTab,
   createTab = async (url) => await tabsCreate({ url }),
   listTabs = async () => await tabsQuery({}),
+  closeTabs = async (tabIds) => await tabsRemove(tabIds),
   storageGet = storageLocalGet,
   storageSet = storageLocalSet,
   groupApi = createChromeWorkspaceGroupApi(),
@@ -147,7 +152,16 @@ export function createWorkspaceManager({
             typeof attachment.workspaceId === 'string' &&
             state.workspaces.workspaces.has(attachment.workspaceId)
           ) {
-            state.workspaces.attachments.set(attachment.tabId, attachment)
+            // 旧版本没有 origin/keep：来源无法证明一律按 attached，keep 按无标记，
+            // 这样 finish 永远不会把这些页面当成可自动关闭的临时页。
+            state.workspaces.attachments.set(attachment.tabId, {
+              ...attachment,
+              origin: attachment.origin === 'created' ? 'created' : 'attached',
+              keep:
+                attachment.keep === 'deliverable' || attachment.keep === 'handoff'
+                  ? attachment.keep
+                  : null,
+            })
           }
         }
         // 恢复展示层开关与 group 缓存；旧 group 失效时下一次同步会重建
@@ -225,6 +239,11 @@ export function createWorkspaceManager({
     const suggestedAction = [
       `If this is the same workflow that owns the tab, rerun the command in the owning workspace: 'autobrowser --workspace ${owner} --tab ${handle} <command>'.`,
       `Otherwise pick a free tab from 'autobrowser tab list' (attachable: true) and run 'autobrowser --workspace <your-workspace> tab attach <tN>', or ask workspace ${owner} to release it with 'autobrowser --workspace ${owner} tab detach ${handle}'; do not force takeover.`,
+      ...(attachment.keep
+        ? [
+            `Workspace ${owner} marked this tab as ${attachment.keep}; only that workspace can unmark it with 'tab unmark ${handle}' or release it with 'workspace finish'.`,
+          ]
+        : []),
       `A single agent that needs no isolation can drop workspaces with 'autobrowser --no-workspace <command>'.`,
     ].join(' ')
     return workspaceError(
@@ -235,6 +254,8 @@ export function createWorkspaceManager({
         tabHandle: `t${tabId}`,
         workspace: attachment.workspaceId,
         attachment: attachment.mode,
+        origin: attachment.origin,
+        keep: attachment.keep ?? null,
         leaseExpiresAt: attachment.leaseExpiresAt,
       },
     )
@@ -244,6 +265,7 @@ export function createWorkspaceManager({
     workspaceId: string,
     tabInput: TabInput,
     mode: WorkspaceAttachmentMode = 'owned',
+    origin: WorkspaceAttachmentOrigin = 'attached',
   ): Promise<Record<string, unknown>> {
     const workspace = await ensureWorkspace(workspaceId)
     const tab = await getTargetTab(tabInput)
@@ -256,6 +278,9 @@ export function createWorkspaceManager({
       tabId: tab.id,
       workspaceId: workspace.id,
       mode,
+      // 重复 attach 只更新租约/模式：来源与交付标记属于页面的既有事实，不能被重新认领改写
+      origin: existing?.origin ?? origin,
+      keep: existing?.keep ?? null,
       attachedAt: existing?.attachedAt || timestamp,
       lastActiveAt: timestamp,
       leaseExpiresAt: new Date(now() + leaseMs).toISOString(),
@@ -299,6 +324,176 @@ export function createWorkspaceManager({
     await groupsController.restoreTab(tabId, workspace.id)
     await touch(workspace)
     return { detached: true, workspace: workspace.id, tabId }
+  }
+
+  /**
+   * mark/unmark 的公共前置：只认本 workspace 的 owned attachment。
+   * 这里不做自动认领，也不改 target，避免一次标记操作悄悄换掉调用方正在操作的页面。
+   */
+  async function requireMarkableAttachment(
+    workspaceId: string,
+    tabInput: TabInput,
+  ): Promise<{ workspace: WorkspaceRecord; attachment: WorkspaceAttachment; tabId: number }> {
+    const workspace = await ensureWorkspace(workspaceId)
+    await pruneExpired()
+    const tabId = resolveTabInput(state, tabInput)
+    if (typeof tabId !== 'number') {
+      throw workspaceError(
+        'WORKSPACE_TARGET_REQUIRED',
+        `workspace ${workspace.id} needs an explicit tab handle for this command`,
+        "Run 'tab list' and pass the handle, for example 'tab mark t12 deliverable'.",
+        { workspace: workspace.id },
+      )
+    }
+    const attachment = state.workspaces.attachments.get(tabId)
+    if (!attachment) {
+      throw workspaceError(
+        'TAB_NOT_ATTACHED',
+        `tab t${tabId} is not attached to workspace ${workspace.id}`,
+        "Run 'tab attach <tN>' from this workspace before marking the tab.",
+        { workspace: workspace.id, tabHandle: `t${tabId}` },
+      )
+    }
+    if (attachment.workspaceId !== workspace.id) throw busyError(attachment, tabId)
+    if (attachment.mode === 'readonly') {
+      throw workspaceError(
+        'WORKSPACE_READONLY',
+        `tab t${tabId} is read-only in workspace ${workspace.id}; marking it as deliverable or handoff needs an owned attachment`,
+        "Reattach it with 'tab attach <tN>' without --readonly if this page is yours to hand over.",
+        { workspace: workspace.id, tabHandle: `t${tabId}`, attachment: attachment.mode },
+      )
+    }
+    return { workspace, attachment, tabId }
+  }
+
+  async function mark(
+    workspaceId: string,
+    tabInput: TabInput,
+    keep: WorkspaceAttachmentKeep,
+  ): Promise<Record<string, unknown>> {
+    const { workspace, attachment, tabId } = await requireMarkableAttachment(workspaceId, tabInput)
+    // 先确认 tab 还在：否则会留下一条指向已关闭页面的 keep 标记
+    const tab = await getTargetTab(tabId)
+    attachment.keep = keep
+    await touch(workspace, tabId)
+    const [decorated] = await decorateTabs([toWorkspaceTabSummary(state, tab)])
+    return { marked: true, workspace: workspace.id, keep, tab: decorated }
+  }
+
+  async function unmark(workspaceId: string, tabInput: TabInput): Promise<Record<string, unknown>> {
+    const { workspace, attachment, tabId } = await requireMarkableAttachment(workspaceId, tabInput)
+    const tab = await getTargetTab(tabId)
+    attachment.keep = null
+    await touch(workspace, tabId)
+    const [decorated] = await decorateTabs([toWorkspaceTabSummary(state, tab)])
+    return { unmarked: true, workspace: workspace.id, keep: null, tab: decorated }
+  }
+
+  /**
+   * 显式收尾：只关闭本 workspace 创建且没有交付/交接标记的普通临时页。
+   *
+   * 判定顺序是保守的：keep 标记优先（deliverable/handoff），其次是借用页（origin=attached），
+   * 最后才看前台。只有全部条件都通过才会关闭，任何无法证明的信息都不作为关闭依据。
+   * 保留的页面一律 detach 并恢复标签组；关闭失败的页面保留 attachment 供重试。
+   */
+  async function finish(workspaceId: string): Promise<Record<string, unknown>> {
+    const workspace = await ensureWorkspace(workspaceId)
+    await pruneExpired()
+    const attachments = Array.from(state.workspaces.attachments.values())
+      .filter((attachment) => attachment.workspaceId === workspace.id)
+      .sort((left, right) => left.tabId - right.tabId)
+
+    let tabsById: Map<number, AutoAttachTab> | null = null
+    let inspectError: string | null = null
+    try {
+      const tabs = await listTabs()
+      tabsById = new Map(
+        tabs
+          .filter((tab): tab is AutoAttachTab & { id: number } => typeof tab.id === 'number')
+          .map((tab) => [tab.id, tab]),
+      )
+    } catch (error) {
+      inspectError = error instanceof Error ? error.message : String(error)
+    }
+
+    const closedTabIds: number[] = []
+    const releasedTabIds: number[] = []
+    const preserved: Array<{ tabId: number; handle: string; reason: string }> = []
+    const missingTabIds: number[] = []
+    const failedTabs: Array<{ tabId: number; handle: string; error: string }> = []
+
+    for (const attachment of attachments) {
+      const tabId = attachment.tabId
+      const handle = `t${tabId}`
+      if (!tabsById) {
+        // 连页面是否存在、是否前台都无法核实：既不关闭也不解除绑定，交给调用方重试
+        failedTabs.push({
+          tabId,
+          handle,
+          error: `could not inspect open tabs: ${inspectError ?? 'unknown error'}`,
+        })
+        continue
+      }
+      if (!tabsById.has(tabId)) {
+        // 用户已经关掉的页面属于正常生命周期，不是失败
+        state.workspaces.attachments.delete(tabId)
+        groupsController.forgetTab(tabId)
+        missingTabIds.push(tabId)
+        continue
+      }
+
+      const reason: 'deliverable' | 'handoff' | 'borrowed' | 'foreground' | null =
+        attachment.keep === 'deliverable'
+          ? 'deliverable'
+          : attachment.keep === 'handoff'
+            ? 'handoff'
+            : attachment.origin !== 'created'
+              ? 'borrowed'
+              : tabsById.get(tabId)?.active === true
+                ? 'foreground'
+                : null
+
+      if (reason) {
+        preserved.push({ tabId, handle, reason })
+        state.workspaces.attachments.delete(tabId)
+        releasedTabIds.push(tabId)
+        await groupsController.restoreTab(tabId, workspace.id)
+        continue
+      }
+
+      try {
+        await closeTabs([tabId])
+      } catch (error) {
+        // 关闭失败必须保留 attachment：否则调用方既拿不到页面，也不知道还有页面没关
+        failedTabs.push({
+          tabId,
+          handle,
+          error: error instanceof Error ? error.message : String(error),
+        })
+        continue
+      }
+      state.workspaces.attachments.delete(tabId)
+      groupsController.forgetTab(tabId)
+      closedTabIds.push(tabId)
+    }
+
+    // workspace 本身保留，后续任务还能继续；只把默认目标清空
+    workspace.targetTabId = null
+    await touch(workspace)
+    const remainingTabIds = Array.from(state.workspaces.attachments.values())
+      .filter((attachment) => attachment.workspaceId === workspace.id)
+      .map((attachment) => attachment.tabId)
+    return {
+      success: failedTabs.length === 0,
+      workspace: workspace.id,
+      closed: closedTabIds.length,
+      closedTabIds,
+      releasedTabIds,
+      preserved,
+      missingTabIds,
+      failedTabs,
+      remainingTabIds,
+    }
   }
 
   /**
@@ -433,7 +628,8 @@ export function createWorkspaceManager({
   ): Promise<Record<string, unknown>> {
     const tab = await createTab(url)
     if (!tab || typeof tab.id !== 'number') throw new Error('failed to create a tab with an id')
-    const attached = await attach(workspaceId, tab.id)
+    // 只有这里能证明页面由 workspace 自己创建；click 新标签、window new、attach 都不算
+    const attached = await attach(workspaceId, tab.id, 'owned', 'created')
     return { tab: (attached.tab as Record<string, unknown>) || toWorkspaceTabSummary(state, tab) }
   }
 
@@ -447,6 +643,8 @@ export function createWorkspaceManager({
         ...tab,
         workspace: attachment?.workspaceId ?? null,
         attachment: attachment?.mode ?? null,
+        origin: attachment?.origin ?? null,
+        keep: attachment?.keep ?? null,
         attachable: !attachment,
         ...(detailed && attachment
           ? { lastActiveAt: attachment.lastActiveAt, leaseExpiresAt: attachment.leaseExpiresAt }
@@ -517,11 +715,14 @@ export function createWorkspaceManager({
     current,
     decorateTabs,
     detach,
+    finish,
     groups,
     list,
+    mark,
     release,
     resolveCommandTab,
     startCommandLease,
+    unmark,
   }
 }
 

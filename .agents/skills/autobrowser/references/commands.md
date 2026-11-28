@@ -13,7 +13,9 @@
 - `back` / `forward` / `reload [--wait-for url <pattern>|selector <sel>]`
 - `tab list` / `tab new <url> [--wait-until <mode>] [--wait-for url <pattern>|selector <css>]` / `tab select <tN>` / `tab close [tN]`
 - `tab attach <tN> [--readonly]` / `tab detach [tN]` — 在 workspace 里复用 / 解除已有页面归属
-- `workspace current` / `workspace list` / `workspace release [workspace-id]` / `workspace groups [on|off|status]`
+- `tab mark <tN> deliverable|handoff` / `tab unmark <tN>` — 标记交付或交接页面（收尾时保留），只对本 workspace 的 owned 标签生效
+- `workspace current` / `workspace list` / `workspace release [workspace-id]` / `workspace groups [on|off|status]` / `workspace finish`
+- `workspace finish` — 显式收尾：只关闭本 workspace 创建（origin=created）且无交付/交接标记、非当前活动/前台标签的普通临时页；借用页与保留页 detach 并恢复标签组，关闭失败保留绑定并返回 success=false
 - `target show` / `target set <tN>` / `target active` / `target clear`
 - `command list` / `command status <id>` / `command cancel <id>` / `command reset`
 - `window new`
@@ -61,6 +63,6 @@
 ## 其他调用接口
 
 - MCP 客户端无需走 CLI：导航类可用 `navigate` / `reload` / `back` / `forward`，脚本与扩展控制用 `script` / `extension`，参数与 CLI 同名（`tab` / `frame` 由工具自动注入）。
-- MCP 默认只列出 20 个核心工具：`navigate`、`reload`、`snapshot`、`search`、`read_page`、`find`、`click`、`fill`、`type`、`press`、`get`、`wait`、`eval`、`tab_list`、`tab_attach`、`tab_detach`、`tab_new`、`tab_select`、`tab_close`、`workspace`。`AUTOBROWSER_MCP_TOOLSET=all` 恢复完整 55 个；未列出的工具仍可直接调用，只是不出现在 `tools/list`。
+- MCP 默认只列出 22 个核心工具：`navigate`、`reload`、`snapshot`、`search`、`read_page`、`find`、`click`、`fill`、`type`、`press`、`get`、`wait`、`eval`、`tab_list`、`tab_attach`、`tab_detach`、`tab_mark`、`tab_unmark`、`tab_new`、`tab_select`、`tab_close`、`workspace`（序列化约 19.8KB，守住 20KB 上限）。`AUTOBROWSER_MCP_TOOLSET=all` 恢复完整 57 个；未列出的工具仍可直接调用，只是不出现在 `tools/list`。`workspace` 工具含 `finish` 动作，`tab_mark` 只接受 `deliverable|handoff`。
 - MCP 响应默认 `AUTOBROWSER_MCP_RESPONSE_MODE=text`，只写 `content` 文本；`structured` 对普通 object 只写 `structuredContent`（数组/原始值回退文本），`both` 双写兼容旧客户端。错误结果同样遵循该模式，`structured`/`both` 下读 `structuredContent.error`。`screenshot` / `video` / `tracing` 的媒体结果保持原样。
 - `cookies list` 是 `cookies get` 的别名，支持同样的 `--domain` / `--path` 过滤。

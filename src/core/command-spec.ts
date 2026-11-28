@@ -1340,6 +1340,22 @@ function validateCommandArgsShape(command: string, args: unknown): void {
       readTabInputField(normalizedArgs, 'handle', command)
       readBooleanField(normalizedArgs, 'readonly', command)
       return
+    case 'tab.mark': {
+      readTabInputField(normalizedArgs, 'handle', command)
+      const mode = readStringField(normalizedArgs, 'mode', command)
+      if (mode !== 'deliverable' && mode !== 'handoff') {
+        throw createCommandArgsValidationError(
+          command,
+          'mode must be deliverable or handoff',
+          { field: 'mode', value: mode },
+          argCliHint(command, 'mode'),
+        )
+      }
+      return
+    }
+    case 'tab.unmark':
+      readTabInputField(normalizedArgs, 'handle', command)
+      return
     case 'tab.detach':
     case 'tab.select':
     case 'tab.close':

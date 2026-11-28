@@ -57,6 +57,50 @@ describe('workspace CLI context', () => {
     })
   })
 
+  test('routes tab mark/unmark and workspace finish', async () => {
+    const marked = await runCli(['--workspace', 'ai-a', 'tab', 'mark', 't12', 'deliverable'])
+    expect(marked.exitCode).toBe(0)
+    expect(marked.fetchCalls[0].body).toMatchObject({
+      command: 'tab.mark',
+      args: { workspace: 'ai-a', handle: 't12', mode: 'deliverable' },
+    })
+
+    const handoff = await runCli(['--workspace', 'ai-a', 'tab', 'mark', 't12', 'handoff'])
+    expect(handoff.fetchCalls[0].body).toMatchObject({
+      command: 'tab.mark',
+      args: { workspace: 'ai-a', handle: 't12', mode: 'handoff' },
+    })
+
+    const unmarked = await runCli(['--workspace', 'ai-a', 'tab', 'unmark', 't12'])
+    expect(unmarked.fetchCalls[0].body).toMatchObject({
+      command: 'tab.unmark',
+      args: { workspace: 'ai-a', handle: 't12' },
+    })
+
+    const finished = await runCli(['--workspace', 'ai-a', 'workspace', 'finish'])
+    expect(finished.fetchCalls[0].body).toMatchObject({
+      command: 'workspace',
+      args: { workspace: 'ai-a', action: 'finish' },
+    })
+  })
+
+  test('rejects an invalid tab mark mode or extra arguments before dispatch', async () => {
+    for (const argv of [
+      ['tab', 'mark', 't1'],
+      ['tab', 'mark', 't1', 'maybe'],
+      ['tab', 'mark', 't1', 'deliverable', 'extra'],
+      ['tab', 'unmark'],
+      ['tab', 'unmark', 't1', 'extra'],
+      ['workspace', 'finish', 'extra'],
+    ]) {
+      const result = await runCli(argv)
+
+      expect(result.exitCode).toBe(1)
+      expect(result.fetchCalls).toHaveLength(0)
+      expect(cliErrorPayload(result.stdout).error.code).toBe('CLI_INVALID_ARGUMENT')
+    }
+  })
+
   test('open creates a workspace target while goto keeps navigation semantics', async () => {
     const opened = await runCli(['--workspace', 'ai-a', 'open', 'https://example.com'])
     expect(opened.fetchCalls[0].body).toMatchObject({

@@ -46,7 +46,7 @@ export const MCP_TOOLS: McpToolDefinition[] = [
   {
     name: 'navigate',
     description:
-      'Navigate to a URL in the current tab. Waits for the navigation to commit and the page to settle; the result reports settled, and settleReason when the page did not settle in time.',
+      'Navigate to a URL in the current tab, waiting for the navigation to commit and the page to settle; the result reports settled and settleReason.',
     command: 'goto',
     inputSchema: {
       type: 'object',
@@ -63,9 +63,9 @@ export const MCP_TOOLS: McpToolDefinition[] = [
             'networkidle',
             'domquiet',
           ],
-          description: 'Navigation phase to wait for (default domquiet).',
+          description: 'Navigation phase (default domquiet).',
         },
-        timeoutMs: { type: 'number', description: 'Total navigation timeout in milliseconds.' },
+        timeoutMs: { type: 'number', description: 'Total timeout in milliseconds.' },
         settleTimeoutMs: {
           type: 'number',
           description: 'Maximum settle phase time in milliseconds.',
@@ -82,7 +82,7 @@ export const MCP_TOOLS: McpToolDefinition[] = [
   {
     name: 'reload',
     description:
-      'Reload the current tab. The result reports outcome/phase plus committed (did the navigation commit?) and dispatchTimedOut (no CDP ack); on partial read observedUrl/observedEpoch and check the page before re-issuing the reload.',
+      'Reload the current tab. Result reports outcome/phase, committed and dispatchTimedOut; on a partial read use observedUrl/observedEpoch and check the page before reloading again.',
     command: 'reload',
     inputSchema: {
       type: 'object',
@@ -100,7 +100,7 @@ export const MCP_TOOLS: McpToolDefinition[] = [
           ],
           description: 'Reload phase to wait for (default domquiet).',
         },
-        timeoutMs: { type: 'number', description: 'Total reload timeout in milliseconds.' },
+        timeoutMs: { type: 'number', description: 'Total timeout in milliseconds.' },
       },
     },
     toArgs: (args) => onlyDefined(args, ['waitUntil', 'timeoutMs']),
@@ -161,7 +161,7 @@ export const MCP_TOOLS: McpToolDefinition[] = [
   {
     name: 'snapshot',
     description:
-      'Capture interactive/visible elements with @eN refs, roles and names, plus @fN frame refs. Concise replies keep only action-relevant element fields (ref, tag, role, name, value, placeholder, type, href, disabled, checked) and omit element text, positions and buttons; pass includeText to add the page text. changed returns a pure diff only (pageEpoch, elements, unchangedCount, full, removedRefs and truncation info). Refs are not reused within a document, but removed nodes are invalid and navigation makes refs stale: refresh snapshot before acting. Concise output defaults to 50 elements and 32768 UTF-8 bytes (detailed: full legacy fields, 200 elements and 200000 bytes); limit can select 1..200 elements without raising the byte budget. When truncated, narrow target/roles or use changed to read changes. Start here to discover targets.',
+      'Capture interactive/visible elements with @eN refs, roles and names, plus @fN frame refs. Concise keeps action-relevant fields (ref, tag, role, name, value, placeholder, type, href, disabled, checked) and omits text/positions/buttons; includeText adds page text. changed returns a pure diff (pageEpoch, elements, unchangedCount, full, removedRefs, truncation). Refs are not reused within a document, but removed nodes are invalid and navigation makes refs stale: refresh before acting. Concise defaults to 50 elements/32768 bytes (detailed: legacy fields, 200/200000); limit selects 1..200 without raising the byte budget. When truncated, narrow target/roles or use changed. Start here to discover targets.',
     command: 'snapshot',
     inputSchema: {
       type: 'object',
@@ -179,12 +179,12 @@ export const MCP_TOOLS: McpToolDefinition[] = [
         changed: {
           type: 'boolean',
           description:
-            'Return added/changed elements including state changes (checked/disabled etc.) and removedRefs as a pure diff (no text/buttons/headings/frames/page metadata). Baselines are document/frame scoped; first run or navigation returns full: true. Truncated snapshots only cache delivered elements.',
+            'Return added/changed elements (state changes and removedRefs) as a pure diff with no text/buttons/headings/frames. Baselines are document/frame scoped; first run or navigation returns full: true. Only delivered elements are cached.',
         },
         includeText: {
           type: 'boolean',
           description:
-            'Include the full page text in a concise snapshot. Ignored by changed, which stays a pure diff; detailed always includes text.',
+            'Include full page text in a concise snapshot; ignored by changed and always on in detailed.',
         },
         limit: {
           type: 'number',
@@ -226,14 +226,14 @@ export const MCP_TOOLS: McpToolDefinition[] = [
           minimum: 0,
           maximum: Number.MAX_SAFE_INTEGER,
           description:
-            'Maximum match windows (concise default 10, detailed default 20, capped at 200; 0 returns no windows or cursor); concise output has a 100-line / 32768 UTF-8 byte budget.',
+            'Maximum match windows (concise default 10, detailed 20, cap 200; 0 returns no windows or cursor). Concise caps at 100 lines / 32768 UTF-8 bytes.',
         },
         startLine: {
           type: 'integer',
           minimum: 1,
           maximum: Number.MAX_SAFE_INTEGER,
           description:
-            '1-based starting line (default 1). When truncated and nextStartLine is present, repeat the same query with startLine: nextStartLine; e.g. startLine: 201.',
+            '1-based start line (default 1). When truncated, repeat the query with startLine: nextStartLine (e.g. 201).',
         },
       },
       required: ['query'],
@@ -243,7 +243,7 @@ export const MCP_TOOLS: McpToolDefinition[] = [
   {
     name: 'read_page',
     description:
-      'Read long page content: scroll the DOM and capture the text, or extract a PDF text layer. Returns text (current slice), chars/totalChars, complete, stopReason. complete is true only when the page was scanned to the end; ok:true alone does not mean the whole text was read. stopReason says why the scan stopped (maxScreens, endlessFeed, renderFrozen, stalled, budgetExhausted, documentChanged, captureLimit, noText). A cursor replays the captured buffer without rescanning; it cannot be combined with maxScreens/timeoutMs. PDF pages add strategy pdf, pdfStatus and pages/pagesRead; autobrowser never OCRs or unlocks a PDF.',
+      'Read long page content: scroll the DOM or extract a PDF text layer. Returns text (current slice), chars/totalChars, complete and stopReason; complete is true only when the scan reached the end, so ok:true alone does not mean the whole text was read. stopReason is maxScreens, endlessFeed, renderFrozen, stalled, budgetExhausted, documentChanged, captureLimit or noText. A cursor replays the captured buffer without rescanning and cannot be combined with maxScreens/timeoutMs. PDF pages add strategy pdf, pdfStatus and pages/pagesRead; autobrowser never OCRs or unlocks a PDF.',
     command: 'read_page',
     inputSchema: {
       type: 'object',
@@ -251,7 +251,7 @@ export const MCP_TOOLS: McpToolDefinition[] = [
         cursor: {
           type: 'string',
           description:
-            'Continue a previous read from its nextCursor. Replays the captured buffer only; cannot be combined with maxScreens or timeoutMs.',
+            'Continue from nextCursor; replays the buffer only, so it cannot be combined with maxScreens or timeoutMs.',
         },
         maxChars: {
           type: 'integer',
@@ -317,7 +317,7 @@ export const MCP_TOOLS: McpToolDefinition[] = [
   {
     name: 'find',
     description:
-      'Find elements by role, text, label, placeholder, alt, title, test-id, or exact-name and optionally act. Read-only locate/text default to the first match. Write actions with multiple matches return AMBIGUOUS_TARGET and candidates unless position is explicit. Inspect candidates, narrow the query/exact match, or deliberately choose position before retrying.',
+      'Find elements by role, text, label, placeholder, alt, title, test-id or exact-name and optionally act. Read-only locate/text use the first match; write actions with multiple matches return AMBIGUOUS_TARGET plus candidates unless position is explicit. Narrow the query, use exact, or choose position, then retry.',
     command: 'find',
     inputSchema: {
       type: 'object',
@@ -333,7 +333,7 @@ export const MCP_TOOLS: McpToolDefinition[] = [
         },
         query: {
           type: 'string',
-          description: 'The text/attribute to look up (when strategy is text, label, ...).',
+          description: 'The text/attribute to look up.',
         },
         name: {
           type: 'string',
@@ -342,7 +342,7 @@ export const MCP_TOOLS: McpToolDefinition[] = [
         },
         exact: {
           type: 'boolean',
-          description: 'Require an exact text match instead of a substring match.',
+          description: 'Require an exact match instead of a substring match.',
         },
         position: {
           type: 'string',
@@ -350,7 +350,7 @@ export const MCP_TOOLS: McpToolDefinition[] = [
         },
         candidates: {
           type: 'number',
-          description: 'Return a Top-N ranked candidate list (only with action locate).',
+          description: 'Return a ranked Top-N candidate list (locate only).',
         },
         action: {
           type: 'string',
@@ -359,7 +359,7 @@ export const MCP_TOOLS: McpToolDefinition[] = [
         },
         value: {
           type: 'string',
-          description: 'Text to enter when action is fill or type.',
+          description: 'Text to enter for fill or type.',
         },
       },
       required: ['strategy'],
@@ -408,7 +408,7 @@ export const MCP_TOOLS: McpToolDefinition[] = [
   {
     name: 'fill',
     description:
-      'Fill a form field: text inputs, textareas and contenteditable take the text value; select elements match an option by its text or value; checkbox/radio inputs take "true" or "false". Accepts a CSS selector or an @eN element ref.',
+      'Fill a form field: text inputs/textareas/contenteditable take the value; select matches an option by text or value; checkbox/radio take "true"/"false". Accepts a CSS selector or @eN ref.',
     command: 'fill',
     inputSchema: {
       type: 'object',
@@ -431,7 +431,7 @@ export const MCP_TOOLS: McpToolDefinition[] = [
   {
     name: 'type',
     description:
-      'Type text into a field, optionally pressing Enter (submit) afterward. Accepts a CSS selector or an @eN element ref. With submit, the result reports submitted (Enter was sent) and navigationDetected (the page actually navigated) — Enter alone does not guarantee the form was submitted.',
+      'Type text into a field, optionally pressing Enter (submit) afterward. Accepts a CSS selector or an @eN ref. With submit, the result reports submitted (Enter was sent) and navigationDetected (the page navigated); Enter alone does not guarantee the form was submitted.',
     command: 'type',
     inputSchema: {
       type: 'object',
@@ -443,8 +443,7 @@ export const MCP_TOOLS: McpToolDefinition[] = [
         value: { type: 'string', description: 'The text to type.' },
         submit: {
           type: 'boolean',
-          description:
-            'Press Enter after typing. The reply tells you whether a navigation was observed.',
+          description: 'Press Enter after typing; the reply reports navigationDetected.',
         },
         expectedValue: {
           type: 'string',
@@ -531,7 +530,7 @@ export const MCP_TOOLS: McpToolDefinition[] = [
       properties: {
         type: {
           type: 'string',
-          description: 'What to wait for; inferred from the other arguments when omitted.',
+          description: 'Inferred from the other arguments when omitted.',
           enum: ['selector', 'url', 'text', 'fn', 'time', 'load', 'networkidle'],
         },
         selector: {
@@ -540,15 +539,14 @@ export const MCP_TOOLS: McpToolDefinition[] = [
         },
         state: {
           type: 'string',
-          description:
-            'Expected state for selector waits: visible (default), hidden, stable, or new.',
+          description: 'Visible (default), hidden, stable, or new.',
           enum: ['visible', 'hidden', 'stable', 'new'],
         },
-        text: { type: 'string', description: 'Text that should appear (or disappear with gone).' },
+        text: { type: 'string', description: 'Text that should appear (with gone: disappear).' },
         url: { type: 'string', description: 'URL pattern the page should navigate to.' },
-        fn: { type: 'string', description: 'JS expression that should evaluate truthy.' },
-        timeout: { type: 'number', description: 'Total timeout in milliseconds (default 30000).' },
-        ms: { type: 'number', description: 'Fixed duration to wait in milliseconds.' },
+        fn: { type: 'string', description: 'JS expression that must be truthy.' },
+        timeout: { type: 'number', description: 'Total timeout ms (default 30000).' },
+        ms: { type: 'number', description: 'Fixed wait in milliseconds.' },
         gone: { type: 'boolean', description: 'Wait for text to disappear instead of appear.' },
       },
     },
@@ -581,12 +579,12 @@ export const MCP_TOOLS: McpToolDefinition[] = [
   {
     name: 'workspace',
     description:
-      'Inspect the current MCP workspace, list workspaces, or release a workspace without closing its tabs.',
+      'Inspect the current MCP workspace, list workspaces, release one without closing its tabs, or finish it: finish closes only unmarked created tabs and keeps borrowed/deliverable/handoff/foreground pages, detaching everything it keeps.',
     command: 'workspace',
     inputSchema: {
       type: 'object',
       properties: {
-        action: { type: 'string', enum: ['current', 'list', 'release'] },
+        action: { type: 'string', enum: ['current', 'list', 'release', 'finish'] },
         workspaceId: { type: 'string', description: 'Workspace to release; defaults to current.' },
       },
       required: ['action'],
@@ -619,6 +617,38 @@ export const MCP_TOOLS: McpToolDefinition[] = [
       },
     },
     toArgs: (args) => onlyDefined(args, ['handle']),
+  },
+  {
+    name: 'tab_mark',
+    description:
+      'Mark an owned tab as deliverable (task output) or handoff (page the next caller continues with). workspace finish keeps marked tabs and closes only unmarked created ones.',
+    command: 'tab.mark',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        handle: { type: 'string', description: 'Owned tab handle (tN).' },
+        keep: {
+          type: 'string',
+          enum: ['deliverable', 'handoff'],
+          description: 'Why this page must survive workspace finish.',
+        },
+      },
+      required: ['handle', 'keep'],
+    },
+    toArgs: (args) => ({ handle: args.handle, mode: args.keep }),
+  },
+  {
+    name: 'tab_unmark',
+    description: 'Clear the deliverable/handoff mark of an owned tab.',
+    command: 'tab.unmark',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        handle: { type: 'string', description: 'Owned tab handle (tN).' },
+      },
+      required: ['handle'],
+    },
+    toArgs: (args) => ({ handle: args.handle }),
   },
   {
     name: 'tab_list',
@@ -728,7 +758,7 @@ export const MCP_TOOLS: McpToolDefinition[] = [
   {
     name: 'eval',
     description:
-      'Run JavaScript in the page context and return the serialized result. The script can use await and reads the optional args object through the local variable args (for example return args.keyword). With element, the function receives el and args. Pass offset/limit to paginate a string (by Unicode code points) or array result and get {value, pagination}; both are omitted by default and the raw result is returned. Pass output to write the full JSON result to a file (2-space indent, trailing newline) and return {path, format, bytes} instead of inlining the body; output defaults to response_format detailed, so results above the concise 32KiB limit still reach the file unless you ask for concise explicitly.',
+      'Run JavaScript in the page context and return the serialized result. Scripts can use await and read the injected args object; with element, the function receives el and args. offset/limit paginate a string (Unicode code points) or array result as {value, pagination}, otherwise the raw result is returned. output writes the full JSON to a file and returns {path, format, bytes} instead of inlining it, and defaults to response_format detailed so it is not rejected by the concise 32KiB limit.',
     command: 'eval',
     inputSchema: {
       type: 'object',
@@ -736,7 +766,7 @@ export const MCP_TOOLS: McpToolDefinition[] = [
         script: {
           type: 'string',
           description:
-            'JavaScript source; with element, use a function such as el => el.textContent. Read injected values from the local args object.',
+            'JavaScript source; with element, use a function such as el => el.textContent.',
         },
         element: {
           type: 'string',
@@ -745,24 +775,23 @@ export const MCP_TOOLS: McpToolDefinition[] = [
         args: {
           type: 'object',
           description:
-            'Values exposed to the script as the local variable args, for example {"keyword": "shoes"}. Keys must be non-empty and must not contain ".".',
+            'Values exposed as the local variable args, e.g. {"keyword": "shoes"}. Keys must be non-empty and must not contain ".".',
         },
         offset: {
           type: 'integer',
           minimum: 0,
           description:
-            'Start index for paginating a string (Unicode code points) or array result. Defaults to 0 when offset/limit is used.',
+            'Start index for string/array pagination (default 0 when offset/limit is used).',
         },
         limit: {
           type: 'integer',
           minimum: 1,
-          description:
-            'Page size for paginating a string or array result. Defaults to 10000 when offset/limit is used.',
+          description: 'Page size for string/array pagination (default 10000).',
         },
         output: {
           type: 'string',
           description:
-            'Write the full JSON result to this path (relative to the MCP server working directory) and return {path, format, bytes}. Existing files are overwritten. Defaults to response_format detailed so large payloads are not rejected by the concise 32KiB limit; an explicit response_format of concise still applies that limit.',
+            'Write the full JSON result here and return {path, format, bytes}. Defaults to response_format detailed; an explicit concise still applies its 32KiB limit.',
         },
       },
       required: ['script'],

@@ -380,6 +380,8 @@ export function createCommandRouter({
     'tab.list',
     'tab.attach',
     'tab.detach',
+    'tab.mark',
+    'tab.unmark',
     'tab.select',
     'tab.new',
     'tab.close',

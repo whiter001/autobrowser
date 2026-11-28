@@ -135,6 +135,8 @@ export function presentCommandResult(
           'status',
           'workspace',
           'attachment',
+          'origin',
+          'keep',
           'attachable',
         ])
         if (!isRecord(tab) || !isRecord(summary)) return summary
@@ -142,6 +144,8 @@ export function presentCommandResult(
           ...summary,
           ...('workspace' in tab ? { workspace: tab.workspace } : {}),
           ...('attachment' in tab ? { attachment: tab.attachment } : {}),
+          ...('origin' in tab ? { origin: tab.origin } : {}),
+          ...('keep' in tab ? { keep: tab.keep } : {}),
         }
       }),
     })

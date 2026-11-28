@@ -28,6 +28,8 @@ const CORE_TOOL_NAMES = [
   'tab_list',
   'tab_attach',
   'tab_detach',
+  'tab_mark',
+  'tab_unmark',
   'tab_new',
   'tab_select',
   'tab_close',
@@ -59,6 +61,8 @@ const KNOWN_TOOL_NAMES = [
   'workspace',
   'tab_attach',
   'tab_detach',
+  'tab_mark',
+  'tab_unmark',
   'tab_list',
   'target',
   'command_control',
@@ -117,7 +121,7 @@ function okResult(result: unknown): CommandResponse {
 }
 
 describe('AutobrowserMcpServer.listTools', () => {
-  test('exposes only the 20 core tools by default', () => {
+  test('exposes only the 22 core tools by default', () => {
     const server = new AutobrowserMcpServer({ requestCommand: async () => okResult({}) })
     const tools = server.listTools()
 
@@ -128,14 +132,14 @@ describe('AutobrowserMcpServer.listTools', () => {
     }
   })
 
-  test('exposes all 55 tools with object-typed input schemas when toolset is all', () => {
+  test('exposes all 57 tools with object-typed input schemas when toolset is all', () => {
     const server = new AutobrowserMcpServer({
       toolset: 'all',
       requestCommand: async () => okResult({}),
     })
     const tools = server.listTools()
 
-    expect(tools).toHaveLength(55)
+    expect(tools).toHaveLength(57)
     expect(tools.map((tool) => tool.name)).toEqual(KNOWN_TOOL_NAMES)
     for (const tool of tools) {
       expect(tool.inputSchema.type).toBe('object')
@@ -491,6 +495,34 @@ describe('AutobrowserMcpServer.callTool', () => {
     await server.callTool('tab_select', { handle: 't3' })
 
     expect(mock.calls).toEqual([{ command: 'tab.select', args: { handle: 't3' } }])
+  })
+
+  test('tab_mark and tab_unmark forward the keep mode without a tab target', async () => {
+    const mock = recordingRequestCommand(okResult({ marked: true }))
+    const server = new AutobrowserMcpServer({ requestCommand: mock })
+
+    await server.callTool('tab_mark', { handle: 't2', keep: 'deliverable', tab: 't2' })
+    await server.callTool('tab_mark', { handle: 't3', keep: 'handoff' })
+    await server.callTool('tab_unmark', { handle: 't2', tab: 't2' })
+
+    // mark/unmark 只操作本 workspace 已有的 attachment，不能借 tab 目标另开页面
+    expect(mock.calls).toEqual([
+      { command: 'tab.mark', args: { handle: 't2', mode: 'deliverable' } },
+      { command: 'tab.mark', args: { handle: 't3', mode: 'handoff' } },
+      { command: 'tab.unmark', args: { handle: 't2' } },
+    ])
+  })
+
+  test('workspace exposes the finish action next to release', async () => {
+    const mock = recordingRequestCommand(okResult({ success: true }))
+    const server = new AutobrowserMcpServer({ requestCommand: mock })
+
+    const workspaceTool = server.listTools().find((tool) => tool.name === 'workspace')!
+    expect(workspaceTool.inputSchema.properties?.action).toMatchObject({
+      enum: ['current', 'list', 'release', 'finish'],
+    })
+    await server.callTool('workspace', { action: 'finish' })
+    expect(mock.calls).toEqual([{ command: 'workspace', args: { action: 'finish' } }])
   })
 
   test('recovery control tools map target and command actions', async () => {

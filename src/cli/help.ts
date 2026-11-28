@@ -219,7 +219,7 @@ export const HELP_ROOT: HelpNode = helpNode(
     helpNode(
       'workspace',
       '在共享当前浏览器配置文件与登录状态的同时，隔离 AI 调用方的目标（Chromium 默认使用自动工作区）。',
-      'autobrowser workspace [current|list|release|groups] [workspace-id]',
+      'autobrowser workspace [current|list|release|groups|finish] [workspace-id]',
       [
         '对 Chromium 调用方默认启用工作区隔离；auto 会为每个调用方推导一个稳定的 id。优先级：--workspace、AUTOBROWSER_WORKSPACE，最后才是 auto。',
         '可用 --no-workspace 或 AUTOBROWSER_WORKSPACE=off（不区分大小写）关闭；--no-workspace 不能与 --workspace 同时使用。',
@@ -227,6 +227,8 @@ export const HELP_ROOT: HelpNode = helpNode(
         '没有指定目标时，页面命令会原子地占用一个空闲的已有标签页（优先活动标签页，其次按稳定的标签页顺序）；显式 --tab 指向未绑定标签时也会直接认领并设为当前目标。localhost 及其他可调试页面均可被占用。结果的 meta 会标记一次 autoAttached。',
         '使用 --no-auto-attach 可关闭自动认领，此时显式未绑定标签仍需先 tab attach。没有空闲标签页时，open 会创建一个；其他命令返回 WORKSPACE_TARGET_REQUIRED。',
         'release 只解除标签页的附着，不关闭、不重载、也不重置它们。',
+        'finish 是显式收尾，绝不自动执行：只关闭本工作区创建（origin=created）且没有交付/交接标记的普通临时页；借用的页面、标记为 deliverable/handoff 的页面，以及浏览器当前活动/前台标签全部保留并 detach。关闭失败的标签保留绑定供重试，结果 success=false。',
+        'finish 结束后工作区仍保留、默认目标清空，后续任务可继续使用；已不存在的标签记入 missingTabIds，不算失败。',
         'groups 是配置文件级的标签页分组显示开关（默认关闭），不是工作区操作：它不改变归属关系，并且在 --no-workspace 下同样有效。报告内容包含 enabled、available、groups 和 lastError。',
         'groups 开启时，每个工作区映射到一个 Chromium 标签页组，组名简短、颜色稳定；attach、auto-attach、tab new 以及已有附着都会加入该组。',
         'detach、release、租约过期以及 groups 关闭时，受管标签页会回到被 autobrowser 分组之前所在的组。用户手动移到别处的标签页不受影响；groupId 只是缓存，不是身份标识。',
@@ -239,6 +241,17 @@ export const HELP_ROOT: HelpNode = helpNode(
           'release',
           '释放工作区，不改变其页面。',
           'autobrowser workspace release [workspace-id]',
+        ),
+        helpNode(
+          'finish',
+          '显式收尾：只关闭本工作区创建的普通临时页，其余页面保留并 detach。',
+          'autobrowser workspace finish',
+          [
+            '保留规则：origin=attached 的借用页、tab mark 标记的 deliverable/handoff、以及浏览器当前活动/前台标签一律不关闭。',
+            '保留的标签会删除 attachment 并恢复进入前的标签组；工作区本身保留，targetTabId 置空，后续任务可继续。',
+            '结果包含 success、closed、closedTabIds、releasedTabIds、preserved（tabId/handle/reason）、missingTabIds、failedTabs 和 remainingTabIds。',
+            '已不存在的页面记入 missingTabIds，不算失败；关闭失败的页面保留 attachment 供重试，此时 success=false，不要当成全部收尾完成。',
+          ],
         ),
         helpNode(
           'groups',
@@ -254,7 +267,7 @@ export const HELP_ROOT: HelpNode = helpNode(
     helpNode(
       'tab',
       '管理标签页及工作区附着。',
-      'autobrowser tab <list|new|attach|detach|select|close>',
+      'autobrowser tab <list|new|attach|detach|select|close|mark|unmark>',
       undefined,
       [
         helpNode(
@@ -290,6 +303,22 @@ export const HELP_ROOT: HelpNode = helpNode(
           'close',
           '关闭当前标签页或指定标签页（用 `close all` 关闭全部标签页；工作区模式下 close all 仅关闭归属的标签页）。',
           'autobrowser tab close [tN]',
+        ),
+        helpNode(
+          'mark',
+          '给当前工作区拥有的标签页打交付/交接标记，收尾时会被保留而不是关闭。',
+          'autobrowser tab mark <tN> deliverable|handoff',
+          [
+            'deliverable 表示这是本次任务的产物；handoff 表示要交给后续调用方继续使用。',
+            '只能标记本工作区 owned 的标签页：其他工作区持有返回 TAB_BUSY，--readonly 附着返回 WORKSPACE_READONLY。',
+            '标记不会改变页面、不会 detach，也不会替你关闭任何标签；返回带 origin/keep 的 tab。',
+            'workspace finish 只关闭 origin=created 且没有标记的普通临时页。',
+          ],
+        ),
+        helpNode(
+          'unmark',
+          '清除标签页的交付/交接标记；归属限制与 tab mark 相同。',
+          'autobrowser tab unmark <tN>',
         ),
       ],
     ),

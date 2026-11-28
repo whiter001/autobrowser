@@ -825,4 +825,24 @@ describe('command specs', () => {
     )
     expect(() => validateCommandArgs('search', { query: '/foo/i' })).not.toThrow()
   })
+
+  test('validates tab mark modes and keeps mark/unmark off the tab-target surface', () => {
+    for (const mode of ['deliverable', 'handoff']) {
+      expect(() => validateCommandArgs('tab.mark', { handle: 't1', mode })).not.toThrow()
+    }
+    for (const mode of [undefined, '']) {
+      expect(() => validateCommandArgs('tab.mark', { handle: 't1', mode })).toThrow()
+    }
+    for (const mode of ['keep', 'DELIVERABLE']) {
+      expect(() => validateCommandArgs('tab.mark', { handle: 't1', mode })).toThrow(
+        'mode must be deliverable or handoff',
+      )
+    }
+    expect(() => validateCommandArgs('tab.unmark', { handle: 't2' })).not.toThrow()
+    // 两个命令只操作已有归属，不能像页面命令那样携带 tab 目标
+    expect(commandSupportsTabTarget('tab.mark')).toBe(false)
+    expect(commandSupportsTabTarget('tab.unmark')).toBe(false)
+    expect(commandSupportsFrameTarget('tab.mark')).toBe(false)
+    expect(getCommandSpec('tab.mark')).toBeUndefined()
+  })
 })
