@@ -168,6 +168,26 @@ export const ERROR_ACTIONS: Record<string, ErrorAction> = {
     action:
       'Fix the extract spec JSON: itemSelector plus fields:{name:{selector?, attr?, type?, required?}}; type must be one of text|string|number|boolean|url|html.',
   },
+  RECIPE_NOT_FOUND: {
+    retryable: false,
+    action:
+      "Run 'recipe list' to see saved recipes, or save one with 'recipe save <name> <spec.json>' before running it again.",
+  },
+  RECIPE_ALREADY_EXISTS: {
+    retryable: false,
+    action:
+      'Re-run with --force to overwrite the saved recipe, or choose a different recipe name; the existing file was left untouched.',
+  },
+  INVALID_RECIPE_SPEC: {
+    retryable: false,
+    action:
+      'Fix the recipe spec JSON: {name, description?, entryUrl (http/https), params:[{name,description,required?}], script (non-empty, <=256KiB), lastVerified? (ISO timestamp)}; name must be a lowercase slug matching the file name.',
+  },
+  RECIPE_ARGUMENTS_INVALID: {
+    retryable: false,
+    action:
+      "Pass every required parameter (non-empty) as --arg key=value or --args-json, or update the recipe's params declaration before retrying.",
+  },
   FIELD_REQUIRED_MISSING: {
     retryable: false,
     action:

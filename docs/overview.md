@@ -241,6 +241,36 @@ autobrowser extract ./spec.json --output items.jsonl
 - `quality` 含 `matchedCount`、`scannedCount`、`itemCount`、`invalidCount`、`missingFields`、有界 `errors`（最多 20 条，含 `rowIndex/field/code/message`）、`totalErrorCount` 和 `errorsTruncated`。
 - 空匹配是成功（`items: []`、`matchedCount: 0`）；`--dry-run` 不能与 `--output` 同用，相对路径按调用方 cwd 解析。
 
+## 可执行的命名配方（recipe）
+
+把反复使用的页面脚本保存成命名配方，之后运行并记录验证时间。该命令族目前只提供 CLI（不宣称 MCP 支持）：
+
+```bash
+autobrowser recipe save daily-check ./check.json          # 已存在时加 --force
+autobrowser recipe list                                   # 只回元数据
+autobrowser recipe show daily-check                       # 完整 spec（含脚本）
+autobrowser recipe run daily-check --arg user=alice       # 执行，不改 lastVerified
+autobrowser recipe verify daily-check --arg user=alice    # 执行成功才固化 lastVerified
+```
+
+```json
+{
+  "name": "daily-check",
+  "description": "读取当前账号的未读消息数",
+  "entryUrl": "https://example.com/messages",
+  "params": [{ "name": "user", "description": "account name", "required": true }],
+  "script": "return document.title",
+  "lastVerified": null
+}
+```
+
+- 配方存在当前 session 的 `homeDir/recipes/<name>.json`，命名 session 天然隔离。`name` 是安全 slug 且必须与 `spec.name` 一致；`entryUrl` 仅 HTTP(S)；`params` 最多 50 个且不重名；`script` 非空且 ≤256KiB；spec 文件 ≤1MiB。
+- 目录权限尽量 700，JSON 用 `writeJsonFile` 原子写入并采用 600；损坏文件或文件名与内容不一致报 `INVALID_RECIPE_SPEC`。
+- `run`/`verify` 都经现有 `eval` 执行脚本：当前标签页与 `entryUrl` 同源就复用页面状态，跨源才 `goto`；`--timeout-ms`（100..1800000）映射为 eval 超时。
+- `--arg key=value` 可重复、值恒为字符串；`--args-json` 传对象，字符串原样、非字符串 `JSON.stringify`；两者互斥、重复 key 报错。`required` 缺失或空字符串报 `RECIPE_ARGUMENTS_INVALID`；未声明参数会透传并在 `warnings` 说明。
+- `run` 返回 `{recipe:{name,entryUrl,lastVerified}, value, warnings}` 且不更新时间；`verify` 成功才写入当前 ISO 时间（`{verified:true,...}`），失败保留原错误码与 recipe 上下文、不写时间，并建议修复后重新 verify。推荐：保存 → run 验证 → verify 固化。
+- `script` 是受信任的 async function body（支持顶层 `return`/`await`），与 `run` 一样不做沙箱或静态安全检查；只运行自己保存的脚本。
+
 ## 构建与 link 流程（仓库开发者）
 
 以下命令只面向本仓库的开发者。使用 npm 全局安装的用户**不需要**执行其中任何一步：`npm i -g @whiter001/autobrowser` 之后，PATH 里就已经有 `autobrowser` 命令，随包发布的已构建扩展位于 `$(npm root -g)/@whiter001/autobrowser/chrome`（Windows 上同样用 `npm root -g` 定位），把它作为未打包扩展加载即可。

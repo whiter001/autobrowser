@@ -34,6 +34,7 @@
 - `screenshot [path] [--element <selector|@eN>] [--full]` — `--element` 会先把目标滚到视口中心并短暂等待懒加载图片 decode，不修改视口尺寸；超时后先用 `command status` 核验，不要重放
 - `eval` — 用 --arg <key=value>（可重复）或 --args-json '<json-object>'（二者互斥）向脚本注入局部变量 args；用 --offset/--limit 对字符串或数组结果分页，返回 { value, pagination }。目标停在 chrome-error:// 时返回 NAVIGATION_FAILED，不会执行脚本。
 - `run <file.js>`
+- `recipe save <name> <spec.json> [--force]` / `recipe list` / `recipe show <name>` / `recipe run <name> [--arg key=value ...|--args-json <object>] [--timeout-ms <100..1800000>]` / `recipe verify <name> ...` — 命名配方：保存 → run 验证 → verify 固化 lastVerified；存在当前 session 的 homeDir/recipes 目录，同源复用页面、跨源才 goto，script 是受信任的 async function body（CLI only）
 - `cdp`
 - `cookies`
 - `storage`

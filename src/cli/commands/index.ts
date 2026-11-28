@@ -30,6 +30,7 @@ const GROUP_LOADERS: Record<string, GroupLoader> = {
   media: () => import('./media.js').then((module) => module.mediaCommandRegistry),
   page: () => import('./page.js').then((module) => module.pageCommandRegistry),
   readpage: () => import('./read-page.js').then((module) => module.readPageCommandRegistry),
+  recipe: () => import('./recipe.js').then((module) => module.recipeCommandRegistry),
   server: () => import('./server.js').then((module) => module.serverCommandRegistry),
   skill: () => import('./skill.js').then((module) => module.skillCommandRegistry),
   state: () => import('./state.js').then((module) => module.stateCommandRegistry),
@@ -102,6 +103,7 @@ const COMMAND_GROUPS: Record<string, string[]> = {
     'pdf',
   ],
   readpage: ['read_page'],
+  recipe: ['recipe'],
   server: [
     'help',
     '--help',

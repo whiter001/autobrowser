@@ -18,6 +18,7 @@ const GROUP_REGISTRIES: Record<string, () => Promise<Record<string, unknown>>> =
   media: async () => (await import('../src/cli/commands/media.js')).mediaCommandRegistry,
   page: async () => (await import('../src/cli/commands/page.js')).pageCommandRegistry,
   readpage: async () => (await import('../src/cli/commands/read-page.js')).readPageCommandRegistry,
+  recipe: async () => (await import('../src/cli/commands/recipe.js')).recipeCommandRegistry,
   server: async () => (await import('../src/cli/commands/server.js')).serverCommandRegistry,
   skill: async () => (await import('../src/cli/commands/skill.js')).skillCommandRegistry,
   state: async () => (await import('../src/cli/commands/state.js')).stateCommandRegistry,

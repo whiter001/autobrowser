@@ -32,6 +32,16 @@
 - 空匹配是成功结果（`items: []`、`matchedCount: 0`），不要当成失败反复重跑；相对路径按调用方 cwd 解析，根级 `--tab`/`--frame` 同样生效。
 - 与 `feed`/`collect` 的分工：`extract` 处理当前页已经渲染出来的静态列表；需要滚动加载或翻页的流式内容用 `feed`/`collect`。
 
+## 可执行的命名配方（recipe）
+
+- 把反复使用的页面脚本存成命名配方：`recipe save <name> <spec.json>`（已存在需 `--force`）→ `recipe run <name>` 验证行为 → `recipe verify <name>` 固化验证时间。`recipe list` 只返回元数据，`recipe show <name>` 才返回完整脚本；该命令族目前只有 CLI，没有 MCP 工具。
+- spec 是 `{name, description?, entryUrl, params:[{name,description,required?}], script, lastVerified?}`。`name` 是安全 slug（小写字母/数字开头，只含小写字母、数字、`_`、`-`，≤64）且必须与 `spec.name` 一致；`entryUrl` 仅 HTTP(S)；`params` ≤50 且不重名；`script` 非空且 ≤256KiB；spec 文件 ≤1MiB。
+- 配方存在当前 session 的 `homeDir/recipes/<name>.json`（目录尽量 700，JSON 用 `writeJsonFile` 的原子写入与 600），命名 session 天然隔离；损坏文件、文件名与内容不一致都报 `INVALID_RECIPE_SPEC`，不会被静默忽略。
+- `run`/`verify` 通过现有 `eval` 执行 `script`，支持顶层 `return`/`await`。当前标签页与 `entryUrl` 同源时复用页面状态（登录、滚动位置等），跨源才用 `goto` 导航；`--timeout-ms` 取值 100..1800000 并映射为 eval 超时。
+- 参数两种写法互斥：`--arg key=value` 可重复、值始终是字符串；`--args-json` 传对象，字符串原样、非字符串 `JSON.stringify` 后作为字符串。`required` 缺失或为空字符串报 `RECIPE_ARGUMENTS_INVALID`；未声明参数不拒绝，但结果 `warnings` 会列出。
+- `run` 返回 `{recipe:{name,entryUrl,lastVerified}, value, warnings}` 且**不更新** `lastVerified`。`verify` 只有执行成功才写入当前 ISO 时间并返回 `{verified:true,...}`；失败保留原错误码、附带 recipe 上下文且不写时间，并提示修复后重新 verify。
+- `script` 是受信任的 async function body，不另做沙箱或静态安全检查（与 `run` 相同）；只运行自己保存的脚本。脚本或导航失败时保留原错误码，不要把它当成验证成功或静默改写配方。
+
 ## 长文与 PDF 读取（read_page）
 
 - `read_page` 面向“读正文”而不是“找元素”：它滚动扫描 DOM（或解析 PDF 文本层），把捕获到的全文分片返回。与 `snapshot`（可交互元素）、`search`（已加载文本里的查找）、`feed`（结构化卡片）分工不同。

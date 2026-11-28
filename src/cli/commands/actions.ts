@@ -71,6 +71,7 @@ export const COMMAND_ACTIONS = {
   server: { actions: ['stop', 'restart'] },
   downloads: { actions: ['list', 'clear'], defaultAction: 'list' },
   media: { actions: ['list'] },
+  recipe: { actions: ['save', 'list', 'show', 'run', 'verify'] },
   snapshot: { actions: ['export', 'extract'] },
   tracing: { actions: ['start', 'status', 'stop'] },
   video: { actions: ['status', 'start', 'chapter', 'show-actions', 'hide-actions', 'stop'] },

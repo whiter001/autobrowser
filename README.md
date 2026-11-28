@@ -738,6 +738,40 @@ autobrowser extract ./spec.json --output items.jsonl
 - `quality` 至少包含 `matchedCount`、`scannedCount`、`itemCount`、`invalidCount`、`missingFields`（每字段缺失次数）、`errors`（最多 20 条，含 `rowIndex/field/code/message`）、`totalErrorCount` 与 `errorsTruncated`。
 - 空匹配是成功结果（`items: []`、`matchedCount: 0`）；`--dry-run` 不能与 `--output` 同用。相对路径按调用方 cwd 解析，根级 `--tab`/`--frame`/`--workspace` 同样生效。
 
+### 可执行的命名配方（recipe）
+
+把一段反复使用的页面脚本保存成命名配方，之后按需运行并记录验证时间：
+
+```bash
+autobrowser recipe save daily-check ./check.json          # 已存在时加 --force
+autobrowser recipe list                                   # 只回元数据，不含脚本
+autobrowser recipe show daily-check                       # 主动读取完整脚本
+autobrowser recipe run daily-check --arg user=alice       # 只执行，不改验证时间
+autobrowser recipe verify daily-check --arg user=alice    # 真实执行，成功后固化 lastVerified
+```
+
+spec 是 JSON：
+
+```json
+{
+  "name": "daily-check",
+  "description": "读取当前账号的未读消息数",
+  "entryUrl": "https://example.com/messages",
+  "params": [
+    { "name": "user", "description": "account name", "required": true }
+  ],
+  "script": "const row = document.querySelector('[data-user=\"' + args.user + '\"]')\nreturn row ? row.textContent.trim() : null",
+  "lastVerified": null
+}
+```
+
+- 配方保存在当前 session 的 `homeDir/recipes/<name>.json`：命名 session 天然隔离。`name` 是安全 slug（小写字母或数字开头，只含小写字母、数字、`_`、`-`，最长 64），必须与 `spec.name` 一致；`entryUrl` 仅 HTTP(S)；`params` 最多 50 个且不能重名；`script` 非空且 ≤256KiB；spec 文件 ≤1MiB。
+- 目录权限尽量收紧为 700，JSON 通过 `writeJsonFile` 原子写入并使用 600 权限；损坏的 spec 或文件名/内容不一致会返回 `INVALID_RECIPE_SPEC`，`list` 不会静默跳过。
+- `run` 与 `verify` 都通过现有 `eval` 执行 `script`：当前标签页与 `entryUrl` **同源**时复用页面状态（登录、滚动位置等），跨源才用 `goto` 导航。`--timeout-ms` 直接映射到 eval 超时（100..1800000 毫秒）。
+- 参数两种写法互斥：`--arg key=value` 可重复且值始终是字符串；`--args-json` 传对象，字符串原样、非字符串 `JSON.stringify` 后作为字符串注入。`required` 参数缺失或为空字符串报 `RECIPE_ARGUMENTS_INVALID`；未声明参数不拒绝，但结果 `warnings` 会明确列出。
+- `run` 返回 `{recipe:{name,entryUrl,lastVerified}, value, warnings}`，**不更新** `lastVerified`；`verify` 同样真实执行，只有成功才写入当前 ISO 时间并返回 `{verified:true, ...}`，失败保留原错误码和 recipe 上下文、不写时间，并提示修复后重新 verify。推荐流程：保存 → `run` 验证行为 → `verify` 固化验证时间。
+- `script` 是受信任的 async function body（支持顶层 `return`/`await`），与 `run` 一样不做额外沙箱或静态检查；只运行自己保存的脚本。该命令族目前只提供 CLI，不宣称 MCP 支持。
+
 ### 数据导出
 
 ```bash

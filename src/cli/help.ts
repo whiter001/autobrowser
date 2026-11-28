@@ -523,6 +523,52 @@ export const HELP_ROOT: HelpNode = helpNode(
       ],
     ),
     helpNode(
+      'recipe',
+      '保存、运行并验证可复用的命名脚本配方（CLI 命令，暂不提供 MCP 工具）。',
+      'autobrowser recipe <save|list|show|run|verify> ...',
+      [
+        '配方保存在当前 session 的 homeDir/recipes/<name>.json，命名 session 天然隔离。',
+        'spec：{name, description?, entryUrl, params:[{name,description,required?}], script, lastVerified?}；entryUrl 仅 HTTP(S)，params 最多 50 个且不能重名，script 非空且 ≤256KiB，spec 文件 ≤1MiB。',
+        'script 是受信任的 async function body，支持顶层 return/await，与 eval 一样不另做沙箱；只运行自己保存的脚本。',
+      ],
+      [
+        helpNode(
+          'save',
+          '校验 spec 并保存为命名配方；已存在时必须显式 --force。',
+          'autobrowser recipe save <name> <spec.json> [--force]',
+          [
+            'name 必须是安全 slug：小写字母或数字开头，只含小写字母、数字、_、-，最长 64；必须与 spec.name 一致。',
+            'lastVerified 由工具维护：可选传入合法 ISO 时间并保留，非法值拒绝保存；新 spec 通常为 null。',
+            '目录权限尽量收紧为 700，JSON 使用 writeJsonFile 的原子写入与 600 权限。',
+          ],
+        ),
+        helpNode('list', '列出已保存配方的元数据（不含脚本）。', 'autobrowser recipe list', [
+          '返回 name/description/entryUrl/params/lastVerified；脚本内容需显式 show。',
+        ]),
+        helpNode('show', '输出一份配方的完整 spec，包括脚本。', 'autobrowser recipe show <name>'),
+        helpNode(
+          'run',
+          '按当前页面状态执行配方脚本，不更新 lastVerified。',
+          'autobrowser recipe run <name> [--arg key=value ...|--args-json <object>] [--timeout-ms <100..1800000>]',
+          [
+            '当前标签页与 entryUrl 同源时直接复用页面状态（登录、滚动位置等）；跨源才用 goto 导航到 entryUrl。',
+            '--arg 可重复，值始终是字符串；--args-json 传对象，字符串原样、非字符串 JSON.stringify；两种形式互斥，重复 key 报错。',
+            'required 参数缺失或为空字符串返回 RECIPE_ARGUMENTS_INVALID；未声明参数不拒绝，但会在 warnings 中列出。',
+            '返回 {recipe:{name,entryUrl,lastVerified}, value, warnings}；脚本或导航失败保留原错误码，并附 recipe 上下文。',
+          ],
+        ),
+        helpNode(
+          'verify',
+          '真实执行配方，成功后才把 lastVerified 固化为当前 ISO 时间。',
+          'autobrowser recipe verify <name> [--arg key=value ...|--args-json <object>] [--timeout-ms <100..1800000>]',
+          [
+            '只有脚本执行成功才写入 lastVerified 并返回 {verified:true,...}；失败不写时间，错误里提示修复后重新 verify。',
+            '保存 → run 验证行为 → verify 固化验证时间；run 永远不会修改 lastVerified。',
+          ],
+        ),
+      ],
+    ),
+    helpNode(
       'extract',
       '按 spec 从当前页面静态提取结构化记录，返回质量报告或写出 JSONL。',
       'autobrowser extract <spec.json> [--output <file.jsonl>] [--dry-run] [--limit <1..10000>]',
