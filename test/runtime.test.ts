@@ -614,6 +614,32 @@ describe('runtime snapshot', () => {
     expect(runtime.snapshot().extensionConnected).toBe(false)
   })
 
+  test('reports extensionConnected only while the socket is open', async () => {
+    const homeDir = await mkdtemp(path.join(os.tmpdir(), 'autobrowser-runtime-test-'))
+    tempDirs.push(homeDir)
+
+    const runtime = await createTestRuntime({ homeDir })
+    const socket = {
+      readyState: WebSocket.CONNECTING,
+      send: () => 1,
+      close: () => {},
+    } as unknown as Bun.ServerWebSocket<{ extensionId?: string | null; userAgent?: string | null }>
+
+    runtime.attachExtension(socket)
+    expect(runtime.snapshot().extensionConnected).toBe(false)
+
+    ;(socket as { readyState: number }).readyState = WebSocket.OPEN
+    expect(runtime.snapshot().extensionConnected).toBe(true)
+
+    for (const state of [WebSocket.CONNECTING, WebSocket.CLOSING, WebSocket.CLOSED]) {
+      ;(socket as { readyState: number }).readyState = state
+      expect(runtime.snapshot().extensionConnected).toBe(false)
+    }
+
+    runtime.detachExtension(socket)
+    expect(runtime.snapshot().extensionConnected).toBe(false)
+  })
+
   test('notifies the displaced socket before closing it on re-attach', async () => {
     const homeDir = await mkdtemp(path.join(os.tmpdir(), 'autobrowser-runtime-test-'))
     tempDirs.push(homeDir)

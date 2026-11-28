@@ -802,7 +802,7 @@ export async function createRuntime(options: RuntimeOptions = {}): Promise<Runti
       ipcPort,
       startedAt: runtime.startedAt,
       snapshot,
-      extensionConnected: Boolean(runtime.extensionSocket),
+      extensionConnected: runtime.extensionSocket?.readyState === WebSocket.OPEN,
     }),
   }
 }
