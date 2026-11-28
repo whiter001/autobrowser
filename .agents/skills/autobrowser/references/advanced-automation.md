@@ -12,7 +12,25 @@
 - 默认 `dedupe=url` 优先按链接去重，无链接卡片自动回退到 author/handle/text，避免虚拟列表重复交付；需要强制正文去重或允许重复时显式选 text/none。
 - 采集期间不要导航或刷新。page epoch 变化会返回 `STALE_FEED_STATE` 并丢弃旧结果，应在当前页面重新采集，不要把旧卡片与新页面拼接。
 - 长任务用 `collect run <spec.json>` 将 feed 或 network-first 流程一次执行并输出 JSONL。network spec 需要 `urlPattern/itemsPath`，可选 `nextPath` 跟随真实响应游标；没有匹配数据返回 `NETWORK_DATA_NOT_FOUND`，先检查请求链，不要伪造 DOM 结果。
-- 每页完成后会原子更新 JSONL 和 checkpoint。失败根据提示运行 `collect resume <checkpoint.json>`，从失败页继续并按内容去重；完成态 resume 是 no-op。结果可能含敏感页面数据，妥善保管输出文件，checkpoint 不保存 cookie/token。
+- 输出是追加式 JSONL，checkpoint 是 version 2 的小文件（`spec/status/nextUrl/nextPage/failures/itemCount`，不含条目数组）：每页只追加新条目，不重写整个输出，翻页成本与已有数据量无关。
+- `collect resume <checkpoint.json>` 会用 node stream 流式扫描一遍输出 JSONL，重建去重集合与 `itemCount`，既不把整个文件读进内存也不重写输出；从失败页继续并按内容去重，完成态 resume 是 no-op。
+- 崩溃窗口（条目已追加、checkpoint 还没推进）：resume 会重抓该页，并按已落盘内容跳过重复条目后正常推进，不会产生重复行。
+- 输出末尾若残留上次崩溃留下的半行 JSON，resume 只截掉这段残片、保留有效前缀，并在结果与 checkpoint 的 `warnings` 里说明；最后一行是合法 JSON 但缺换行时，追加前会先补换行，不会把两条记录粘连。
+- 中间出现损坏的 JSON 记录会报 `COLLECT_OUTPUT_CORRUPT` 且不推进 checkpoint；输出文件缺失但 checkpoint 已记录条目时报 `COLLECT_OUTPUT_MISSING`，不要从零重跑，先把输出文件找回来。
+- 旧的 version 1 checkpoint 在 resume 时会一次性迁移成 version 2（以 `checkpoint.items` 为权威重写输出，`_meta` 与 `failures` 原样保留），之后只追加。
+- `feed` 模式的 `nextSelector` 翻页：点击前先捕获列表签名（可见节点数 + 前几个节点的文本/href/几何），点击后等待签名变化；同步替换整列表也能立刻判定成功，不要依赖 `wait new`（它的基线建立得太晚，同步替换会永远等不到变化）。签名读不到（选择器没匹配到可见卡片）会报错并停在当前页，resume 后重试。
+- 失败根据提示运行 `collect resume <checkpoint.json>`。结果可能含敏感页面数据，妥善保管输出文件，checkpoint 不保存 cookie/token。
+
+## 静态结构化提取（extract）
+
+- 根级 `extract` 按 spec 从当前页面静态提取一维记录：`autobrowser extract ./spec.json`。只读 DOM，spec 内容以数据形式注入，不会被当成代码执行。
+- spec 是 `{itemSelector, fields:{name:{selector?, attr?, type?, required?}}, limit?}`：`itemSelector` 选中每个条目根节点，`fields` 定义要取的字段名与取法。
+- 取值规则：`selector` 省略时在条目根元素上取值，`attr` 读属性，`type` 取 `text|string|number|boolean|url|html`（默认 `text`），`url` 基于 `document.baseURI` 转绝对地址。
+- `required` 字段缺失或类型非法（`number/boolean/url`）会让整行作废；可选字段缺失或非法写 `null` 并计入 `missingFields`。
+- `--dry-run` 默认只取前 5 条且不能与 `--output` 同用，显式 `--limit` 覆盖 dry-run 条数与 spec 里的 `limit`；`--output items.jsonl` 只把有效 items 写成 JSONL。
+- 无 `--output` 时返回 `items` 与 `quality`；`quality` 含 `matchedCount`、`scannedCount`、`itemCount`、`invalidCount`、`missingFields`、有界 `errors`（含 `rowIndex/field/code/message`）、`totalErrorCount`、`errorsTruncated`——先看 quality 再决定是放宽 selector 还是换字段取法。
+- 空匹配是成功结果（`items: []`、`matchedCount: 0`），不要当成失败反复重跑；相对路径按调用方 cwd 解析，根级 `--tab`/`--frame` 同样生效。
+- 与 `feed`/`collect` 的分工：`extract` 处理当前页已经渲染出来的静态列表；需要滚动加载或翻页的流式内容用 `feed`/`collect`。
 
 ## SPA 列表与文本采集
 

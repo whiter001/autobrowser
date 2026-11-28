@@ -647,7 +647,45 @@ autobrowser collect resume ./spec.json     # 从失败页继续，按内容去�
 - YouTube（`youtube.com`/`youtu.be`）：`author` 取频道名、`handle` 取指向 `/@name` 的频道链接、`time` 只从元信息行取可靠的相对时间或明确日期（取不到就是 `null`，不会从描述正文里猜日期），频道链接里的图片算头像、普通的视频缩略图仍算正文媒体。
 - B 站（`bilibili.com` 及其子域，页面存在 `.bili-video-card` 或 `.bpx-player-primary-area` 时启用）：`author` 取 `.bili-video-card__info--owner` 的第一个非空行（空头像图标不算作者），`time` 只从卡片日期区域取（取不到就是 `null`，不会从描述里猜日期），`url` 只认 BV 视频链接，`authorUrl` 是 `space.bilibili.com/<uid>`；B 站没有 handle 概念，`handle` 为 `null`，不会伪造 `@handle`。`cm.bilibili.com` 跟踪链接或明确的“广告”标记会让 `promoted` 为 `true`，跟踪链接只进 `trackingUrl`；只有广告链接没有 BV 时 `url` 为 `null`，去重回退到作者+正文，不会拿超长跟踪 URL 当身份。
 
-`collect` 的 spec 是 JSON：`{name, mode: "feed"|"network", startUrl?, output, maxPages?, feed?, network?}`。`feed` 模式用 `feed.selector/limit/dedupe/maxScrolls/pauseMs/stallRounds/nextSelector/waitTimeoutMs`；`network` 模式用 `network.urlPattern/itemsPath` 和可选的 `nextPath` 跟随真实响应游标。每完成一页就原子更新输出 JSONL 和 checkpoint，失败时按提示 `collect resume`；checkpoint 不含 cookie 或 token。该命令当前只支持 Chromium 扩展通道。
+`collect` 的 spec 是 JSON：`{name, mode: "feed"|"network", startUrl?, output, maxPages?, feed?, network?}`。`feed` 模式用 `feed.selector/limit/dedupe/maxScrolls/pauseMs/stallRounds/nextSelector/waitTimeoutMs`；`network` 模式用 `network.urlPattern/itemsPath` 和可选的 `nextPath` 跟随真实响应游标。该命令当前只支持 Chromium 扩展通道。
+
+采集的落盘协议是 version 2：输出是**追加式 JSONL**，每页只把新条目追加到文件末尾；checkpoint 只保留 `spec`/`status`/`nextUrl`/`nextPage`/`failures`/`itemCount`，不再保存条目数组，所以翻页成本与已有数据量无关：
+
+- `collect resume` 会用 node stream **流式扫描**一遍输出 JSONL，重建去重集合和 `itemCount`；不会把整个文件读进内存，也不会重写输出。
+- **崩溃窗口**：条目已经追加进文件、但 checkpoint 还没推进时崩溃，resume 会重抓那一页，并按已落盘内容跳过重复条目后正常推进。
+- **末尾半行**：输出末尾若残留上次崩溃留下的半行 JSON，resume 会只截掉这段残片、保留有效前缀，并在结果与 checkpoint 的 `warnings` 里说明；最后一行是合法 JSON 但缺换行时，追加前会先补换行，不会把两条记录粘连。
+- **损坏与丢失**：中间出现损坏的 JSON 记录会报 `COLLECT_OUTPUT_CORRUPT` 且不推进 checkpoint；输出文件缺失但 checkpoint 已记录条目时报 `COLLECT_OUTPUT_MISSING`；输出的有效记录比 checkpoint 记录的条目数少时报 `COLLECT_OUTPUT_TRUNCATED`（文件被截短或丢了记录），同样不会静默缩小区重基线。checkpoint 本身损坏（例如 version 2 缺少 `itemCount`）时报 `INVALID_COLLECT_CHECKPOINT`，不会替你猜默认值。
+- **v1 迁移**：旧的 version 1 checkpoint 在 resume 时会一次性迁移成 version 2——以 `checkpoint.items` 为权威重写输出文件（`_meta` 与 `failures` 原样保留），之后只追加；version 1 的完成态 resume 仍是 no-op，按 `items.length` 返回条目数。
+- 失败会记录 `failures`、置 `status=failed` 并给出 `suggestedAction`；checkpoint 不含 cookie 或 token。
+
+### 结构化字段提取（extract）
+
+`extract` 用一份 JSON spec 把当前页面的列表静态提取成一维记录，只读 DOM，不执行 spec 里的任何代码：
+
+```json
+{
+  "itemSelector": "li.item",
+  "fields": {
+    "title": { "selector": "h3", "required": true },
+    "price": { "selector": ".price", "type": "number" },
+    "detail": { "selector": "a.more", "attr": "href", "type": "url" },
+    "stock": { "selector": ".stock", "type": "boolean" },
+    "card": { "type": "html" }
+  },
+  "limit": 100
+}
+```
+
+```bash
+autobrowser extract ./spec.json --dry-run          # 默认只取前 5 条，--limit 可覆盖
+autobrowser extract ./spec.json --output items.jsonl
+```
+
+- `type` 取 `text|string|number|boolean|url|html`，默认 `text`；`selector` 省略时在 item 根元素上取值，`attr` 存在时读属性，`html` 读 `outerHTML`，`url` 基于 `document.baseURI` 转绝对地址。
+- 可选字段缺失写 `null`，同时计入 `missingFields`；`required` 字段缺失或类型非法（`number/boolean/url`）会让该行不进入 `items`，可选字段类型非法同样只写 `null`。
+- 无 `--output` 时返回 `items` 与 `quality`；有 `--output` 时只把有效 items 写成 JSONL，stdout 只返回 `path`、`itemCount` 和 `quality` 摘要。
+- `quality` 至少包含 `matchedCount`、`scannedCount`、`itemCount`、`invalidCount`、`missingFields`（每字段缺失次数）、`errors`（最多 20 条，含 `rowIndex/field/code/message`）、`totalErrorCount` 与 `errorsTruncated`。
+- 空匹配是成功结果（`items: []`、`matchedCount: 0`）；`--dry-run` 不能与 `--output` 同用。相对路径按调用方 cwd 解析，根级 `--tab`/`--frame`/`--workspace` 同样生效。
 
 ### 数据导出
 

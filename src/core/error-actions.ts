@@ -58,6 +58,31 @@ export const ERROR_ACTIONS: Record<string, ErrorAction> = {
     action:
       "Use the checkpoint in the response with 'collect resume <checkpoint.json>' instead of restarting from the first page.",
   },
+  COLLECT_OUTPUT_CORRUPT: {
+    retryable: false,
+    action:
+      "Repair or remove the malformed JSONL record in the collect output file, then run 'collect resume <checkpoint.json>' again; the checkpoint was not advanced.",
+  },
+  COLLECT_OUTPUT_MISSING: {
+    retryable: false,
+    action:
+      'Restore the collect output file, or start a new collect run; resuming without it would silently restart from zero and lose the deduplication baseline.',
+  },
+  COLLECT_OUTPUT_TRUNCATED: {
+    retryable: false,
+    action:
+      'The collect output file holds fewer records than the checkpoint; restore it from a backup, or start a new collect run, instead of resuming with a shorter output.',
+  },
+  COLLECT_FEED_SIGNATURE_UNAVAILABLE: {
+    retryable: false,
+    action:
+      'The feed selector matched no visible card, so the pagination baseline could not be captured; fix feed.selector, then run collect resume again.',
+  },
+  INVALID_COLLECT_CHECKPOINT: {
+    retryable: false,
+    action:
+      'Fix the collect checkpoint JSON (version, spec, status, nextUrl, nextPage, itemCount), or start a new collect run; do not guess the missing fields.',
+  },
   COMMAND_CANCELLED: {
     retryable: false,
     action:
@@ -117,6 +142,21 @@ export const ERROR_ACTIONS: Record<string, ErrorAction> = {
   INVALID_DEVICE_PRESET: {
     retryable: false,
     action: "Use a documented device preset, or 'set device --reset' to clear overrides.",
+  },
+  INVALID_EXTRACT_SPEC: {
+    retryable: false,
+    action:
+      'Fix the extract spec JSON: itemSelector plus fields:{name:{selector?, attr?, type?, required?}}; type must be one of text|string|number|boolean|url|html.',
+  },
+  FIELD_REQUIRED_MISSING: {
+    retryable: false,
+    action:
+      "The required field was empty on that row: relax 'required' in the spec, or fix the field selector so it matches the rendered markup.",
+  },
+  FIELD_TYPE_INVALID: {
+    retryable: false,
+    action:
+      "The value did not match the field type: fix the selector/attr, or set the field type to 'text' to keep the raw value.",
   },
   MODAL_OPEN: {
     retryable: false,

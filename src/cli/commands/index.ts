@@ -25,6 +25,7 @@ const GROUP_LOADERS: Record<string, GroupLoader> = {
   diagnostics: () => import('./diagnostics.js').then((module) => module.diagnosticsCommandRegistry),
   elements: () => import('./elements.js').then((module) => module.elementCommandRegistry),
   extension: () => import('./extension.js').then((module) => module.extensionCommandRegistry),
+  extract: () => import('./extract.js').then((module) => module.extractCommandRegistry),
   fillform: () => import('./fillform.js').then((module) => module.fillFormCommandRegistry),
   media: () => import('./media.js').then((module) => module.mediaCommandRegistry),
   page: () => import('./page.js').then((module) => module.pageCommandRegistry),
@@ -70,6 +71,7 @@ const COMMAND_GROUPS: Record<string, string[]> = {
     'scrollintoview',
   ],
   extension: ['extension'],
+  extract: ['extract'],
   fillform: ['fillform'],
   media: ['download', 'media'],
   page: [

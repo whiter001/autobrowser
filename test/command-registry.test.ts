@@ -13,6 +13,7 @@ const GROUP_REGISTRIES: Record<string, () => Promise<Record<string, unknown>>> =
   elements: async () => (await import('../src/cli/commands/elements.js')).elementCommandRegistry,
   extension: async () =>
     (await import('../src/cli/commands/extension.js')).extensionCommandRegistry,
+  extract: async () => (await import('../src/cli/commands/extract.js')).extractCommandRegistry,
   fillform: async () => (await import('../src/cli/commands/fillform.js')).fillFormCommandRegistry,
   media: async () => (await import('../src/cli/commands/media.js')).mediaCommandRegistry,
   page: async () => (await import('../src/cli/commands/page.js')).pageCommandRegistry,

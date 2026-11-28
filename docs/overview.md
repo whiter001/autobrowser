@@ -181,9 +181,41 @@ autobrowser feed collect 'article' --limit 50 --dedupe url --max-scrolls 20
 
 - `mode` 为 `feed` 时用 `feed.selector/limit/dedupe/maxScrolls/pauseMs/stallRounds/nextSelector/waitTimeoutMs`；为 `network` 时用 `network.urlPattern/itemsPath` 和可选的 `nextPath`（跟随真实响应里的游标）。
 - `collect run ./spec.json` 开始跑，`collect resume ./spec.json` 从失败页继续并按内容去重，完成态 resume 是 no-op。
-- 每完成一页就原子更新输出 JSONL 和 checkpoint；失败会带上失败页和原因，结果里带 `suggestedAction`。
-- checkpoint 不保存 cookie 或 token，但输出文件可能包含页面敏感数据，妥善保管。
+- 落盘协议是 version 2：输出是追加式 JSONL，每页只追加新条目；checkpoint 只保留 `spec`/`status`/`nextUrl`/`nextPage`/`failures`/`itemCount`，不含条目数组。
+- `resume` 用 node stream 流式扫描一遍输出 JSONL 来重建去重集合与 `itemCount`，不会把整个文件读进内存，也不重写输出。
+- 崩溃窗口（条目已落盘、checkpoint 未推进）会重抓该页并跳过重复条目；末尾半行残片会被截掉并给出 warning，合法但缺换行的末行会先补换行再追加。
+- 中间损坏的记录报 `COLLECT_OUTPUT_CORRUPT` 且不推进 checkpoint；输出缺失且 `itemCount>0` 报 `COLLECT_OUTPUT_MISSING`；输出的有效记录少于 checkpoint 记录的条目数（文件被截短或丢记录）报 `COLLECT_OUTPUT_TRUNCATED`；checkpoint 自身字段非法（如 version 2 缺 `itemCount`）报 `INVALID_COLLECT_CHECKPOINT`。
+- 旧的 version 1 checkpoint 在 resume 时一次性迁移成 version 2（以 `checkpoint.items` 为准重写输出），之后只追加。
+- 失败会带上失败页和原因，结果里带 `suggestedAction`；checkpoint 不保存 cookie 或 token，但输出文件可能包含页面敏感数据，妥善保管。
 - 没有匹配到数据时返回 `NETWORK_DATA_NOT_FOUND`，先检查请求链、`urlPattern` 和 `itemsPath`，不要伪造 DOM 结果；`collect` 当前只支持 Chromium 扩展通道。
+
+## 结构化字段提取（extract）
+
+列表页需要稳定的一维记录时，用根级 `extract` 配合 JSON spec：
+
+```json
+{
+  "itemSelector": "li.item",
+  "fields": {
+    "title": { "selector": "h3", "required": true },
+    "price": { "selector": ".price", "type": "number" },
+    "detail": { "selector": "a.more", "attr": "href", "type": "url" }
+  },
+  "limit": 50
+}
+```
+
+```bash
+autobrowser extract ./spec.json --dry-run      # 默认只取前 5 条，--limit 覆盖
+autobrowser extract ./spec.json --output items.jsonl
+```
+
+- 只读取 DOM：selector、attr 等以数据形式经 eval 的 `args` 注入，spec 内容不会拼进脚本，也不会执行。
+- `type` 取 `text|string|number|boolean|url|html`，默认 `text`；`selector` 省略时在 item 根元素上取值，`attr` 读属性，`html` 读 `outerHTML`，`url` 基于 `document.baseURI` 转绝对地址。
+- 可选字段缺失写 `null` 并计入 `missingFields`；`required` 字段缺失或类型非法（`number/boolean/url`）会让整行作废，可选字段类型非法只写 `null`。
+- 无 `--output` 时返回 `items` 与 `quality`；有 `--output` 时只写有效 items 的 JSONL，stdout 只含 `path`、`itemCount` 与 `quality`。
+- `quality` 含 `matchedCount`、`scannedCount`、`itemCount`、`invalidCount`、`missingFields`、有界 `errors`（最多 20 条，含 `rowIndex/field/code/message`）、`totalErrorCount` 和 `errorsTruncated`。
+- 空匹配是成功（`items: []`、`matchedCount: 0`）；`--dry-run` 不能与 `--output` 同用，相对路径按调用方 cwd 解析。
 
 ## 构建与 link 流程（仓库开发者）
 

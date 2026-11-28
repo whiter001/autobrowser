@@ -1,4 +1,6 @@
-interface FeedCollectSpec {
+import { createHash } from 'node:crypto'
+
+export interface FeedCollectSpec {
   selector?: string
   limit?: number
   dedupe?: 'url' | 'text' | 'none'
@@ -9,13 +11,13 @@ interface FeedCollectSpec {
   waitTimeoutMs?: number
 }
 
-interface NetworkCollectSpec {
+export interface NetworkCollectSpec {
   urlPattern: string
   itemsPath: string
   nextPath?: string
 }
 
-interface CollectSpec {
+export interface CollectSpec {
   name: string
   mode: 'feed' | 'network'
   startUrl?: string
@@ -38,7 +40,7 @@ export interface CollectItem extends Record<string, unknown> {
   _meta: CollectItemMeta
 }
 
-interface CollectFailure {
+export interface CollectFailure {
   at: string
   page: number
   sourceUrl: string
@@ -46,15 +48,36 @@ interface CollectFailure {
   code: string
 }
 
-export interface CollectCheckpoint {
-  version: 1
+export type CollectStatus = 'running' | 'completed' | 'failed'
+
+interface CollectCheckpointBase {
   spec: CollectSpec
-  status: 'running' | 'completed' | 'failed'
+  status: CollectStatus
   nextUrl: string
   nextPage: number
-  items: CollectItem[]
   failures: CollectFailure[]
 }
+
+/**
+ * v1 检查点：全部条目都存在 checkpoint 里，每翻一页就要整份重写 checkpoint 与输出文件。
+ * 只用于识别旧 checkpoint 并做一次性迁移，新任务不再产出这种结构。
+ */
+export interface CollectCheckpointV1 extends CollectCheckpointBase {
+  version: 1
+  items: CollectItem[]
+}
+
+/**
+ * v2 检查点：条目只写进输出 JSONL，checkpoint 只保留游标、计数与失败记录。
+ * 追加式输出让每页的落盘成本与已有数据量无关，checkpoint 也始终保持很小。
+ */
+export interface CollectCheckpointV2 extends CollectCheckpointBase {
+  version: 2
+  itemCount: number
+  warnings?: string[]
+}
+
+export type CollectCheckpoint = CollectCheckpointV1 | CollectCheckpointV2
 
 /**
  * 判断值是否是普通对象。collect 的输入来自用户提供的 JSON，需要先收窄再取字段。
@@ -94,6 +117,16 @@ export function collectItemKey(item: Record<string, unknown>): string {
   const { _meta, ...data } = item
   void _meta
   return JSON.stringify(data)
+}
+
+/**
+ * 生成条目去重指纹：对剔除 _meta 后的内容做 SHA-256。
+ *
+ * 运行期只保留这些指纹，条目本身只存在于输出 JSONL 里；
+ * 指纹长度固定，条目再多也不会把 checkpoint 或内存里的键集合撑大。
+ */
+export function collectItemHash(item: Record<string, unknown>): string {
+  return createHash('sha256').update(collectItemKey(item)).digest('hex')
 }
 
 /**
