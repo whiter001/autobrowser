@@ -86,6 +86,12 @@ autobrowser find text "Pricing" click
 autobrowser find label "Email" fill "agent@example.com"
 ```
 
+对依赖 trusted 事件、或经常被浮层/骨架屏挡住的目标，用 `click --verify-delivery`（MCP `verify_delivery`、batch `args.verifyDelivery`）：它先等目标可见、启用、在视口内、未被遮挡且几何稳定，再在按下前安装捕获阶段探针，确认 `isTrusted` 的 `pointerdown`/`mousedown` 确实落在目标上。成功结果多出 `delivery:{status:"delivered",trusted:true,events:[...]}`；失败按阶段报 `CLICK_NOT_READY` / `CLICK_NOT_DELIVERED` / `CLICK_DELIVERY_UNKNOWN`，且不会在发出输入后回退 DOM 点击或盲目重放。`delivery` 只证明输入到达目标，不证明业务提交成功；默认不开启时 click 行为与耗时保持原样。`--timeout-ms <ms>`（MCP `timeout_ms`）可调整总预算（默认 10000，上限 1800000），ready 阶段取它与 5000ms 的较小值。
+
+```bash
+autobrowser click '#submit' --verify-delivery
+```
+
 当你需要把 snapshot 数据导出给下游处理时，可以使用 `snapshot export` 导出完整的 JSONL 流，或者用 `snapshot extract` 搭配 `--field` 选择更窄的记录。对于网络跟踪，`network export` 会写出 JSONL 摘要，通常比完整 HAR 更方便 diff。
 
 要读长页面正文（文章、报告、PDF），用 `read_page`：

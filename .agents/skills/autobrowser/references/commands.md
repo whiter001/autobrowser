@@ -19,6 +19,7 @@
 - `window new`
 - `frame <@fN|selector|top>` — 选择持续有效，直到下一次 `frame` 或页面导航/重载；`snapshot`/`find` 返回的元素 ref 会记录来源 frame，后续省略 `--frame` 的操作按来源路由，显式 `--frame` 仍优先。跨 iframe 连续操作建议显式 `--frame top` / `--frame <selector>` 或重新 `snapshot`。
 - `click` / `dblclick` / `fill` / `find` / `type` / `press` / `keyboard` / `hover` / `focus` / `select` / `check` / `uncheck` / `scroll` / `scrollintoview` / `drag` / `drop` / `upload`
+- `click [--verify-delivery|--timeout-ms <ms>]` — 先等可见/启用/视口内/未遮挡/几何稳定的 ready，再装捕获探针确认 trusted pointerdown/mousedown 落在目标上；成功多出 delivery:{status:"delivered",trusted:true,events:[...]}，失败为 CLICK_NOT_READY / CLICK_NOT_DELIVERED / CLICK_DELIVERY_UNKNOWN（details.delivery 带证据）。--timeout-ms 调整总预算（默认 10000，上限 1800000），ready 阶段取它与 5000ms 较小值。只证明输入送达，不证明业务提交成功；验证路径不做 DOM 回退，默认关闭时 click 行为不变
 - `press <key>` 只接受一个键名（例如 Enter），不接受 selector 位置参数；先 `click` / `focus <selector>` 聚焦目标，否则按键发给当前焦点元素
 - `mousemove` / `mousedown` / `mouseup` / `mousewheel`
 - `locator` / `highlight`

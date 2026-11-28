@@ -515,6 +515,8 @@ export function createCommandHandlers({
       context,
       // 调用方打算接管新标签时才愿意为"onCreated 晚到"多等一小段
       readBooleanArg(scope.args, 'followNewTab', false),
+      // 显式要求送达验证时才准备 ready/装探针；默认路径完全不变
+      readBooleanArg(scope.args, 'verifyDelivery', false),
     )
   })
   register(['dblclick'], async ({ scope, context }) => {

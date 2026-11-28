@@ -12,6 +12,28 @@ import type { ElementActionResult, ElementBox, PageInputContext } from './page-i
 import { createElementNotFoundError } from './page-input-helpers.js'
 import { isDeadlineExceeded } from './operation-context.js'
 import type { createNavigationCommands } from './page-input-navigation.js'
+import {
+  CLICK_DELIVERY_RELEASE_SETTLE_MS,
+  CLICK_DELIVERY_SETTLE_MS,
+  CLICK_READY_MAX_WAIT_MS,
+  CLICK_READY_POLL_INTERVAL_MS,
+  attachDeliveryToError,
+  buildClickDeliveryCleanupSource,
+  buildClickDeliveryProbeSource,
+  buildClickDeliveryReportSource,
+  buildClickReadinessSource,
+  createClickDeliveryUnknownError,
+  createClickNotDeliveredError,
+  createClickNotReadyError,
+  type ClickBlockerInfo,
+  type ClickDeliveryProbeInstallResult,
+  type ClickDeliveryProbeReport,
+  type ClickDeliverySummary,
+  type ClickDeliverySuccess,
+  type ClickPoint,
+  type ClickReadinessResult,
+  type ClickRect,
+} from './page-input-click-delivery.js'
 
 // 鼠标相关命令：坐标测量、点击/双击/悬停、拖拽、坐标移动与拖放数据投递。
 // 坐标测量与导航等待都来自共享的 navigation 模块，避免重复实现
@@ -136,6 +158,105 @@ function clickDownloadEvidence(
   }
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
+}
+
+function readRect(value: unknown): ClickRect | null {
+  if (!isRecord(value)) return null
+  const { x, y, width, height } = value
+  if (![x, y, width, height].every((item) => typeof item === 'number' && Number.isFinite(item))) {
+    return null
+  }
+  return { x: x as number, y: y as number, width: width as number, height: height as number }
+}
+
+function readPoint(value: unknown): ClickPoint | null {
+  if (!isRecord(value)) return null
+  const { x, y } = value
+  if (typeof x !== 'number' || typeof y !== 'number') return null
+  if (!Number.isFinite(x) || !Number.isFinite(y)) return null
+  return { x, y }
+}
+
+function readBlocker(value: unknown): ClickBlockerInfo | null {
+  if (!isRecord(value)) return null
+  return {
+    tag: typeof value.tag === 'string' ? value.tag : 'unknown',
+    id: typeof value.id === 'string' ? value.id : null,
+    className: typeof value.className === 'string' ? value.className : null,
+    text: typeof value.text === 'string' ? value.text : null,
+  }
+}
+
+function normalizeReadiness(value: unknown): ClickReadinessResult {
+  if (!isRecord(value)) return { ready: false, reason: 'evaluation_failed' }
+  return {
+    ready: value.ready === true,
+    reason: typeof value.reason === 'string' ? value.reason : 'unknown',
+    rect: readRect(value.rect),
+    center: readPoint(value.center),
+    blocker: readBlocker(value.blocker),
+  }
+}
+
+function normalizeProbeInstall(value: unknown): ClickDeliveryProbeInstallResult {
+  if (!isRecord(value)) return { found: false, installed: false }
+  return {
+    found: value.found === true,
+    installed: value.installed === true,
+    center: readPoint(value.center),
+  }
+}
+
+function normalizeProbeReport(value: unknown): ClickDeliveryProbeReport {
+  if (!isRecord(value)) {
+    return {
+      found: false,
+      installed: false,
+      delivered: false,
+      blocked: null,
+      blockedEvent: null,
+      events: [],
+      center: null,
+    }
+  }
+  return {
+    found: value.found === true,
+    installed: value.installed === true,
+    delivered: value.delivered === true,
+    blocked: readBlocker(value.blocked),
+    blockedEvent: typeof value.blockedEvent === 'string' ? value.blockedEvent : null,
+    events: Array.isArray(value.events)
+      ? value.events.filter((item): item is string => typeof item === 'string')
+      : [],
+    center: readPoint(value.center),
+  }
+}
+
+/** 几何稳定判定：亚像素抖动（0.5px 内）不算移动，避免动画收尾阶段永远不稳定 */
+function rectStable(previous: ClickRect, next: ClickRect): boolean {
+  return (
+    Math.abs(previous.x - next.x) < 0.5 &&
+    Math.abs(previous.y - next.y) < 0.5 &&
+    Math.abs(previous.width - next.width) < 0.5 &&
+    Math.abs(previous.height - next.height) < 0.5
+  )
+}
+
+function centersMatch(box: ElementBox, center: ClickPoint): boolean {
+  return Math.abs(box.x - center.x) <= 1 && Math.abs(box.y - center.y) <= 1
+}
+
+function describeCdpError(error: unknown): Record<string, unknown> {
+  if (!(error instanceof Error)) return { message: String(error) }
+  const code = (error as { code?: unknown }).code
+  return {
+    message: error.message,
+    ...(typeof code === 'string' ? { code } : {}),
+  }
+}
+
 /**
  * 创建指针类命令：鼠标移动、按下抬起、滚轮与拖拽。
  */
@@ -219,10 +340,9 @@ export function createPointerCommands(
     return { ...value, x: value.x + frame.left + border.left, y: value.y + frame.top + border.top }
   }
 
-  async function dispatchMouseClick(
+  async function dispatchMouseMove(
     tabId: number,
     box: ElementBox,
-    clickCount: number,
     context?: CommandExecutionContext,
   ): Promise<void> {
     // 先移动再按下，并显式维护 buttons 位掩码；部分 Chromium 会丢掉没有前置移动或按键状态的点击。
@@ -241,6 +361,14 @@ export function createPointerCommands(
       },
       context,
     )
+  }
+
+  async function dispatchMousePress(
+    tabId: number,
+    box: ElementBox,
+    clickCount: number,
+    context?: CommandExecutionContext,
+  ): Promise<void> {
     context?.throwIfCancelled()
     await sendDebuggerCommand(
       tabId,
@@ -256,6 +384,14 @@ export function createPointerCommands(
       },
       context,
     )
+  }
+
+  async function dispatchMouseRelease(
+    tabId: number,
+    box: ElementBox,
+    clickCount: number,
+  ): Promise<void> {
+    // 释放不传 context：收尾动作必须发出，不能因为取消把按键状态留在页面里
     await sendDebuggerCommand(tabId, 'Input.dispatchMouseEvent', {
       type: 'mouseReleased',
       x: box.x,
@@ -265,6 +401,17 @@ export function createPointerCommands(
       clickCount,
       pointerType: 'mouse',
     })
+  }
+
+  async function dispatchMouseClick(
+    tabId: number,
+    box: ElementBox,
+    clickCount: number,
+    context?: CommandExecutionContext,
+  ): Promise<void> {
+    await dispatchMouseMove(tabId, box, context)
+    await dispatchMousePress(tabId, box, clickCount, context)
+    await dispatchMouseRelease(tabId, box, clickCount)
   }
 
   async function observeClickTarget(
@@ -359,6 +506,278 @@ export function createPointerCommands(
     return null
   }
 
+  /**
+   * 等待目标真正可点：可见、启用、在视口内、未被遮挡，且几何连续两次一致。
+   * 预算取 click 的 timeoutMs 与 CLICK_READY_MAX_WAIT_MS 的较小值；没发出输入，
+   * 所以失败时只抛 CLICK_NOT_READY，不会触发任何 DOM 点击回退。
+   */
+  async function waitForClickReadiness(
+    tabId: number,
+    selector: string,
+    resolvedSelector: string,
+    evaluateOptions: Record<string, unknown>,
+    timeoutMs: number,
+    context?: CommandExecutionContext,
+  ): Promise<void> {
+    const budget = Math.max(1, Math.min(timeoutMs, CLICK_READY_MAX_WAIT_MS))
+    const deadline = Date.now() + budget
+    const source = buildClickReadinessSource(resolvedSelector)
+    let previousRect: ClickRect | null = null
+    let last: ClickReadinessResult = { ready: false, reason: 'not_found' }
+
+    for (;;) {
+      context?.throwIfCancelled()
+      let value: unknown
+      try {
+        value = (await evaluateInTabContext(tabId, source, evaluateOptions)).value
+      } catch (error) {
+        // 等待期间页面导航会销毁执行上下文；此时没有发出任何输入，按 ready 失败报告
+        if ((error as { code?: unknown }).code !== 'EVAL_CONTEXT_DESTROYED') throw error
+        throw createClickNotReadyError(selector, {
+          status: 'not_ready',
+          reason: 'page_changed',
+          events: [],
+          blocker: null,
+          error: describeCdpError(error),
+          waitedMs: budget,
+        })
+      }
+      last = normalizeReadiness(value)
+      if (last.ready && last.rect) {
+        if (previousRect && rectStable(previousRect, last.rect)) {
+          return
+        }
+        previousRect = last.rect
+      } else {
+        // 几何不稳定或不可见时重新开始计数，避免用"上一次可见"的矩形误判稳定
+        previousRect = null
+      }
+      if (Date.now() >= deadline) {
+        const reason = last.ready ? 'unstable' : last.reason
+        throw createClickNotReadyError(selector, {
+          status: 'not_ready',
+          reason,
+          events: [],
+          blocker: last.blocker ?? null,
+          waitedMs: budget,
+          ...(last.rect ? { rect: last.rect } : {}),
+        })
+      }
+      await sleep(Math.max(1, Math.min(CLICK_READY_POLL_INTERVAL_MS, deadline - Date.now())))
+    }
+  }
+
+  /**
+   * 读取探针证据。输入已经发出，读取本身没有副作用，因此不传 commandContext：
+   * 即使命令已被取消，也要尽量把"是否送达"的既成事实读回来。
+   */
+  async function readDeliveryReport(
+    tabId: number,
+    evaluateOptions: Record<string, unknown>,
+    settleMs: number,
+  ): Promise<ClickDeliveryProbeReport | null> {
+    const source = buildClickDeliveryReportSource()
+    const deadline = Date.now() + Math.max(0, settleMs)
+    let last: ClickDeliveryProbeReport | null = null
+    for (;;) {
+      try {
+        const { value } = await evaluateInTabContext(tabId, source, evaluateOptions)
+        last = normalizeProbeReport(value)
+      } catch {
+        // 页面在点击后导航/关闭时旧执行上下文会消失；此前读到的证据仍然有效
+        return last
+      }
+      if (last.delivered || last.blocked) return last
+      if (Date.now() >= deadline) return last
+      await sleep(Math.min(20, Math.max(1, deadline - Date.now())))
+    }
+  }
+
+  async function cleanupDeliveryProbe(
+    tabId: number,
+    evaluateOptions: Record<string, unknown>,
+  ): Promise<void> {
+    try {
+      await evaluateInTabContext(tabId, buildClickDeliveryCleanupSource(), evaluateOptions)
+    } catch {
+      // 导航/关闭会连带销毁页面全局，探针不会残留
+    }
+  }
+
+  function mergeDeliveryReports(
+    first: ClickDeliveryProbeReport | null,
+    second: ClickDeliveryProbeReport | null,
+  ): {
+    delivered: boolean
+    blocked: ClickBlockerInfo | null
+    blockedEvent: string | null
+    events: string[]
+  } {
+    const events: string[] = []
+    for (const report of [first, second]) {
+      for (const event of report?.events ?? []) {
+        if (!events.includes(event)) events.push(event)
+      }
+    }
+    return {
+      delivered: first?.delivered === true || second?.delivered === true,
+      blocked: first?.blocked ?? second?.blocked ?? null,
+      blockedEvent: first?.blockedEvent ?? second?.blockedEvent ?? null,
+      events,
+    }
+  }
+
+  /**
+   * verify-delivery 路径：ready → 布探针 → trusted CDP 输入 → 用探针证据判定送达。
+   * 这条路径禁止 DOM fallback；只要发生过输入，就不再重放任何 DOM click。
+   */
+  async function performVerifiedClick(
+    tabId: number,
+    selector: string,
+    resolvedSelector: string,
+    frameSelector: FrameSelector,
+    timeoutMs: number,
+    context?: CommandExecutionContext,
+    onBeforeInput?: () => Promise<void>,
+  ): Promise<{ delivery: ClickDeliverySuccess; downloadHint: boolean; downloadUrl?: string }> {
+    const tab = await getTargetTab(tabId)
+    const effectiveFrame = resolveEffectiveFrameSelector(state, tab, frameSelector)
+    const frameTarget = effectiveFrame || 'top'
+    const readinessOptions = withFrameSelectorOptions(frameTarget, { commandContext: context })
+    const inspectOptions = withFrameSelectorOptions(frameTarget, {})
+
+    // 与默认路径一致：先滚动到视口再判断 ready；目标不存在时由 readiness 给出具体 reason
+    await getElementBox(tabId, selector, frameSelector, true, context)
+    await waitForClickReadiness(
+      tabId,
+      selector,
+      resolvedSelector,
+      readinessOptions,
+      timeoutMs,
+      context,
+    )
+
+    let box: ElementBox | null = null
+    let probe: ClickDeliveryProbeInstallResult | null = null
+    let aligned = false
+    // iframe 的坐标是全局坐标，不能和页面内 center 直接比较；比较只在主文档有意义
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      context?.throwIfCancelled()
+      box = await getElementBox(tabId, selector, frameSelector, 'none', context)
+      if (!box) break
+      const { value } = await evaluateInTabContext<ClickDeliveryProbeInstallResult>(
+        tabId,
+        buildClickDeliveryProbeSource(resolvedSelector),
+        inspectOptions,
+      )
+      probe = normalizeProbeInstall(value)
+      if (!probe.installed) break
+      if (effectiveFrame) {
+        aligned = true
+        break
+      }
+      if (probe.center && centersMatch(box, probe.center)) {
+        aligned = true
+        break
+      }
+      // ready 之后布局又动了：重新测量并重装探针，避免按旧坐标输入
+      await sleep(20)
+    }
+
+    if (!box) {
+      // 极少数情况下目标在拿到探针后消失：安装过的监听必须清掉再报错
+      if (probe?.installed) await cleanupDeliveryProbe(tabId, inspectOptions)
+      throw createClickNotReadyError(selector, {
+        status: 'not_ready',
+        reason: 'detached',
+        events: [],
+        blocker: null,
+      })
+    }
+    if (!probe?.installed) {
+      throw createClickNotReadyError(selector, {
+        status: 'not_ready',
+        reason: 'not_found',
+        events: [],
+        blocker: null,
+      })
+    }
+    if (!aligned) {
+      // 坐标与探针中心对不上，说明 ready 之后目标仍在移动：清掉探针并宁可不发输入
+      await cleanupDeliveryProbe(tabId, inspectOptions)
+      throw createClickNotReadyError(selector, {
+        status: 'not_ready',
+        reason: 'unstable',
+        events: [],
+        blocker: null,
+        dispatchedAt: null,
+      })
+    }
+
+    let cdpError: unknown = null
+    const send = async (action: () => Promise<void>) => {
+      try {
+        await action()
+      } catch (error) {
+        if (cdpError === null) cdpError = error
+      }
+    }
+
+    // ready 可能等了几秒：导航/新标签的基线要在真正发输入前重捕，
+    // 否则等待期间页面自己的导航会被误算成这次点击的产物
+    await onBeforeInput?.()
+
+    // 移动与按下分开：按下后立刻取一次证据，页面即使随即导航也能保留 trusted 按下记录
+    await send(() => dispatchMouseMove(tabId, box, context))
+    await send(() => dispatchMousePress(tabId, box, 1, context))
+    const pressedReport = await readDeliveryReport(tabId, inspectOptions, CLICK_DELIVERY_SETTLE_MS)
+    await send(() => dispatchMouseRelease(tabId, box, 1))
+    const releasedReport = await readDeliveryReport(
+      tabId,
+      inspectOptions,
+      CLICK_DELIVERY_RELEASE_SETTLE_MS,
+    )
+    await cleanupDeliveryProbe(tabId, inspectOptions)
+
+    const evidence = mergeDeliveryReports(pressedReport, releasedReport)
+    const delivery: ClickDeliverySuccess = {
+      status: 'delivered',
+      trusted: true,
+      events: evidence.events,
+    }
+    if (evidence.delivered) {
+      // 证据确认已投递，但 CDP 回执可能丢失；原错误必须冒泡，同时附上送达事实
+      if (cdpError !== null) {
+        throw attachDeliveryToError(cdpError, {
+          ...delivery,
+          reason: 'delivered',
+          blocker: null,
+          dispatchedAt: { x: box.x, y: box.y },
+        })
+      }
+      return { delivery, downloadHint: box.downloadHint === true, downloadUrl: box.downloadUrl }
+    }
+
+    const summary: ClickDeliverySummary = {
+      status: evidence.blocked ? 'not_delivered' : 'unknown',
+      reason: evidence.blocked
+        ? 'blocked'
+        : cdpError !== null
+          ? 'no_evidence_after_cdp_error'
+          : 'no_evidence',
+      events: evidence.events,
+      blocker: evidence.blocked,
+      dispatchedAt: { x: box.x, y: box.y },
+      probeCenter: probe.center ?? null,
+      ...(evidence.blockedEvent ? { blockedEvent: evidence.blockedEvent } : {}),
+      ...(cdpError !== null ? { cdpError: describeCdpError(cdpError) } : {}),
+    }
+    if (evidence.blocked) {
+      throw createClickNotDeliveredError(selector, summary)
+    }
+    throw createClickDeliveryUnknownError(selector, summary)
+  }
+
   async function clickSelector(
     tabId: TabInput,
     selector: string,
@@ -366,47 +785,80 @@ export function createPointerCommands(
     timeoutMs = 10000,
     context?: CommandExecutionContext,
     followNewTab = false,
+    verifyDelivery = false,
   ) {
     const { tab, resolvedSelector } = await resolveElementSelectorForTab(tabId, selector)
-    const beforeEpoch = getPageEpoch(state, tab.id)
-    const beforeUrl = tab.url
-    const previousDownloads = new Set(state.session.downloads.map((item) => item.id))
-    const previousRequests = new Set<unknown>(state.network.requests)
+    let beforeEpoch = getPageEpoch(state, tab.id)
+    let beforeUrl = tab.url
+    let previousDownloads = new Set(state.session.downloads.map((item) => item.id))
+    let previousRequests = new Set<unknown>(state.network.requests)
     // 点击开始时间：新标签必须在它之后创建才算这次点击的产物
-    const clickStartedAt = Date.now()
+    let clickStartedAt = Date.now()
 
-    // CDP 优先：先 scrollIntoView 并取元素中心坐标，走 trusted 的 Input.dispatchMouseEvent；
-    // 依赖 isTrusted 的页面（表单校验/统计埋点等）必须由真实输入事件触发
-    const boxResult = await getElementBox(tab.id, selector, frameSelector, true, context)
-    let downloadHint = boxResult?.downloadHint === true
-    let downloadUrl = boxResult?.downloadUrl
+    // verify 路径要等 ready；等待期间页面可能自行导航或开标签，
+    // 真正发输入前重捕基线，避免把等待期的副作用算到这次点击上
+    const captureClickBaseline = async () => {
+      beforeEpoch = getPageEpoch(state, tab.id)
+      try {
+        beforeUrl = (await getTargetTab(tab.id)).url || beforeUrl
+      } catch {
+        // tab 已关闭时保留原 URL；后续导航判断会按 epoch 变化处理
+      }
+      previousDownloads = new Set(state.session.downloads.map((item) => item.id))
+      previousRequests = new Set<unknown>(state.network.requests)
+      clickStartedAt = Date.now()
+    }
 
+    let downloadHint: boolean
+    let downloadUrl: string | undefined
     let domFallback = false
-    if (boxResult) {
-      await observeClickTarget(tab.id, resolvedSelector, frameSelector, context)
-      let cdpError: unknown = null
-      try {
-        await dispatchMouseClick(tab.id, boxResult, 1, context)
-      } catch (error) {
-        if (!isDeadlineExceeded(error)) throw error
-        cdpError = error
-      }
-      let observed
-      try {
-        observed = await finishObservedClick(tab.id, resolvedSelector, frameSelector, context)
-      } catch (error) {
-        if (cdpError) throw cdpError
-        throw error
-      }
-      // 已收到任一鼠标事件就不能再 DOM click；即使 CDP 回执丢失，也只能报告原错误。
-      if (cdpError && (!observed?.found || observed.events.length > 0)) throw cdpError
-      domFallback = observed?.domClicked === true
-    } else {
-      // 坐标拿不到（display:none 等不可见元素）时回退到页面内 node.click()
-      context?.throwIfCancelled()
-      const { value: jsResult } = await evaluateInTabContext<ElementActionResult>(
+    let delivery: ClickDeliverySuccess | null = null
+
+    if (verifyDelivery) {
+      // verify 路径自己完成 ready/探针/输入，绝不回退到页面内 node.click()
+      const verified = await performVerifiedClick(
         tab.id,
-        `(() => {
+        selector,
+        resolvedSelector,
+        frameSelector,
+        timeoutMs,
+        context,
+        captureClickBaseline,
+      )
+      downloadHint = verified.downloadHint
+      downloadUrl = verified.downloadUrl
+      delivery = verified.delivery
+    } else {
+      // CDP 优先：先 scrollIntoView 并取元素中心坐标，走 trusted 的 Input.dispatchMouseEvent；
+      // 依赖 isTrusted 的页面（表单校验/统计埋点等）必须由真实输入事件触发
+      const boxResult = await getElementBox(tab.id, selector, frameSelector, true, context)
+      downloadHint = boxResult?.downloadHint === true
+      downloadUrl = boxResult?.downloadUrl
+      if (boxResult) {
+        await observeClickTarget(tab.id, resolvedSelector, frameSelector, context)
+        let cdpError: unknown = null
+        try {
+          await dispatchMouseClick(tab.id, boxResult, 1, context)
+        } catch (error) {
+          if (!isDeadlineExceeded(error)) throw error
+          cdpError = error
+        }
+        let observed
+        try {
+          observed = await finishObservedClick(tab.id, resolvedSelector, frameSelector, context)
+        } catch (error) {
+          if (cdpError) throw cdpError
+          throw error
+        }
+        // 已收到任一鼠标事件就不能再 DOM click；即使 CDP 回执丢失，也只能报告原错误。
+        if (cdpError && (!observed?.found || observed.events.length > 0)) throw cdpError
+        domFallback = observed?.domClicked === true
+      } else {
+        // 坐标拿不到（display:none 等不可见元素）时回退到页面内 node.click()
+        context?.throwIfCancelled()
+        const { value: jsResult } = await evaluateInTabContext<ElementActionResult>(
+          tab.id,
+          `(() => {
           const node = deepQuerySelector(document, ${JSON.stringify(resolvedSelector)});
           if (!node) return { found: false };
           const downloadHint = node.hasAttribute('download') || (typeof node.href === 'string' && /\\/dl(?:\\/|$)|\\.(epub|mobi|pdf|zip|rar|7z|mp3|mp4)(?:$|[?#])/i.test(node.href));
@@ -414,14 +866,15 @@ export function createPointerCommands(
           node.click();
           return { found: true, downloadHint, downloadUrl, selector: ${JSON.stringify(selector)} };
         })()`,
-        withFrameSelectorOptions(frameSelector, { commandContext: context }),
-      )
+          withFrameSelectorOptions(frameSelector, { commandContext: context }),
+        )
 
-      if (!jsResult?.found) {
-        throw createElementNotFoundError(selector)
+        if (!jsResult?.found) {
+          throw createElementNotFoundError(selector)
+        }
+        downloadHint ||= jsResult.downloadHint === true
+        downloadUrl ||= typeof jsResult.downloadUrl === 'string' ? jsResult.downloadUrl : undefined
       }
-      downloadHint ||= jsResult.downloadHint === true
-      downloadUrl ||= typeof jsResult.downloadUrl === 'string' ? jsResult.downloadUrl : undefined
     }
 
     // 点击可能触发导航（链接/表单提交），两条路径统一在这里检测并等待页面稳定
@@ -476,6 +929,7 @@ export function createPointerCommands(
         found: true,
         selector,
         ...(domFallback ? { domFallback: true } : {}),
+        ...(delivery ? { delivery } : {}),
         navigatedToUrl: currentUrl,
         settled: settle.settled,
         ...(settle.settled ? {} : { settleReason: settle.settleReason || 'page did not settle' }),
@@ -487,6 +941,7 @@ export function createPointerCommands(
       found: true,
       selector,
       ...(domFallback ? { domFallback: true } : {}),
+      ...(delivery ? { delivery } : {}),
       ...newTabEvidence,
       ...downloadEvidence,
     }

@@ -270,6 +270,31 @@ describe('WebDriver engine adapter', () => {
     })
   })
 
+  test('returns BROWSER_CAPABILITY_UNSUPPORTED for click --verify-delivery', async () => {
+    await withTempHome(async (home) => {
+      const mock = createDriverMock()
+      const handler = createWebDriverCommandHandler({
+        engine: 'webkit',
+        driverUrl: 'http://127.0.0.1:4723',
+        homeDir: home,
+        fetchImpl: mock.fetchImpl,
+      })
+
+      const response = await handler('click', { selector: '#save', verifyDelivery: true })
+
+      expect(response.ok).toBe(false)
+      expect(response.error?.code).toBe('BROWSER_CAPABILITY_UNSUPPORTED')
+      expect(response.error?.message).toContain('trusted-event observation')
+      // 能力拒绝发生在驱动调用之前，不能假装点过
+      expect(mock.requests.some((request) => request.url.endsWith('/click'))).toBe(false)
+
+      // 未要求验证时仍走原有 WebDriver 原生点击；timeoutMs 不影响该路径
+      const plain = await handler('click', { selector: '#save', timeoutMs: 2500 })
+      expect(plain.ok).toBe(true)
+      expect(mock.requests.some((request) => request.url.endsWith('/click'))).toBe(true)
+    })
+  })
+
   test('returns real driver-shaped snapshot, storage, cookies and PNG screenshot results', async () => {
     await withTempHome(async (home) => {
       const mock = createDriverMock({

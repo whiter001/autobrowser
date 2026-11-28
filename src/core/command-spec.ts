@@ -623,6 +623,8 @@ function validateCommandArgsShape(command: string, args: unknown): void {
         // 显式跟随新标签的意图标记：扩展侧只负责识别并报告新标签，
         // 真正接管由 CLI 的 --follow-new-tab 完成（复用 tab attach）。
         readBooleanField(normalizedArgs, 'followNewTab', command)
+        // 送达验证：扩展侧会先等 ready、再装 trusted 事件探针，默认关闭
+        readBooleanField(normalizedArgs, 'verifyDelivery', command)
       }
       return
     case 'scroll':

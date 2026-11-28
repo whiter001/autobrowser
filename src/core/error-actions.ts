@@ -38,6 +38,21 @@ export const ERROR_ACTIONS: Record<string, ErrorAction> = {
     action:
       'Use a Chromium target or a command the current engine supports; capability rejection is not transient.',
   },
+  CLICK_NOT_READY: {
+    retryable: true,
+    action:
+      'No mouse input was sent. Read details.delivery.reason (not_found, detached, disabled, not_visible, out_of_view, obstructed, unstable, page_changed), fix that condition, then retry; do not bypass readiness with a DOM click.',
+  },
+  CLICK_NOT_DELIVERED: {
+    retryable: false,
+    action:
+      'The trusted pointer event landed on details.delivery.blocker instead of the target and was suppressed. Remove the covering element or target the correct element, then retry; autobrowser will not replay via DOM node.click().',
+  },
+  CLICK_DELIVERY_UNKNOWN: {
+    retryable: false,
+    action:
+      "Mouse input was dispatched but no trusted pointerdown/mousedown proof was captured. Check 'status', 'command list' and the current page before deciding; never replay the click blindly.",
+  },
   CLI_ERROR: {
     retryable: false,
     action:

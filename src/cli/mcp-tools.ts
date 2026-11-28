@@ -366,11 +366,35 @@ export const MCP_TOOLS: McpToolDefinition[] = [
     },
     toArgs: findToArgs,
   },
-  selectorOnlyTool(
-    'click',
-    'Click an element. Accepts a CSS selector or an @eN element ref from snapshot. If the click triggers a navigation, waits for the page to settle and reports navigatedToUrl/settled.',
-    'click',
-  ),
+  {
+    name: 'click',
+    description:
+      'Click a CSS selector or @eN ref; verify_delivery proves trusted input delivery and adds delivery evidence.',
+    command: 'click',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        selector: {
+          type: 'string',
+          description: 'CSS selector or @eN ref.',
+        },
+        verify_delivery: {
+          type: 'boolean',
+          description: 'Confirm trusted input delivery.',
+        },
+        timeout_ms: {
+          type: 'number',
+          description: 'Click budget in ms (default 10000).',
+        },
+      },
+      required: ['selector'],
+    },
+    toArgs: (args) => ({
+      selector: args.selector,
+      ...(args.verify_delivery === undefined ? {} : { verifyDelivery: args.verify_delivery }),
+      ...(args.timeout_ms === undefined ? {} : { timeoutMs: args.timeout_ms }),
+    }),
+  },
   selectorOnlyTool(
     'dblclick',
     'Double-click an element. Accepts a CSS selector or an @eN element ref from snapshot.',

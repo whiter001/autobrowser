@@ -492,6 +492,24 @@ autobrowser click '#new-tab'                    # 只报告 newTabId / newTabHan
 autobrowser click '#new-tab' --follow-new-tab   # 显式跟随：把当前目标切到新标签
 ```
 
+`click --verify-delivery`（MCP `verify_delivery`、batch `args.verifyDelivery`）在发出输入前后做一次可信送达验证，适合依赖 `isTrusted` 事件、或点击经常被遮挡/错位的场景：
+
+```bash
+autobrowser click '#submit' --verify-delivery
+autobrowser click '#new-tab' --follow-new-tab --verify-delivery
+autobrowser click '#submit' --verify-delivery --timeout-ms 2000
+```
+
+开启后扩展会先等待目标 ready：`isConnected`、非 disabled/aria-disabled/inert、可见、中心点在视口内、几何连续两次一致，并且 `elementFromPoint` + composed 路径证明未被遮挡。`--timeout-ms <ms>` 可调整总预算（默认沿用现有 click 的 10000ms，范围 1..1800000）；ready 阶段取它与 5000ms 的较小值，点击后的导航等待仍用同一预算。随后在 `mousePressed` 前安装捕获阶段探针，只接受 `isTrusted` 且坐标与目标中心一致的 `pointerdown`/`mousedown`/`mouseup`/`click`，并用 `composedPath()` 确认事件确实到达目标（含 shadow host 的合理回退）。
+
+成功时结果在原有字段上增加 `delivery: { status: "delivered", trusted: true, events: [...] }`，`clicked`/`newTab*`/下载/导航/`--follow-new-tab` 行为不变：
+
+- ready 失败、尚未发出任何输入 → `CLICK_NOT_READY`，`details.delivery.reason` 给出 `not_found`/`detached`/`disabled`/`not_visible`/`out_of_view`/`obstructed`/`unstable` 及 `blocker`。
+- 探针确认 trusted 事件落在其他元素上 → `CLICK_NOT_DELIVERED`，错误目标的事件会被 `preventDefault` + `stopImmediatePropagation` 拦截，`details.delivery.blocker` 指出实际接收者。
+- 输入已经发出但没有 trusted 按下证据（包括 CDP 回执丢失、页面随即导航/关闭）→ `CLICK_DELIVERY_UNKNOWN`。
+
+`delivery` 只证明 trusted 输入到达目标，不证明业务提交、接口请求或表单校验成功。验证路径禁止 DOM `node.click()` 回退；发生过副作用后也绝不会重放点击。默认不加该选项时行为、耗时和原有 DOM 回退完全不变。WebDriver（Firefox/Safari）适配器没有 CDP 事件探针，`verifyDelivery=true` 会返回 `BROWSER_CAPABILITY_UNSUPPORTED`。
+
 `search` 命令对页面可见文本做全文检索：按行匹配并返回命中行及上下文窗口，适合“抓取页面数据”而不是定位元素：
 
 ```bash

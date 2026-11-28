@@ -217,6 +217,14 @@ export function createWebDriverCommandHandler({
           return { ok: true, result }
         }
         case 'click': {
+          if (args.verifyDelivery === true) {
+            // WebDriver 适配器没有 CDP 事件探针，给不出 trusted 送达证据：明确拒绝而不是假装验证过
+            return unsupported(
+              engine,
+              command,
+              'click --verify-delivery needs CDP trusted-event observation, which the WebDriver adapter does not provide; run with --engine chromium',
+            )
+          }
           const elementId = await findElement(String(args.selector))
           await client.call('POST', (id) => `/session/${id}/element/${elementId}/click`, {})
           return { ok: true, result: { clicked: true, selector: args.selector } }

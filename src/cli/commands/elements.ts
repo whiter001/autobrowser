@@ -1,5 +1,6 @@
 import { readFile, stat } from 'node:fs/promises'
 import path from 'node:path'
+import { MAX_REQUEST_TIMEOUT_MS } from '../../core/command-budget.js'
 import { DROP_MAX_FILE_BYTES, DROP_MAX_TOTAL_BYTES } from '../../core/command-spec.js'
 import { isRecord } from '../client.js'
 import { CLI_ERROR_CODES, CliUsageError } from '../cli-error.js'
@@ -18,17 +19,24 @@ import type { CommandContext, CommandRegistry } from './types.js'
 
 /** 显式跟随新标签的开关：默认只报告新标签，不改变当前目标 */
 const FOLLOW_NEW_TAB_FLAG = '--follow-new-tab'
+/** 送达验证开关：默认 false，保证现有 click 行为与耗时完全不变 */
+const VERIFY_DELIVERY_FLAG = '--verify-delivery'
+/** click 的总预算选项：同时约束 ready 等待（封顶 5000ms）和点击后的导航等待 */
+const TIMEOUT_MS_FLAG = '--timeout-ms'
 
 export interface ClickArgs {
   selector: string
   followNewTab: boolean
+  verifyDelivery: boolean
+  /** 未传时保持扩展侧现有的 10000ms click 预算 */
+  timeoutMs?: number
 }
 
 /**
  * click 参数解析。
  *
- * --follow-new-tab 只能出现一次：重复出现说明调用方对"是否跟随"有歧义，
- * 报错比 last-wins 更安全。`--` 之后的内容按字面量当作选择器。
+ * --follow-new-tab / --verify-delivery / --timeout-ms 各自只能出现一次：重复出现说明
+ * 调用方对意图有歧义，报错比 last-wins 更安全。`--` 之后的内容按字面量当作选择器。
  */
 export function parseClickArgs(rest: string[]): ClickArgs {
   const separatorIndex = rest.indexOf('--')
@@ -36,15 +44,41 @@ export function parseClickArgs(rest: string[]): ClickArgs {
   const literalParts = separatorIndex < 0 ? [] : rest.slice(separatorIndex + 1)
 
   let followNewTab = false
+  let verifyDelivery = false
+  let timeoutMs: number | undefined
   const positional: string[] = []
-  for (const part of optionParts) {
-    if (part === FOLLOW_NEW_TAB_FLAG) {
-      if (followNewTab) {
-        throw new CliUsageError(`duplicate click option: ${FOLLOW_NEW_TAB_FLAG}`, {
+  for (let index = 0; index < optionParts.length; index += 1) {
+    const part = optionParts[index]!
+    if (part === FOLLOW_NEW_TAB_FLAG || part === VERIFY_DELIVERY_FLAG) {
+      const duplicate = part === FOLLOW_NEW_TAB_FLAG ? followNewTab : verifyDelivery
+      if (duplicate) {
+        throw new CliUsageError(`duplicate click option: ${part}`, {
           details: { path: 'click' },
         })
       }
-      followNewTab = true
+      if (part === FOLLOW_NEW_TAB_FLAG) followNewTab = true
+      else verifyDelivery = true
+      continue
+    }
+    if (part === TIMEOUT_MS_FLAG) {
+      if (timeoutMs !== undefined) {
+        throw new CliUsageError(`duplicate click option: ${part}`, {
+          details: { path: 'click' },
+        })
+      }
+      try {
+        timeoutMs = parseNumberArg(optionParts[index + 1], 'timeout ms', {
+          min: 1,
+          max: MAX_REQUEST_TIMEOUT_MS,
+          integer: true,
+        })
+      } catch (error) {
+        // parseNumberArg 抛普通 Error；统一收敛成 CLI_INVALID_ARGUMENT 并带上命令路径
+        throw new CliUsageError(error instanceof Error ? error.message : String(error), {
+          details: { path: 'click' },
+        })
+      }
+      index += 1
       continue
     }
     if (part.startsWith('--')) {
@@ -68,7 +102,12 @@ export function parseClickArgs(rest: string[]): ClickArgs {
     })
   }
 
-  return { selector, followNewTab }
+  return {
+    selector,
+    followNewTab,
+    verifyDelivery,
+    ...(timeoutMs !== undefined ? { timeoutMs } : {}),
+  }
 }
 
 /**
@@ -114,6 +153,8 @@ async function handleClick(rest: string[], context: CommandContext): Promise<num
   const payload = await context.requestCommand(context.flags.server, 'click', {
     selector: parsed.selector,
     ...(parsed.followNewTab ? { followNewTab: true } : {}),
+    ...(parsed.verifyDelivery ? { verifyDelivery: true } : {}),
+    ...(parsed.timeoutMs !== undefined ? { timeoutMs: parsed.timeoutMs } : {}),
   })
 
   if (payload.ok === false || !parsed.followNewTab) {
